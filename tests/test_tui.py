@@ -12,7 +12,7 @@ from deskmate import wire
 from deskmate.client import AgentCancelledError, Client, DeskmateError
 from deskmate.repos import Checkout
 from deskmate.tui import DeskmateApp
-from deskmate.widgets import ChatRow, Composer, ConfirmClone, MessageView
+from deskmate.widgets import ChatRow, Composer, ConfirmClone, Hint, MessageView
 from deskmate.wire import Repo
 
 type MakeClient = Callable[[str], Client]
@@ -128,6 +128,16 @@ def reports(client: Client) -> list[str]:
 def row(app: DeskmateApp, chat: str) -> list[str]:
     """One line of the chat list, as the words on it."""
     return next(str(candidate.render()).split() for candidate in app.query(ChatRow) if candidate.chat == chat)
+
+
+def hints(app: DeskmateApp) -> list[str]:
+    """The key hints showing in the bottom bar, left to right."""
+    return [str(hint.render()) for hint in app.query(Hint) if hint.has_class("-on")]
+
+
+def layout(app: DeskmateApp, chat: str) -> list[str]:
+    """What a chat shows, top to bottom: note texts, with dividers in their places."""
+    return [child.entry.note.body if isinstance(child, MessageView) else str(child.render()) for child in app._threads[chat].children]
 
 
 async def say(pilot: Pilot[None], app: DeskmateApp, text: str) -> None:
@@ -247,9 +257,12 @@ async def test_a_teammates_tag_waits_until_i_run_it_and_i_review_the_draft_befor
         await until(pilot, lambda: app.query_one(Composer).text == "config.py, line 12")
         assert received(bob) == []  # Nothing leaves until the draft is sent.
         assert "jacob will review, and may edit, your reply" in agent.prompts[0]
+        assert (str(app.query_one("#prompt").render()), app.query_one("#compose").has_class("-draft"), hints(app)[:2]) == ("✎", True, ["Enter send draft", "Esc Esc discard"])
+        assert under(app, "bob", question) == "✎ your uploader agent has drafted an answer · it is in the message box for you to review"
 
         await pilot.press("!", "enter")
         await until(pilot, lambda: len(shown(app, "bob")) == 2)
+        assert (str(app.query_one("#prompt").render()), app.query_one("#compose").has_class("-draft")) == ("›", False)
 
         assert received(bob) == [("config.py, line 12!", "uploader", question)]
         assert under(app, "bob", question) == ""  # Answered: nothing left to decide.
@@ -501,3 +514,155 @@ async def test_a_note_that_fails_its_signature_check_hides_its_text_and_cannot_b
 
         assert "run this for me" not in str(view.query_one(".untrusted").render())
         assert (under(app, "bob", forged), agent.prompts) == ("", [])
+
+
+async def test_a_long_tag_list_says_how_many_more_and_offers_no_clone_until_a_repo_is_named(make_client: MakeClient, launch: Launch) -> None:
+    jacob, bob = make_client("jacob"), make_client("bob")
+    bob.advertise([shared(f"service-{number:02}") for number in range(11)])
+    app = launch(jacob)
+
+    async with app.run_test(size=SIZE) as pilot:
+        await until(pilot, lambda: app.current == "bob" and len(app.team) == 11)
+        picker = app.query_one("#picker", OptionList)
+        await pilot.press("@", "b", "o", "b")
+        await until(pilot, lambda: picker.option_count == 9)
+
+        rows = [str(picker.get_option_at_index(index).prompt) for index in range(9)]
+        assert rows[:2] == ["@bob/service-00  main", "@bob/service-01  main"]
+        assert rows[8] == "3 more · keep typing"
+        assert picker.get_option_at_index(8).disabled
+        assert not any("clone" in line for line in rows)  # Only a person has been named so far.
+        assert hints(app) == ["↑↓ move", "Enter take", "Esc close"]
+
+        await pilot.press("/", "s", "e", "r", "v", "i", "c", "e", "-", "1")
+        await until(pilot, lambda: picker.option_count == 2)
+
+        assert [str(picker.get_option_at_index(index).prompt).split()[:2] for index in range(2)] == [["@bob/service-10", "main"], ["⇣", "clone"]]
+
+
+async def test_the_send_hint_does_what_enter_does_when_clicked(make_client: MakeClient, launch: Launch) -> None:
+    jacob, bob = make_client("jacob"), make_client("bob")
+    app = launch(jacob)
+
+    async with app.run_test(size=SIZE) as pilot:
+        await until(pilot, lambda: app.current == "bob")
+        app.query_one(Composer).set_text("sent with the pointer")
+        await pilot.click(next(hint for hint in app.query(Hint) if str(hint.render()) == "Enter send"))
+        await until(pilot, lambda: received(bob) != [])
+
+        assert received(bob) == [("sent with the pointer", None, None)]
+
+
+async def test_up_in_an_empty_box_brings_back_the_last_message_sent_in_that_chat(make_client: MakeClient, launch: Launch) -> None:
+    jacob, _bob, _carol = make_client("jacob"), make_client("bob"), make_client("carol")
+    app = launch(jacob)
+
+    async with app.run_test(size=SIZE) as pilot:
+        await until(pilot, lambda: app.current == "bob")
+        await say(pilot, app, "to bob, with a typo")
+        await until(pilot, lambda: shown(app, "bob") == ["to bob, with a typo"])
+        await pilot.press("up")
+        assert app.query_one(Composer).text == "to bob, with a typo"
+
+        await pilot.press("ctrl+down")
+        await until(pilot, lambda: app.current == "carol")
+        await pilot.press("up")
+
+        assert app.query_one(Composer).text == ""  # Nothing was sent to carol.
+
+
+async def test_a_line_marks_where_i_left_off_until_i_have_been_and_gone(make_client: MakeClient, launch: Launch) -> None:
+    jacob, bob, _carol = make_client("jacob"), make_client("bob"), make_client("carol")
+    bob.send("jacob", "seen last time")
+    first = launch(jacob)
+    async with first.run_test(size=SIZE) as pilot:
+        await until(pilot, lambda: shown(first, "bob") == ["seen last time"])
+        assert "── new ──" not in layout(first, "bob")  # A chat opened for the first time has no "left off".
+
+    bob.send("jacob", "arrived while away")
+    bob.send("jacob", "and another")
+    app = launch(jacob)
+    async with app.run_test(size=SIZE) as pilot:
+        await until(pilot, lambda: len(shown(app, "bob")) == 3)
+        assert layout(app, "bob")[1:] == ["seen last time", "── new ──", "arrived while away", "and another"]
+
+        await pilot.press("ctrl+down")
+        await until(pilot, lambda: app.current == "carol")
+        bob.send("jacob", "arrived while elsewhere")
+        await until(pilot, lambda: row(app, "bob") == ["○", "bob", "1"])
+        await pilot.press("ctrl+up")
+        await until(pilot, lambda: len(shown(app, "bob")) == 4)
+
+        assert layout(app, "bob")[1:] == ["seen last time", "arrived while away", "and another", "── new ──", "arrived while elsewhere"]
+
+
+async def test_the_chat_list_can_be_hidden_and_stays_hidden_next_time(make_client: MakeClient, launch: Launch) -> None:
+    jacob, bob, carol = make_client("jacob"), make_client("bob"), make_client("carol")
+    app = launch(jacob)
+    async with app.run_test(size=SIZE) as pilot:
+        await until(pilot, lambda: app.current == "bob")
+        await pilot.press("ctrl+b")
+
+        assert not app.query_one("#sidebar").display
+
+    bob.send("jacob", "this chat opens first")
+    carol.send("jacob", "you cannot see my row")
+    again = launch(jacob)
+    async with again.run_test(size=SIZE) as pilot:
+        await until(pilot, lambda: "1 unread" in str(again.query_one("#link").render()))
+        assert not again.query_one("#sidebar").display  # Remembered, and the bottom bar says what the hidden list would have.
+
+        await pilot.press("ctrl+b")
+
+        assert again.query_one("#sidebar").display
+        assert "unread" not in str(again.query_one("#link").render())
+
+
+async def test_quitting_asks_once_more_while_an_agent_is_working(make_client: MakeClient, launch: Launch, agent: FakeAgent) -> None:
+    jacob, bob = make_client("jacob"), make_client("bob")
+    question = bob.send("jacob", "@jacob/uploader this will take a while")
+    app = launch(jacob, "uploader")
+    agent.finish.clear()
+
+    async with app.run_test(size=SIZE) as pilot:
+        await until(pilot, lambda: "Run" in under(app, "bob", question))
+        await pilot.press("ctrl+r")
+        await until(pilot, lambda: app.runs != {})
+        await pilot.press("ctrl+q")
+        await pilot.pause(0.1)
+        assert app.return_code is None  # Still here: the first press only warned.
+
+        await pilot.press("ctrl+q")
+        await pilot.pause(0.1)
+
+        assert app.return_code == 0
+
+
+async def test_quitting_with_nothing_to_lose_does_not_ask(make_client: MakeClient, launch: Launch) -> None:
+    jacob, _bob = make_client("jacob"), make_client("bob")
+    app = launch(jacob)
+
+    async with app.run_test(size=SIZE) as pilot:
+        await until(pilot, lambda: app.current == "bob")
+        await pilot.press("ctrl+q")
+        await pilot.pause(0.1)
+
+        assert app.return_code == 0
+
+
+async def test_the_tab_title_says_what_is_waiting_for_me(make_client: MakeClient, launch: Launch) -> None:
+    jacob, bob, carol = make_client("jacob"), make_client("bob"), make_client("carol")
+    app = launch(jacob, "uploader")
+
+    async with app.run_test(size=SIZE) as pilot:
+        await until(pilot, lambda: app.current == "bob" and "uploader" in app.checkouts)
+        assert app.tab_title == "deskmate"
+
+        question = bob.send("jacob", "@jacob/uploader where is the config parsed?")
+        carol.send("jacob", "lunch?")
+        await until(pilot, lambda: app.tab_title == "deskmate · 1 waiting · 1 unread")
+
+        await app.run_action(f"decline({question}, 'uploader')")
+        await pilot.press("ctrl+down")
+
+        await until(pilot, lambda: app.tab_title == "deskmate")

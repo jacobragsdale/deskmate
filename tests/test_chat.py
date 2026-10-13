@@ -1,6 +1,6 @@
 import pytest
 
-from deskmate.chat import GROUP_WINDOW, STALE, Candidate, ChatLog, Entry, Row, agent_prompt, candidates, chat_of, continues, mentions
+from deskmate.chat import GROUP_WINDOW, STALE, ChatLog, Entry, Row, agent_prompt, candidates, chat_of, continues, mentions, rings
 from deskmate.wire import ChannelInfo, Kind, Note, RepoRef, TeamRepo
 
 NOW = 1_800_000_000
@@ -185,34 +185,77 @@ def test_rows_list_joined_channels_then_people_and_any_chat_with_history() -> No
     assert rows == [Row("#backend", 0), Row("#old-channel", 1), Row("bob", 0), Row("carol", 0), Row("dana", 1)]
 
 
-TEAM = team(("bob", "uploader", "feature/retry"), ("carol", "uploader", "main"), ("jacob", "uploader", "main"), ("bob", "billing", "main"), ("jacob", "tools", "main"))
+TEAM = team(("bob", "uploader", "feature/retry"), ("carol", "uploader", "main"), ("jacob", "uploader", "main"), ("bob", "billing", "main"), ("carol", "portal", "main"), ("jacob", "tools", "main"))
 
 
 @pytest.mark.parametrize(
-    ("query", "pinned", "tags"),
+    ("query", "pinned", "partner", "tags"),
     [
-        ("", None, ["@jacob/tools", "@jacob/uploader", "@bob/billing", "@bob/uploader", "@carol/uploader"]),  # Mine first, then by repo and owner.
-        ("", "billing", ["@bob/billing", "@jacob/tools", "@jacob/uploader", "@bob/uploader", "@carol/uploader"]),  # The channel's repo leads.
-        ("upl", None, ["@jacob/uploader", "@bob/uploader", "@carol/uploader"]),
-        ("bob/", None, ["@bob/billing", "@bob/uploader"]),
-        ("nothing-like-this", None, []),
+        ("", None, None, ["@jacob/tools", "@jacob/uploader", "@bob/uploader", "@carol/uploader", "@bob/billing", "@carol/portal"]),  # Mine, then repos I also have, then the rest.
+        ("", "billing", None, ["@bob/billing", "@jacob/tools", "@jacob/uploader", "@bob/uploader", "@carol/uploader", "@carol/portal"]),  # The channel's repo leads.
+        ("", None, "carol", ["@jacob/tools", "@jacob/uploader", "@carol/uploader", "@carol/portal", "@bob/uploader", "@bob/billing"]),  # Then whoever I am talking to.
+        ("upl", None, None, ["@jacob/uploader", "@bob/uploader", "@carol/uploader"]),
+        ("bob", None, None, ["@bob/uploader", "@bob/billing"]),  # Of Bob's repos, the one I also have comes first.
+        ("nothing-like-this", None, None, []),
     ],
 )
-def test_candidates_are_agents_matching_what_was_typed(query: str, pinned: str | None, tags: list[str]) -> None:
-    assert [candidate.tag for candidate in candidates(query, TEAM, "jacob", pinned) if candidate.clone is None] == tags
+def test_candidates_are_agents_matching_what_was_typed_most_likely_first(query: str, pinned: str | None, partner: str | None, tags: list[str]) -> None:
+    assert [candidate.tag for candidate in candidates(query, TEAM, "jacob", pinned, partner).rows if candidate.clone is None] == tags
 
 
-def test_a_repo_i_do_not_have_also_comes_with_an_offer_to_clone_it() -> None:
-    found = candidates("bill", TEAM, "jacob", None)
+@pytest.mark.parametrize(
+    ("query", "offered"),
+    [
+        ("bill", ["billing"]),  # Part of a repo's name.
+        ("bob/b", ["billing"]),  # A person, then part of a repo's name.
+        ("o", ["portal"]),  # In "portal" and in "tools" and "uploader", which I have; "bob" is a person, not a repo.
+        ("bob", []),  # Only a person's name so far.
+        ("bob/", []),
+        ("", []),
+        ("upl", []),  # A repo I already have.
+    ],
+)
+def test_a_clone_is_offered_only_once_part_of_a_missing_repos_name_is_typed(query: str, offered: list[str]) -> None:
+    found = candidates(query, TEAM, "jacob", None, None)
 
-    assert found == [
-        Candidate("bob", "billing", "main", None),
-        Candidate("jacob", "billing", "", RepoRef(name="billing", key="dev.azure.com/acme/platform/billing", url="https://dev.azure.com/acme/Platform/_git/billing")),
-    ]
+    assert [candidate.repo for candidate in found.rows if candidate.clone] == offered
+    assert all(
+        candidate.clone == RepoRef(name=candidate.repo, key=f"dev.azure.com/acme/platform/{candidate.repo}", url=f"https://dev.azure.com/acme/Platform/_git/{candidate.repo}")
+        for candidate in found.rows
+        if candidate.clone
+    )
 
 
-def test_nothing_is_offered_for_cloning_until_something_is_typed() -> None:
-    assert all(candidate.clone is None for candidate in candidates("", TEAM, "jacob", None))
+@pytest.mark.parametrize(("limit", "shown", "more"), [(8, 6, 0), (6, 6, 0), (5, 5, 1), (2, 2, 4)])
+def test_a_list_cut_short_says_how_many_agents_were_left_out(limit: int, shown: int, more: int) -> None:
+    found = candidates("", TEAM, "jacob", None, None, limit=limit)
+
+    assert (len(found.rows), found.more) == (shown, more)
+
+
+def test_clone_offers_take_their_room_from_the_agents_and_the_count_says_so() -> None:
+    found = candidates("o", TEAM, "jacob", None, None, limit=3)  # All six agents match "o" somewhere; one row goes to the offer to clone portal.
+
+    assert [candidate.clone is None for candidate in found.rows] == [True, True, False]
+    assert found.more == 4
+
+
+@pytest.mark.parametrize(
+    ("note", "expected"),
+    [
+        (entry(1, "bob", "jacob", "ping"), True),  # Sent straight to me.
+        (entry(1, "bob", "jacob", "ping", trusted=False), True),  # Even one that fails its check wants looking at.
+        (entry(1, "bob", "#backend", "@jacob/uploader where?"), True),  # Tags my agent.
+        (entry(1, "bob", "#backend", "lunch?"), False),  # Channel chatter.
+        (entry(1, "bob", "#backend", "@carol/uploader where?"), False),  # Tags someone else's.
+        (entry(1, "bob", "#backend", "@jacob/uploader where?", agent="uploader"), False),  # An agent's words tag nobody.
+        (entry(1, "bob", "#backend", "@jacob/uploader where?", trusted=False), False),
+        (entry(1, "jacob", "bob", "my own note"), False),
+        (status(1, "bob", "jacob", 1, "uploader", "working\nmain"), False),
+    ],
+)
+def test_the_bell_is_for_direct_notes_and_tags_of_my_agents(note: Entry, expected: bool) -> None:
+    assert rings(note, "jacob") is expected
 
 
 def test_the_agent_is_told_who_asked_where_which_repo_and_what_came_before() -> None:

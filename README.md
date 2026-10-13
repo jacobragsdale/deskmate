@@ -3,7 +3,7 @@
 Deskmate is a terminal chat for a small team and their coding agents. Every repo you have checked out under `~/dev` is an agent that anyone on the team can tag, as `@you/repo`. Your own agent answers as soon as you tag it. A teammate's tag waits until you approve it, and everyone in the chat can see where it stands.
 
 ```text
- deskmate  jacob on deskmate.corp.example · claude -p · 3 repos in ~/dev                          ? Help
+ deskmate  jacob on deskmate.corp.example · claude -p · 3 repos in ~/dev                 ☰ Chats  ? Help
 ╭─ Chats ────────────────╮╭─ #backend · uploader (3 of 3 have it) · bob, carol, jacob ─────────────────╮
 │  Channels              ││ you · 22:10                                                                │
 │› #backend            ▶ ││ looking                                                                    │
@@ -34,7 +34,7 @@ Deskmate is a terminal chat for a small team and their coding agents. Every repo
 │                        ││ ────────────────────────────────────────────────────────────────────────── │
 │                        ││ › Message #backend · @ tags an agent                                       │
 ╰────────────────────────╯╰─────────────────────────────────────────────── ◆ Unpin uploader · × Leave ─╯
- ^R run request  Enter send  @ tag an agent  ^↓ next chat  ^N join channel  ^P commands     ● connected
+ ^R run request  Enter send  @ tag an agent  ^↓ next chat  ^B chat list  ^N join channel    ● connected
 ```
 
 ## Quick start
@@ -120,7 +120,7 @@ In the steps that follow, `uploader` stands for any repo both people have.
 
 ### 4. Tag your own agent
 
-Jacob clicks `bob` in the chat list and types `@`. A list opens with every agent on the team, his own first, each with the branch it is on. Typing narrows it; Enter takes the highlighted one. He finishes the message and sends it:
+Jacob clicks `bob` in the chat list and types `@`. A list opens with the team's agents, each with the branch it is on: his own first, then Bob's, because this is their chat. It shows eight and says how many more there are. Typing narrows it; Enter takes the highlighted one. He finishes the message and sends it:
 
 ```text
 @jacob/uploader where do we retry failed uploads?
@@ -140,7 +140,7 @@ Under his note Bob sees `◌ waiting for jacob to approve`. Nothing has run.
 
 Jacob's terminal rings, and his chat list marks the chat with `▶`. Under Bob's note he has three choices:
 
-- `▶ Run and review` runs his agent and puts its answer in his message box as a draft. He can edit it; Enter sends it, and pressing Esc twice discards it. Ctrl+R does the same for the oldest request waiting in the open chat.
+- `▶ Run and review` runs his agent and puts its answer in his message box as a draft. The box grows and its prompt changes from `›` to `✎`, so it is plain that Enter now sends the agent's words. He can edit it; Enter sends it, and pressing Esc twice discards it. Ctrl+R does the same for the oldest request waiting in the open chat.
 - `▶▶ Run and post` runs his agent and posts the answer without a review.
 - `× Decline` tells Bob the answer is no.
 
@@ -170,6 +170,8 @@ deskmate send '#backend' "who owns the uploader?"
 An agent is one person's checkout of one team repo: `@bob/uploader` is the agent command run in Bob's `~/dev/uploader`. Nothing is registered by hand. The interface looks at the folders directly under `~/dev`, keeps those whose `origin` remote is under the hub's `DESKMATE_REPOS` address, and tells the hub their names and current branches. It looks again every 25 seconds, so a branch switch shows up without a restart.
 
 A repo is named by the last part of its remote URL, in lowercase, whatever the folder is called. The `https` and `ssh` forms of one remote, and every Azure DevOps address form, count as the same repo. With two clones of one repo under `~/dev`, the folder named like the repo is used. Two different repos with the same name cannot both be shared: the first folder in alphabetical order wins. A repo whose name has characters other than letters, digits, `.`, `_` and `-` is skipped.
+
+The list that opens on `@` shows the agents whose `person/repo` contains what you have typed, most likely first: the channel's pinned repo, your own agents, the agents of the person you are chatting with, repos you also have, then the rest by name. A repo you have no copy of is offered for cloning once you have typed part of its name.
 
 A tag counts only in a note that is not marked as an agent's answer. An answer that contains a tag sets nothing off, so agents cannot start each other. A script, or your agent, can tag someone by sending a note with `deskmate send`; that tag waits for its target's owner like any other, and that includes a tag of your own agent.
 
@@ -201,23 +203,27 @@ If you tag or pin a repo you do not have, `⇣ Clone it` offers to run `git clon
 
 ## The chat interface
 
-`deskmate` with no command opens the interface. Everything a key does can also be clicked: chats in the list, the choices under a note, the buttons beside the status line, and the hints along the bottom. Drag to select text.
+`deskmate` with no command opens the interface. Everything a key does can also be clicked: chats in the list, the choices under a note, the buttons beside the status line, and the hints along the bottom, `Enter send` included. Drag to select text.
 
 | Key | Effect |
 |---|---|
-| @ | Opens the list of agents. ↑ and ↓ move, Enter or Tab takes one, Esc closes it. |
+| @ | Opens the list of agents. ↑ and ↓ move, Enter or Tab takes one, Esc closes it. The bottom bar shows these keys while the list is open. |
 | Enter | Sends the message, or the draft you are reviewing. |
+| ↑ | In an empty message box, brings back the last message you sent in that chat. |
 | Ctrl+J | Starts a new line in the message. |
 | Ctrl+R | Runs your agent on the oldest request waiting in the open chat, for review. |
 | Esc | Stops your agents in the open chat. Pressed twice within 2 seconds, discards a draft. |
 | Ctrl+↑, Ctrl+↓ | Opens the previous or next chat. Alt+↑ and Alt+↓ do the same. |
 | Ctrl+N | Joins or creates a channel. |
+| Ctrl+B | Hides or shows the chat list. `☰ Chats` in the top bar does the same. |
 | Ctrl+P | Opens the command list: open a chat, pin or unpin a repo, leave the open channel, change theme. |
 | Ctrl+C | Copies the selected text. |
 | F1 | Shows the keys. |
-| Ctrl+Q | Quits. |
+| Ctrl+Q | Quits. While an agent is working or a draft is unsent, the first press only warns; a second within 3 seconds quits. |
 
-In the chat list, a number is the count of unread notes, `▶` means a request is waiting for one of your agents, `✎` means a draft is waiting for your review, and a spinner means one of your agents is working there.
+In the chat list, a number is the count of unread notes, `▶` means a request is waiting for one of your agents, `✎` means a draft is waiting for your review, and a spinner means one of your agents is working there. With the list hidden, the right of the bottom bar says how many requests are waiting and how many notes are unread.
+
+A `── new ──` line marks where you left off in a chat you come back to. The bell rings for a note sent straight to you, a tag of one of your agents, and a draft ready for review; a channel note that tags none of your agents only adds to the unread count. The terminal tab's title says what is waiting, for example `deskmate · 1 waiting · 2 unread`, so it shows while you are in another tab.
 
 Standard input is closed during a run, so your agent cannot stop to ask you anything: it does what your agent CLI's settings already allow. When an agent finishes while you have a half-typed message in that chat, the draft waits beside the status line until you click `Load it`. A message or an answer that fails to send is kept: a message goes back into the message box, an answer becomes a draft.
 

@@ -24,11 +24,13 @@ NAME_COLOURS = ("$accent", "$secondary", "$success", "$warning", "$primary")
 KEYS = (
     ("@", "tag an agent: yours runs at once, a teammate's waits for them"),
     ("Enter", "send the message, or the draft you are reviewing"),
+    ("↑", "in an empty box: bring back your last message in this chat"),
     ("Ctrl+J", "new line in the message"),
     ("Ctrl+R", "run the oldest request waiting for one of your agents"),
     ("Esc", "stop your agents in this chat; press twice to discard a draft"),
     ("Ctrl+↑ / Ctrl+↓", "previous or next chat"),
     ("Ctrl+N", "join or create a channel"),
+    ("Ctrl+B", "hide or show the chat list"),
     ("Ctrl+P", "commands: open a chat, pin a repo, leave a channel, change theme"),
     ("Ctrl+C", "copy the text you selected with the mouse"),
     ("F1", "this help"),
@@ -40,10 +42,11 @@ Screen { layout: vertical; }
 #top { height: 1; }
 #brand { width: auto; color: $primary; text-style: bold; }
 #identity { width: 1fr; color: $dm-muted; text-wrap: nowrap; text-overflow: ellipsis; }
-#help-link { width: auto; color: $dm-muted; }
+#help-link { width: auto; margin-left: 2; color: $dm-muted; }
 #body { height: 1fr; }
 
 #sidebar { width: 26; border: round $dm-border; border-title-color: $dm-muted; }
+#sidebar.-hidden { display: none; }
 #rows { height: 1fr; }
 #channel-rows, #people-rows { height: auto; }
 .section { height: 1; margin-top: 1; padding: 0 2; color: $dm-muted; text-style: bold; }
@@ -61,6 +64,7 @@ ChatRow.-current { color: $foreground; background: $dm-selected; text-style: bol
 ThreadView { height: 1fr; }
 .none-yet { height: auto; margin-top: 1; color: $dm-muted; text-align: center; }
 .day { height: 1; margin-top: 1; color: $dm-muted; text-align: center; }
+.new { height: 1; margin-top: 1; color: $primary; text-align: center; }
 MessageView { height: auto; margin-top: 1; }
 MessageView.-joined { margin-top: 0; }
 MessageView .who { height: 1; text-wrap: nowrap; text-overflow: ellipsis; }
@@ -80,10 +84,13 @@ MessageView Markdown > *:last-child { margin-bottom: 0; }
 #status-actions { width: auto; margin-left: 2; link-color: $primary; }
 #picker { height: auto; max-height: 10; margin-top: 1; padding: 0; border: none; background: transparent; display: none; }
 #picker.-on { display: block; }
-#picker > .option-list--option-highlighted { color: $foreground; background: $dm-selected; text-style: bold; }
+#picker > .option-list--option-highlighted { color: $primary; background: transparent; text-style: bold; }
+#picker > .option-list--option-disabled { color: $dm-muted; }
 #compose { height: auto; border-top: solid $dm-border; }
 #prompt { width: 2; color: $primary; text-style: bold; }
 Composer { height: auto; max-height: 8; border: none; padding: 0; background: transparent; }
+#compose.-draft #prompt { color: $warning; }
+#compose.-draft Composer { max-height: 18; }
 Composer:focus { border: none; }
 
 #bottom { height: 1; }
@@ -167,7 +174,8 @@ class ChatRow(Widget):
     def render(self) -> Content:
         current, mark, here = self._shown
         badge = f"{mark} " if mark else ""
-        presence: list[tuple[str, str]] = [] if here is None else [("● ", "$success") if here else ("○ ", "$dm-muted")]
+        away = "" if current else "$dm-muted"  # Muted on the open chat's background would vanish.
+        presence: list[tuple[str, str]] = [] if here is None else [("● ", "$success") if here else ("○ ", away)]
         room = max(self.size.width - 2 - 2 * len(presence) - len(badge), 1)
         name = self.chat if len(self.chat) <= room else f"{self.chat[: room - 1]}…"
         return Content.assemble(("› " if current else "  ", "bold $primary"), *presence, name.ljust(room), (badge, "bold $primary"))
@@ -235,6 +243,7 @@ class ThreadView(VerticalScroll):
         self._last: Entry | None = None
         self._day: date | None = None
         self._waiting: list[Static | MessageView] = []  # Notes added before this view was on screen.
+        self._new: Static | None = None  # The "new" line, while there is one.
         self.tagging: dict[int, MessageView] = {}  # The notes that tag an agent, by id: the ones whose status line changes.
 
     @override
@@ -246,7 +255,8 @@ class ThreadView(VerticalScroll):
         self._show(self._waiting)
         self._waiting = []
 
-    def append(self, entries: Iterable[Entry]) -> None:
+    def append(self, entries: Iterable[Entry], *, new_after: int | None = None) -> None:
+        """Add notes at the bottom. With `new_after`, a line marks the first note from someone else with a higher id as where the user left off."""
         widgets: list[Static | MessageView] = []
         for entry in entries:
             note = entry.note
@@ -254,6 +264,10 @@ class ThreadView(VerticalScroll):
             if day != self._day:
                 widgets.append(Static(self._day_label(day), classes="day", markup=False))
                 self._day, self._last = day, None
+            if new_after is not None and self._new is None and entry.id > new_after and note.sender != self._log.me:
+                self._new = Static("── new ──", classes="new", markup=False)
+                widgets.append(self._new)
+                self._last = None  # The first new note states who wrote it, even right after their earlier one.
             answered = self._log.find(note.re) if note.re is not None else None
             quote = f"{answered.note.sender}: {one_line(answered.note.body)}" if answered and answered.trusted else ""
             view = MessageView(entry, me=self._log.me, header=not continues(self._last, entry), quote=quote, branch=self._log.ran_on(entry))
@@ -265,6 +279,14 @@ class ThreadView(VerticalScroll):
             self._show(widgets)
         else:
             self._waiting += widgets
+
+    def clear_new(self) -> None:
+        """Take the "new" line away: the user has been here since."""
+        if self._new is not None:
+            self._waiting = [widget for widget in self._waiting if widget is not self._new]
+            if self._new.is_attached:
+                self._new.remove()
+            self._new = None
 
     def _show(self, widgets: list[Static | MessageView]) -> None:
         if widgets:
@@ -294,6 +316,9 @@ class Composer(TextArea):
             super().__init__()
             self.key = key
 
+    class Recall(Message):
+        """↑ in an empty box: the user wants their last message back."""
+
     def on_key(self, event: events.Key) -> None:
         if self.completing and event.key in {"up", "down", "enter", "tab", "escape"}:
             event.prevent_default()
@@ -303,6 +328,10 @@ class Composer(TextArea):
             event.prevent_default()
             event.stop()
             self.post_message(self.Submitted(self.text))
+        elif event.key == "up" and not self.text:
+            event.prevent_default()
+            event.stop()
+            self.post_message(self.Recall())
 
     def action_newline(self) -> None:
         self.insert("\n")

@@ -27,6 +27,7 @@ class UiState(Model):
     read: dict[str, int]  # Per chat, the id of the newest note the user has seen.
     theme: str | None  # None: the default theme.
     chat: str | None  # The chat that was open last; None before any has been.
+    chats_hidden: bool = False  # Whether the chat list is tucked away. Has a default so a file from before it existed still loads.
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,14 @@ class Candidate:
         return f"@{self.owner}/{self.repo}"
 
 
+@dataclass(frozen=True)
+class Picks:
+    """What the tag list shows for what has been typed."""
+
+    rows: tuple[Candidate, ...]
+    more: int  # Matching agents left out because the list is full.
+
+
 def chat_of(note: Note, me: str) -> str:
     """The chat a note belongs to: its channel, or the other person in a direct chat."""
     if is_channel(note.to):
@@ -92,18 +101,34 @@ def continues(previous: Entry | None, entry: Entry) -> bool:
     return a.sender == b.sender and a.agent == b.agent and b.re is None and 0 <= b.ts - a.ts <= GROUP_WINDOW
 
 
-def candidates(query: str, team: Sequence[TeamRepo], me: str, pinned: str | None, limit: int = 8) -> list[Candidate]:
-    """Agents whose "owner/repo" contains what was typed: the channel's own repo first, then the user's, then by name.
+def candidates(query: str, team: Sequence[TeamRepo], me: str, pinned: str | None, partner: str | None, limit: int = 8) -> Picks:
+    """Agents whose "owner/repo" contains what was typed, most likely first.
 
-    A repo that matches but that the user has no copy of also gets an offer to clone it.
+    The channel's own repo leads, then the user's agents, then those of the person they are talking to, then repos
+    the user also has, then the rest by name. Once part of a repo's name has been typed, a matching repo the user
+    has no copy of also gets an offer to clone it.
     """
     wanted = query.lower()
-    matching = sorted((repo for repo in team if wanted in f"{repo.user}/{repo.name}"), key=lambda repo: (repo.name != pinned, repo.user != me, repo.name, repo.user))
-    found = [Candidate(repo.user, repo.name, repo.branch, None) for repo in matching]
     mine = {repo.name for repo in team if repo.user == me}
-    missing = {repo.name: repo for repo in reversed(matching) if repo.name not in mine}
-    offers = [Candidate(me, name, "", RepoRef(name=repo.name, key=repo.key, url=repo.url)) for name, repo in sorted(missing.items())] if wanted else []
-    return [*found[: limit - min(len(offers), 2)], *offers[:2]]
+    matching = sorted(
+        (repo for repo in team if wanted in f"{repo.user}/{repo.name}"), key=lambda repo: (repo.name != pinned, repo.user != me, repo.user != partner, repo.name not in mine, repo.name, repo.user)
+    )
+    named = wanted.rpartition("/")[2]  # What has been typed of a repo's name: the text after the slash, or all of it when there is none.
+    lacking = {repo.name: repo for repo in reversed(matching) if named and named in repo.name and repo.name not in mine}
+    offers = [Candidate(me, name, "", RepoRef(name=repo.name, key=repo.key, url=repo.url)) for name, repo in sorted(lacking.items())][:2]
+    room = limit - len(offers)
+    agents = [Candidate(repo.user, repo.name, repo.branch, None) for repo in matching]
+    return Picks(rows=(*agents[:room], *offers), more=max(len(agents) - room, 0))
+
+
+def rings(entry: Entry, me: str) -> bool:
+    """Whether a note from someone else deserves the bell: one sent straight to the user, or one that tags their agent."""
+    note = entry.note
+    if note.sender == me or note.kind != "note":
+        return False
+    if not is_channel(note.to):
+        return True
+    return entry.trusted and note.agent is None and any(owner == me for owner, _ in mentions(note.body))
 
 
 class ChatLog:

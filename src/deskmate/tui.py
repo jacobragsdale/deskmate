@@ -27,7 +27,7 @@ from textual.widgets import ContentSwitcher, Label, OptionList, Static
 from textual.widgets.option_list import Option
 
 from deskmate import repos
-from deskmate.chat import ONLINE, Candidate, ChatLog, Entry, Request, Row, UiState, agent_prompt, candidates, chat_of, mentions
+from deskmate.chat import ONLINE, Candidate, ChatLog, Entry, Request, Row, UiState, agent_prompt, candidates, chat_of, mentions, rings
 from deskmate.client import POLL_WAIT, AgentCancelledError, Client, DeskmateError, Runner
 from deskmate.repos import Checkout
 from deskmate.widgets import CSS, ChatRow, Composer, ConfirmClone, Help, Hint, JoinChannel, PickRepo, ThreadView, one_line, thread_id
@@ -37,6 +37,7 @@ HISTORY = 300  # Notes loaded when the interface starts or a channel is joined.
 RETRY_DELAY = 5.0
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧"
 DISCARD_WINDOW = 2.0  # Seconds in which a second Esc discards a draft.
+QUIT_WINDOW = 3.0  # Seconds in which a second Ctrl+Q quits despite work that would be lost.
 DEFAULT_THEME = "terminal"
 HINT_SLOTS = 8
 TAG_BEING_TYPED = re.compile(r"(?:^|\s)@([\w./-]*)$")
@@ -84,6 +85,7 @@ class DeskmateApp(App[None]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("ctrl+r", "run_waiting", "run request", priority=True),
         Binding("ctrl+n", "join_channel", "join channel", priority=True),
+        Binding("ctrl+b", "toggle_chats", "chat list", priority=True),
         Binding("ctrl+up,alt+up", "step_chat(-1)", "previous chat", priority=True),
         Binding("ctrl+down,alt+down", "step_chat(1)", "next chat", priority=True),
         Binding("f1", "help", "help", priority=True),
@@ -131,8 +133,12 @@ class DeskmateApp(App[None]):
         self._frame = 0
         self._animated = False  # Whether the open chat shows an agent at work.
         self._autorun: set[int] = set()  # Notes just sent from here: their tags of the user's own agents run without asking.
-        self._picks: list[Candidate] = []
+        self._picks: tuple[Candidate, ...] = ()
         self._pick_span = ((0, 0), (0, 0))
+        self.last_sent: dict[str, str] = {}  # Per chat, the last message the user typed and sent, for ↑ to bring back.
+        self.chats_hidden = self._state.chats_hidden
+        self.tab_title = ""  # What the terminal tab was last told to say.
+        self._quit_at = 0.0
         self._row_widgets: dict[str, ChatRow] = {}
         self._threads: dict[str, ThreadView] = {}
         self._hints: tuple[tuple[str, str, str], ...] = ()
@@ -144,7 +150,7 @@ class DeskmateApp(App[None]):
         with Horizontal(id="top"):
             yield Label(" deskmate ", id="brand")
             yield Label("", id="identity", markup=False)
-            yield Static("[@click=app.help]? Help[/] ", id="help-link")
+            yield Static("[@click=app.toggle_chats]☰ Chats[/]  [@click=app.help]? Help[/] ", id="help-link")
         with Horizontal(id="body"):
             with Vertical(id="sidebar") as sidebar:
                 sidebar.border_title = "Chats"
@@ -185,6 +191,7 @@ class DeskmateApp(App[None]):
     def get_system_commands(self, screen: Screen[object]) -> Iterable[SystemCommand]:
         yield from super().get_system_commands(screen)
         yield SystemCommand("Join or create a channel", "Start or enter a group chat", self.action_join_channel)
+        yield SystemCommand("Show the chat list" if self.chats_hidden else "Hide the chat list", "Give the open chat the full width, or take it back", self.action_toggle_chats)
         if is_channel(self.current):
             yield SystemCommand(f"Pin a repo to {self.current}", "Say which repo this channel is about", self.action_pin_repo)
             if self._pinned():
@@ -198,6 +205,8 @@ class DeskmateApp(App[None]):
         self.theme = self._start_theme
         self.ansi_color = None  # From here on, each theme says for itself whether it uses the terminal's colours.
         self.query_one("#picker", OptionList).can_focus = False  # Its keys arrive through the message box, which keeps the focus.
+        self.query_one("#sidebar", Vertical).set_class(self.chats_hidden, "-hidden")
+        self._to_terminal("\x1b[22;0t")  # Ask the terminal to remember its tab title, so it can be put back on the way out.
         self._spinner = self.set_interval(0.1, self._spin, pause=True)
         self.query_one(Composer).focus()
         self.poller = threading.Thread(target=self._poll, daemon=True, name="deskmate-poll")
@@ -205,6 +214,7 @@ class DeskmateApp(App[None]):
         self._refresh()
 
     def on_unmount(self) -> None:
+        self._to_terminal("\x1b]2;\x07\x1b[23;0t")  # Clear the title, then ask for the remembered one back: a terminal that kept none shows its default.
         self._stop_polling.set()
         self.stop_agents()
 
@@ -288,7 +298,8 @@ class DeskmateApp(App[None]):
         touched = list(dict.fromkeys(chat_of(entry.note, self.me) for entry in fresh))
         for chat in touched:
             if view := self._threads.get(chat):
-                view.append(entry for entry in fresh if entry.note.kind == "note" and chat_of(entry.note, self.me) == chat)
+                arrived = [entry for entry in fresh if entry.note.kind == "note" and chat_of(entry.note, self.me) == chat]
+                view.append(arrived, new_after=None if chat == self.current or not arrived else arrived[0].id - 1)  # Unseen: mark where it starts.
         self._loaded = True
         for entry in fresh:
             if entry.id in self._autorun:
@@ -303,6 +314,12 @@ class DeskmateApp(App[None]):
         self._mark_read()
         self._refresh()
 
+    def _to_terminal(self, codes: str) -> None:
+        """Send control codes that are not part of the picture, such as the tab title, in step with the drawing."""
+        if self._driver is not None:
+            self._driver.write(codes)
+            self._driver.flush()
+
     def _announce(self, incoming: list[Entry]) -> None:
         for entry in incoming[-3:]:
             note = entry.note
@@ -312,7 +329,7 @@ class DeskmateApp(App[None]):
                 self.notify(one_line(note.body, 120), title=f"{note.sender} tagged your {tagged[0]} agent{where}", markup=False)
             elif chat_of(note, self.me) != self.current:
                 self.notify(one_line(note.body, 120) if entry.trusted else "a note failed its signature check", title=f"{note.sender}{where}", markup=False)
-        if incoming:
+        if any(rings(entry, self.me) for entry in incoming):  # Channel chatter shows as unread without a sound.
             self.bell()
 
     # ── state the widgets show ────────────────────────────────────────────────
@@ -341,7 +358,7 @@ class DeskmateApp(App[None]):
             self._save_state()
 
     def _save_state(self, theme: str | None = None) -> None:
-        self._state = UiState(read=dict(self.read), theme=theme or self._state.theme, chat=self.current or self._state.chat)
+        self._state = UiState(read=dict(self.read), theme=theme or self._state.theme, chat=self.current or self._state.chat, chats_hidden=self.chats_hidden)
         (self.client.home / "state.json").write_text(self._state.model_dump_json(indent=1))
 
     def _refresh(self) -> None:
@@ -349,6 +366,20 @@ class DeskmateApp(App[None]):
         self._refresh_pane()
         self._refresh_bars()
         self._refresh_status()
+        self._refresh_title()
+
+    def _elsewhere(self) -> tuple[int, int]:
+        """How many requests are waiting for the user's agents anywhere, and how many notes are unread."""
+        rows = self._rows()
+        return sum(len(self.chats.waiting_for_me(row.chat, self._now())) for row in rows), sum(row.unread for row in rows)
+
+    def _refresh_title(self) -> None:
+        """Keep the terminal tab saying what needs the user, so it shows while they are in another tab."""
+        waiting, unread = self._elsewhere()
+        title = " · ".join(["deskmate", *([f"{waiting} waiting"] if waiting else []), *([f"{unread} unread"] if unread else [])])
+        if title != self.tab_title:
+            self.tab_title = title
+            self._to_terminal(f"\x1b]2;{title}\x07")
 
     def _refresh_sidebar(self) -> None:
         """Bring the chat list in line with what is known. Rows are made once and updated in place, never rebuilt."""
@@ -409,7 +440,11 @@ class DeskmateApp(App[None]):
             mine = request.owner == self.me
             who = f"your {repo} agent" if mine else f"{request.owner}'s {repo} agent"
             run = self.runs.get((note_id, repo)) if mine else None
+            drafted = mine and any(draft.entry.id == note_id and draft.repo == repo for draft in self.drafts.get(chat_of(request.entry.note, self.me), []))
             if request.state == "answered":
+                continue
+            if drafted:
+                lines.append(f"[$warning]✎[/] {who} has drafted an answer · it is in the message box for you to review")
                 continue
             if run:
                 self._animated = True
@@ -461,10 +496,13 @@ class DeskmateApp(App[None]):
         text = actions = ""
         discard = "[@click=app.discard_draft]× Discard[/]"
         more = f" · {len(drafts) - 1} more" if len(drafts) > 1 else ""
+        reviewing = bool(draft and draft.loaded)
+        self.query_one("#compose", Horizontal).set_class(reviewing, "-draft")  # More room, and a different prompt: Enter now sends the agent's words.
+        self.query_one("#prompt", Label).update("✎" if reviewing else "›")
         if draft and draft.loaded:
-            text = f"[$primary]✎[/] {draft.repo} draft for {draft.entry.note.sender} · Enter sends{more}"
+            text = f"[$warning]✎[/] {draft.repo} draft for {draft.entry.note.sender} · Enter sends{more}"
             actions = discard
-            hints += [("Enter", "send draft", ""), ("Esc Esc", "discard", "app.discard_draft")]
+            hints += [("Enter", "send draft", "app.send"), ("Esc Esc", "discard", "app.discard_draft")]
         elif draft:
             text = f"[$primary]✎[/] {draft.repo} draft for {draft.entry.note.sender} is ready{more}"
             actions = f"[@click=app.load_draft]Load it[/] · {discard}"
@@ -475,13 +513,25 @@ class DeskmateApp(App[None]):
             hints.append(("^R", "run request", "app.run_waiting"))
         if running:
             hints.append(("Esc", "stop my agent", "app.stop_or_discard"))
-        if not (draft and draft.loaded):
-            hints.append(("Enter", "send", ""))
+        if not reviewing:
+            hints.append(("Enter", "send", "app.send"))
         self.query_one("#status-text", Static).update(text)
         self.query_one("#status-actions", Static).update(actions)
         status.set_class(bool(text), "-on")
-        hints += [("@", "tag an agent", ""), ("^↓", "next chat", "app.step_chat(1)"), ("^N", "join channel", "app.join_channel"), ("^P", "commands", "app.command_palette"), ("^Q", "quit", "app.quit")]
+        hints += [
+            ("@", "tag an agent", ""),
+            ("^↓", "next chat", "app.step_chat(1)"),
+            ("^B", "chat list", "app.toggle_chats"),
+            ("^N", "join channel", "app.join_channel"),
+            ("^P", "commands", "app.command_palette"),
+        ]
+        hints.append(("^Q", "quit", "app.quit"))
+        if self._picks:  # The tag list is open: its keys are the ones that matter.
+            hints = [("↑↓", "move", ""), ("Enter", "take", ""), ("Esc", "close", "")]
         state = "● connected " if self.connected else (f"◌ {one_line(self.problem, 40)} · retrying " if self.problem else "◌ connecting ")
+        asks, unread = self._elsewhere()
+        if self.chats_hidden and (asks or unread):  # With the list hidden, this is where the user learns something is waiting.
+            state = " · ".join([*([f"▶ {asks} waiting"] if asks else []), *([f"{unread} unread"] if unread else []), state])
         link = self.query_one("#link", Static)
         link.update(state)
         link.set_class(bool(self.problem), "-down")
@@ -519,7 +569,9 @@ class DeskmateApp(App[None]):
         row, column = composer.cursor_location
         typed = TAG_BEING_TYPED.search(composer.document.get_line(row)[:column])
         pinned = self._pinned()
-        self._picks = candidates(str(typed.group(1)), self.team, self.me, pinned.name if pinned else None) if typed else []
+        partner = None if is_channel(self.current) else self.current or None
+        found = candidates(str(typed.group(1)), self.team, self.me, pinned.name if pinned else None, partner) if typed else None
+        self._picks = found.rows if found else ()
         self._pick_span = ((row, column - len(str(typed.group(1))) - 1), (row, column)) if typed else ((0, 0), (0, 0))
         picker = self.query_one("#picker", OptionList)
         picker.clear_options()
@@ -527,14 +579,18 @@ class DeskmateApp(App[None]):
         for pick in self._picks:
             label = Content.assemble((f"⇣ clone {pick.repo} into {where}", "$dm-muted")) if pick.clone else Content.assemble(pick.tag, (f"  {pick.branch}", "$dm-muted"))
             picker.add_option(Option(label))
+        if found and found.more:
+            picker.add_option(Option(f"{found.more} more · keep typing", disabled=True))
         picker.highlighted = 0 if self._picks else None
         picker.set_class(bool(self._picks), "-on")
         composer.completing = bool(self._picks)
+        self._refresh_status()
 
     def _close_picks(self) -> None:
-        self._picks = []
+        self._picks = ()
         self.query_one("#picker", OptionList).set_class(False, "-on")
         self.query_one(Composer).completing = False
+        self._refresh_status()
 
     def _take_pick(self, index: int | None) -> None:
         if index is None or index >= len(self._picks):
@@ -571,11 +627,13 @@ class DeskmateApp(App[None]):
         composer = self.query_one(Composer)
         if self.current:
             self.typed[self.current] = composer.text
+        if self.current != chat and (left := self._threads.get(self.current)):
+            left.clear_new()  # Its "new" line has been seen.
         self.current = chat
         switcher = self.query_one("#threads", ContentSwitcher)
         if chat not in self._threads:
             view = self._threads[chat] = ThreadView(chat, self.chats, self._today)
-            view.append(self.chats.entries(chat)[-HISTORY:])
+            view.append(self.chats.entries(chat)[-HISTORY:], new_after=self.read.get(chat))  # A chat never opened has no "left off".
             switcher.add_content(view, set_current=True)
         else:
             switcher.current = thread_id(chat)
@@ -706,6 +764,8 @@ class DeskmateApp(App[None]):
         self.typed[chat] = ""
         if answering:
             drafts.pop(0)
+        else:
+            self.last_sent[chat] = text
         self._offer_draft(chat)
         self._refresh()
 
@@ -716,6 +776,31 @@ class DeskmateApp(App[None]):
                 self._ui(partial(self._sent, self.client.send(chat, text[:MAX_BODY])))
 
         self._background(work, partial(self._send_failed, chat, text, answering))
+
+    def action_send(self) -> None:
+        """What Enter does in the message box, for the hint in the bottom bar to do on a click."""
+        self.on_composer_submitted(Composer.Submitted(self.query_one(Composer).text))
+
+    def on_composer_recall(self) -> None:
+        if last := self.last_sent.get(self.current):
+            self.query_one(Composer).set_text(last)
+
+    def action_toggle_chats(self) -> None:
+        self.chats_hidden = not self.chats_hidden
+        self.query_one("#sidebar", Vertical).set_class(self.chats_hidden, "-hidden")
+        self._save_state()
+        self._refresh()
+
+    @override
+    async def action_quit(self) -> None:
+        """Quit, but ask once more first when that would stop an agent or throw a draft away."""
+        working, unsent = len(self.runs), sum(len(drafts) for drafts in self.drafts.values())
+        if (working or unsent) and time.monotonic() - self._quit_at > QUIT_WINDOW:
+            self._quit_at = time.monotonic()
+            losing = [*([f"{working} agent{'s' if working > 1 else ''} still working"] if working else []), *([f"{unsent} draft{'s' if unsent > 1 else ''} not sent"] if unsent else [])]
+            self.notify(f"{' and '.join(losing)}. Ctrl+Q again quits: agents are stopped and drafts are lost.", timeout=QUIT_WINDOW, severity="warning", markup=False)
+            return
+        await super().action_quit()
 
     def _sent(self, note_id: int) -> None:
         """A note typed here has reached the hub. Its tags of the user's own agents run without asking, whichever of the two arrives first."""
