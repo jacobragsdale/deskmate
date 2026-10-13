@@ -14,7 +14,7 @@ def test_a_note_verifies_against_its_senders_key() -> None:
     assert wire.note_is_authentic(NOTE, wire.public_hex(KEY))
 
 
-@pytest.mark.parametrize("change", [{"body": "hello!"}, {"to": "carol"}, {"sender": "mallory"}, {"ts": TS + 1}])
+@pytest.mark.parametrize("change", [{"body": "hello!"}, {"to": "carol"}, {"to": "#bob"}, {"sender": "mallory"}, {"ts": TS + 1}, {"agent": True}, {"re": 7}])
 def test_changing_any_signed_field_breaks_the_signature(change: dict[str, object]) -> None:
     forged = Note.model_validate(NOTE.model_dump() | change)
 
@@ -25,14 +25,29 @@ def test_a_note_does_not_verify_against_another_key() -> None:
     assert not wire.note_is_authentic(NOTE, wire.public_hex(OTHER_KEY))
 
 
-@pytest.mark.parametrize("change", [{"body": ""}, {"body": "x" * (MAX_BODY + 1)}, {"sender": "Alice"}, {"to": "bob smith"}, {"sig": "not-hex"}, {"ts": "1800000000"}, {"extra": 1}])
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"body": ""},
+        {"body": "x" * (MAX_BODY + 1)},
+        {"sender": "Alice"},
+        {"sender": "#alice"},
+        {"to": "bob smith"},
+        {"to": "##backend"},
+        {"sig": "not-hex"},
+        {"ts": "1800000000"},
+        {"agent": "yes"},
+        {"extra": 1},
+    ],
+)
 def test_note_rejects_malformed_fields(change: dict[str, object]) -> None:
     with pytest.raises(ValidationError):
         Note.model_validate(NOTE.model_dump() | change)
 
 
-def test_note_accepts_a_body_at_the_size_limit() -> None:
-    assert Note.model_validate(NOTE.model_dump() | {"body": "x" * MAX_BODY})
+@pytest.mark.parametrize("change", [{"body": "x" * MAX_BODY}, {"to": "#backend"}, {"re": 12}])
+def test_note_accepts_values_at_the_edge_of_what_is_allowed(change: dict[str, object]) -> None:
+    assert Note.model_validate(NOTE.model_dump() | change)
 
 
 @pytest.mark.parametrize(("offset", "fresh"), [(0, True), (MAX_SKEW, True), (-MAX_SKEW, True), (MAX_SKEW + 1, False), (-MAX_SKEW - 1, False)])

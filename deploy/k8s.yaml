@@ -37,7 +37,7 @@ items:
             fsGroup: 10001
           containers:
             - name: hub
-              image: REGISTRY/deskmate:0.1.0
+              image: REGISTRY/deskmate:0.2.0
               ports:
                 - containerPort: 8787
               env:

@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from deskmate.cli import Client, DeskmateError, Transport, join, load_client
+from deskmate.client import Client, DeskmateError, Transport, join, load_client
 from deskmate.hub import HubSettings, create_app
 
 NOW = 1_800_000_000.0

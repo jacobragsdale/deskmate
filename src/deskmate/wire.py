@@ -11,7 +11,10 @@ MAX_BODY = 64_000
 MAX_SKEW = 300  # Seconds a signed timestamp may differ from the verifier's clock.
 AUTH_SCHEME = "Deskmate"
 
-Name = Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9_-]{0,31}$")]
+_NAME = r"[a-z0-9][a-z0-9_-]{0,31}"
+Name = Annotated[str, StringConstraints(pattern=rf"^{_NAME}$")]
+Channel = Annotated[str, StringConstraints(pattern=rf"^#{_NAME}$")]
+Address = Annotated[str, StringConstraints(pattern=rf"^#?{_NAME}$")]  # A person, or a channel when it starts with "#".
 PubKey = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 Signature = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{128}$")]
 
@@ -29,13 +32,20 @@ class Join(User):
     token: str
 
 
+class ChannelInfo(Model):
+    name: Channel
+    members: tuple[Name, ...]
+
+
 class Note(Model):
-    """A message signed by its sender. The hub relays it unchanged, so the recipient can verify it too."""
+    """A message signed by its sender. The hub relays it unchanged, so every recipient can verify it too."""
 
     sender: Name
-    to: Name
+    to: Address
     body: Annotated[str, StringConstraints(min_length=1, max_length=MAX_BODY)]
     ts: int  # Unix seconds, UTC.
+    agent: bool  # Written by the sender's agent (and approved by the sender) rather than typed.
+    re: int | None  # The id of the note this one answers; None when it answers nothing.
     sig: Signature
 
 
@@ -46,6 +56,10 @@ class Delivered(Model):
 
 class Receipt(Model):
     id: int
+
+
+def is_channel(address: str) -> bool:
+    return address.startswith("#")
 
 
 def new_key() -> Ed25519PrivateKey:
@@ -76,17 +90,17 @@ def is_fresh(ts: int, now: float) -> bool:
     return abs(now - ts) <= MAX_SKEW
 
 
-def _note_payload(sender: str, to: str, body: str, ts: int) -> bytes:
+def _note_payload(sender: str, to: str, body: str, ts: int, agent: bool, re: int | None) -> bytes:
     # A JSON array of fixed positions has exactly one encoding, so both sides sign the same bytes.
-    return json.dumps(["deskmate-note-v1", sender, to, body, ts], ensure_ascii=False, separators=(",", ":")).encode()
+    return json.dumps(["deskmate-note-v2", sender, to, body, ts, agent, re], ensure_ascii=False, separators=(",", ":")).encode()
 
 
-def sign_note(key: Ed25519PrivateKey, sender: str, to: str, body: str, ts: int) -> Note:
-    return Note(sender=sender, to=to, body=body, ts=ts, sig=key.sign(_note_payload(sender, to, body, ts)).hex())
+def sign_note(key: Ed25519PrivateKey, sender: str, to: str, body: str, ts: int, *, agent: bool = False, re: int | None = None) -> Note:
+    return Note(sender=sender, to=to, body=body, ts=ts, agent=agent, re=re, sig=key.sign(_note_payload(sender, to, body, ts, agent, re)).hex())
 
 
 def note_is_authentic(note: Note, pubkey: str) -> bool:
-    return verify(pubkey, _note_payload(note.sender, note.to, note.body, note.ts), note.sig)
+    return verify(pubkey, _note_payload(note.sender, note.to, note.body, note.ts, note.agent, note.re), note.sig)
 
 
 def _auth_payload(name: str, ts: int) -> bytes:
@@ -94,7 +108,7 @@ def _auth_payload(name: str, ts: int) -> bytes:
 
 
 def auth_header(key: Ed25519PrivateKey, name: str, ts: int) -> str:
-    """Prove who is asking. It gates reads only: every note carries its own signature."""
+    """Prove who is asking. It gates reads and channel membership: every note carries its own signature."""
     return f"{AUTH_SCHEME} {name}:{ts}:{key.sign(_auth_payload(name, ts)).hex()}"
 
 

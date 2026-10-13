@@ -8,8 +8,8 @@ from fastapi.testclient import TestClient
 from httpx2 import Response
 
 from deskmate import wire
-from deskmate.cli import Client, DeskmateError, Transport, join
-from deskmate.wire import MAX_SKEW, Note
+from deskmate.client import Client, DeskmateError, Transport, join
+from deskmate.wire import MAX_SKEW, ChannelInfo, Note
 
 type MakeClient = Callable[[str], Client]
 
@@ -19,7 +19,11 @@ def post_note(hub: TestClient, note: Note) -> Response:
     return hub.post("/notes", content=note.model_dump_json(), headers={"Content-Type": "application/json"})
 
 
-def test_a_note_reaches_only_its_recipient(make_client: MakeClient) -> None:
+def bodies(client: Client, *, mine: bool = True) -> list[str]:
+    return [delivered.note.body for delivered in client.notes(mine=mine)]
+
+
+def test_a_direct_note_reaches_its_recipient_and_its_sender_only(make_client: MakeClient) -> None:
     alice, bob, carol = make_client("alice"), make_client("bob"), make_client("carol")
 
     alice.send("bob", "hi bob")
@@ -27,8 +31,9 @@ def test_a_note_reaches_only_its_recipient(make_client: MakeClient) -> None:
     (delivered,) = bob.notes()
     assert (delivered.note.sender, delivered.note.body) == ("alice", "hi bob")
     assert bob.is_trusted(delivered.note)
-    assert carol.notes() == []
-    assert alice.notes() == []
+    assert bodies(alice) == ["hi bob"]  # The sender sees their own note, so their chat shows both sides.
+    assert bodies(alice, mine=False) == []
+    assert bodies(carol) == []
 
 
 def test_joining_again_with_the_same_key_is_allowed(make_client: MakeClient) -> None:
@@ -56,7 +61,7 @@ def test_a_note_signed_by_someone_else_is_refused(make_client: MakeClient, hub: 
     response = post_note(hub, forged)
 
     assert response.status_code == 401
-    assert bob.notes() == []
+    assert bodies(bob) == []
 
 
 @pytest.mark.parametrize(("age", "status"), [(MAX_SKEW, 201), (MAX_SKEW + 1, 400)])
@@ -75,7 +80,7 @@ def test_a_replayed_note_is_delivered_once(make_client: MakeClient, hub: TestCli
     statuses = [post_note(hub, note).status_code for _ in range(2)]
 
     assert statuses == [201, 409]
-    assert len(bob.notes()) == 1
+    assert bodies(bob) == ["once"]
 
 
 def test_a_note_to_an_unknown_name_is_refused(make_client: MakeClient) -> None:
@@ -123,3 +128,72 @@ def test_the_installer_joins_the_hub_it_was_downloaded_from(hub: TestClient) -> 
     script = hub.get("/install.sh").text
 
     assert 'deskmate join "http://testserver" "$1" "$2"' in script
+
+
+def test_a_channel_note_reaches_every_member_and_nobody_else(make_client: MakeClient) -> None:
+    alice, bob, carol = make_client("alice"), make_client("bob"), make_client("carol")
+    alice.join_channel("backend")
+    bob.join_channel("#backend")
+
+    alice.send("#backend", "deploy at noon")
+
+    assert bodies(bob) == ["deploy at noon"]
+    assert bodies(alice, mine=False) == []
+    assert bodies(carol) == []
+
+
+def test_channels_list_their_members(make_client: MakeClient) -> None:
+    alice, bob = make_client("alice"), make_client("bob")
+    alice.join_channel("backend")
+    bob.join_channel("backend")
+    bob.join_channel("oncall")
+
+    assert alice.channels() == [ChannelInfo(name="#backend", members=("alice", "bob")), ChannelInfo(name="#oncall", members=("bob",))]
+
+
+def test_posting_to_a_channel_needs_membership(make_client: MakeClient) -> None:
+    alice, carol = make_client("alice"), make_client("carol")
+    alice.join_channel("backend")
+
+    with pytest.raises(DeskmateError, match="join #backend before posting"):
+        carol.send("#backend", "let me in")
+
+
+def test_leaving_a_channel_stops_its_notes(make_client: MakeClient) -> None:
+    alice, bob = make_client("alice"), make_client("bob")
+    alice.join_channel("backend")
+    bob.join_channel("backend")
+    alice.send("#backend", "before")
+
+    left = bob.leave_channel("backend")
+    alice.send("#backend", "after")
+
+    assert left.members == ("alice",)
+    assert bodies(bob) == []  # Leaving also drops the channel's history from what the hub hands over.
+
+
+def test_joining_a_channel_reveals_its_earlier_notes(make_client: MakeClient) -> None:
+    alice, bob = make_client("alice"), make_client("bob")
+    alice.join_channel("backend")
+    alice.send("#backend", "written before bob arrived")
+
+    bob.join_channel("backend")
+
+    assert bodies(bob) == ["written before bob arrived"]
+
+
+def test_a_note_keeps_its_agent_mark_and_what_it_answers(make_client: MakeClient) -> None:
+    alice, bob = make_client("alice"), make_client("bob")
+    question = alice.send("bob", "where is the config parsed?")
+
+    bob.send("alice", "config.py, line 12", agent=True, re=question)
+
+    (answer,) = alice.notes(mine=False)
+    assert (answer.note.agent, answer.note.re) == (True, question)
+    assert alice.is_trusted(answer.note)
+
+
+@pytest.mark.parametrize("name", ["Backend", "back end", "a" * 33, "#"])
+def test_a_channel_name_must_be_a_plain_name(make_client: MakeClient, name: str) -> None:
+    with pytest.raises(ValueError, match="String should match pattern"):
+        make_client("alice").join_channel(name)

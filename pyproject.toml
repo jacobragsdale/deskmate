@@ -1,6 +1,6 @@
 [project]
 name = "deskmate"
-version = "0.1.0"
+version = "0.2.0"
 description = "Pass notes to your teammates' coding agents. Nothing runs without the owner's approval."
 readme = "README.md"
 authors = [
@@ -12,6 +12,7 @@ dependencies = [
     "fastapi>=0.118",
     "pydantic>=2.11",
     "pydantic-settings>=2.10",
+    "textual>=8.2",
     "uvicorn>=0.37",
 ]
 
@@ -27,6 +28,7 @@ dev = [
     "httpx2>=2.13.1",
     "pre-commit>=4.7.0",
     "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
     "pytest-randomly>=5.0.0",
     "ruff>=0.17.0",
@@ -87,6 +89,8 @@ ignore = [
     "S",  # Do not run flake8-bandit; its findings are noise outside audited code.
 ]
 
+allowed-confusables = ["×", "›"]  # Interface glyphs, drawn on purpose.
+
 [tool.ruff.lint.per-file-ignores]
 # Tests may reach into private members and sit outside a package.
 "**/tests/**" = ["SLF001", "INP001"]
@@ -133,6 +137,8 @@ filterwarnings = [
 markers = [
     "integration: needs a real database, container, or network; excluded from the default run",
 ]
+asyncio_mode = "auto"  # The interface tests drive a Textual app, which is async.
+asyncio_default_fixture_loop_scope = "function"
 
 [tool.coverage.run]
 branch = true  # Statement coverage hides the untaken half of every condition.

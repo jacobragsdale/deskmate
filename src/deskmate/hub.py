@@ -1,4 +1,4 @@
-"""The hub: keeps everyone's public key, relays signed notes, and queues them until they are fetched."""
+"""The hub: keeps everyone's public key and channel memberships, relays signed notes, and keeps them for later reading."""
 
 import asyncio
 import hmac
@@ -17,25 +17,30 @@ from fastapi.responses import PlainTextResponse
 from pydantic import StringConstraints
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from deskmate.wire import Delivered, Join, Note, Receipt, User, auth_claim, auth_is_valid, is_fresh, note_is_authentic
+from deskmate.wire import ChannelInfo, Delivered, Join, Name, Note, Receipt, User, auth_claim, auth_is_valid, is_channel, is_fresh, note_is_authentic
 
 log = logging.getLogger(__name__)
 
 MAX_WAIT = 30.0  # Longest a client may hold one long-poll open, in seconds.
 PAGE = 100
+HISTORY = 500  # Most notes one `tail` request may ask for.
 
 SCHEMA = """
 PRAGMA journal_mode = WAL;
 CREATE TABLE IF NOT EXISTS users (name TEXT PRIMARY KEY, pubkey TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS members (channel TEXT NOT NULL, user TEXT NOT NULL, PRIMARY KEY (channel, user));
 CREATE TABLE IF NOT EXISTS notes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     sender TEXT NOT NULL,
     recipient TEXT NOT NULL,
     body TEXT NOT NULL,
     ts INTEGER NOT NULL,
+    agent INTEGER NOT NULL,
+    re INTEGER,
     sig TEXT NOT NULL UNIQUE
 );
 CREATE INDEX IF NOT EXISTS notes_by_recipient ON notes (recipient, id);
+CREATE INDEX IF NOT EXISTS notes_by_sender ON notes (sender, id);
 """
 
 INSTALLER = """#!/usr/bin/env bash
@@ -79,6 +84,11 @@ def create_app(settings: HubSettings, now: Callable[[], float] = time.time) -> F
         with closing(connect()) as conn:
             row: tuple[str] | None = conn.execute("SELECT pubkey FROM users WHERE name = ?", (name,)).fetchone()
         return row[0] if row else None
+
+    def members_of(channel: str) -> tuple[str, ...]:
+        with closing(connect()) as conn:
+            rows: list[tuple[str]] = conn.execute("SELECT user FROM members WHERE channel = ? ORDER BY user", (channel,)).fetchall()
+        return tuple(user for (user,) in rows)
 
     def init_db() -> None:
         with closing(connect()) as conn:
@@ -134,11 +144,16 @@ def create_app(settings: HubSettings, now: Callable[[], float] = time.time) -> F
             raise HTTPException(status_code=401, detail="note is not signed by its sender")
         if not is_fresh(note.ts, now()):
             raise HTTPException(status_code=400, detail="note timestamp is more than 5 minutes off the hub clock; check your system time")
-        if pubkey_of(note.to) is None:
+        if is_channel(note.to):
+            if note.sender not in members_of(note.to):
+                raise HTTPException(status_code=403, detail=f"join {note.to} before posting to it")
+        elif pubkey_of(note.to) is None:
             raise HTTPException(status_code=404, detail=f"nobody named {note.to!r} has joined")
         try:
             with closing(connect()) as conn, conn:
-                cursor = conn.execute("INSERT INTO notes (sender, recipient, body, ts, sig) VALUES (?, ?, ?, ?, ?)", (note.sender, note.to, note.body, note.ts, note.sig))
+                cursor = conn.execute(
+                    "INSERT INTO notes (sender, recipient, body, ts, agent, re, sig) VALUES (?, ?, ?, ?, ?, ?, ?)", (note.sender, note.to, note.body, note.ts, note.agent, note.re, note.sig)
+                )
         except sqlite3.IntegrityError as err:
             raise HTTPException(status_code=409, detail="this exact note was already delivered") from err
         with arrived:
@@ -147,25 +162,58 @@ def create_app(settings: HubSettings, now: Callable[[], float] = time.time) -> F
         log.info("note queued", extra={"note_id": note_id, "sender": note.sender, "recipient": note.to})
         return Receipt(id=note_id)
 
-    def fetch(recipient: str, after: int, tail: int | None) -> list[Delivered]:
+    @app.get("/channels", dependencies=[Depends(caller)])
+    def channels() -> list[ChannelInfo]:
         with closing(connect()) as conn:
-            if tail is None:
-                query, args = "SELECT id, sender, recipient, body, ts, sig FROM notes WHERE recipient = ? AND id > ? ORDER BY id LIMIT ?", (recipient, after, PAGE)
-            else:
-                query, args = "SELECT * FROM (SELECT id, sender, recipient, body, ts, sig FROM notes WHERE recipient = ? AND id > ? ORDER BY id DESC LIMIT ?) ORDER BY id", (recipient, after, tail)
-            rows: list[tuple[int, str, str, str, int, str]] = conn.execute(query, args).fetchall()
-        return [Delivered(id=note_id, note=Note(sender=sender, to=to, body=body, ts=ts, sig=sig)) for note_id, sender, to, body, ts, sig in rows]
+            rows: list[tuple[str, str]] = conn.execute("SELECT channel, user FROM members ORDER BY channel, user").fetchall()
+        grouped: dict[str, list[str]] = {}
+        for channel, user in rows:
+            grouped.setdefault(channel, []).append(user)
+        return [ChannelInfo(name=channel, members=tuple(members)) for channel, members in grouped.items()]
+
+    @app.post("/channels/{name}/join")
+    def join_channel(name: Name, me: Annotated[str, Depends(caller)]) -> ChannelInfo:
+        """Join a channel, creating it if nobody is in it yet."""
+        with closing(connect()) as conn, conn:
+            conn.execute("INSERT OR IGNORE INTO members (channel, user) VALUES (?, ?)", (f"#{name}", me))
+        log.info("channel joined", extra={"channel": f"#{name}", "user": me})
+        return ChannelInfo(name=f"#{name}", members=members_of(f"#{name}"))
+
+    @app.post("/channels/{name}/leave")
+    def leave_channel(name: Name, me: Annotated[str, Depends(caller)]) -> ChannelInfo:
+        with closing(connect()) as conn, conn:
+            conn.execute("DELETE FROM members WHERE channel = ? AND user = ?", (f"#{name}", me))
+        log.info("channel left", extra={"channel": f"#{name}", "user": me})
+        return ChannelInfo(name=f"#{name}", members=members_of(f"#{name}"))
+
+    def fetch(me: str, after: int, tail: int | None, mine: bool) -> list[Delivered]:
+        visible = "(recipient = :me OR recipient IN (SELECT channel FROM members WHERE user = :me) OR sender = :me) AND (:mine OR sender != :me)"
+        columns = "id, sender, recipient, body, ts, agent, re, sig"
+        if tail is None:
+            query = f"SELECT {columns} FROM notes WHERE id > :after AND {visible} ORDER BY id LIMIT :limit"
+        else:
+            query = f"SELECT * FROM (SELECT {columns} FROM notes WHERE id > :after AND {visible} ORDER BY id DESC LIMIT :limit) ORDER BY id"
+        with closing(connect()) as conn:
+            rows: list[tuple[int, str, str, str, int, int, int | None, str]] = conn.execute(query, {"me": me, "after": after, "mine": mine, "limit": tail or PAGE}).fetchall()
+        return [Delivered(id=note_id, note=Note(sender=sender, to=to, body=body, ts=ts, agent=bool(agent), re=re, sig=sig)) for note_id, sender, to, body, ts, agent, re, sig in rows]
 
     # ponytail: each waiting long-poll holds one threadpool thread (default 40). Fine for a desk row; go async if the team outgrows it.
     @app.get("/notes")
     def get_notes(
-        me: Annotated[str, Depends(caller)], after: Annotated[int, Query(ge=0)] = 0, wait: Annotated[float, Query(ge=0, le=MAX_WAIT)] = 0, tail: Annotated[int | None, Query(ge=1, le=PAGE)] = None
+        me: Annotated[str, Depends(caller)],
+        after: Annotated[int, Query(ge=0)] = 0,
+        wait: Annotated[float, Query(ge=0, le=MAX_WAIT)] = 0,
+        tail: Annotated[int | None, Query(ge=1, le=HISTORY)] = None,
+        mine: bool = True,
     ) -> list[Delivered]:
-        """Notes addressed to the caller with an id above `after`, oldest first. `wait` holds the request open until one arrives; `tail` returns only the newest few."""
+        """Notes the caller can see with an id above `after`, oldest first: sent to them, to a channel they are in, or (unless `mine` is false) sent by them.
+
+        `wait` holds the request open until one arrives; `tail` returns only the newest few.
+        """
         deadline = time.monotonic() + wait
         with arrived:  # Held across the check so a note cannot land between "nothing yet" and going to sleep.
             while True:
-                notes = fetch(me, after, tail)
+                notes = fetch(me, after, tail, mine)
                 remaining = deadline - time.monotonic()
                 if notes or remaining <= 0:
                     return notes
