@@ -45,7 +45,7 @@ The hub needs Docker. Each person needs `curl`, `git`, their repos checked out d
 
 ### 1. Start the hub
 
-One person runs the hub somewhere everyone can reach. With Docker, from a clone of this repository:
+One person runs the hub somewhere everyone can reach. With Docker, from a clone of this repository on its `main` branch, which is also where the installer in step 2 takes the client from:
 
 ```sh
 docker build -t deskmate .
@@ -55,7 +55,7 @@ docker run -d --name deskmate -p 8787:8787 -e DESKMATE_JOIN_TOKEN=JOIN_TOKEN -e 
 Replace the following:
 
 - `JOIN_TOKEN`: a secret of at least 16 characters, for example the output of `openssl rand -hex 16`. Anyone who has it can register a name, so share it only with your teammates.
-- `REPOS_URL`: the address your team's repos live under, for example `https://dev.azure.com/acme/` or `https://github.com/acme/`. Only repos below it are ever shared; anything else under `~/dev` stays private.
+- `REPOS_URL`: the `https` address your team's repos live under, for example `https://dev.azure.com/acme/` or `https://github.com/acme/`. It can be an organisation or a single project, with or without the final `/`. Only repos below it are ever shared; anything else under `~/dev` stays private. A checkout whose remote uses `ssh` matches too.
 
 Inside the container the hub listens on every interface, and `-p 8787:8787` publishes it on the host. Check that it answers:
 
@@ -83,7 +83,7 @@ Replace the following:
 - `NAME`: your name on the hub. Lowercase letters, digits, `-` and `_`, at most 32 characters.
 - `JOIN_TOKEN`: the hub's join token.
 
-The installer installs [uv](https://docs.astral.sh/uv/) if it is missing, installs the `deskmate` command from the `main` branch of `github.com/jacobragsdale/deskmate` into `~/.local/bin`, creates a signing key in `~/.config/deskmate`, and registers your name. It needs access to GitHub. The hub and its clients must run the same version, so build the hub image from `main` as well. The installer ends with:
+The installer installs [uv](https://docs.astral.sh/uv/) if it is missing, installs the `deskmate` command from the `main` branch of `github.com/jacobragsdale/deskmate` into `~/.local/bin`, creates a signing key in `~/.config/deskmate`, and registers your name. It needs to reach GitHub; the repository is public, so no sign-in is involved. The installer ends with:
 
 ```text
 joined http://localhost:8787 as bob; your agent command is `claude -p`
@@ -92,7 +92,7 @@ Run 'deskmate' to open the chat. Your agents are the repos under ~/dev.
 
 If your shell does not find `deskmate` afterwards, open a new terminal, or add `~/.local/bin` to `PATH`.
 
-To try both people on one machine, give each their own settings folder with `DESKMATE_HOME`, in two terminals. To make them differ, also give one of them a repos folder of their own with `DESKMATE_DEV`:
+To try both people on one machine, run these two instead of the command above, each in its own terminal. `DESKMATE_HOME` gives each person their own settings folder, and it must be in front of every later `deskmate` command in that terminal too (or `export` it once):
 
 ```sh
 curl -fsSL HUB_URL/install.sh | DESKMATE_HOME=~/deskmate-jacob bash -s -- jacob JOIN_TOKEN
@@ -101,8 +101,10 @@ DESKMATE_HOME=~/deskmate-jacob deskmate
 
 ```sh
 curl -fsSL HUB_URL/install.sh | DESKMATE_HOME=~/deskmate-bob bash -s -- bob JOIN_TOKEN
-DESKMATE_HOME=~/deskmate-bob DESKMATE_DEV=~/bob-dev deskmate
+DESKMATE_HOME=~/deskmate-bob deskmate
 ```
+
+Both people then have the same repos, because they share one `~/dev`. That is enough for a first try. To make them differ, clone one or two team repos into another folder and point one person at it with `DESKMATE_DEV=~/bob-dev` in front of `deskmate`.
 
 ### 3. Open the chat
 
@@ -112,7 +114,9 @@ Each person runs `deskmate`, from any directory:
 deskmate
 ```
 
-The top line counts the team repos found under `~/dev`. The chat list on the left shows everyone who has joined, with `●` beside those who are here now and `○` beside those who are away.
+The top line counts the team repos found under `~/dev`. If it says `0 repos`, no folder directly under `~/dev` has an `origin` remote below the hub's `REPOS_URL`. The chat list on the left shows everyone who has joined, with `●` beside those who are here now and `○` beside those who are away.
+
+In the steps that follow, `uploader` stands for any repo both people have.
 
 ### 4. Tag your own agent
 
@@ -126,7 +130,7 @@ His agent starts at once in `~/dev/uploader`. A line under the note shows it wor
 
 ### 5. Tag a teammate's agent
 
-Bob wants to know about work on Jacob's branch, so he tags Jacob's agent:
+Bob wants to know about work on Jacob's branch, so in his chat with `jacob` he tags Jacob's agent:
 
 ```text
 @jacob/uploader does your retry change handle 429s?
@@ -167,7 +171,9 @@ An agent is one person's checkout of one team repo: `@bob/uploader` is the agent
 
 A repo is named by the last part of its remote URL, in lowercase, whatever the folder is called. The `https` and `ssh` forms of one remote, and every Azure DevOps address form, count as the same repo. With two clones of one repo under `~/dev`, the folder named like the repo is used. Two different repos with the same name cannot both be shared: the first folder in alphabetical order wins. A repo whose name has characters other than letters, digits, `.`, `_` and `-` is skipped.
 
-A tag counts only in a note a person typed. An agent's answer that contains a tag sets nothing off, so agents cannot start each other.
+A tag counts only in a note that is not marked as an agent's answer. An answer that contains a tag sets nothing off, so agents cannot start each other. A script, or your agent, can tag someone by sending a note with `deskmate send`; that tag waits for its target's owner like any other, and that includes a tag of your own agent.
+
+A request waits for as long as it takes. It is stored on the hub, so it is still there after you restart the interface or come back from lunch.
 
 Who may run what:
 
@@ -191,7 +197,7 @@ Under each note that tags an agent, everyone in the chat sees one line per tag u
 
 A run reported as working that has produced no answer after 16 minutes is shown as waiting again.
 
-If you tag or pin a repo you do not have, `⇣ Clone it` offers to run `git clone` into `~/dev` with your own git credentials. A dialog shows the address and the destination first, and nothing is fetched until you confirm. Git is not allowed to prompt on the terminal, so a clone that needs a password you have not stored fails with the command to run yourself.
+If you tag or pin a repo you do not have, `⇣ Clone it` offers to run `git clone` into your repos folder (`~/dev`, or `DESKMATE_DEV` when set) with your own git credentials. A dialog shows the address and the destination first, and nothing is fetched until you confirm. Git is not allowed to prompt on the terminal, so a clone that needs a password you have not stored fails with the command to run yourself.
 
 ## The chat interface
 
@@ -275,7 +281,7 @@ Every note is signed with the sender's Ed25519 key. The signature covers the sen
 
 The agent mark is the sender's own statement. It tells you a teammate's agent drafted the note and the teammate let it through; a modified client could leave the mark off, and such a note could then tag agents. A tag still runs nothing without its target's approval.
 
-What the hub learns about your machine is the names and branches of the repos under `~/dev` whose remote is below `DESKMATE_REPOS`, and when your interface last polled. Every hub member can see those. Folder paths, other repos and file contents are not sent. Remote URLs are rebuilt before they are shared, so a user name or token embedded in your `origin` URL does not leave your machine.
+What the hub learns about your machine is the names, clone addresses and branches of the repos under `~/dev` whose remote is below `DESKMATE_REPOS`, when your interface last polled, and, while one of your agents runs, whether that checkout has uncommitted changes. Every hub member can see those. Folder paths, other repos and file contents are not sent. A clone address is rebuilt from the host and path before it is shared, so a user name or token embedded in your `origin` URL does not leave your machine.
 
 The hub hands a direct note only to its sender and its recipient, and a channel's notes only to the channel's current members. A request for notes must be signed with the reader's key. Channels are open: anyone who has joined the hub can join any channel, and then sees its earlier notes too. Do not treat a channel as private from other hub members.
 
