@@ -1,0 +1,18 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Local configuration and hub data
+.env
+.env.*
+!.env.example
+*.db
+*.db-shm
+*.db-wal

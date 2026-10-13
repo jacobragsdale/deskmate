@@ -1,0 +1,149 @@
+[project]
+name = "deskmate"
+version = "0.1.0"
+description = "Pass notes to your teammates' coding agents. Nothing runs without the owner's approval."
+readme = "README.md"
+authors = [
+    { name = "Jacob Ragsdale", email = "jacobragsdale@protonmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "cryptography>=45",
+    "fastapi>=0.118",
+    "pydantic>=2.11",
+    "pydantic-settings>=2.10",
+    "uvicorn>=0.37",
+]
+
+[project.scripts]
+deskmate = "deskmate.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "httpx2>=2.13.1",
+    "pre-commit>=4.7.0",
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+    "pytest-randomly>=5.0.0",
+    "ruff>=0.17.0",
+    "ty>=0.0.86",
+]
+
+[tool.ruff]
+line-length = 200
+required-version = ">=0.17.0"
+force-exclude = true
+show-fixes = true
+unsafe-fixes = false
+
+[tool.ruff.lint]
+extend-select = [  # Ruff's own defaults stay on; these are additions to them.
+    "E4",  # Keep imports valid and at the top level.
+    "E7",  # Reject ambiguous statements and comparisons.
+    "F",  # Reject star imports and invalid forward-reference annotations.
+    "I",  # Keep imports ordered and grouped consistently.
+    "UP",  # Use syntax appropriate for the target Python version.
+    "B",  # Catch likely bugs and hazardous design patterns.
+    "SIM",  # Replace needlessly complex control flow.
+    "C4",  # Remove wasteful collection constructions.
+    "RUF",  # Apply additional correctness and modernization checks.
+    "PTH",  # Use pathlib instead of legacy os.path calls.
+    "N",  # Enforce standard naming conventions.
+    "A",  # Prevent names from shadowing builtins.
+    "SLF",  # Reject access to another object's private members.
+    "T20",  # Reject print and pprint in favor of logging.
+    "INP",  # Require explicit packages instead of implicit namespaces.
+    "TID",  # Reject parent-relative imports.
+    "ERA",  # Remove commented-out code.
+    "EM",  # Bind exception messages before raising them.
+    "ANN001",  # Require annotations for named function arguments.
+    "ANN002",  # Require annotations for *args.
+    "ANN003",  # Require annotations for **kwargs.
+    "ANN201",  # Require return annotations on public functions.
+    "ANN202",  # Require return annotations on private functions.
+    "ANN204",  # Require return annotations on special methods.
+    "ANN205",  # Require return annotations on static methods.
+    "ANN206",  # Require return annotations on class methods.
+    "LOG",  # Enforce safe logger and exception usage.
+    "G",  # Require lazy, valid log formatting.
+    "ARG",  # Expose unused parameters.
+    "PGH",  # Reject blanket `noqa` and `type: ignore` comments.
+    "RSE",  # Remove unnecessary syntax when raising exceptions.
+    "RET502",  # Reject implicit None returns in functions that return values.
+    "RET503",  # Require an explicit final return in value-returning functions.
+    "PLW",  # Catch suspicious control flow and API usage.
+    "C90",  # Limit cyclomatic complexity.
+    "PERF",  # Flag avoidable allocations and slow loop patterns.
+    "ASYNC",  # Catch blocking calls and async misuse.
+    "FAST",  # Validate route declarations and dependency annotations.
+    "PD",  # Enforce safer and more efficient dataframe idioms.
+]
+ignore = [
+    "ASYNC109",  # Allow deliberate timeout parameters in async APIs.
+    "S",  # Do not run flake8-bandit; its findings are noise outside audited code.
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests may reach into private members and sit outside a package.
+"**/tests/**" = ["SLF001", "INP001"]
+"**/test_*.py" = ["SLF001", "INP001"]
+"**/conftest.py" = ["SLF001", "INP001"]
+# The client is a terminal program: what it prints is its output, not diagnostics.
+"src/deskmate/cli.py" = ["T201"]
+
+[tool.ruff.lint.isort]
+split-on-trailing-comma = false  # Do not preserve comma-forced import line breaks.
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
+
+[tool.ruff.format]
+docstring-code-format = true
+skip-magic-trailing-comma = true  # Collapse comma-forced multiline constructs when they fit.
+
+[tool.ty.rules]
+blanket-ignore-comment = "error"
+missing-override-decorator = "error"
+missing-type-argument = "error"
+possibly-unresolved-reference = "warn"
+unsound-return-statement = "error"
+unsound-yield = "error"
+unsupported-dynamic-base = "warn"
+
+[tool.ty.analysis]
+respect-type-ignore-comments = false  # Require a specific `# ty: ignore[rule]` suppression.
+strict-generic-narrowing = true
+
+[tool.ty.terminal]
+error-on-warning = true
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers --strict-config --import-mode=importlib -m 'not integration'"
+testpaths = ["tests"]
+xfail_strict = true  # An xfail that starts passing is a failure, not a silent pass.
+filterwarnings = [
+    "error",  # pandas 3 chained assignment only warns; the lost write is otherwise invisible.
+    # Add narrow, dated `ignore::` entries with a reason for third-party
+    # deprecations you do not control. Never widen this back to "default".
+]
+markers = [
+    "integration: needs a real database, container, or network; excluded from the default run",
+]
+
+[tool.coverage.run]
+branch = true  # Statement coverage hides the untaken half of every condition.
+source = ["src"]  # Set to the package directory; coverage of tests/ is noise.
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "@overload",
+]
+# Deliberately no fail_under: coverage is a diagnostic here, not a CI gate.
