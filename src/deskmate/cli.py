@@ -96,6 +96,11 @@ class Client:
         query = f"/notes?after={after}&wait={wait:.1f}" + (f"&tail={tail}" if tail else "")
         return _DELIVERED.validate_json(self._get(query, timeout=wait + 10))
 
+    def received(self, note_id: int) -> Note | None:
+        """The note with this id, if it is addressed to this user and its signature holds."""
+        found = self.notes(after=note_id - 1)[:1]
+        return found[0].note if found and found[0].id == note_id and self.is_trusted(found[0].note) else None
+
     def is_trusted(self, note: Note) -> bool:
         """Check a note against the key first seen for its sender, so a hub that later swaps a key cannot forge notes."""
         pin_file = self.home / "known.json"
@@ -264,10 +269,11 @@ def watch(client: Client, cwd: Path, run: Runner) -> int:
                     print(HELP)
                 case Say(to, body):
                     print(f"→ #{client.send(to, body)} to {to}")
-                case Run(note_id) if runnable:
-                    note = runnable.get(next(reversed(runnable)) if note_id is None else note_id)
+                case Run(note_id) if runnable or note_id is not None:
+                    newest = next(reversed(runnable)) if note_id is None else note_id
+                    note = runnable.get(newest) or client.received(newest)  # An id from an earlier session is fetched again.
                     if note is None:
-                        print(f"no note #{note_id} in this session; `deskmate inbox` lists older ones")
+                        print(f"no note #{newest} addressed to you; `deskmate inbox` lists yours")
                         continue
                     print(f"running `{client.config.agent}` on the note from {note.sender} (ctrl-c cancels) …")
                     sent = answer(client, note, cwd, run, _confirm)

@@ -87,6 +87,18 @@ def test_a_pinned_key_survives_the_hub_reporting_a_different_one(make_client: Ma
     assert not alice.is_trusted(wire.sign_note(bob.key, "bob", "alice", "hello", int(alice.now())))
 
 
+def test_a_note_can_be_fetched_again_by_id_only_by_its_recipient(make_client: MakeClient) -> None:
+    alice, bob, carol = make_client("alice"), make_client("bob"), make_client("carol")
+    note_id = alice.send("bob", "for bob only")
+
+    found = bob.received(note_id)
+
+    assert found is not None
+    assert found.body == "for bob only"
+    assert carol.received(note_id) is None
+    assert bob.received(note_id + 1) is None
+
+
 def test_main_joins_sends_and_lists_notes(tmp_path: Path, transport: Transport, hub_url: str, token: str, capsys: pytest.CaptureFixture[str]) -> None:
     def deskmate(who: str, *argv: str) -> int:
         return main(argv, home=tmp_path / who, transport=transport, now=lambda: 1_800_000_000.0)
