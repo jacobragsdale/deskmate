@@ -12,8 +12,10 @@ from deskmate.hub import HubSettings, create_app
 NOW = 1_800_000_000.0
 TOKEN = "a-join-token-for-tests"
 HUB_URL = "http://testserver"
+TEAM_REPOS = "https://dev.azure.com/acme/"  # Only repos under this address may be shared on the test hub.
 
 type MakeClient = Callable[[str], Client]
+type MakeCheckout = Callable[..., Path]
 
 
 def fixed_clock() -> float:
@@ -32,7 +34,7 @@ def hub_url() -> str:
 
 @pytest.fixture
 def hub(tmp_path: Path) -> Iterator[TestClient]:
-    with TestClient(create_app(HubSettings(join_token=TOKEN, db=tmp_path / "hub.db"), now=fixed_clock)) as client:
+    with TestClient(create_app(HubSettings(join_token=TOKEN, db=tmp_path / "hub.db", repos=TEAM_REPOS), now=fixed_clock)) as client:
         yield client
 
 
@@ -55,5 +57,19 @@ def make_client(tmp_path: Path, transport: Transport) -> MakeClient:
         home = tmp_path / name
         join(home, HUB_URL, name, TOKEN, "fake-agent", transport)
         return load_client(home, transport, fixed_clock)
+
+    return make
+
+
+@pytest.fixture
+def checkout() -> MakeCheckout:
+    """Lay down just enough of a git checkout for the scan to read: its origin and what HEAD points at."""
+
+    def make(dev: Path, folder: str, origin: str, head: str = "ref: refs/heads/main") -> Path:
+        git = dev / folder / ".git"
+        git.mkdir(parents=True)
+        (git / "config").write_text(f'[core]\n\tbare = false\n[remote "origin"]\n\turl = {origin}\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n[branch "main"]\n\tremote = origin\n')
+        (git / "HEAD").write_text(head + "\n")
+        return dev / folder
 
     return make

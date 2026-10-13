@@ -1,11 +1,13 @@
 """Wire format shared by the hub and the client: signed notes and signed request headers."""
 
 import json
-from typing import Annotated
+from typing import Annotated, Literal
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from pydantic import BaseModel, ConfigDict, StringConstraints
+
+from deskmate.repos import REPO_NAME
 
 MAX_BODY = 64_000
 MAX_SKEW = 300  # Seconds a signed timestamp may differ from the verifier's clock.
@@ -15,8 +17,13 @@ _NAME = r"[a-z0-9][a-z0-9_-]{0,31}"
 Name = Annotated[str, StringConstraints(pattern=rf"^{_NAME}$")]
 Channel = Annotated[str, StringConstraints(pattern=rf"^#{_NAME}$")]
 Address = Annotated[str, StringConstraints(pattern=rf"^#?{_NAME}$")]  # A person, or a channel when it starts with "#".
+RepoName = Annotated[str, StringConstraints(pattern=rf"^{REPO_NAME}$")]
+RepoKey = Annotated[str, StringConstraints(pattern=r"^[a-z0-9.-]+(/[^/\x00-\x20]+)+$", max_length=300)]
+RepoUrl = Annotated[str, StringConstraints(pattern=r"^https://[^\x00-\x20]+$", max_length=400)]
+Branch = Annotated[str, StringConstraints(pattern=r"^[^\x00-\x1f]+$", min_length=1, max_length=200)]
 PubKey = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 Signature = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{128}$")]
+Kind = Literal["note", "status"]  # A status reports what an agent is doing with a note; it is never shown as a message.
 
 
 class Model(BaseModel):
@@ -32,9 +39,36 @@ class Join(User):
     token: str
 
 
+class Person(User):
+    seen: int  # Unix seconds of their last signed request; 0 if they have never made one.
+
+
+class HubInfo(Model):
+    repos: str  # The key every shareable repo starts with, such as "dev.azure.com/acme".
+
+
+class RepoRef(Model):
+    """A repo as everyone can refer to it."""
+
+    name: RepoName
+    key: RepoKey
+    url: RepoUrl
+
+
+class Repo(RepoRef):
+    """A repo someone has checked out, and the branch their copy is on."""
+
+    branch: Branch
+
+
+class TeamRepo(Repo):
+    user: Name
+
+
 class ChannelInfo(Model):
     name: Channel
     members: tuple[Name, ...]
+    repo: RepoRef | None  # The repo this channel is about, if one is pinned.
 
 
 class Note(Model):
@@ -42,9 +76,10 @@ class Note(Model):
 
     sender: Name
     to: Address
+    kind: Kind
     body: Annotated[str, StringConstraints(min_length=1, max_length=MAX_BODY)]
     ts: int  # Unix seconds, UTC.
-    agent: bool  # Written by the sender's agent (and approved by the sender) rather than typed.
+    agent: RepoName | None  # The repo the sender's agent worked in; None when the sender typed the note.
     re: int | None  # The id of the note this one answers; None when it answers nothing.
     sig: Signature
 
@@ -90,17 +125,18 @@ def is_fresh(ts: int, now: float) -> bool:
     return abs(now - ts) <= MAX_SKEW
 
 
-def _note_payload(sender: str, to: str, body: str, ts: int, agent: bool, re: int | None) -> bytes:
+def _note_payload(sender: str, to: str, kind: str, body: str, ts: int, agent: str | None, re: int | None) -> bytes:
     # A JSON array of fixed positions has exactly one encoding, so both sides sign the same bytes.
-    return json.dumps(["deskmate-note-v2", sender, to, body, ts, agent, re], ensure_ascii=False, separators=(",", ":")).encode()
+    return json.dumps(["deskmate-note-v3", sender, to, kind, body, ts, agent, re], ensure_ascii=False, separators=(",", ":")).encode()
 
 
-def sign_note(key: Ed25519PrivateKey, sender: str, to: str, body: str, ts: int, *, agent: bool = False, re: int | None = None) -> Note:
-    return Note(sender=sender, to=to, body=body, ts=ts, agent=agent, re=re, sig=key.sign(_note_payload(sender, to, body, ts, agent, re)).hex())
+def sign_note(key: Ed25519PrivateKey, sender: str, to: str, body: str, ts: int, *, kind: Kind = "note", agent: str | None = None, re: int | None = None) -> Note:
+    sig = key.sign(_note_payload(sender, to, kind, body, ts, agent, re)).hex()
+    return Note(sender=sender, to=to, kind=kind, body=body, ts=ts, agent=agent, re=re, sig=sig)
 
 
 def note_is_authentic(note: Note, pubkey: str) -> bool:
-    return verify(pubkey, _note_payload(note.sender, note.to, note.body, note.ts, note.agent, note.re), note.sig)
+    return verify(pubkey, _note_payload(note.sender, note.to, note.kind, note.body, note.ts, note.agent, note.re), note.sig)
 
 
 def _auth_payload(name: str, ts: int) -> bytes:

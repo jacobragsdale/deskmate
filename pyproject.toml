@@ -1,6 +1,6 @@
 [project]
 name = "deskmate"
-version = "0.2.0"
+version = "0.3.0"
 description = "Pass notes to your teammates' coding agents. Nothing runs without the owner's approval."
 readme = "README.md"
 authors = [

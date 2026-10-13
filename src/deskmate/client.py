@@ -17,7 +17,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pydantic import StringConstraints, TypeAdapter
 
 from deskmate import wire
-from deskmate.wire import ChannelInfo, Delivered, Join, Model, Name, Note, Receipt, User
+from deskmate.wire import ChannelInfo, Delivered, HubInfo, Join, Kind, Model, Name, Note, Person, Receipt, Repo, RepoRef, TeamRepo
 
 DEFAULT_AGENT = "claude -p"
 AGENT_TIMEOUT = 900  # Seconds an approved agent run may take.
@@ -27,7 +27,9 @@ JSON = {"Content-Type": "application/json"}
 type Transport = Callable[[str, str, Mapping[str, str], bytes | None, float], bytes]
 type Runner = Callable[[Sequence[str], Path, threading.Event], str]
 
-_USERS = TypeAdapter(list[User])
+_PEOPLE = TypeAdapter(list[Person])
+_REPOS = TypeAdapter(list[Repo])
+_TEAM_REPOS = TypeAdapter(list[TeamRepo])
 _CHANNELS = TypeAdapter(list[ChannelInfo])
 _DELIVERED = TypeAdapter(list[Delivered])
 _PINS = TypeAdapter(dict[str, str])
@@ -78,12 +80,23 @@ class Client:
     transport: Transport
     now: Callable[[], float]
 
-    def _call(self, method: str, path: str, timeout: float = 10) -> bytes:
-        headers = {"Authorization": wire.auth_header(self.key, self.config.name, int(self.now()))}
-        return self.transport(method, self.config.hub + path, headers, None, timeout)
+    def _call(self, method: str, path: str, body: bytes | None = None, timeout: float = 10) -> bytes:
+        headers = {"Authorization": wire.auth_header(self.key, self.config.name, int(self.now()))} | (JSON if body is not None else {})
+        return self.transport(method, self.config.hub + path, headers, body, timeout)
 
-    def users(self) -> list[User]:
-        return _USERS.validate_json(self._call("GET", "/users"))
+    def info(self) -> HubInfo:
+        return HubInfo.model_validate_json(self._call("GET", "/info"))
+
+    def users(self) -> list[Person]:
+        return _PEOPLE.validate_json(self._call("GET", "/users"))
+
+    def advertise(self, repos: Sequence[Repo]) -> None:
+        """Tell the hub which team repos this user has checked out, replacing what it knew."""
+        self._call("PUT", "/repos", _REPOS.dump_json(list(repos)))
+
+    def repos(self) -> list[TeamRepo]:
+        """Every repo anyone has checked out, with whose copy it is and the branch it is on."""
+        return _TEAM_REPOS.validate_json(self._call("GET", "/repos"))
 
     def channels(self) -> list[ChannelInfo]:
         return _CHANNELS.validate_json(self._call("GET", "/channels"))
@@ -95,14 +108,22 @@ class Client:
     def leave_channel(self, channel: str) -> ChannelInfo:
         return ChannelInfo.model_validate_json(self._call("POST", f"/channels/{_bare(channel)}/leave"))
 
-    def send(self, to: str, body: str, *, agent: bool = False, re: int | None = None) -> int:
-        note = wire.sign_note(self.key, self.config.name, to, body, int(self.now()), agent=agent, re=re)
+    def pin(self, channel: str, repo: RepoRef) -> ChannelInfo:
+        """Say which repo a channel is about."""
+        pinned = RepoRef(name=repo.name, key=repo.key, url=repo.url)
+        return ChannelInfo.model_validate_json(self._call("PUT", f"/channels/{_bare(channel)}/repo", pinned.model_dump_json().encode()))
+
+    def unpin(self, channel: str) -> ChannelInfo:
+        return ChannelInfo.model_validate_json(self._call("DELETE", f"/channels/{_bare(channel)}/repo"))
+
+    def send(self, to: str, body: str, *, kind: Kind = "note", agent: str | None = None, re: int | None = None) -> int:
+        note = wire.sign_note(self.key, self.config.name, to, body, int(self.now()), kind=kind, agent=agent, re=re)
         raw = self.transport("POST", self.config.hub + "/notes", JSON, note.model_dump_json().encode(), 10)
         return Receipt.model_validate_json(raw).id
 
-    def notes(self, *, after: int = 0, wait: float = 0, tail: int | None = None, mine: bool = True) -> list[Delivered]:
-        """Notes this user can see: sent to them, to their channels, and (unless `mine` is false) by them."""
-        query = f"/notes?after={after}&wait={wait:.1f}&mine={'true' if mine else 'false'}" + (f"&tail={tail}" if tail else "")
+    def notes(self, *, after: int = 0, wait: float = 0, tail: int | None = None, mine: bool = True, status: bool = True) -> list[Delivered]:
+        """Notes this user can see: sent to them, to their channels, and (unless `mine` is false) by them. `status` false leaves out agent status reports."""
+        query = f"/notes?after={after}&wait={wait:.1f}&mine={str(mine).lower()}&status={str(status).lower()}" + (f"&tail={tail}" if tail else "")
         return _DELIVERED.validate_json(self._call("GET", query, timeout=wait + 10))
 
     def is_trusted(self, note: Note) -> bool:
@@ -125,6 +146,11 @@ def _bare(channel: str) -> str:
 def default_home() -> Path:
     # Optional override so one machine can hold several identities; absence means the usual place.
     return Path(os.environ.get("DESKMATE_HOME") or Path.home() / ".config" / "deskmate")
+
+
+def default_dev() -> Path:
+    # Everyone keeps their repos in ~/dev, so a repo's name is all it takes to find it. The override exists for a second identity on one machine.
+    return Path(os.environ.get("DESKMATE_DEV") or Path.home() / "dev")
 
 
 def join(home: Path, hub: str, name: str, token: str, agent: str, transport: Transport) -> Config:

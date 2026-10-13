@@ -1,134 +1,51 @@
-"""The chat interface: chats on the left, the open chat on the right, and your agent one click away."""
+"""The chat interface: chats on the left, the open chat on the right, and anyone's agent one "@" away."""
 
 import contextlib
 import dataclasses
+import re
 import shlex
 import threading
 import time
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from functools import partial
 from pathlib import Path
 from typing import ClassVar, override
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from pydantic import ValidationError
-from textual import events
 from textual.app import App, ComposeResult, SystemCommand
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
+from textual.markup import escape
 from textual.message import Message
-from textual.screen import ModalScreen, Screen
+from textual.screen import Screen
 from textual.theme import BUILTIN_THEMES
-from textual.widget import Widget
-from textual.widgets import ContentSwitcher, Input, Label, Markdown, OptionList, Static, TextArea
+from textual.widgets import ContentSwitcher, Label, OptionList, Static
 from textual.widgets.option_list import Option
 
-from deskmate.chat import ChatLog, Entry, Row, UiState, agent_prompt, chat_of, continues, is_request
+from deskmate import repos
+from deskmate.chat import ONLINE, Candidate, ChatLog, Entry, Request, Row, UiState, agent_prompt, candidates, chat_of, mentions
 from deskmate.client import POLL_WAIT, AgentCancelledError, Client, DeskmateError, Runner
-from deskmate.wire import MAX_BODY, ChannelInfo, is_channel
+from deskmate.repos import Checkout
+from deskmate.widgets import CSS, ChatRow, Composer, ConfirmClone, Help, Hint, JoinChannel, PickRepo, ThreadView, one_line, thread_id
+from deskmate.wire import MAX_BODY, ChannelInfo, Person, Repo, RepoRef, TeamRepo, is_channel
 
 HISTORY = 300  # Notes loaded when the interface starts or a channel is joined.
 RETRY_DELAY = 5.0
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧"
 DISCARD_WINDOW = 2.0  # Seconds in which a second Esc discards a draft.
-NAME_COLOURS = ("$accent", "$secondary", "$success", "$warning", "$primary")
 DEFAULT_THEME = "terminal"
-HINT_SLOTS = 7
+HINT_SLOTS = 8
+TAG_BEING_TYPED = re.compile(r"(?:^|\s)@([\w./-]*)$")
+
+type Cloner = Callable[[str, Path], None]
+type Describer = Callable[[Checkout], str]
 
 # The terminal's own sixteen colours, so the interface follows whatever palette the terminal uses.
 TERMINAL_THEME = dataclasses.replace(BUILTIN_THEMES["ansi-dark"], name=DEFAULT_THEME, primary="ansi_cyan", secondary="ansi_blue", accent="ansi_magenta")
-
-KEYS = (
-    ("Enter", "send the message, or the draft you are reviewing"),
-    ("Ctrl+J", "new line in the message"),
-    ("Ctrl+R", "run your agent on the newest note from someone else"),
-    ("Esc", "stop your agent; press twice to discard a draft"),
-    ("Ctrl+↑ / Ctrl+↓", "previous or next chat"),
-    ("Ctrl+N", "join or create a channel"),
-    ("Ctrl+P", "commands: open a chat, leave a channel, change theme"),
-    ("Ctrl+C", "copy the text you selected with the mouse"),
-    ("F1", "this help"),
-    ("Ctrl+Q", "quit"),
-)
-
-CSS = """
-Screen { layout: vertical; }
-#top { height: 1; }
-#brand { width: auto; color: $primary; text-style: bold; }
-#identity { width: 1fr; color: $dm-muted; text-wrap: nowrap; text-overflow: ellipsis; }
-#help-link { width: auto; color: $dm-muted; }
-#body { height: 1fr; }
-
-#sidebar { width: 26; border: round $dm-border; border-title-color: $dm-muted; }
-#rows { height: 1fr; }
-#channel-rows, #people-rows { height: auto; }
-.section { height: 1; margin-top: 1; padding: 0 2; color: $dm-muted; text-style: bold; }
-.section.-first { margin-top: 0; }
-.nobody { height: 1; padding: 0 2; color: $dm-muted; }
-ChatRow { height: 1; }
-ChatRow:hover { color: $primary; }
-ChatRow.-unread { text-style: bold; }
-ChatRow.-current { color: $foreground; background: $dm-selected; text-style: bold; }
-.action { height: 1; padding: 0 2; color: $dm-muted; }
-
-#pane { width: 1fr; padding: 0 1; border: round $primary; border-title-color: $primary; border-title-style: bold; border-subtitle-color: $dm-muted; }
-#threads { height: 1fr; }
-#empty { height: 1fr; color: $dm-muted; content-align: center middle; text-align: center; }
-ThreadView { height: 1fr; }
-.none-yet { height: auto; margin-top: 1; color: $dm-muted; text-align: center; }
-.day { height: 1; margin-top: 1; color: $dm-muted; text-align: center; }
-MessageView { height: auto; margin-top: 1; }
-MessageView.-joined { margin-top: 0; }
-MessageView .head { height: 1; }
-MessageView .who { width: 1fr; text-wrap: nowrap; text-overflow: ellipsis; }
-MessageView .run { width: auto; margin-left: 2; visibility: hidden; color: $dm-muted; }
-MessageView.-over .run { visibility: visible; }
-MessageView.-newest .run { visibility: visible; color: $primary; }
-MessageView .quote { height: 1; color: $dm-muted; text-wrap: nowrap; text-overflow: ellipsis; }
-MessageView .text { height: auto; }
-MessageView .untrusted { height: auto; color: $error; }
-MessageView Markdown { margin: 0; padding: 0; background: transparent; }
-MessageView MarkdownFence { margin: 0 0 1 0; padding: 0 1; border-left: heavy $dm-border; color: $foreground; background: transparent; }
-MessageView MarkdownFence > Label { padding: 0; }
-MessageView Markdown > *:last-child { margin-bottom: 0; }
-
-#status { height: 1; margin-top: 1; display: none; }
-#status.-on { display: block; }
-#status-text { width: 1fr; color: $dm-muted; text-wrap: nowrap; text-overflow: ellipsis; }
-#status-actions { width: auto; margin-left: 2; link-color: $primary; }
-#compose { height: auto; border-top: solid $dm-border; }
-#prompt { width: 2; color: $primary; text-style: bold; }
-Composer { height: auto; max-height: 8; border: none; padding: 0; background: transparent; }
-Composer:focus { border: none; }
-
-#bottom { height: 1; }
-#hints { width: 1fr; height: 1; padding-left: 1; overflow: hidden; }
-Hint { width: auto; margin-right: 2; color: $dm-muted; text-wrap: nowrap; display: none; }
-Hint.-on { display: block; }
-Hint:hover { color: $foreground; }
-#link { width: auto; margin-left: 2; color: $dm-muted; }
-#link.-down { color: $warning; }
-
-#rows, ThreadView {
-    scrollbar-size-vertical: 1; scrollbar-color: $dm-border; scrollbar-color-hover: $primary; scrollbar-color-active: $primary;
-    scrollbar-background: $background; scrollbar-background-hover: $background; scrollbar-background-active: $background;
-}
-Static, Label { link-style: none; link-color: $dm-muted; link-background: transparent; link-color-hover: $primary; link-style-hover: bold; link-background-hover: transparent; }
-MessageView.-newest .run { link-color: $primary; }
-
-ModalScreen { align: center middle; }
-.dialog { width: 60; max-width: 90%; height: auto; max-height: 90%; padding: 1 2; border: round $primary; border-title-color: $primary; border-title-style: bold; border-subtitle-color: $dm-muted; background: $surface; }
-.dialog Input { border: none; height: 1; padding: 0; margin-bottom: 1; background: transparent; }
-.dialog Input:focus { border: none; }
-.dialog OptionList { height: auto; max-height: 10; border: none; padding: 0; margin-bottom: 1; background: transparent; }
-.dialog .hint { width: 100%; height: auto; color: $dm-muted; }
-.dialog .key { width: 18; color: $primary; text-style: bold; }
-.dialog .does { width: 1fr; }
-.dialog .line { height: auto; }
-"""
 
 
 @dataclass(frozen=True)
@@ -137,12 +54,15 @@ class Draft:
 
     text: str
     entry: Entry  # The note it answers.
+    repo: str  # The repo the agent worked in.
     loaded: bool  # Whether it is in the message box; False while the user's own half-typed message is there.
 
 
 @dataclass(frozen=True)
 class AgentRun:
     entry: Entry
+    repo: str
+    post: bool  # Post the answer as soon as it is ready, rather than drafting it for review.
     cancel: threading.Event
     started: float
     done: threading.Event  # Set once the agent's process is gone.
@@ -156,242 +76,13 @@ class _OnUiThread(Message):
         self.call = call
 
 
-def _colour_of(name: str) -> str:
-    return NAME_COLOURS[sum(name.encode()) % len(NAME_COLOURS)]
-
-
-def _one_line(text: str, width: int = 60) -> str:
-    flat = " ".join(text.split())
-    return flat if len(flat) <= width else flat[: width - 1] + "…"
-
-
-def _thread_id(chat: str) -> str:
-    return f"channel-{chat[1:]}" if is_channel(chat) else f"person-{chat}"
-
-
-class Hint(Static):
-    """One slot of the bottom bar: a key and what it does. Clicking it does what the key does."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._action = ""
-
-    def show(self, hint: tuple[str, str, str] | None) -> None:
-        self.set_class(hint is not None, "-on")
-        if hint:
-            key, does, self._action = hint
-            self.update(f"[b $primary]{key}[/] {does}")
-
-    async def on_click(self) -> None:
-        if self._action:
-            await self.app.run_action(self._action)
-
-
-class ChatRow(Widget):
-    """One chat in the list: a marker when it is open, its name, and what is waiting in it. Clicking it opens the chat."""
-
-    def __init__(self, chat: str) -> None:
-        super().__init__()
-        self.chat = chat
-        self._current = False
-        self._badge = ""
-
-    @override
-    def render(self) -> Content:
-        badge = f"{self._badge} " if self._badge else ""
-        room = max(self.size.width - 2 - len(badge), 1)
-        name = self.chat if len(self.chat) <= room else f"{self.chat[: room - 1]}…"
-        return Content.assemble(("› " if self._current else "  ", "bold $primary"), name.ljust(room), (badge, "bold $primary"))
-
-    def show(self, *, current: bool, unread: int, mark: str) -> None:
-        badge = mark or (str(unread) if unread else "")
-        if (current, badge) != (self._current, self._badge):
-            self._current, self._badge = current, badge
-            self.refresh()
-        self.set_class(current, "-current")
-        self.set_class(unread > 0, "-unread")
-
-    async def on_click(self) -> None:
-        await self.app.run_action(f"open_chat({self.chat!r})")
-
-
-class MessageView(Vertical):
-    """One note in a chat: who and when, what it answers, and the text. Notes from other people offer to run your agent."""
-
-    def __init__(self, entry: Entry, *, me: str, header: bool, quote: str) -> None:
-        super().__init__(classes="" if header else "-joined")
-        self.entry = entry
-        self._me = me
-        self._header = header
-        self._quote = quote
-
-    @override
-    def compose(self) -> ComposeResult:
-        note = self.entry.note
-        if not self.entry.trusted:
-            yield Static(f"✗ a note claiming to be from {note.sender} failed its signature check and is hidden", classes="untrusted", markup=False)
-            return
-        if self._header:
-            who = "you" if note.sender == self._me else note.sender
-            colour = "$text" if note.sender == self._me else _colour_of(note.sender)
-            when = datetime.fromtimestamp(note.ts, tz=UTC).astimezone().strftime("%H:%M")
-            with Horizontal(classes="head"):
-                yield Label(f"[b {colour}]{who}[/]{' [$dm-muted]· agent[/]' if note.agent else ''} [$dm-muted]· {when}[/]", classes="who")
-                if is_request(self.entry, self._me):
-                    yield Static(f"[@click=app.run_on({self.entry.id})]▶ Run my agent[/]", classes="run")
-        if self._quote:
-            yield Static(f"┃ {self._quote}", classes="quote", markup=False)
-        if note.agent or "```" in note.body:
-            yield Markdown(note.body, open_links=False)
-        else:
-            yield Static(note.body, classes="text", markup=False)
-
-    def on_enter(self) -> None:
-        self.add_class("-over")
-
-    def on_leave(self) -> None:
-        self.set_class(self.is_mouse_over, "-over")
-
-
-class ThreadView(VerticalScroll):
-    """The notes of one chat, oldest at the top, following new ones unless the user has scrolled up."""
-
-    can_focus = False
-
-    def __init__(self, chat: str, me: str, today: Callable[[], date], find: Callable[[int], Entry | None]) -> None:
-        super().__init__(id=_thread_id(chat))
-        self.chat = chat
-        self._me = me
-        self._today = today
-        self._find = find
-        self._last: Entry | None = None
-        self._day: date | None = None
-        self._waiting: list[Static | MessageView] = []  # Notes added before this view was on screen.
-        self._open_request: int | None = None
-
-    @override
-    def compose(self) -> ComposeResult:
-        yield Static(f"Nothing here yet. Write the first note to {self.chat}.", classes="none-yet", markup=False)
-
-    def on_mount(self) -> None:
-        self.anchor()
-        self._show(self._waiting)
-        self._waiting = []
-
-    def append(self, entries: Iterable[Entry]) -> None:
-        widgets: list[Static | MessageView] = []
-        for entry in entries:
-            day = datetime.fromtimestamp(entry.note.ts, tz=UTC).astimezone().date()
-            if day != self._day:
-                widgets.append(Static(self._day_label(day), classes="day", markup=False))
-                self._day, self._last = day, None
-            header = not continues(self._last, entry) or is_request(entry, self._me)  # A note you can run always keeps its header: that is where its button lives.
-            answered = self._find(entry.note.re) if entry.note.re is not None else None
-            quote = f"{answered.note.sender}: {_one_line(answered.note.body)}" if answered and answered.trusted else ""
-            widgets.append(MessageView(entry, me=self._me, header=header, quote=quote))
-            self._last = entry
-        if self.is_mounted:
-            self._show(widgets)
-        else:
-            self._waiting += widgets
-
-    def _show(self, widgets: list[Static | MessageView]) -> None:
-        if not widgets:
-            return
-        self.query(".none-yet").remove()
-        for widget in widgets:
-            if isinstance(widget, MessageView):
-                widget.set_class(widget.entry.id == self._open_request, "-newest")
-        self.mount_all(widgets)
-
-    def mark_open_request(self, note_id: int | None) -> None:
-        """Keep the run button visible on the one note still waiting for an answer."""
-        self._open_request = note_id
-        for view in [*self.query(MessageView), *(widget for widget in self._waiting if isinstance(widget, MessageView))]:
-            view.set_class(view.entry.id == note_id, "-newest")
-
-    def _day_label(self, day: date) -> str:
-        days_ago = (self._today() - day).days
-        return {0: "── today ──", 1: "── yesterday ──"}.get(days_ago, f"── {day:%a %-d %b} ──")
-
-
-class Composer(TextArea):
-    """The message box. Enter sends; Ctrl+J starts a new line."""
-
-    BINDINGS: ClassVar[list[BindingType]] = [Binding("ctrl+j,shift+enter", "newline", "new line", show=False)]
-
-    class Submitted(Message):
-        def __init__(self, text: str) -> None:
-            super().__init__()
-            self.text = text
-
-    def on_key(self, event: events.Key) -> None:
-        if event.key == "enter":
-            event.prevent_default()
-            event.stop()
-            self.post_message(self.Submitted(self.text))
-
-    def action_newline(self) -> None:
-        self.insert("\n")
-
-    def set_text(self, text: str) -> None:
-        self.load_text(text)
-        self.move_cursor(self.document.end)
-
-
-class JoinChannel(ModalScreen[str]):
-    """Ask which channel to join. The result is its name, or "" when the dialog is closed."""
-
-    BINDINGS: ClassVar[list[BindingType]] = [Binding("escape", "dismiss('')", "close")]
-
-    def __init__(self, others: Sequence[ChannelInfo]) -> None:
-        super().__init__()
-        self._others = others
-
-    @override
-    def compose(self) -> ComposeResult:
-        with Vertical(classes="dialog") as dialog:
-            dialog.border_title = "Join or create a channel"
-            dialog.border_subtitle = "Enter joins · Esc closes"
-            yield Input(placeholder="channel name, for example backend", restrict=r"#?[a-z0-9_-]*", max_length=33)
-            if self._others:
-                yield Label("or pick one your teammates are in", classes="hint")
-                yield OptionList(*(Option(f"{channel.name}  {', '.join(channel.members)}", id=channel.name) for channel in self._others))
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        name = event.value.strip().removeprefix("#")
-        if name:
-            self.dismiss(f"#{name}")
-
-    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
-        self.dismiss(event.option.id or "")
-
-
-class Help(ModalScreen[None]):
-    BINDINGS: ClassVar[list[BindingType]] = [Binding("escape,f1,q", "dismiss", "close")]
-
-    @override
-    def compose(self) -> ComposeResult:
-        with Vertical(classes="dialog") as dialog:
-            dialog.border_title = "Keys"
-            dialog.border_subtitle = "[@click=screen.dismiss]Esc closes[/]"
-            for key, does in KEYS:
-                with Horizontal(classes="line"):
-                    yield Label(key, classes="key", markup=False)
-                    yield Label(does, classes="does", markup=False)
-            yield Label("")
-            yield Label(
-                "Everything is clickable too: chats, the run button on a note, and the hints along the bottom. Hover a note to run your agent on it. Drag to select text.", classes="hint", markup=False
-            )
-
-
 class DeskmateApp(App[None]):
-    """Chats, notes, and approval-gated agent runs for one person."""
+    """Chats, notes, and agents that run only when their owner says so."""
 
     CSS = CSS
     TITLE = "deskmate"
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("ctrl+r", "run_newest", "run my agent", priority=True),
+        Binding("ctrl+r", "run_waiting", "run request", priority=True),
         Binding("ctrl+n", "join_channel", "join channel", priority=True),
         Binding("ctrl+up,alt+up", "step_chat(-1)", "previous chat", priority=True),
         Binding("ctrl+down,alt+down", "step_chat(1)", "next chat", priority=True),
@@ -400,7 +91,7 @@ class DeskmateApp(App[None]):
         Binding("ctrl+q", "quit", "quit", priority=True),
     ]
 
-    def __init__(self, client: Client, cwd: Path, runner: Runner, *, poll_wait: float = POLL_WAIT) -> None:
+    def __init__(self, client: Client, dev: Path, runner: Runner, *, cloner: Cloner = repos.clone, describe: Describer = repos.describe, poll_wait: float = POLL_WAIT) -> None:
         self._state = UiState(read={}, theme=None, chat=None)
         state_file = client.home / "state.json"
         if state_file.exists():
@@ -413,38 +104,46 @@ class DeskmateApp(App[None]):
         # ponytail: decided once at start. Switching between the two kinds of theme under NO_COLOR needs a restart.
         super().__init__(ansi_color=True if themes[self._start_theme].ansi else None)
         self.client = client
-        self.cwd = cwd
+        self.dev = dev
         self.runner = runner
+        self.cloner = cloner
+        self.describe = describe
         self._poll_wait = poll_wait
         self._stop_polling = threading.Event()
+        self._sharing = threading.Lock()
+        self._advertised: list[Repo] | None = None
         self.me = client.config.name
         self.chats = ChatLog(self.me)
-        self.people: list[str] = []
+        self.people: list[Person] = []
         self.channels: list[ChannelInfo] = []
+        self.team: list[TeamRepo] = []  # Every repo anyone has checked out.
+        self.checkouts: dict[str, Checkout] = {}  # The user's own, by repo name.
+        self.prefix = ""  # The key every repo this hub shares starts with; "" until the hub has said.
         self.current = ""  # The open chat; "" until one exists.
         self.typed: dict[str, str] = {}  # Per chat, what is in the message box while another chat is open.
-        self.drafts: dict[str, Draft] = {}
-        self.runs: dict[str, AgentRun] = {}
+        self.drafts: dict[str, list[Draft]] = {}  # Per chat, answers waiting for review; the first is the one being reviewed.
+        self.runs: dict[tuple[int, str], AgentRun] = {}  # By (tagging note, repo).
         self.connected = False
         self.problem = ""
+        self.read = dict(self._state.read)
         self._loaded = False
         self._esc_at = 0.0
         self._frame = 0
+        self._animated = False  # Whether the open chat shows an agent at work.
+        self._autorun: set[int] = set()  # Notes just sent from here: their tags of the user's own agents run without asking.
+        self._picks: list[Candidate] = []
+        self._pick_span = ((0, 0), (0, 0))
         self._row_widgets: dict[str, ChatRow] = {}
         self._threads: dict[str, ThreadView] = {}
         self._hints: tuple[tuple[str, str, str], ...] = ()
-        self.read = dict(self._state.read)
 
     # ── layout ────────────────────────────────────────────────────────────────
 
     @override
     def compose(self) -> ComposeResult:
-        config = self.client.config
-        home = str(Path.home())
-        where = str(self.cwd).replace(home, "~", 1) if str(self.cwd).startswith(home) else str(self.cwd)
         with Horizontal(id="top"):
             yield Label(" deskmate ", id="brand")
-            yield Label(f" {self.me} on {urlsplit(config.hub).netloc} · {config.agent} in {where}", id="identity", markup=False)
+            yield Label("", id="identity", markup=False)
             yield Static("[@click=app.help]? Help[/] ", id="help-link")
         with Horizontal(id="body"):
             with Vertical(id="sidebar") as sidebar:
@@ -462,6 +161,7 @@ class DeskmateApp(App[None]):
                 with Horizontal(id="status"):
                     yield Static(id="status-text")
                     yield Static(id="status-actions")
+                yield OptionList(id="picker")
                 with Horizontal(id="compose"):
                     yield Label("›", id="prompt")
                     yield Composer(compact=True, highlight_cursor_line=False, soft_wrap=True, placeholder="Message")
@@ -486,6 +186,9 @@ class DeskmateApp(App[None]):
         yield from super().get_system_commands(screen)
         yield SystemCommand("Join or create a channel", "Start or enter a group chat", self.action_join_channel)
         if is_channel(self.current):
+            yield SystemCommand(f"Pin a repo to {self.current}", "Say which repo this channel is about", self.action_pin_repo)
+            if self._pinned():
+                yield SystemCommand(f"Unpin the repo from {self.current}", "Make this channel about no repo in particular", self.action_unpin_repo)
             yield SystemCommand(f"Leave {self.current}", "Stop receiving this channel's notes", self.action_leave_channel)
         for row in self._rows():
             yield SystemCommand(f"Open {row.chat}", "Switch to this chat", partial(self.action_open_chat, row.chat))
@@ -494,6 +197,7 @@ class DeskmateApp(App[None]):
         self.register_theme(TERMINAL_THEME)
         self.theme = self._start_theme
         self.ansi_color = None  # From here on, each theme says for itself whether it uses the terminal's colours.
+        self.query_one("#picker", OptionList).can_focus = False  # Its keys arrive through the message box, which keeps the focus.
         self._spinner = self.set_interval(0.1, self._spin, pause=True)
         self.query_one(Composer).focus()
         self.poller = threading.Thread(target=self._poll, daemon=True, name="deskmate-poll")
@@ -516,77 +220,118 @@ class DeskmateApp(App[None]):
         if self._loaded or theme != DEFAULT_THEME:
             self._save_state(theme=theme)
 
-    # ── the hub, on worker threads ────────────────────────────────────────────
+    # ── the hub and the disk, on worker threads ───────────────────────────────
 
     def _ui(self, call: Callable[[], None]) -> None:
         self.post_message(_OnUiThread(call))
 
     def on__on_ui_thread(self, message: _OnUiThread) -> None:
-        message.call()
+        if self.is_running:  # A worker can still report in while the app is closing, when the widgets it would update are gone.
+            message.call()
 
-    def _snapshot(self, after: int | None) -> tuple[list[str], list[ChannelInfo], list[Entry]]:
-        people = [user.name for user in self.client.users()]
-        channels = self.client.channels()
+    def _share(self, prefix: str) -> None:
+        """Look under ~/dev for the team's repos and tell the hub when the list or a branch has changed."""
+        with self._sharing:
+            found = repos.scan(self.dev, prefix)
+            adverts = [Repo(name=checkout.remote.name, key=checkout.remote.key, url=checkout.remote.url, branch=checkout.branch) for checkout in found]
+            if adverts != self._advertised:
+                self.client.advertise(adverts)
+                self._advertised = adverts
+        self._ui(partial(self._set_checkouts, prefix, found))
+
+    def _snapshot(self, after: int | None) -> tuple[list[Person], list[ChannelInfo], list[TeamRepo], list[Entry]]:
+        people, channels, team = self.client.users(), self.client.channels(), self.client.repos()
         batch = self.client.notes(tail=HISTORY) if after is None else self.client.notes(after=after, wait=self._poll_wait)
-        return people, channels, [Entry(delivered.id, delivered.note, self.client.is_trusted(delivered.note)) for delivered in batch]
+        return people, channels, team, [Entry(delivered.id, delivered.note, self.client.is_trusted(delivered.note)) for delivered in batch]
 
     def _poll(self) -> None:
         after: int | None = None
+        prefix = ""
         while not self._stop_polling.is_set():
             try:
-                people, channels, entries = self._snapshot(after)
+                prefix = prefix or self.client.info().repos
+                self._share(prefix)
+                people, channels, team, entries = self._snapshot(after)
             except (DeskmateError, ValidationError) as err:
                 self._ui(partial(self._link_down, str(err)))
                 self._stop_polling.wait(RETRY_DELAY)
                 continue
-            self._ui(partial(self._sync, people, channels, entries, after is None))
+            self._ui(partial(self._sync, people, channels, team, entries, after is None))
             after = max([after or 0, *(entry.id for entry in entries)])
 
     def _background(self, work: Callable[[], None], failed: Callable[[str], None]) -> None:
         def body() -> None:
             try:
                 work()
-            except (DeskmateError, ValidationError) as err:
+            except (DeskmateError, ValidationError, OSError) as err:
                 self._ui(partial(failed, str(err)))
 
         threading.Thread(target=body, daemon=True).start()
+
+    def _report(self, chat: str, entry: Entry, repo: str, state: str) -> None:
+        """Tell everyone in the chat what an agent is doing with a note. Best effort: the note itself is what matters."""
+        with contextlib.suppress(DeskmateError, ValidationError):
+            self.client.send(chat, state, kind="status", agent=repo, re=entry.id)
 
     def _link_down(self, problem: str) -> None:
         self.connected, self.problem = False, problem
         self._refresh()
 
-    def _sync(self, people: list[str], channels: list[ChannelInfo], entries: list[Entry], first: bool) -> None:
-        self.people, self.channels, self.connected, self.problem = people, channels, True, ""
+    def _set_checkouts(self, prefix: str, found: list[Checkout]) -> None:
+        self.prefix = prefix
+        self.checkouts = {checkout.remote.name: checkout for checkout in found}
+        self._refresh()
+
+    def _sync(self, people: list[Person], channels: list[ChannelInfo], team: list[TeamRepo], entries: list[Entry], first: bool) -> None:
+        self.people, self.channels, self.team, self.connected, self.problem = people, channels, team, True, ""
         fresh = self.chats.add(entries)
-        for chat in dict.fromkeys(chat_of(entry.note, self.me) for entry in fresh):
+        touched = list(dict.fromkeys(chat_of(entry.note, self.me) for entry in fresh))
+        for chat in touched:
             if view := self._threads.get(chat):
-                view.append(entry for entry in fresh if chat_of(entry.note, self.me) == chat)
+                view.append(entry for entry in fresh if entry.note.kind == "note" and chat_of(entry.note, self.me) == chat)
         self._loaded = True
+        for entry in fresh:
+            if entry.id in self._autorun:
+                self._run_own_tags(entry)
         if not self.current:
             rows = self._rows()
             if rows:  # Start where something is waiting; failing that, where the user left off.
                 last = self._state.chat if self._state.chat in [row.chat for row in rows] else rows[0].chat
                 self.action_open_chat(next((row.chat for row in rows if row.unread), last))
         if not first:
-            self._announce([entry for entry in fresh if entry.note.sender != self.me])
+            self._announce([entry for entry in fresh if entry.note.kind == "note" and entry.note.sender != self.me])
         self._mark_read()
         self._refresh()
 
     def _announce(self, incoming: list[Entry]) -> None:
-        elsewhere = [entry for entry in incoming if chat_of(entry.note, self.me) != self.current]
-        for entry in elsewhere[-3:]:
-            where = f" in {entry.note.to}" if is_channel(entry.note.to) else ""
-            self.notify(_one_line(entry.note.body, 120) if entry.trusted else "a note failed its signature check", title=f"{entry.note.sender}{where}", markup=False)
+        for entry in incoming[-3:]:
+            note = entry.note
+            tagged = [repo for owner, repo in mentions(note.body) if owner == self.me] if entry.trusted and note.agent is None else []
+            where = f" in {note.to}" if is_channel(note.to) else ""
+            if tagged:
+                self.notify(one_line(note.body, 120), title=f"{note.sender} tagged your {tagged[0]} agent{where}", markup=False)
+            elif chat_of(note, self.me) != self.current:
+                self.notify(one_line(note.body, 120) if entry.trusted else "a note failed its signature check", title=f"{note.sender}{where}", markup=False)
         if incoming:
             self.bell()
 
     # ── state the widgets show ────────────────────────────────────────────────
 
+    def _now(self) -> float:
+        return self.client.now()
+
     def _rows(self) -> list[Row]:
-        return self.chats.rows(self.channels, self.people, self.read)
+        return self.chats.rows(self.channels, [person.name for person in self.people], self.read)
 
     def _today(self) -> date:
-        return datetime.fromtimestamp(self.client.now(), tz=UTC).astimezone().date()
+        return datetime.fromtimestamp(self._now(), tz=UTC).astimezone().date()
+
+    def _here(self, name: str) -> bool:
+        return any(person.name == name and self._now() - person.seen <= ONLINE for person in self.people)
+
+    def _pinned(self) -> RepoRef | None:
+        """The repo the open channel is about, if it is a channel and has one."""
+        return next((channel.repo for channel in self.channels if channel.name == self.current), None)
 
     def _mark_read(self) -> None:
         entries = self.chats.entries(self.current)
@@ -602,6 +347,7 @@ class DeskmateApp(App[None]):
     def _refresh(self) -> None:
         self._refresh_sidebar()
         self._refresh_pane()
+        self._refresh_bars()
         self._refresh_status()
 
     def _refresh_sidebar(self) -> None:
@@ -618,61 +364,124 @@ class DeskmateApp(App[None]):
             self.call_after_refresh(self._sort_rows)
         alone = self._loaded and all(is_channel(chat) for chat in wanted)
         self.query_one("#nobody", Static).update("nobody else yet" if alone else "")
+        working = {chat_of(run.entry.note, self.me) for run in self.runs.values()}
         spinner = SPINNER[self._frame % len(SPINNER)]
         for row in rows:
-            mark = spinner if row.chat in self.runs else ("✎" if row.chat in self.drafts else "")
-            self._row_widgets[row.chat].show(current=row.chat == self.current, unread=row.unread, mark=mark)
+            asked = "▶" if self.chats.waiting_for_me(row.chat, self._now()) else ""
+            mark = spinner if row.chat in working else ("✎" if self.drafts.get(row.chat) else asked)
+            self._row_widgets[row.chat].show(current=row.chat == self.current, unread=row.unread, mark=mark, here=None if is_channel(row.chat) else self._here(row.chat))
 
     def _sort_rows(self) -> None:
         for group in ("#channel-rows", "#people-rows"):
             self.query_one(group, Vertical).sort_children(key=lambda widget: widget.chat if isinstance(widget, ChatRow) else "")
 
     def _refresh_pane(self) -> None:
+        config = self.client.config
+        home = str(Path.home())
+        where = str(self.dev).replace(home, "~", 1) if str(self.dev).startswith(home) else str(self.dev)
+        self.query_one("#identity", Label).update(f" {self.me} on {urlsplit(config.hub).netloc} · {config.agent} · {len(self.checkouts)} repos in {where}")
         pane = self.query_one("#pane", Vertical)
-        empty = self.query_one("#empty", Static)
-        composer = self.query_one(Composer)
         if not self.current:
             pane.border_title = "deskmate"
             pane.border_subtitle = ""
             if self._loaded:
-                empty.update("Nobody else has joined this hub yet.\nShare the install line with a teammate, or press Ctrl+N to start a channel.")
+                self.query_one("#empty", Static).update("Nobody else has joined this hub yet.\nShare the install line with a teammate, or press Ctrl+N to start a channel.")
             return
         info = next((channel for channel in self.channels if channel.name == self.current), None)
-        pane.border_title = f"{self.current} · {', '.join(info.members)}" if info else self.current
-        pane.border_subtitle = "[@click=app.leave_channel]× Leave[/]" if info and self.me in info.members else ""
-        composer.placeholder = f"Message {self.current}"
-        waiting = self.chats.open_request(self.current)
-        if view := self._threads.get(self.current):
-            view.mark_open_request(waiting.id if waiting else None)
+        title = self.current
+        if info and info.repo:
+            have = sum(1 for member in info.members if any(repo.user == member and repo.key == info.repo.key for repo in self.team))
+            title += f" · {info.repo.name} ({have} of {len(info.members)} have it)"
+        pane.border_title = f"{title} · {', '.join(info.members)}" if info else title
+        if info and self.me in info.members:
+            pin = f"[@click=app.unpin_repo]◆ Unpin {info.repo.name}[/]" if info.repo else "[@click=app.pin_repo]◆ Pin a repo[/]"
+            pane.border_subtitle = f"{pin} · [@click=app.leave_channel]× Leave[/]"
+        else:
+            pane.border_subtitle = ""
+        self.query_one(Composer).placeholder = f"Message {self.current} · @ tags an agent"
+
+    def _bar(self, requests: list[Request]) -> str:
+        """The lines under a note that tags agents: for the user's own, what they can do; for a teammate's, where it stands."""
+        lines: list[str] = []
+        spin = f"[$primary]{SPINNER[self._frame % len(SPINNER)]}[/]"
+        for request in requests:
+            note_id, repo, asker = request.entry.id, request.repo, request.entry.note.sender
+            mine = request.owner == self.me
+            who = f"your {repo} agent" if mine else f"{request.owner}'s {repo} agent"
+            run = self.runs.get((note_id, repo)) if mine else None
+            if request.state == "answered":
+                continue
+            if run:
+                self._animated = True
+                on = f" on {escape(request.detail)}" if request.state == "working" and request.detail else ""
+                lines.append(f"{spin} {who} is working{on} · {int(time.monotonic() - run.started)}s · [@click=app.stop_run({note_id}, '{repo}')]■ Stop[/]")
+            elif mine and repo not in self.checkouts:
+                lines.append(f"[$warning]?[/] you have no checkout of {repo} · [@click=app.clone('{repo}')]⇣ Clone it[/]")
+            elif mine:
+                before = {"declined": "you declined · ", "failed": "it failed · ", "stopped": "stopped · ", "working": "interrupted · "}.get(request.state, "")
+                decline = "" if asker == self.me or request.state == "declined" else f" · [@click=app.decline({note_id}, '{repo}')]× Decline[/]"
+                run_it = f"[@click=app.run_request({note_id}, '{repo}', False)]▶ Run and review[/] · [@click=app.run_request({note_id}, '{repo}', True)]▶▶ Run and post[/]"
+                lines.append(f"[$warning]◆[/] {before}{who} · {run_it}{decline}")
+            elif request.state == "working":
+                self._animated = True
+                lines.append(f"{spin} {who} is working{f' on {escape(request.detail)}' if request.detail else ''}")
+            elif request.state == "waiting":
+                lines.append(self._waiting_on(request.owner, repo))
+            else:
+                lines.append({"declined": f"× {request.owner} declined", "failed": f"✗ {who} failed", "stopped": f"■ {who} was stopped"}[request.state])
+        return "\n".join(lines)
+
+    def _waiting_on(self, owner: str, repo: str) -> str:
+        if all(person.name != owner for person in self.people):
+            return f"[$warning]?[/] nobody named {owner} has joined"
+        if all(theirs.user != owner or theirs.name != repo for theirs in self.team):
+            return f"[$warning]?[/] {owner} has no checkout of {repo}"
+        return f"◌ waiting for {owner} to approve{'' if self._here(owner) else ' · they are away'}"
+
+    def _refresh_bars(self) -> None:
+        """Redraw the status lines of the open chat's tagging notes, and note whether any of them is moving."""
+        self._animated = False
+        view = self._threads.get(self.current)
+        for note_id, message in view.tagging.items() if view else ():
+            entry = self.chats.find(note_id)
+            message.set_bar(self._bar(self.chats.requests(entry, self._now())) if entry else "")
+        if self.runs or self._animated:
+            self._spinner.resume()
+        else:
+            self._spinner.pause()
 
     def _refresh_status(self) -> None:
         status = self.query_one("#status", Horizontal)
-        run, draft = self.runs.get(self.current), self.drafts.get(self.current)
+        drafts = self.drafts.get(self.current, [])
+        draft = drafts[0] if drafts else None
+        pinned = self._pinned()
+        waiting = self.chats.waiting_for_me(self.current, self._now()) if self.current else []
+        running = [key for key, run in self.runs.items() if chat_of(run.entry.note, self.me) == self.current]
         hints: list[tuple[str, str, str]] = []
         text = actions = ""
         discard = "[@click=app.discard_draft]× Discard[/]"
-        if run:
-            seconds = int(time.monotonic() - run.started)
-            text = f"[$primary]{SPINNER[self._frame % len(SPINNER)]}[/] working on {run.entry.note.sender}'s note · {seconds}s"
-            actions = "[@click=app.stop_or_discard]■ Stop[/]"
-            hints += [("Esc", "stop my agent", "app.stop_or_discard"), ("Enter", "send", "")]
-        elif draft and draft.loaded:
-            text = f"[$primary]✎[/] Draft for {draft.entry.note.sender} · Enter sends it"
+        more = f" · {len(drafts) - 1} more" if len(drafts) > 1 else ""
+        if draft and draft.loaded:
+            text = f"[$primary]✎[/] {draft.repo} draft for {draft.entry.note.sender} · Enter sends{more}"
             actions = discard
             hints += [("Enter", "send draft", ""), ("Esc Esc", "discard", "app.discard_draft")]
         elif draft:
-            text = f"[$primary]✎[/] Draft for {draft.entry.note.sender} is ready"
+            text = f"[$primary]✎[/] {draft.repo} draft for {draft.entry.note.sender} is ready{more}"
             actions = f"[@click=app.load_draft]Load it[/] · {discard}"
-            hints += [("Enter", "send", "")]
-        else:
-            if self.current and self.chats.newest_request(self.current):
-                hints.append(("^R", "run my agent", "app.run_newest"))
+        elif pinned and self._loaded and pinned.name not in self.checkouts:
+            text = f"[$warning]◆[/] This channel is about {pinned.name}, which you have no checkout of"
+            actions = f"[@click=app.clone('{pinned.name}')]⇣ Clone it[/]"
+        if waiting:
+            hints.append(("^R", "run request", "app.run_waiting"))
+        if running:
+            hints.append(("Esc", "stop my agent", "app.stop_or_discard"))
+        if not (draft and draft.loaded):
             hints.append(("Enter", "send", ""))
         self.query_one("#status-text", Static).update(text)
         self.query_one("#status-actions", Static).update(actions)
-        status.set_class(bool(run or draft), "-on")
-        hints += [("^↓", "next chat", "app.step_chat(1)"), ("^N", "join channel", "app.join_channel"), ("^P", "commands", "app.command_palette"), ("^Q", "quit", "app.quit")]
-        state = "● connected " if self.connected else (f"◌ {_one_line(self.problem, 40)} · retrying " if self.problem else "◌ connecting ")
+        status.set_class(bool(text), "-on")
+        hints += [("@", "tag an agent", ""), ("^↓", "next chat", "app.step_chat(1)"), ("^N", "join channel", "app.join_channel"), ("^P", "commands", "app.command_palette"), ("^Q", "quit", "app.quit")]
+        state = "● connected " if self.connected else (f"◌ {one_line(self.problem, 40)} · retrying " if self.problem else "◌ connecting ")
         link = self.query_one("#link", Static)
         link.update(state)
         link.set_class(bool(self.problem), "-down")
@@ -694,13 +503,67 @@ class DeskmateApp(App[None]):
     def _spin(self) -> None:
         self._frame += 1
         self._refresh_sidebar()
-        self._refresh_status()
+        self._refresh_bars()
 
-    def _set_spinning(self) -> None:
-        if self.runs:
-            self._spinner.resume()
+    # ── the tag list ──────────────────────────────────────────────────────────
+
+    def on_text_area_changed(self) -> None:
+        self._refresh_picks()
+
+    def on_text_area_selection_changed(self) -> None:
+        self._refresh_picks()
+
+    def _refresh_picks(self) -> None:
+        """Open the list of agents while the user is typing a tag, narrowed to what they have typed of it."""
+        composer = self.query_one(Composer)
+        row, column = composer.cursor_location
+        typed = TAG_BEING_TYPED.search(composer.document.get_line(row)[:column])
+        pinned = self._pinned()
+        self._picks = candidates(str(typed.group(1)), self.team, self.me, pinned.name if pinned else None) if typed else []
+        self._pick_span = ((row, column - len(str(typed.group(1))) - 1), (row, column)) if typed else ((0, 0), (0, 0))
+        picker = self.query_one("#picker", OptionList)
+        picker.clear_options()
+        where = str(self.dev).replace(str(Path.home()), "~", 1)
+        for pick in self._picks:
+            label = Content.assemble((f"⇣ clone {pick.repo} into {where}", "$dm-muted")) if pick.clone else Content.assemble(pick.tag, (f"  {pick.branch}", "$dm-muted"))
+            picker.add_option(Option(label))
+        picker.highlighted = 0 if self._picks else None
+        picker.set_class(bool(self._picks), "-on")
+        composer.completing = bool(self._picks)
+
+    def _close_picks(self) -> None:
+        self._picks = []
+        self.query_one("#picker", OptionList).set_class(False, "-on")
+        self.query_one(Composer).completing = False
+
+    def _take_pick(self, index: int | None) -> None:
+        if index is None or index >= len(self._picks):
+            return
+        pick = self._picks[index]
+        composer = self.query_one(Composer)
+        start, end = self._pick_span
+        self._close_picks()
+        if pick.clone:
+            composer.replace("", start, end)
+            self.action_clone(pick.repo)
         else:
-            self._spinner.pause()
+            composer.replace(f"{pick.tag} ", start, end)
+
+    def on_composer_list_key(self, message: Composer.ListKey) -> None:
+        picker = self.query_one("#picker", OptionList)
+        if message.key == "escape":
+            self._close_picks()
+        elif message.key == "up":
+            picker.action_cursor_up()
+        elif message.key == "down":
+            picker.action_cursor_down()
+        else:
+            self._take_pick(picker.highlighted)
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        if event.option_list.id == "picker":
+            self._take_pick(event.option_index)
+            self.query_one(Composer).focus()
 
     # ── actions: every key, and everything clickable ──────────────────────────
 
@@ -711,11 +574,11 @@ class DeskmateApp(App[None]):
         self.current = chat
         switcher = self.query_one("#threads", ContentSwitcher)
         if chat not in self._threads:
-            view = self._threads[chat] = ThreadView(chat, self.me, self._today, self.chats.find)
+            view = self._threads[chat] = ThreadView(chat, self.chats, self._today)
             view.append(self.chats.entries(chat)[-HISTORY:])
             switcher.add_content(view, set_current=True)
         else:
-            switcher.current = _thread_id(chat)
+            switcher.current = thread_id(chat)
         composer.set_text(self.typed.get(chat, ""))
         composer.focus()
         self._mark_read()
@@ -730,6 +593,9 @@ class DeskmateApp(App[None]):
         if not isinstance(self.screen, Help):
             self.push_screen(Help())
 
+    def _failed(self, what: str, problem: str) -> None:
+        self.notify(problem, title=what, severity="error", markup=False)
+
     def action_join_channel(self) -> None:
         if isinstance(self.screen, JoinChannel):
             return
@@ -742,13 +608,13 @@ class DeskmateApp(App[None]):
 
         def work() -> None:
             self.client.join_channel(channel)
-            people, channels, entries = self._snapshot(None)  # A channel's earlier notes are older than the poll cursor, so load them now.
-            self._ui(partial(self._joined, channel, people, channels, entries))
+            people, channels, team, entries = self._snapshot(None)  # A channel's earlier notes are older than the poll cursor, so load them now.
+            self._ui(partial(self._joined, channel, people, channels, team, entries))
 
         self._background(work, partial(self._failed, f"could not join {channel}"))
 
-    def _joined(self, channel: str, people: list[str], channels: list[ChannelInfo], entries: list[Entry]) -> None:
-        self._sync(people, channels, entries, True)
+    def _joined(self, channel: str, people: list[Person], channels: list[ChannelInfo], team: list[TeamRepo], entries: list[Entry]) -> None:
+        self._sync(people, channels, team, entries, True)
         self.action_open_chat(channel)
 
     def action_leave_channel(self) -> None:
@@ -778,121 +644,236 @@ class DeskmateApp(App[None]):
                 self.action_open_chat(rows[0].chat)
         self._refresh()
 
-    def _failed(self, what: str, problem: str) -> None:
-        self.notify(problem, title=what, severity="error", markup=False)
+    def _set_channels(self, channels: list[ChannelInfo]) -> None:
+        self.channels = channels
+        self._refresh()
+
+    def action_pin_repo(self) -> None:
+        channel = self.current
+        if not is_channel(channel) or isinstance(self.screen, PickRepo):
+            return
+        if not self.checkouts:
+            self.notify(f"You have no team repos under {self.dev} to pin.", markup=False)
+            return
+
+        def pin(name: str | None) -> None:
+            checkout = self.checkouts.get(name or "")
+            if checkout:
+                ref = RepoRef(name=checkout.remote.name, key=checkout.remote.key, url=checkout.remote.url)
+                self._background(lambda: self._ui(partial(self._set_channels, [*self._others(channel), self.client.pin(channel, ref)])), partial(self._failed, f"could not pin a repo to {channel}"))
+
+        self.push_screen(PickRepo(f"Which repo is {channel} about?", sorted(self.checkouts)), pin)
+
+    def action_unpin_repo(self) -> None:
+        channel = self.current
+        if is_channel(channel):
+            self._background(lambda: self._ui(partial(self._set_channels, [*self._others(channel), self.client.unpin(channel)])), partial(self._failed, f"could not unpin the repo from {channel}"))
+
+    def _others(self, channel: str) -> list[ChannelInfo]:
+        return [other for other in self.channels if other.name != channel]
+
+    def action_clone(self, repo: str) -> None:
+        """Offer to clone a repo the user lacks into ~/dev, showing where it comes from before anything is fetched."""
+        pinned = self._pinned()
+        known: list[RepoRef] = [*self.team, *([pinned] if pinned else [])]
+        ref = next((candidate for candidate in known if candidate.name == repo), None)
+        if ref is None or repo in self.checkouts:
+            self.notify(f"You already have {repo}." if repo in self.checkouts else f"Nobody on this hub has {repo}, so there is nowhere to clone it from.", markup=False)
+            return
+        destination = self.dev / unquote(ref.url.rstrip("/").rsplit("/", 1)[-1])
+
+        def clone(agreed: bool | None) -> None:
+            if not agreed:
+                return
+            self.notify(f"Cloning {repo}…", markup=False)
+
+            def work() -> None:
+                self.cloner(ref.url, destination)
+                self._share(self.prefix)
+                self._ui(partial(self.notify, f"Cloned {repo} into {destination}. Your {repo} agent can be tagged now.", markup=False))
+
+            self._background(work, partial(self._failed, f"could not clone {repo}"))
+
+        self.push_screen(ConfirmClone(ref.url, destination), clone)
 
     def on_composer_submitted(self, message: Composer.Submitted) -> None:
         chat, text = self.current, message.text.strip()
         if not chat or not text:
             return
-        draft = self.drafts.get(chat)
-        answering = draft if draft and draft.loaded else None
-        composer = self.query_one(Composer)
-        composer.set_text("")
+        drafts = self.drafts.get(chat, [])
+        answering = drafts[0] if drafts and drafts[0].loaded else None
+        self.query_one(Composer).set_text("")
         self.typed[chat] = ""
         if answering:
-            del self.drafts[chat]
+            drafts.pop(0)
+        self._offer_draft(chat)
         self._refresh()
 
         def work() -> None:
-            self.client.send(chat, text[:MAX_BODY], agent=answering is not None, re=answering.entry.id if answering else None)
+            if answering:
+                self.client.send(chat, text[:MAX_BODY], agent=answering.repo, re=answering.entry.id)
+            else:
+                self._ui(partial(self._sent, self.client.send(chat, text[:MAX_BODY])))
 
         self._background(work, partial(self._send_failed, chat, text, answering))
+
+    def _sent(self, note_id: int) -> None:
+        """A note typed here has reached the hub. Its tags of the user's own agents run without asking, whichever of the two arrives first."""
+        self._autorun.add(note_id)
+        if entry := self.chats.find(note_id):
+            self._run_own_tags(entry)
+
+    def _run_own_tags(self, entry: Entry) -> None:
+        self._autorun.discard(entry.id)
+        if entry.note.sender != self.me:
+            return
+        for request in self.chats.requests(entry, self._now()):
+            if request.owner == self.me and request.state == "waiting" and request.repo in self.checkouts:
+                self._start_run(entry, request.repo, post=True)
 
     def _send_failed(self, chat: str, text: str, answering: Draft | None, problem: str) -> None:
         """Put an unsent message back where it was, so nothing the user or their agent wrote is lost."""
         if answering:
-            self.drafts[chat] = answering
-        if not self.typed.get(chat) and not (chat == self.current and self.query_one(Composer).text):
+            self.drafts.setdefault(chat, []).insert(0, dataclasses.replace(answering, text=text))
+        elif not self.typed.get(chat) and not (chat == self.current and self.query_one(Composer).text):
             self.typed[chat] = text
             if chat == self.current:
                 self.query_one(Composer).set_text(text)
         self._failed(f"not sent to {chat}", problem)
         self._refresh()
 
-    def action_run_newest(self) -> None:
-        newest = self.chats.newest_request(self.current) if self.current else None
-        if newest:
-            self._start_run(newest)
+    def action_run_waiting(self) -> None:
+        waiting = self.chats.waiting_for_me(self.current, self._now()) if self.current else []
+        if waiting:
+            self._start_run(waiting[0].entry, waiting[0].repo, post=False)
         else:
-            self.notify("No note from someone else in this chat to run your agent on.", markup=False)
+            self.notify("Nothing is waiting for your agents here. Type @ to tag one.", markup=False)
 
-    def action_run_on(self, note_id: int) -> None:
+    def action_run_request(self, note_id: int, repo: str, post: bool) -> None:
         entry = self.chats.find(note_id)
-        if entry and is_request(entry, self.me):
-            self._start_run(entry)
+        if entry and any(request.owner == self.me and request.repo == repo for request in self.chats.requests(entry, self._now())):
+            self._start_run(entry, repo, post=post)
 
-    def _start_run(self, entry: Entry) -> None:
-        chat = chat_of(entry.note, self.me)
-        if chat in self.runs:
-            self.notify(f"Your agent is already working in {chat}.", markup=False)
+    def action_stop_run(self, note_id: int, repo: str) -> None:
+        if run := self.runs.get((note_id, repo)):
+            run.cancel.set()
+
+    def action_decline(self, note_id: int, repo: str) -> None:
+        if entry := self.chats.find(note_id):
+            chat = chat_of(entry.note, self.me)
+            self._background(lambda: self._report(chat, entry, repo, "declined"), partial(self._failed, "could not decline"))
+
+    def _start_run(self, entry: Entry, repo: str, *, post: bool) -> None:
+        checkout = self.checkouts.get(repo)
+        key = (entry.id, repo)
+        if key in self.runs:
+            return
+        if checkout is None:
+            self._failed(f"your {repo} agent", f"there is no checkout of {repo} under {self.dev}")
             return
         try:
-            argv = [*shlex.split(self.client.config.agent), agent_prompt(entry, self.me, self.chats.earlier(entry))]
+            argv = [*shlex.split(self.client.config.agent), agent_prompt(entry, self.me, repo, self.chats.earlier(entry), review=not post)]
         except ValueError as err:
             self._failed("agent command", f'cannot read "agent" in config.json: {err}')
             return
-        run = AgentRun(entry, threading.Event(), time.monotonic(), threading.Event())
-        self.runs[chat] = run
+        run = AgentRun(entry, repo, post, threading.Event(), time.monotonic(), threading.Event())
+        self.runs[key] = run
+        chat = chat_of(entry.note, self.me)
 
         def work() -> None:
             try:
-                text = self.runner(argv, self.cwd, run.cancel)
+                self._report(chat, entry, repo, f"working\n{self.describe(checkout)}")
+                text = self.runner(argv, checkout.path, run.cancel)
             except AgentCancelledError:
-                self._ui(partial(self._run_ended, chat, run, "", "stopped"))
+                self._report(chat, entry, repo, "stopped")
+                self._ui(partial(self._run_ended, key, run, "", "stopped"))
             except DeskmateError as err:
-                self._ui(partial(self._run_ended, chat, run, "", str(err)))
+                self._report(chat, entry, repo, "failed")  # Only the fact: what the agent printed on the way down may not be fit to share.
+                self._ui(partial(self._run_ended, key, run, "", str(err)))
             else:
-                self._ui(partial(self._run_ended, chat, run, text, ""))
+                if not text:
+                    self._report(chat, entry, repo, "failed")
+                self._ui(partial(self._run_ended, key, run, text, "" if text else "the agent returned nothing"))
             finally:
                 run.done.set()
 
         threading.Thread(target=work, daemon=True, name="deskmate-agent").start()
-        self._set_spinning()
         self._refresh()
 
-    def _run_ended(self, chat: str, run: AgentRun, text: str, problem: str) -> None:
-        if self.runs.get(chat) is run:
-            del self.runs[chat]
-        self._set_spinning()
+    def _run_ended(self, key: tuple[int, str], run: AgentRun, text: str, problem: str) -> None:
+        if self.runs.get(key) is run:
+            del self.runs[key]
+        chat = chat_of(run.entry.note, self.me)
+        draft = Draft(text[:MAX_BODY], run.entry, run.repo, loaded=False)
         if problem == "stopped":
-            self.notify("Stopped your agent.", markup=False)
-        elif problem or not text:
-            self._failed("your agent", problem or "the agent returned nothing")
+            self.notify(f"Stopped your {run.repo} agent.", markup=False)
+        elif problem:
+            self._failed(f"your {run.repo} agent", problem)
+        elif run.post:
+
+            def post() -> None:
+                self.client.send(chat, draft.text, agent=draft.repo, re=draft.entry.id)
+
+            self._background(post, partial(self._post_failed, chat, draft))
         else:
-            box_is_empty = not (self.query_one(Composer).text if chat == self.current else self.typed.get(chat, ""))
-            self.drafts[chat] = Draft(text[:MAX_BODY], run.entry, loaded=False)
-            if box_is_empty:
-                self._load_draft(chat)
-            if chat != self.current:
-                self.notify("Your agent's draft is ready to review.", title=chat, markup=False)
-            self.bell()
+            self._queue_draft(chat, draft)
         self._refresh()
+
+    def _post_failed(self, chat: str, draft: Draft, problem: str) -> None:
+        """An answer that could not be posted is kept as a draft, so the agent's work is not lost."""
+        self._failed(f"your {draft.repo} agent's answer was not posted; it is kept as a draft", problem)
+        self._queue_draft(chat, draft)
+        self._refresh()
+
+    def _queue_draft(self, chat: str, draft: Draft) -> None:
+        self.drafts.setdefault(chat, []).append(draft)
+        self._offer_draft(chat)
+        if chat != self.current:
+            self.notify(f"Your {draft.repo} agent's draft is ready to review.", title=chat, markup=False)
+        self.bell()
+
+    def _offer_draft(self, chat: str) -> None:
+        """Put the next waiting draft into the chat's message box, unless the user has something of their own typed there."""
+        drafts = self.drafts.get(chat, [])
+        if not drafts:
+            self.drafts.pop(chat, None)
+            return
+        box_is_empty = not (self.query_one(Composer).text if chat == self.current else self.typed.get(chat, ""))
+        if not drafts[0].loaded and box_is_empty:
+            self._load_draft(chat)
 
     def _load_draft(self, chat: str) -> None:
-        draft = self.drafts[chat]
-        self.drafts[chat] = dataclasses.replace(draft, loaded=True)
-        self.typed[chat] = draft.text
+        drafts = self.drafts[chat]
+        drafts[0] = dataclasses.replace(drafts[0], loaded=True)
+        self.typed[chat] = drafts[0].text
         if chat == self.current:
-            self.query_one(Composer).set_text(draft.text)
+            self.query_one(Composer).set_text(drafts[0].text)
 
     def action_load_draft(self) -> None:
-        if self.current in self.drafts:
+        if self.drafts.get(self.current):
             self._load_draft(self.current)
             self._refresh()
 
     def action_discard_draft(self) -> None:
-        draft = self.drafts.pop(self.current, None)
-        if draft and draft.loaded:
-            self.typed[self.current] = ""
+        chat = self.current
+        drafts = self.drafts.get(chat, [])
+        if not drafts:
+            return
+        draft = drafts.pop(0)
+        if draft.loaded:
+            self.typed[chat] = ""
             self.query_one(Composer).set_text("")
+        self._background(lambda: self._report(chat, draft.entry, draft.repo, "declined"), partial(self._failed, "could not tell the chat"))
+        self._offer_draft(chat)
         self._refresh()
 
     def action_stop_or_discard(self) -> None:
-        """Esc: stop the agent working in this chat, or, pressed twice, discard the draft being reviewed."""
-        if run := self.runs.get(self.current):
-            run.cancel.set()
-        elif self.current in self.drafts:
+        """Esc: stop the agents working in this chat, or, pressed twice, discard the draft being reviewed."""
+        running = [run for run in self.runs.values() if chat_of(run.entry.note, self.me) == self.current]
+        if running:
+            for run in running:
+                run.cancel.set()
+        elif self.drafts.get(self.current):
             if time.monotonic() - self._esc_at <= DISCARD_WINDOW:
                 self.action_discard_draft()
             else:

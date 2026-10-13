@@ -11,7 +11,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from deskmate.chat import chat_of
-from deskmate.client import DEFAULT_AGENT, POLL_WAIT, Client, DeskmateError, Runner, Transport, default_home, http, join, load_client, run_agent
+from deskmate.client import DEFAULT_AGENT, POLL_WAIT, Client, DeskmateError, Runner, Transport, default_dev, default_home, http, join, load_client, run_agent
 from deskmate.wire import Delivered, is_channel
 
 
@@ -22,14 +22,14 @@ def render(delivered: Delivered, *, trusted: bool) -> str:
     when = datetime.fromtimestamp(note.ts, tz=UTC).astimezone().strftime("%a %H:%M")
     where = f" in {note.to}" if is_channel(note.to) else ""
     lines = "\n".join(f"│ {line}" for line in note.body.splitlines())
-    return f"┌ {delivered.id} · {note.sender}{' (agent)' if note.agent else ''}{where} · {when}\n{lines}\n└"
+    return f"┌ {delivered.id} · {note.sender}{f' ({note.agent} agent)' if note.agent else ''}{where} · {when}\n{lines}\n└"
 
 
 def _await_reply(client: Client, chat: str, after: int, seconds: float) -> Delivered | None:
     """The next trusted note from someone else in this chat, if one arrives in time."""
     deadline = time.monotonic() + seconds
     while (remaining := deadline - time.monotonic()) > 0:
-        for delivered in client.notes(after=after, wait=min(remaining, POLL_WAIT), mine=False):
+        for delivered in client.notes(after=after, wait=min(remaining, POLL_WAIT), mine=False, status=False):
             after = delivered.id
             if chat_of(delivered.note, client.config.name) == chat and client.is_trusted(delivered.note):
                 return delivered
@@ -45,7 +45,7 @@ def _explain(err: DeskmateError | ValidationError) -> str:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="deskmate", description="Chat with your teammates and their coding agents. With no command, opens the chat interface; your agent runs in the current directory."
+        prog="deskmate", description="Chat with your teammates and their coding agents. With no command, opens the chat interface. Your agents are your checkouts under ~/dev."
     )
     commands = parser.add_subparsers(dest="command")
     join_cmd = commands.add_parser("join", help="register your name and a new key with a hub")
@@ -61,6 +61,7 @@ def _parser() -> argparse.ArgumentParser:
     inbox_cmd.add_argument("--after", type=int, metavar="ID", help="only notes newer than this id")
     inbox_cmd.add_argument("--wait", type=float, default=0, metavar="SECONDS", help="with --after: wait this long for a new note")
     commands.add_parser("who", help="list everyone who has joined")
+    commands.add_parser("repos", help="list which team repos each person has checked out, and on which branch")
     channel_cmd = commands.add_parser("channel", help="list channels, or join or leave one")
     channel_cmd.add_argument("action", nargs="?", choices=["list", "join", "leave"], default="list")
     channel_cmd.add_argument("name", nargs="?", help="the channel to join or leave; joining a new name creates it")
@@ -111,7 +112,7 @@ def _run(args: argparse.Namespace, home: Path, transport: Transport, run: Runner
             raise DeskmateError(msg)
         from deskmate.tui import DeskmateApp  # Imported here so one-shot commands start without loading the interface.
 
-        app = DeskmateApp(client, Path.cwd(), run)
+        app = DeskmateApp(client, default_dev(), run)
 
         def terminal_gone(signum: int, _frame: object) -> None:
             app.stop_agents()  # A closed window or a kill must not leave an agent working with nobody to read its answer.
@@ -122,6 +123,8 @@ def _run(args: argparse.Namespace, home: Path, transport: Transport, run: Runner
         app.run()
     elif command == "who":
         print("\n".join(user.name + (" (you)" if user.name == client.config.name else "") for user in client.users()))
+    elif command == "repos":
+        print("\n".join(f"@{repo.user}/{repo.name}  {repo.branch}" for repo in client.repos()) or "nobody has shared a repo yet; repos under ~/dev are shared once the chat interface has run")
     elif command == "channel":
         action: str = args.action
         channel: str | None = args.name
@@ -129,7 +132,7 @@ def _run(args: argparse.Namespace, home: Path, transport: Transport, run: Runner
     elif command == "inbox":
         after: int | None = args.after
         wait: float = args.wait
-        notes = client.notes(tail=20, mine=False) if after is None else client.notes(after=after, wait=wait, mine=False)
+        notes = client.notes(tail=20, mine=False, status=False) if after is None else client.notes(after=after, wait=wait, mine=False, status=False)
         print("\n".join(render(delivered, trusted=client.is_trusted(delivered.note)) for delivered in notes) or "no notes")
     else:
         to: str = args.to

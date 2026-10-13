@@ -6,28 +6,41 @@ from pathlib import Path
 
 import pytest
 from textual.pilot import Pilot
+from textual.widgets import OptionList
 
 from deskmate import wire
 from deskmate.client import AgentCancelledError, Client, DeskmateError
-from deskmate.tui import ChatRow, Composer, DeskmateApp, MessageView
+from deskmate.repos import Checkout
+from deskmate.tui import DeskmateApp
+from deskmate.widgets import ChatRow, Composer, ConfirmClone, MessageView
+from deskmate.wire import Repo
 
 type MakeClient = Callable[[str], Client]
+type MakeCheckout = Callable[..., Path]
 type Launch = Callable[..., DeskmateApp]
+type Dev = Callable[..., Path]
 
-SIZE = (100, 30)
+SIZE = (150, 34)  # Wide enough that the choices under a note stay on one line, so a click can be aimed at one.
+PLATFORM = "https://dev.azure.com/acme/Platform/_git"
+
+
+def shared(name: str, branch: str = "main") -> Repo:
+    return Repo(name=name, key=f"dev.azure.com/acme/platform/{name}", url=f"{PLATFORM}/{name}", branch=branch)
 
 
 class FakeAgent:
-    """Stands in for the agent command: records what it was asked, and can be held back to look busy."""
+    """Stands in for the agent command: records what it was asked and where, and can be held back to look busy."""
 
     def __init__(self) -> None:
         self.reply = "config.py, line 12"
         self.prompts: list[str] = []
+        self.folders: list[Path] = []
         self.finish = threading.Event()
         self.finish.set()
 
-    def __call__(self, argv: Sequence[str], _cwd: Path, cancel: threading.Event) -> str:
+    def __call__(self, argv: Sequence[str], cwd: Path, cancel: threading.Event) -> str:
         self.prompts.append(argv[-1])
+        self.folders.append(cwd)
         while not self.finish.wait(0.01):
             if cancel.is_set():
                 raise AgentCancelledError
@@ -40,12 +53,39 @@ def agent() -> FakeAgent:
 
 
 @pytest.fixture
-def launch(tmp_path: Path, agent: FakeAgent) -> Iterator[Launch]:
+def dev(tmp_path: Path, checkout: MakeCheckout) -> Dev:
+    """A person's ~/dev, holding checkouts of the named team repos."""
+
+    def make(person: str, *repos: str) -> Path:
+        folder = tmp_path / f"{person}-dev"
+        folder.mkdir(exist_ok=True)
+        for repo in repos:
+            checkout(folder, repo, f"{PLATFORM}/{repo}")
+        return folder
+
+    return make
+
+
+@pytest.fixture
+def cloned() -> list[tuple[str, Path]]:
+    """What the interface was asked to clone. The stand-in cloner lays a checkout down where the real one would."""
+    return []
+
+
+@pytest.fixture
+def launch(agent: FakeAgent, dev: Dev, cloned: list[tuple[str, Path]], checkout: MakeCheckout) -> Iterator[Launch]:
     """Build the interface for a client. Its poll thread is joined afterwards, before the hub goes away."""
     apps: list[DeskmateApp] = []
 
-    def build(client: Client, poll_wait: float = 0.05) -> DeskmateApp:
-        apps.append(DeskmateApp(client, tmp_path, agent, poll_wait=poll_wait))
+    def clone(url: str, destination: Path) -> None:
+        cloned.append((url, destination))
+        checkout(destination.parent, destination.name, url)
+
+    def describe(where: Checkout) -> str:
+        return f"{where.branch} ±"
+
+    def build(client: Client, *repos: str, poll_wait: float = 0.05) -> DeskmateApp:
+        apps.append(DeskmateApp(client, dev(client.config.name, *repos), agent, cloner=clone, describe=describe, poll_wait=poll_wait))
         return apps[-1]
 
     yield build
@@ -55,7 +95,7 @@ def launch(tmp_path: Path, agent: FakeAgent) -> Iterator[Launch]:
 
 async def until(pilot: Pilot[None], condition: Callable[[], bool]) -> None:
     """Let the interface and its worker threads run until something becomes true."""
-    for _ in range(200):
+    for _ in range(250):
         if condition():
             await pilot.pause()
             return
@@ -69,26 +109,44 @@ def shown(app: DeskmateApp, chat: str) -> list[str]:
     return [view.entry.note.body for view in thread.query(MessageView)] if thread else []
 
 
-def received(client: Client) -> list[tuple[str, bool, int | None]]:
-    return [(delivered.note.body, delivered.note.agent, delivered.note.re) for delivered in client.notes(mine=False)]
+def under(app: DeskmateApp, chat: str, note_id: int) -> str:
+    """The status line under a note that tags an agent, as plain text; "" when there is none."""
+    thread = app._threads.get(chat)
+    view = thread.tagging.get(note_id) if thread else None
+    return str(view.bar.render()) if view else ""
 
 
-def row(app: DeskmateApp, chat: str) -> ChatRow:
-    return next(candidate for candidate in app.query(ChatRow) if candidate.chat == chat)
+def received(client: Client) -> list[tuple[str, str | None, int | None]]:
+    return [(delivered.note.body, delivered.note.agent, delivered.note.re) for delivered in client.notes(mine=False, status=False)]
 
 
-async def test_it_opens_on_the_chat_with_unread_notes_and_lists_everyone(make_client: MakeClient, launch: Launch) -> None:
-    jacob, bob, _carol = make_client("jacob"), make_client("bob"), make_client("carol")
+def reports(client: Client) -> list[str]:
+    """The agent status reports other people have sent this client, oldest first."""
+    return [delivered.note.body for delivered in client.notes(mine=False) if delivered.note.kind == "status"]
+
+
+def row(app: DeskmateApp, chat: str) -> list[str]:
+    """One line of the chat list, as the words on it."""
+    return next(str(candidate.render()).split() for candidate in app.query(ChatRow) if candidate.chat == chat)
+
+
+async def say(pilot: Pilot[None], app: DeskmateApp, text: str) -> None:
+    """Put text in the message box and send it."""
+    app.query_one(Composer).set_text(text)
+    await pilot.press("enter")
+
+
+async def test_it_opens_on_the_chat_with_unread_notes_and_shows_who_is_here(make_client: MakeClient, launch: Launch) -> None:
+    jacob, bob, carol = make_client("jacob"), make_client("bob"), make_client("carol")
     jacob.join_channel("backend")
+    carol.users()  # Any signed request marks carol as here; bob has only joined.
     bob.send("jacob", "ping")
     app = launch(jacob)
 
     async with app.run_test(size=SIZE) as pilot:
         await until(pilot, lambda: app.current == "bob" and shown(app, "bob") == ["ping"])
 
-        assert [candidate.chat for candidate in app.query(ChatRow)] == ["#backend", "bob", "carol"]
-        assert [str(candidate.render()).split() for candidate in app.query(ChatRow)] == [["#backend"], ["›", "bob"], ["carol"]]
-        assert not row(app, "bob").has_class("-unread")  # Opening it marked it read.
+        assert [str(candidate.render()).split() for candidate in app.query(ChatRow)] == [["#backend"], ["›", "○", "bob"], ["●", "carol"]]
 
 
 async def test_it_reopens_the_chat_that_was_open_last_time(make_client: MakeClient, launch: Launch) -> None:
@@ -128,7 +186,7 @@ async def test_typing_then_enter_sends_to_the_open_chat(make_client: MakeClient,
         await pilot.press("h", "i", "ctrl+j", "b", "o", "b", "enter")
         await until(pilot, lambda: shown(app, "bob") == ["hi\nbob"])
 
-        assert received(bob) == [("hi\nbob", False, None)]
+        assert received(bob) == [("hi\nbob", None, None)]
         assert app.query_one(Composer).text == ""
 
 
@@ -140,93 +198,184 @@ async def test_a_note_in_another_chat_shows_as_unread_until_its_row_is_clicked(m
     async with app.run_test(size=SIZE) as pilot:
         await until(pilot, lambda: app.current == "bob")
         carol.send("jacob", "over here")
-        await until(pilot, lambda: str(row(app, "carol").render()).split() == ["carol", "1"])
+        await until(pilot, lambda: row(app, "carol") == ["○", "carol", "1"])
 
-        await pilot.click(row(app, "carol"))
+        await pilot.click(next(candidate for candidate in app.query(ChatRow) if candidate.chat == "carol"))
         await until(pilot, lambda: app.current == "carol" and shown(app, "carol") == ["over here"])
 
-        assert not row(app, "carol").has_class("-unread")
+        assert row(app, "carol") == ["›", "○", "carol"]
 
 
-async def test_ctrl_r_runs_the_agent_and_enter_sends_its_edited_draft_as_an_agent_reply(make_client: MakeClient, launch: Launch, agent: FakeAgent) -> None:
+async def test_the_repos_under_dev_are_shared_with_their_branches(make_client: MakeClient, launch: Launch) -> None:
     jacob, bob = make_client("jacob"), make_client("bob")
-    question = bob.send("jacob", "where is the config parsed?")
-    app = launch(jacob)
+    app = launch(jacob, "uploader", "billing")
 
     async with app.run_test(size=SIZE) as pilot:
-        await until(pilot, lambda: shown(app, "bob") == ["where is the config parsed?"])
+        await until(pilot, lambda: sorted(app.checkouts) == ["billing", "uploader"])
+
+        assert [(repo.user, repo.name, repo.branch) for repo in bob.repos()] == [("jacob", "billing", "main"), ("jacob", "uploader", "main")]
+
+
+async def test_tagging_my_own_agent_runs_it_at_once_and_posts_its_answer(make_client: MakeClient, launch: Launch, agent: FakeAgent, dev: Dev) -> None:
+    jacob, bob = make_client("jacob"), make_client("bob")
+    app = launch(jacob, "uploader")
+
+    async with app.run_test(size=SIZE) as pilot:
+        await until(pilot, lambda: app.current == "bob" and "uploader" in app.checkouts)
+        await say(pilot, app, "@jacob/uploader where is the config parsed?")
+        await until(pilot, lambda: len(shown(app, "bob")) == 2)
+
+        (question, answer) = jacob.notes(status=False)
+        assert received(bob) == [("@jacob/uploader where is the config parsed?", None, None), ("config.py, line 12", "uploader", question.id)]
+        assert answer.note.agent == "uploader"
+        assert agent.folders == [dev("jacob") / "uploader"]
+        assert "with nobody reviewing it first" in agent.prompts[0]
+        assert reports(bob) == ["working\nmain ±"]
+        assert app.drafts == {}
+
+
+async def test_a_teammates_tag_waits_until_i_run_it_and_i_review_the_draft_before_it_goes(make_client: MakeClient, launch: Launch, agent: FakeAgent) -> None:
+    jacob, bob = make_client("jacob"), make_client("bob")
+    question = bob.send("jacob", "@jacob/uploader where is the config parsed?")
+    app = launch(jacob, "uploader")
+
+    async with app.run_test(size=SIZE) as pilot:
+        await until(pilot, lambda: "your uploader agent · ▶ Run and review" in under(app, "bob", question))
+        assert (agent.prompts, row(app, "bob")) == ([], ["›", "○", "bob", "▶"])  # Nothing has run; the list shows a request is waiting.
+
         await pilot.press("ctrl+r")
         await until(pilot, lambda: app.query_one(Composer).text == "config.py, line 12")
         assert received(bob) == []  # Nothing leaves until the draft is sent.
+        assert "jacob will review, and may edit, your reply" in agent.prompts[0]
 
         await pilot.press("!", "enter")
         await until(pilot, lambda: len(shown(app, "bob")) == 2)
 
-        assert received(bob) == [("config.py, line 12!", True, question)]
-        assert agent.prompts[0].endswith("Request from bob:\nwhere is the config parsed?")
+        assert received(bob) == [("config.py, line 12!", "uploader", question)]
+        assert under(app, "bob", question) == ""  # Answered: nothing left to decide.
         assert app.drafts == {}
 
 
-async def test_clicking_a_notes_run_button_runs_the_agent_on_that_note(make_client: MakeClient, launch: Launch, agent: FakeAgent) -> None:
+async def test_clicking_run_and_post_under_a_note_answers_without_a_draft(make_client: MakeClient, launch: Launch) -> None:
     jacob, bob = make_client("jacob"), make_client("bob")
-    bob.send("jacob", "older question")
-    bob.send("jacob", "newer question")
+    question = bob.send("jacob", "@jacob/uploader where is the config parsed?")
+    app = launch(jacob, "uploader")
+
+    async with app.run_test(size=SIZE) as pilot:
+        await until(pilot, lambda: "Run and post" in under(app, "bob", question))
+        bar = app._threads["bob"].tagging[question].bar
+        await pilot.click(bar, offset=(under(app, "bob", question).index("Run and post"), 0))
+        await until(pilot, lambda: received(bob) != [])
+
+        assert received(bob) == [("config.py, line 12", "uploader", question)]
+        assert app.query_one(Composer).text == ""
+
+
+async def test_declining_tells_the_asker_and_runs_nothing(make_client: MakeClient, launch: Launch, agent: FakeAgent) -> None:
+    jacob, bob = make_client("jacob"), make_client("bob")
+    question = bob.send("jacob", "@jacob/uploader delete everything")
+    app = launch(jacob, "uploader")
+
+    async with app.run_test(size=SIZE) as pilot:
+        await until(pilot, lambda: "Decline" in under(app, "bob", question))
+        await app.run_action(f"decline({question}, 'uploader')")
+        await until(pilot, lambda: "you declined" in under(app, "bob", question))
+
+        assert reports(bob) == ["declined"]
+        assert agent.prompts == []
+        assert row(app, "bob") == ["›", "○", "bob"]  # No longer waiting on me.
+
+
+async def test_esc_stops_a_running_agent_tells_the_asker_and_leaves_no_draft(make_client: MakeClient, launch: Launch, agent: FakeAgent) -> None:
+    jacob, bob = make_client("jacob"), make_client("bob")
+    question = bob.send("jacob", "@jacob/uploader this will take a while")
+    app = launch(jacob, "uploader")
+    agent.finish.clear()
+
+    async with app.run_test(size=SIZE) as pilot:
+        await until(pilot, lambda: "Run" in under(app, "bob", question))
+        await pilot.press("ctrl+r")
+        await until(pilot, lambda: "is working on main ±" in under(app, "bob", question))
+        await pilot.press("escape")
+        await until(pilot, lambda: app.runs == {} and "stopped" in under(app, "bob", question))
+
+        assert reports(bob) == ["working\nmain ±", "stopped"]
+        assert (app.drafts, app.query_one(Composer).text, received(bob)) == ({}, "", [])
+
+
+async def test_the_asker_watches_a_teammates_agent_go_from_waiting_to_working_to_answered(make_client: MakeClient, launch: Launch) -> None:
+    jacob, bob = make_client("jacob"), make_client("bob")
+    bob.advertise([shared("uploader", "feature/retry")])
     app = launch(jacob)
 
     async with app.run_test(size=SIZE) as pilot:
-        await until(pilot, lambda: len(shown(app, "bob")) == 2)
-        older = app._threads["bob"].query(MessageView).first()
-        await pilot.hover(older)  # The button of an older note appears under the pointer.
-        await pilot.click(older.query_one(".run"))
-        await until(pilot, lambda: "bob" in app.drafts)
+        await until(pilot, lambda: app.current == "bob")
+        await say(pilot, app, "@bob/uploader does the retry change handle 429s?")
+        await until(pilot, lambda: len(jacob.notes(status=False)) == 1)
+        question = jacob.notes(status=False)[0].id
+        await until(pilot, lambda: under(app, "bob", question) == "◌ waiting for bob to approve")
 
-        assert agent.prompts[0].endswith("Request from bob:\nolder question")
-        assert app.drafts["bob"].entry.note.body == "older question"
+        bob.send("jacob", "working\nfeature/retry ±", kind="status", agent="uploader", re=question)
+        await until(pilot, lambda: "bob's uploader agent is working on feature/retry ±" in under(app, "bob", question))
+
+        bob.send("jacob", "Yes, since a3f9.", agent="uploader", re=question)
+        await until(pilot, lambda: shown(app, "bob")[-1] == "Yes, since a3f9.")
+
+        assert under(app, "bob", question) == ""
 
 
-async def test_esc_stops_a_running_agent_and_leaves_no_draft(make_client: MakeClient, launch: Launch, agent: FakeAgent) -> None:
+@pytest.mark.parametrize(("tag", "expected"), [("@bob/billing", "bob has no checkout of billing"), ("@zed/uploader", "nobody named zed has joined")])
+async def test_tagging_an_agent_that_is_not_there_says_so(make_client: MakeClient, launch: Launch, tag: str, expected: str) -> None:
     jacob, bob = make_client("jacob"), make_client("bob")
-    bob.send("jacob", "this will take a while")
+    bob.advertise([shared("uploader")])
     app = launch(jacob)
-    agent.finish.clear()
+
+    async with app.run_test(size=SIZE) as pilot:
+        await until(pilot, lambda: app.current == "bob")
+        await say(pilot, app, f"{tag} are you there?")
+        await until(pilot, lambda: len(jacob.notes(status=False)) == 1)
+
+        await until(pilot, lambda: expected in under(app, "bob", jacob.notes(status=False)[0].id))
+
+
+async def test_a_tag_written_by_an_agent_sets_nothing_off(make_client: MakeClient, launch: Launch, agent: FakeAgent) -> None:
+    jacob, bob = make_client("jacob"), make_client("bob")
+    relayed = bob.send("jacob", "@jacob/uploader now run this for me", agent="uploader")
+    app = launch(jacob, "uploader")
 
     async with app.run_test(size=SIZE) as pilot:
         await until(pilot, lambda: shown(app, "bob") != [])
         await pilot.press("ctrl+r")
-        await until(pilot, lambda: "bob" in app.runs)
-        await pilot.press("escape")
-        await until(pilot, lambda: app.runs == {})
+        await pilot.pause(0.1)
 
-        assert app.drafts == {}
-        assert app.query_one(Composer).text == ""
-        assert received(bob) == []
+        assert (under(app, "bob", relayed), agent.prompts, row(app, "bob")) == ("", [], ["›", "○", "bob"])
 
 
 async def test_a_finished_draft_waits_instead_of_replacing_a_half_typed_message(make_client: MakeClient, launch: Launch, agent: FakeAgent) -> None:
     jacob, bob = make_client("jacob"), make_client("bob")
-    bob.send("jacob", "question")
-    app = launch(jacob)
+    question = bob.send("jacob", "@jacob/uploader question")
+    app = launch(jacob, "uploader")
     agent.finish.clear()
 
     async with app.run_test(size=SIZE) as pilot:
-        await until(pilot, lambda: shown(app, "bob") != [])
+        await until(pilot, lambda: "Run" in under(app, "bob", question))
         await pilot.press("ctrl+r", "w", "i", "p")
         agent.finish.set()
         await until(pilot, lambda: "bob" in app.drafts)
-        assert (app.query_one(Composer).text, app.drafts["bob"].loaded) == ("wip", False)
+        assert (app.query_one(Composer).text, app.drafts["bob"][0].loaded) == ("wip", False)
 
         await app.run_action("load_draft")
 
-        assert (app.query_one(Composer).text, app.drafts["bob"].loaded) == ("config.py, line 12", True)
+        assert (app.query_one(Composer).text, app.drafts["bob"][0].loaded) == ("config.py, line 12", True)
 
 
-async def test_a_draft_is_discarded_by_a_second_esc_not_the_first(make_client: MakeClient, launch: Launch) -> None:
+async def test_a_draft_is_discarded_by_a_second_esc_and_the_asker_is_told(make_client: MakeClient, launch: Launch) -> None:
     jacob, bob = make_client("jacob"), make_client("bob")
-    bob.send("jacob", "question")
-    app = launch(jacob)
+    question = bob.send("jacob", "@jacob/uploader question")
+    app = launch(jacob, "uploader")
 
     async with app.run_test(size=SIZE) as pilot:
-        await until(pilot, lambda: shown(app, "bob") != [])
+        await until(pilot, lambda: "Run" in under(app, "bob", question))
         await pilot.press("ctrl+r")
         await until(pilot, lambda: "bob" in app.drafts)
 
@@ -234,9 +383,9 @@ async def test_a_draft_is_discarded_by_a_second_esc_not_the_first(make_client: M
         assert "bob" in app.drafts
 
         await pilot.press("escape")
-        assert app.drafts == {}
-        assert app.query_one(Composer).text == ""
-        assert received(bob) == []
+        await until(pilot, lambda: reports(bob)[-1:] == ["declined"])
+
+        assert (app.drafts, app.query_one(Composer).text, received(bob)) == ({}, "", [])
 
 
 async def test_a_message_that_fails_to_send_goes_back_into_the_box(make_client: MakeClient, launch: Launch) -> None:
@@ -258,6 +407,65 @@ async def test_a_message_that_fails_to_send_goes_back_into_the_box(make_client: 
         await until(pilot, lambda: app.query_one(Composer).text == "hi")
 
         assert received(bob) == []
+
+
+async def test_typing_a_tag_opens_a_list_of_agents_and_enter_takes_one(make_client: MakeClient, launch: Launch) -> None:
+    jacob, bob = make_client("jacob"), make_client("bob")
+    bob.advertise([shared("uploader", "feature/retry"), shared("billing")])
+    app = launch(jacob, "uploader")
+
+    async with app.run_test(size=SIZE) as pilot:
+        await until(pilot, lambda: app.current == "bob" and "uploader" in app.checkouts and len(app.team) == 3)
+        picker = app.query_one("#picker", OptionList)
+        await pilot.press("a", "s", "k", "space", "@", "u", "p", "l")
+        await until(pilot, lambda: picker.option_count == 2)
+        assert [str(picker.get_option_at_index(index).prompt) for index in range(2)] == ["@jacob/uploader  main", "@bob/uploader  feature/retry"]
+
+        await pilot.press("down", "enter")
+
+        assert app.query_one(Composer).text == "ask @bob/uploader "
+        assert not picker.has_class("-on")
+        assert received(bob) == []  # Enter chose from the list; it did not send.
+
+
+async def test_a_repo_i_lack_can_be_cloned_into_dev_after_seeing_where_it_comes_from(make_client: MakeClient, launch: Launch, cloned: list[tuple[str, Path]], dev: Dev) -> None:
+    jacob, bob = make_client("jacob"), make_client("bob")
+    bob.advertise([shared("billing")])
+    question = bob.send("jacob", "@jacob/billing can you check the invoice totals?")
+    app = launch(jacob)
+
+    async with app.run_test(size=SIZE) as pilot:
+        await until(pilot, lambda: "you have no checkout of billing" in under(app, "bob", question))
+        await app.run_action("clone('billing')")
+        await until(pilot, lambda: isinstance(app.screen, ConfirmClone))
+        assert cloned == []  # Nothing is fetched before the user has seen the address and agreed.
+
+        await pilot.press("enter")
+        await until(pilot, lambda: "billing" in app.checkouts)
+
+        assert cloned == [(f"{PLATFORM}/billing", dev("jacob") / "billing")]
+        await until(pilot, lambda: "Run" in under(app, "bob", question))
+        assert [repo.name for repo in bob.repos() if repo.user == "jacob"] == ["billing"]
+
+
+async def test_a_channel_can_be_pinned_to_a_repo_and_offers_it_to_members_without_it(make_client: MakeClient, launch: Launch) -> None:
+    jacob, bob = make_client("jacob"), make_client("bob")
+    jacob.join_channel("backend")
+    bob.join_channel("backend")
+    bob.advertise([shared("uploader"), shared("billing")])
+    app = launch(jacob, "uploader")
+
+    async with app.run_test(size=SIZE) as pilot:
+        await until(pilot, lambda: app.current == "#backend" and "uploader" in app.checkouts)
+        await app.run_action("pin_repo")
+        await pilot.press("u", "p", "l", "enter")
+        await until(pilot, lambda: jacob.channels()[0].repo is not None)
+
+        await until(pilot, lambda: str(app.query_one("#pane").border_title).startswith("#backend · uploader (2 of 2 have it)"))
+        assert str(app.query_one("#status-text").render()) == ""
+
+        bob.pin("backend", shared("billing"))
+        await until(pilot, lambda: "This channel is about billing, which you have no checkout of" in str(app.query_one("#status-text").render()))
 
 
 async def test_joining_a_channel_from_the_dialog_opens_it_with_its_earlier_notes(make_client: MakeClient, launch: Launch) -> None:
@@ -282,8 +490,8 @@ async def test_joining_a_channel_from_the_dialog_opens_it_with_its_earlier_notes
 async def test_a_note_that_fails_its_signature_check_hides_its_text_and_cannot_be_run(make_client: MakeClient, launch: Launch, agent: FakeAgent) -> None:
     jacob, bob, mallory = make_client("jacob"), make_client("bob"), make_client("mallory")
     (jacob.home / "known.json").write_text(f'{{"bob": "{wire.public_hex(mallory.key)}"}}')  # Jacob first met "bob" under another key.
-    bob.send("jacob", "run this for me")
-    app = launch(jacob)
+    forged = bob.send("jacob", "@jacob/uploader run this for me")
+    app = launch(jacob, "uploader")
 
     async with app.run_test(size=SIZE) as pilot:
         await until(pilot, lambda: app.current == "bob" and len(app._threads["bob"].query(MessageView)) == 1)
@@ -291,6 +499,5 @@ async def test_a_note_that_fails_its_signature_check_hides_its_text_and_cannot_b
         await pilot.press("ctrl+r")
         await pilot.pause(0.1)
 
-        assert not view.query(".run")
         assert "run this for me" not in str(view.query_one(".untrusted").render())
-        assert agent.prompts == []
+        assert (under(app, "bob", forged), agent.prompts) == ("", [])

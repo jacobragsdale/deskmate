@@ -1,3 +1,4 @@
+import sqlite3
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -9,9 +10,14 @@ from httpx2 import Response
 
 from deskmate import wire
 from deskmate.client import Client, DeskmateError, Transport, join
-from deskmate.wire import MAX_SKEW, ChannelInfo, Note
+from deskmate.hub import HubSettings, create_app
+from deskmate.wire import MAX_SKEW, ChannelInfo, Note, Repo, RepoRef, TeamRepo
 
 type MakeClient = Callable[[str], Client]
+
+UPLOADER = Repo(name="uploader", key="dev.azure.com/acme/platform/uploader", url="https://dev.azure.com/acme/Platform/_git/uploader", branch="main")
+BILLING = Repo(name="billing", key="dev.azure.com/acme/billing/billing", url="https://dev.azure.com/acme/Billing/_git/billing", branch="feature/invoices")
+ELSEWHERE = Repo(name="side-project", key="github.com/jacob/side-project", url="https://github.com/jacob/side-project", branch="main")
 
 
 def post_note(hub: TestClient, note: Note) -> Response:
@@ -148,7 +154,7 @@ def test_channels_list_their_members(make_client: MakeClient) -> None:
     bob.join_channel("backend")
     bob.join_channel("oncall")
 
-    assert alice.channels() == [ChannelInfo(name="#backend", members=("alice", "bob")), ChannelInfo(name="#oncall", members=("bob",))]
+    assert alice.channels() == [ChannelInfo(name="#backend", members=("alice", "bob"), repo=None), ChannelInfo(name="#oncall", members=("bob",), repo=None)]
 
 
 def test_posting_to_a_channel_needs_membership(make_client: MakeClient) -> None:
@@ -186,10 +192,10 @@ def test_a_note_keeps_its_agent_mark_and_what_it_answers(make_client: MakeClient
     alice, bob = make_client("alice"), make_client("bob")
     question = alice.send("bob", "where is the config parsed?")
 
-    bob.send("alice", "config.py, line 12", agent=True, re=question)
+    bob.send("alice", "config.py, line 12", agent="uploader", re=question)
 
     (answer,) = alice.notes(mine=False)
-    assert (answer.note.agent, answer.note.re) == (True, question)
+    assert (answer.note.agent, answer.note.re) == ("uploader", question)
     assert alice.is_trusted(answer.note)
 
 
@@ -197,3 +203,75 @@ def test_a_note_keeps_its_agent_mark_and_what_it_answers(make_client: MakeClient
 def test_a_channel_name_must_be_a_plain_name(make_client: MakeClient, name: str) -> None:
     with pytest.raises(ValueError, match="String should match pattern"):
         make_client("alice").join_channel(name)
+
+
+def test_status_reports_travel_with_notes_and_can_be_left_out(make_client: MakeClient) -> None:
+    alice, bob = make_client("alice"), make_client("bob")
+    question = alice.send("bob", "@bob/uploader where is the config parsed?")
+
+    bob.send("alice", "working\nmain", kind="status", agent="uploader", re=question)
+
+    assert [(delivered.note.kind, delivered.note.body) for delivered in alice.notes(mine=False)] == [("status", "working\nmain")]
+    assert alice.notes(mine=False, status=False) == []
+
+
+def test_the_hub_says_which_repos_it_shares(make_client: MakeClient) -> None:
+    assert make_client("alice").info().repos == "dev.azure.com/acme"
+
+
+def test_everyone_sees_which_repos_each_person_has_and_a_new_list_replaces_the_old(make_client: MakeClient) -> None:
+    alice, bob = make_client("alice"), make_client("bob")
+    alice.advertise([UPLOADER, BILLING])
+    bob.advertise([UPLOADER])
+
+    alice.advertise([BILLING])
+
+    assert bob.repos() == [TeamRepo(user="alice", **BILLING.model_dump()), TeamRepo(user="bob", **UPLOADER.model_dump())]
+
+
+@pytest.mark.parametrize(("repos", "problem"), [([UPLOADER, ELSEWHERE], "does not share it"), ([UPLOADER, UPLOADER], "share a name")])
+def test_a_list_with_a_repo_from_elsewhere_or_a_repeated_name_is_refused_whole(make_client: MakeClient, repos: list[Repo], problem: str) -> None:
+    alice = make_client("alice")
+
+    with pytest.raises(DeskmateError, match=problem):
+        alice.advertise(repos)
+
+    assert alice.repos() == []
+
+
+def test_a_persons_last_signed_request_shows_when_they_were_last_here(make_client: MakeClient) -> None:
+    alice, _bob = make_client("alice"), make_client("bob")
+
+    seen = {person.name: person.seen for person in alice.users()}
+
+    assert seen == {"alice": int(alice.now()), "bob": 0}  # Bob has joined but never asked for anything.
+
+
+def test_a_member_can_pin_and_unpin_the_repo_a_channel_is_about(make_client: MakeClient) -> None:
+    alice, bob = make_client("alice"), make_client("bob")
+    alice.join_channel("backend")
+
+    pinned = alice.pin("#backend", UPLOADER)
+
+    assert pinned.repo == RepoRef(name="uploader", key=UPLOADER.key, url=UPLOADER.url)
+    assert bob.channels()[0].repo == pinned.repo
+    assert alice.unpin("backend").repo is None
+
+
+@pytest.mark.parametrize(("who", "repo", "problem"), [("bob", UPLOADER, "join #backend first"), ("alice", ELSEWHERE, "does not share it")])
+def test_pinning_needs_membership_and_a_repo_the_hub_shares(make_client: MakeClient, who: str, repo: Repo, problem: str) -> None:
+    clients = {"alice": make_client("alice"), "bob": make_client("bob")}
+    clients["alice"].join_channel("backend")
+
+    with pytest.raises(DeskmateError, match=problem):
+        clients[who].pin("backend", repo)
+
+
+def test_the_hub_refuses_to_start_on_a_database_from_another_version(tmp_path: Path) -> None:
+    old = tmp_path / "old.db"
+    with sqlite3.connect(old) as conn:
+        conn.execute("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT)")
+    app = create_app(HubSettings(join_token="a-join-token-for-tests", db=old, repos="https://dev.azure.com/acme/"))
+
+    with pytest.raises(RuntimeError, match="another version of deskmate"), TestClient(app):
+        pass

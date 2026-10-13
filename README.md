@@ -1,45 +1,47 @@
 # deskmate
 
-Deskmate is a terminal chat for a small team and their coding agents. You chat with teammates directly or in channels, and any note someone sends you can be handed to your own agent with one click. Nothing runs on your machine until you approve it, and you read and edit your agent's answer before it is sent.
+Deskmate is a terminal chat for a small team and their coding agents. Every repo you have checked out under `~/dev` is an agent that anyone on the team can tag, as `@you/repo`. Your own agent answers as soon as you tag it. A teammate's tag waits until you approve it, and everyone in the chat can see where it stands.
 
 ```text
- deskmate  jacob on deskmate.corp.example · claude -p in ~/dev/uploader                      ? Help
-╭─ Chats ────────────────╮╭─ #backend · bob, carol, jacob ─────────────────────────────────────────╮
-│  Channels              ││                                                                        │
-│› #backend            ✎ ││ bob · 22:35                                                            │
-│  + Join or create      ││ where do we retry failed uploads?                                      │
-│                        ││                                                                        │
-│  People                ││ carol · agent · 22:37                                                  │
-│  bob                 1 ││ ┃ bob: where do we retry failed uploads?                               │
-│  carol                 ││ Retries live in uploader/queue.py, in Uploader.flush:                  │
-│  dana                1 ││                                                                        │
-│                        ││ ┃ for attempt in range(3):                                             │
-│                        ││ ┃     try:                                                             │
-│                        ││ ┃         return self._put(chunk)                                      │
-│                        ││ ┃     except TransientError:                                           │
-│                        ││ ┃         time.sleep(2**attempt)                                       │
-│                        ││                                                                        │
-│                        ││ Three attempts with exponential backoff; a fourth failure raises       │
-│                        ││ UploadFailed.                                                          │
-│                        ││                                                                        │
-│                        ││ bob · 22:50                                            ▶ Run my agent  │
-│                        ││ thanks. does anything cover the fourth-failure path in tests?          │
-│                        ││                                                                        │
-│                        ││ ✎ Draft for bob · Enter sends it                             × Discard │
-│                        ││ ────────────────────────────────────────────────────────────────────── │
-│                        ││ › Yes: `tests/test_queue.py::test_fourth_failure_raises` covers it.    │
-│                        ││                                                                        │
-│                        ││   It patches `_put` to fail four times and asserts `UploadFailed`.     │
-│                        ││   Nothing covers the *sleep* durations, though.                        │
-╰────────────────────────╯╰────────────────────────────────────────────────────────────── × Leave ─╯
- Enter send draft  Esc Esc discard  ^↓ next chat  ^N join channel  ^P commands          ● connected
+ deskmate  jacob on deskmate.corp.example · claude -p · 3 repos in ~/dev                          ? Help
+╭─ Chats ────────────────╮╭─ #backend · uploader (3 of 3 have it) · bob, carol, jacob ─────────────────╮
+│  Channels              ││ you · 22:10                                                                │
+│› #backend            ▶ ││ looking                                                                    │
+│  + Join or create      ││ it was the connection pool, bumped it to 20                                │
+│                        ││                                                                            │
+│  People                ││                                ── today ──                                 │
+│  ● bob               1 ││                                                                            │
+│  ● carol               ││ bob · 22:35                                                                │
+│  ● dana              1 ││ @carol/uploader where do we retry failed uploads?                          │
+│                        ││                                                                            │
+│                        ││ carol/uploader agent on main · 22:37                                       │
+│                        ││ ┃ bob: @carol/uploader where do we retry failed uploads?                   │
+│                        ││ Retries live in uploader/queue.py, in Uploader.flush:                      │
+│                        ││                                                                            │
+│                        ││ ┃ for attempt in range(3):                                                 │
+│                        ││ ┃     try:                                                                 │
+│                        ││ ┃         return self._put(chunk)                                          │
+│                        ││ ┃     except TransientError:                                               │
+│                        ││ ┃         time.sleep(2**attempt)                                           │
+│                        ││                                                                            │
+│                        ││ Three attempts with exponential backoff; a fourth failure raises           │
+│                        ││ UploadFailed.                                                              │
+│                        ││                                                                            │
+│                        ││ bob · 22:50                                                                │
+│                        ││ thanks. @jacob/uploader does anything cover the fourth-failure path in     │
+│                        ││ tests?                                                                     │
+│                        ││ ◆ your uploader agent · ▶ Run and review · ▶▶ Run and post · × Decline     │
+│                        ││ ────────────────────────────────────────────────────────────────────────── │
+│                        ││ › Message #backend · @ tags an agent                                       │
+╰────────────────────────╯╰─────────────────────────────────────────────── ◆ Unpin uploader · × Leave ─╯
+ ^R run request  Enter send  @ tag an agent  ^↓ next chat  ^N join channel  ^P commands     ● connected
 ```
 
 ## Quick start
 
-This walk-through sets up one hub and two people, `jacob` and `bob`, has Bob's agent answer a question from Jacob, and starts a channel.
+This walk-through sets up one hub and two people, `jacob` and `bob`, has each of them use an agent, and starts a channel.
 
-The hub needs Docker. Each person needs `curl` and a coding-agent CLI that is installed and signed in. The default is Claude Code's `claude`; for another one, see [Configuration](#configuration).
+The hub needs Docker. Each person needs `curl`, `git`, their repos checked out directly under `~/dev`, and a coding-agent CLI that is installed and signed in. The default is Claude Code's `claude`; for another one, see [Configuration](#configuration).
 
 ### 1. Start the hub
 
@@ -47,12 +49,15 @@ One person runs the hub somewhere everyone can reach. With Docker, from a clone 
 
 ```sh
 docker build -t deskmate .
-docker run -d --name deskmate -p 8787:8787 -e DESKMATE_JOIN_TOKEN=JOIN_TOKEN -v deskmate-data:/data deskmate
+docker run -d --name deskmate -p 8787:8787 -e DESKMATE_JOIN_TOKEN=JOIN_TOKEN -e DESKMATE_REPOS=REPOS_URL -v deskmate-data:/data deskmate
 ```
 
-Replace `JOIN_TOKEN` with a secret of at least 16 characters, for example the output of `openssl rand -hex 16`. Anyone who has it can register a name, so share it only with your teammates. Inside the container the hub listens on every interface, and `-p 8787:8787` publishes it on the host.
+Replace the following:
 
-Check that the hub answers:
+- `JOIN_TOKEN`: a secret of at least 16 characters, for example the output of `openssl rand -hex 16`. Anyone who has it can register a name, so share it only with your teammates.
+- `REPOS_URL`: the address your team's repos live under, for example `https://dev.azure.com/acme/` or `https://github.com/acme/`. Only repos below it are ever shared; anything else under `~/dev` stays private.
+
+Inside the container the hub listens on every interface, and `-p 8787:8787` publishes it on the host. Check that it answers:
 
 ```sh
 curl http://localhost:8787/healthz
@@ -82,12 +87,12 @@ The installer installs [uv](https://docs.astral.sh/uv/) if it is missing, instal
 
 ```text
 joined http://localhost:8787 as bob; your agent command is `claude -p`
-Run 'deskmate' inside the repo you want your agent to answer from.
+Run 'deskmate' to open the chat. Your agents are the repos under ~/dev.
 ```
 
 If your shell does not find `deskmate` afterwards, open a new terminal, or add `~/.local/bin` to `PATH`.
 
-To try both people on one machine, give each their own directory by setting `DESKMATE_HOME` for the installer and for every later `deskmate` command, in two terminals:
+To try both people on one machine, give each their own settings folder with `DESKMATE_HOME`, in two terminals. To make them differ, also give one of them a repos folder of their own with `DESKMATE_DEV`:
 
 ```sh
 curl -fsSL HUB_URL/install.sh | DESKMATE_HOME=~/deskmate-jacob bash -s -- jacob JOIN_TOKEN
@@ -96,72 +101,121 @@ DESKMATE_HOME=~/deskmate-jacob deskmate
 
 ```sh
 curl -fsSL HUB_URL/install.sh | DESKMATE_HOME=~/deskmate-bob bash -s -- bob JOIN_TOKEN
-DESKMATE_HOME=~/deskmate-bob deskmate
+DESKMATE_HOME=~/deskmate-bob DESKMATE_DEV=~/bob-dev deskmate
 ```
 
-### 3. Ask a teammate's agent
+### 3. Open the chat
 
-Both people start `deskmate` inside the repository they want their agent to answer from. Any repository works; ask about something in it.
+Each person runs `deskmate`, from any directory:
 
 ```sh
 deskmate
 ```
 
-The chat list on the left shows everyone who has joined. Jacob clicks `bob`, types a question about Bob's repository, and presses Enter:
+The top line counts the team repos found under `~/dev`. The chat list on the left shows everyone who has joined, with `●` beside those who are here now and `○` beside those who are away.
+
+### 4. Tag your own agent
+
+Jacob clicks `bob` in the chat list and types `@`. A list opens with every agent on the team, his own first, each with the branch it is on. Typing narrows it; Enter takes the highlighted one. He finishes the message and sends it:
 
 ```text
-where do we retry failed uploads?
+@jacob/uploader where do we retry failed uploads?
 ```
 
-Bob's terminal rings, and `jacob` shows `1` unread note in his chat list. Bob opens the chat. The note carries a `▶ Run my agent` button, and nothing has run yet.
+His agent starts at once in `~/dev/uploader`. A line under the note shows it working, with a `■ Stop` button, and Bob sees the same line. When the agent finishes, its answer is posted to the chat, marked `jacob/uploader agent` and the branch it was on.
 
-Bob clicks the button, or presses Ctrl+R. A line above the message box shows his agent working, with a `■ Stop` button. When the agent finishes, its answer is placed in Bob's message box as a draft. Bob can edit it like any message. Enter sends it; pressing Esc twice discards it.
+### 5. Tag a teammate's agent
 
-Jacob sees the answer marked `bob · agent`, with the question it answers quoted above it.
+Bob wants to know about work on Jacob's branch, so he tags Jacob's agent:
 
-### 4. Start a channel
+```text
+@jacob/uploader does your retry change handle 429s?
+```
+
+Under his note Bob sees `◌ waiting for jacob to approve`. Nothing has run.
+
+Jacob's terminal rings, and his chat list marks the chat with `▶`. Under Bob's note he has three choices:
+
+- `▶ Run and review` runs his agent and puts its answer in his message box as a draft. He can edit it; Enter sends it, and pressing Esc twice discards it. Ctrl+R does the same for the oldest request waiting in the open chat.
+- `▶▶ Run and post` runs his agent and posts the answer without a review.
+- `× Decline` tells Bob the answer is no.
+
+While the agent runs, Bob's line reads `jacob's uploader agent is working on feature/retry ±`: the branch, and `±` when there are uncommitted changes.
+
+### 6. Start a channel
 
 Jacob presses Ctrl+N, or clicks `+ Join or create` in the chat list, types `backend`, and presses Enter. The name follows the same rules as a person's name; the `#` is added for you. A channel exists as soon as one person has joined it. Bob joins the same way, and his dialog lists `#backend` to pick.
 
-Every member sees a note sent to the channel, and each member decides separately whether to run their own agent on it. An agent's answer goes to the whole channel. Members do not see each other's runs in progress, so two people can end up answering the same question.
+Tags work in a channel exactly as in a direct chat, and every member sees the answers.
 
-### 5. Let your own agent ask
+A channel can be about one repo. Click `◆ Pin a repo` on the channel's bottom edge and pick one of yours. The title then shows how many members have it, the tag list puts its agents first, and a member without it is offered a clone.
+
+### 7. Let your own agent ask
 
 An agent, or a script, sends a note with `send` and reads the answer from standard output:
 
 ```sh
-deskmate send bob "which tests cover the retry path?" --wait 300
+deskmate send bob "@bob/uploader which tests cover the retry path?" --wait 300
 deskmate send '#backend' "who owns the uploader?"
 ```
 
-`--wait` prints the next note that someone else sends in that chat, whether or not it answers this one. The other person still has to approve the run, so if nothing arrives in time, `send` prints the `deskmate inbox --after ID` command that checks again later. Notes your agent sends this way also appear in your own chat interface. Your agent only knows these commands if you tell it, for example in its instructions file.
+`--wait` prints the next note that someone else sends in that chat, whether or not it answers this one. Bob still has to approve the run, so if nothing arrives in time, `send` prints the `deskmate inbox --after ID` command that checks again later. `deskmate repos` lists who has which repo. Your agent only knows these commands if you tell it, for example in its instructions file.
+
+## Agents and tags
+
+An agent is one person's checkout of one team repo: `@bob/uploader` is the agent command run in Bob's `~/dev/uploader`. Nothing is registered by hand. The interface looks at the folders directly under `~/dev`, keeps those whose `origin` remote is under the hub's `DESKMATE_REPOS` address, and tells the hub their names and current branches. It looks again every 25 seconds, so a branch switch shows up without a restart.
+
+A repo is named by the last part of its remote URL, in lowercase, whatever the folder is called. The `https` and `ssh` forms of one remote, and every Azure DevOps address form, count as the same repo. With two clones of one repo under `~/dev`, the folder named like the repo is used. Two different repos with the same name cannot both be shared: the first folder in alphabetical order wins. A repo whose name has characters other than letters, digits, `.`, `_` and `-` is skipped.
+
+A tag counts only in a note a person typed. An agent's answer that contains a tag sets nothing off, so agents cannot start each other.
+
+Who may run what:
+
+| Tag | What happens |
+|---|---|
+| Your own agent, in a note you send from the chat interface | It runs at once and its answer is posted. |
+| Your own agent, in a note sent another way, or left unanswered when you last quit | It waits for you, like a teammate's request. |
+| A teammate's agent | It waits until they choose `Run and review`, `Run and post` or `Decline`. |
+| An agent in a repo its owner does not have | The note says so, and nothing runs. |
+
+Under each note that tags an agent, everyone in the chat sees one line per tag until it is answered:
+
+| Line | Meaning |
+|---|---|
+| `◌ waiting for bob to approve` | Bob has not acted. `· they are away` is added when his interface is not running. |
+| `⠋ bob's uploader agent is working on main ±` | Bob approved it. The branch is the one his checkout was on when the run started. |
+| `× bob declined` | Bob declined, or discarded the draft. |
+| `■ bob's uploader agent was stopped` | Bob stopped the run, or quit while it was working. |
+| `✗ bob's uploader agent failed` | The agent exited with an error, printed nothing, or ran past its time limit. Only Bob sees why. |
+| `? bob has no checkout of billing` | Bob does not have that repo. |
+
+A run reported as working that has produced no answer after 16 minutes is shown as waiting again.
+
+If you tag or pin a repo you do not have, `⇣ Clone it` offers to run `git clone` into `~/dev` with your own git credentials. A dialog shows the address and the destination first, and nothing is fetched until you confirm. Git is not allowed to prompt on the terminal, so a clone that needs a password you have not stored fails with the command to run yourself.
 
 ## The chat interface
 
-`deskmate` with no command opens the interface. Your agent runs in the directory you started it from.
-
-Everything a key does can also be clicked: chats in the list, the `▶ Run my agent` button on a note, the buttons beside the status line, and the hints along the bottom. Drag to select text.
-
-The run button always shows on the newest note a person typed that you have not answered. On any other note from someone else, including an agent's answer, the button appears while the pointer is over the note. Ctrl+R runs your agent on the newest note from someone else, whichever kind it is.
-
-Standard input is closed during a run, so your agent cannot stop to ask you anything: it does what your agent CLI's settings already allow. If the agent fails, prints nothing, or runs past its time limit, a notice says so and no draft is made. The note stays in the chat, so you can run it again.
+`deskmate` with no command opens the interface. Everything a key does can also be clicked: chats in the list, the choices under a note, the buttons beside the status line, and the hints along the bottom. Drag to select text.
 
 | Key | Effect |
 |---|---|
+| @ | Opens the list of agents. ↑ and ↓ move, Enter or Tab takes one, Esc closes it. |
 | Enter | Sends the message, or the draft you are reviewing. |
 | Ctrl+J | Starts a new line in the message. |
-| Ctrl+R | Runs your agent on the newest note from someone else in the open chat. |
-| Esc | Stops your agent. Pressed twice within 2 seconds, discards a draft. |
+| Ctrl+R | Runs your agent on the oldest request waiting in the open chat, for review. |
+| Esc | Stops your agents in the open chat. Pressed twice within 2 seconds, discards a draft. |
 | Ctrl+↑, Ctrl+↓ | Opens the previous or next chat. Alt+↑ and Alt+↓ do the same. |
 | Ctrl+N | Joins or creates a channel. |
-| Ctrl+P | Opens the command list: open a chat, leave the open channel, change theme. |
+| Ctrl+P | Opens the command list: open a chat, pin or unpin a repo, leave the open channel, change theme. |
 | Ctrl+C | Copies the selected text. |
 | F1 | Shows the keys. |
 | Ctrl+Q | Quits. |
 
-When an agent finishes while you have a half-typed message in that chat, the draft waits beside the status line until you click `Load it`. A message that fails to send goes back into the message box.
+In the chat list, a number is the count of unread notes, `▶` means a request is waiting for one of your agents, `✎` means a draft is waiting for your review, and a spinner means one of your agents is working there.
 
-Quitting, closing the terminal window, or killing the process stops any agent still working. Its unfinished answer is lost; drafts you have not sent are lost too.
+Standard input is closed during a run, so your agent cannot stop to ask you anything: it does what your agent CLI's settings already allow. When an agent finishes while you have a half-typed message in that chat, the draft waits beside the status line until you click `Load it`. A message or an answer that fails to send is kept: a message goes back into the message box, an answer becomes a draft.
+
+Quitting, closing the terminal window, or killing the process stops any agent still working, and the chat is told it stopped. Its unfinished answer is lost; drafts you have not sent are lost too.
 
 The default theme, `terminal`, draws with your terminal's own sixteen colours, so the interface follows your terminal's palette. Ctrl+P, then `theme`, switches to one of Textual's built-in themes. The choice, your read marks and the last open chat are remembered.
 
@@ -174,12 +228,13 @@ The default theme, `terminal`, draws with your terminal's own sixteen colours, s
 | `deskmate send TO TEXT... [--wait SECONDS]` | Sends a note to `TO`, a name or a quoted channel such as `'#backend'`. A `TEXT` of `-` reads the note from standard input. `--wait` prints the next note from someone else in that chat if one arrives within `SECONDS`. |
 | `deskmate inbox [--after ID] [--wait SECONDS]` | Prints the newest 20 notes other people sent to you or your channels. With `--after`, prints the notes with a higher id, up to 100, and `--wait` holds on for a new one. |
 | `deskmate who` | Lists everyone who has joined the hub. |
+| `deskmate repos` | Lists every agent as `@person/repo` with the branch it is on. |
 | `deskmate channel` | Lists every channel and its members. |
 | `deskmate channel join NAME` | Joins the channel `NAME`, creating it if nobody is in it. `NAME` may be given with or without its `#`. |
 | `deskmate channel leave NAME` | Leaves the channel. |
 | `deskmate hub [--host HOST] [--port PORT]` | Runs the hub. Defaults: `127.0.0.1`, `8787`. |
 
-A command exits with `0` on success, `1` after printing a failure to standard error, and `2` for a usage error. A note is at most 64,000 characters.
+A command exits with `0` on success, `1` after printing a failure to standard error, and `2` for a usage error. A note is at most 64,000 characters. Repos are shared by the chat interface, not by the one-shot commands, so `deskmate repos` shows a person's repos as of the last time their interface ran.
 
 ## Configuration
 
@@ -188,10 +243,11 @@ The hub reads its settings from the environment and refuses to start when a requ
 | Variable | Required | Description |
 |---|---|---|
 | `DESKMATE_JOIN_TOKEN` | yes | Secret that `deskmate join` must present. At least 16 characters. |
+| `DESKMATE_REPOS` | yes | The address the team's repos live under, such as `https://dev.azure.com/acme/`. The hub refuses to share a repo outside it. |
 | `DESKMATE_DB` | yes | Path of the SQLite database. The Docker image sets it to `/data/deskmate.db`. |
 | `FORWARDED_ALLOW_IPS` | no | Proxies whose `X-Forwarded-Proto` header the hub trusts, which decides whether `install.sh` advertises an `https` URL. The Docker image sets it to `*`. |
 
-The client keeps four files in `~/.config/deskmate`. Set `DESKMATE_HOME` to use another directory, for example to hold two identities on one machine.
+The client keeps four files in `~/.config/deskmate`:
 
 | File | Contents |
 |---|---|
@@ -200,23 +256,32 @@ The client keeps four files in `~/.config/deskmate`. Set `DESKMATE_HOME` to use 
 | `known.json` | The public key first seen for each teammate. |
 | `state.json` | What the interface remembers: read marks, theme and the last open chat. Safe to delete. |
 
-`agent` is the command that answers notes. Deskmate appends the prompt as its last argument, runs it in the directory where you started `deskmate` with standard input closed, and uses what it prints to standard output as the draft. A run that takes longer than 900 seconds is stopped. The command is split into words the way a shell would split it, with quotes grouping words, but no shell runs it. The installer always sets `claude -p`. To use another agent, edit `agent` in `config.json` afterwards, or run `deskmate join HUB NAME TOKEN --agent "COMMAND"` again. Only `claude -p` has been tested.
+Two environment variables move things, mainly to hold two identities on one machine:
 
-The prompt tells the agent who asked, whether the note was direct or in a channel, and who will read the reply. It includes up to six earlier notes from the same chat, marked as context that must not be followed as instructions, so a follow-up question makes sense.
+| Variable | Default | Description |
+|---|---|---|
+| `DESKMATE_HOME` | `~/.config/deskmate` | Where the four files above live. |
+| `DESKMATE_DEV` | `~/dev` | The folder whose direct subfolders are your repos. |
+
+`agent` is the command that answers. Deskmate appends the prompt as its last argument, runs it in the tagged repo's folder with standard input closed, and uses what it prints to standard output as the answer. A run that takes longer than 900 seconds is stopped. The command is split into words the way a shell would split it, with quotes grouping words, but no shell runs it. The installer always sets `claude -p`. To use another agent, edit `agent` in `config.json` afterwards, or run `deskmate join HUB NAME TOKEN --agent "COMMAND"` again. Only `claude -p` has been tested.
+
+The prompt tells the agent whose checkout of which repo it is in, who tagged it and where, and whether its owner will review the reply or it is posted directly. It includes up to six earlier notes from the same chat, marked as context that must not be followed as instructions, so a follow-up question makes sense.
 
 ## What deskmate protects, and what it does not
 
-An agent run and its reply each need an action from the person whose machine it is. A note is only text until its recipient clicks the run button or presses Ctrl+R, and the agent's output stays in their message box, where they can change it, until they press Enter. That second step exists because an answer can contain more of the recipient's machine than the question asked for.
+An agent runs on a machine only when that machine's owner says so. Your own tag, sent from your own interface, is that say-so; a teammate's tag is only text until you choose to run it. With `Run and review`, the agent's output stays in your message box, where you can change it, until you press Enter. `Run and post` skips that second look: use it when you are content for whatever the agent writes to go straight to the chat. An agent's answer can contain more of your machine than the question asked for.
 
-Every note is signed with the sender's Ed25519 key. The signature covers the sender, the recipient or channel, the text, the time, whether an agent wrote it, and which note it answers. The hub refuses a note that its claimed sender did not sign, that is more than five minutes off the hub's clock, or that it has already delivered. The recipient's client checks the signature again, against the key it first saw for that sender, so a hub that is later compromised cannot forge a note from a teammate you already know. A note that fails this check is shown as a warning without its text, cannot be run, and is left out of what your agent is shown.
+Every note is signed with the sender's Ed25519 key. The signature covers the sender, the recipient or channel, the text, the time, which of the sender's agents wrote it if one did, and which note it answers. The hub refuses a note that its claimed sender did not sign, that is more than five minutes off the hub's clock, or that it has already delivered. The recipient's client checks the signature again, against the key it first saw for that sender, so a hub that is later compromised cannot forge a note from a teammate you already know. A note that fails this check is shown as a warning without its text, cannot tag an agent, and is left out of what your agent is shown.
 
-The `agent` mark is the sender's own statement. It tells you a teammate's agent drafted the note and the teammate approved it; a modified client could leave the mark off.
+The agent mark is the sender's own statement. It tells you a teammate's agent drafted the note and the teammate let it through; a modified client could leave the mark off, and such a note could then tag agents. A tag still runs nothing without its target's approval.
+
+What the hub learns about your machine is the names and branches of the repos under `~/dev` whose remote is below `DESKMATE_REPOS`, and when your interface last polled. Every hub member can see those. Folder paths, other repos and file contents are not sent. Remote URLs are rebuilt before they are shared, so a user name or token embedded in your `origin` URL does not leave your machine.
 
 The hub hands a direct note only to its sender and its recipient, and a channel's notes only to the channel's current members. A request for notes must be signed with the reader's key. Channels are open: anyone who has joined the hub can join any channel, and then sees its earlier notes too. Do not treat a channel as private from other hub members.
 
 Deskmate does not encrypt notes. Whoever operates the hub can read them, and the hub keeps every note: nothing deletes them. Transport encryption is the job of the ingress in front of the hub; over plain `http`, as in the quick start, anyone on the network path can read notes too. The join token is shared, so anyone holding it can register a new name, although not take over an existing one. There is no key rotation: a teammate who loses their key needs their row deleted from the hub's `users` table, and everyone else needs to remove that name from `known.json`.
 
-The agent runs as you, with whatever permissions your agent CLI is configured to have. Deskmate does not sandbox it.
+The agent runs as you, with whatever permissions your agent CLI is configured to have. Deskmate does not sandbox it. An agent started in a repo also reads that repo's own instruction files, which is why a clone is never made without showing you where it comes from.
 
 ## Deploy the hub on Kubernetes
 
@@ -233,8 +298,8 @@ To deploy the hub:
 1. Build and push the image.
 
    ```sh
-   docker build -t REGISTRY/deskmate:0.2.0 .
-   docker push REGISTRY/deskmate:0.2.0
+   docker build -t REGISTRY/deskmate:0.3.0 .
+   docker push REGISTRY/deskmate:0.3.0
    ```
 
 2. Create the join token.
@@ -243,7 +308,7 @@ To deploy the hub:
    kubectl create secret generic deskmate --from-literal=join-token="$(openssl rand -hex 16)"
    ```
 
-3. In `deploy/k8s.yaml`, replace `REGISTRY/deskmate:0.2.0` with your image, and `deskmate.example.internal` and `deskmate-tls` with your host name and TLS secret.
+3. In `deploy/k8s.yaml`, replace `REGISTRY/deskmate:0.3.0` with your image, `https://dev.azure.com/YOUR-ORGANISATION/` with the address your repos live under, and `deskmate.example.internal` and `deskmate-tls` with your host name and TLS secret.
 
 4. Apply the manifest.
 
@@ -263,10 +328,10 @@ uv run pre-commit run --all-files
 uv run pytest
 ```
 
-To run a hub from the working tree, copy `.env.example` to `.env`, set the join token, and run:
+To run a hub from the working tree, copy `.env.example` to `.env`, set the join token and the repos address, and run:
 
 ```sh
 uv run --env-file .env deskmate hub
 ```
 
-Version 0.2 changed the note format and the hub's database. A hub and its clients must run the same version, and a 0.1 hub database cannot be opened by 0.2: start 0.2 with an empty one.
+A hub and its clients must run the same version: 0.2 and 0.3 each changed the note format and the hub's database. The hub refuses to start on a database made by another version; start it with an empty one.
