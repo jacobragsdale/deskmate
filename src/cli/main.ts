@@ -3,6 +3,7 @@
 import { text } from "node:stream/consumers";
 import { parseArgs } from "node:util";
 
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
 import { chatOf } from "../core/chat.ts";
@@ -19,6 +20,7 @@ import { runDesk } from "../desk/main.ts";
 import { agentOf, ask, glance, readNote, trust } from "../desk/notes.ts";
 import type { Agent, Asked } from "../desk/notes.ts";
 import { runHub, verifyHub } from "../hub/main.ts";
+import { createServer } from "../mcp/server.ts";
 import type { Check } from "../shared/ipc.ts";
 
 const INBOX = 20; // Messages and answers `inbox` prints when it is not told where to start.
@@ -39,6 +41,7 @@ const USAGE = `usage: player-two COMMAND
   hub [--host HOST] [--port PORT]       run the hub; it reads PLAYER_TWO_JOIN_TOKEN, PLAYER_TWO_DB, PLAYER_TWO_REPOS and, if set, PLAYER_TWO_DOWNLOADS
   hub verify                            check that no event in the log in PLAYER_TWO_DB was changed or taken out since it was stored
   desk                                  run your side with no window, for the window to start: it speaks JSON lines on standard input and output
+  mcp                                   run the MCP server, for an agent's editor to start: the chat as tools, over standard input and output
   doctor                                check what Player Two needs on this machine, and say how to fix what is missing
 
 send, inbox, who, repos, channel, search, read, ask, status and doctor take --json, and then print one JSON value and nothing else.
@@ -415,6 +418,14 @@ async function repos(joined: () => Client, args: string[], out: (line: string) =
   show(out, json, team, lines.length === 0 ? "nobody has shared a repo yet; repos under ~/dev are shared once the window has run" : lines.join("\n"));
 }
 
+/** Serve the chat to an agent's editor over MCP until it closes standard input. */
+async function mcp(joined: () => Client, args: string[]): Promise<void> {
+  parseArgs({ args, options: {} });
+  const client = joined();
+  globalThis.console = new console.Console(process.stderr); // Standard output carries the protocol's messages and nothing else, as for the desk.
+  await createServer(client).connect(new StdioServerTransport());
+}
+
 /** The commands that act as the person who joined from here, by name. */
 const AS_USER = new Map<string, (joined: () => Client, args: string[], out: (line: string) => void, options: Options) => Promise<void>>([
   ["send", (joined, args, out, options) => send(joined, args, out, options.stdin)],
@@ -425,7 +436,8 @@ const AS_USER = new Map<string, (joined: () => Client, args: string[], out: (lin
   ["search", search],
   ["read", read],
   ["ask", askAgent],
-  ["status", status]
+  ["status", status],
+  ["mcp", mcp]
 ]);
 
 async function run(argv: readonly string[], options: Options, out: (line: string) => void): Promise<void> {

@@ -41,20 +41,17 @@ export function messagesIn(log: ChatLog, chat: string): Message[] {
 }
 
 /**
- * A chat's events from `seq` to its newest, a page at a time from the newest back.
+ * A chat's events from `seq` to its newest, oldest first, read a page at a time from the newest back.
  * ponytail: reads all of a chat after a note to find what was said about it; a hub route for the events that refer to one would be the upgrade if old notes in busy chats get slow.
  */
-async function chatFrom(client: Client, chat: string, seq: number): Promise<Entry[]> {
+export async function chatFrom(client: Client, chat: string, seq: number): Promise<Entry[]> {
   const found: Delivered[] = [];
   for (;;) {
     const before = found.at(-1)?.seq;
     const page = await client.events(before === undefined ? { chat, limit: PAGE } : { chat, before, limit: PAGE });
     found.push(...page);
     if (page.length < PAGE || (page.at(-1)?.seq ?? 0) <= seq) {
-      return trust(
-        client,
-        found.filter((delivered) => delivered.seq >= seq)
-      );
+      return trust(client, found.filter((delivered) => delivered.seq >= seq).reverse());
     }
   }
 }
