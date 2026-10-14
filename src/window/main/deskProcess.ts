@@ -3,12 +3,17 @@
 import { spawn } from "node:child_process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
+import { readFileSync } from "node:fs";
 import { join as joinPath } from "node:path";
 import { createInterface } from "node:readline";
 
+import { installScript } from "../../core/install.ts";
+import { problemOf } from "../../core/text.ts";
 import { PROTOCOL } from "../../core/wire.ts";
 import { deskLineSchema, readLine } from "../../shared/ipc.ts";
 import type { Arrival, Command, Notice, Outcome, Question, View, WindowLine } from "../../shared/ipc.ts";
+import { home, named, runScript, toLinuxPath, wslExe } from "./wsl.ts";
+import type { Result } from "./wsl.ts";
 
 const RESTARTS = 3; // Times a desk that went away unasked is started again before the window gives up on it.
 const RESTART_DELAY = 1000; // Milliseconds before the first of them; each one after waits twice as long.
@@ -23,8 +28,43 @@ export interface Launch {
 }
 
 /** The desk where the window and the repos are on one machine, which is Linux, macOS, and development inside WSL: the built command beside this file, run by Electron itself as plain Node. */
-export function localLaunch(): Launch {
-  return { command: process.execPath, args: [joinPath(import.meta.dirname, "player-two.js"), "desk"], env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } };
+export function localLaunch(): Promise<Result<Launch>> {
+  return Promise.resolve({ ok: true, value: { command: process.execPath, args: [joinPath(import.meta.dirname, "player-two.js"), "desk"], env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } } });
+}
+
+/** The SHA-256 the app was shipped with for its runtime archive, from the file beside it; "" when that file is missing or holds something else. */
+function shippedDigest(archive: string): string {
+  try {
+    return /^[0-9a-f]{64}(?=\s|$)/.exec(readFileSync(`${archive}.sha256`, "utf8"))?.[0] ?? "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * The desk on Windows, where the repos and the agents are inside WSL: install the runtime the app carries in `resources` into the distribution, then start its launcher through wsl.exe.
+ * The launcher is a login shell's script, so the desk gets the user's own environment and nothing has to be quoted on this side. `distro` null is whichever distribution WSL uses by default.
+ */
+export async function wslLaunch(distro: string | null, resources: string): Promise<Result<Launch>> {
+  const archive = joinPath(resources, "wsl-runtime.tar.gz");
+  const digest = shippedDigest(archive);
+  if (digest === "") {
+    return { ok: false, problem: `this copy of Player Two has no Linux runtime to install: ${archive}.sha256 is missing or damaged. Install Player Two again` };
+  }
+  const linuxHome = await home(distro);
+  if (!linuxHome.ok) {
+    return linuxHome;
+  }
+  const linuxArchive = await toLinuxPath(distro, archive);
+  if (!linuxArchive.ok) {
+    return linuxArchive;
+  }
+  const installed = await runScript(distro, installScript(linuxArchive.value, digest));
+  if (!installed.ok) {
+    return installed;
+  }
+  // WSL_UTF8 is for what wsl.exe itself may say if it cannot start the launcher; what the desk writes passes through as it is.
+  return { ok: true, value: { command: wslExe(), args: [...named(distro), "--exec", `${linuxHome.value}/.player-two/current/bin/player-two-desk`], env: { ...process.env, WSL_UTF8: "1" } } };
 }
 
 /** What the desk says that is not the answer to a command. */
@@ -36,7 +76,7 @@ export interface Handlers {
 }
 
 export class DeskProcess {
-  private readonly launch: Launch;
+  private readonly prepare: () => Promise<Result<Launch>>;
   private readonly handlers: Handlers;
   private readonly restartDelay: number;
   private readonly waiting = new Map<number, (outcome: Outcome) => void>(); // Commands the desk has not answered yet, by id.
@@ -48,32 +88,30 @@ export class DeskProcess {
   private attentive: boolean | null = null; // What the desk was last told, so one started again is told too.
   private tail = "";
 
-  constructor(launch: Launch, handlers: Handlers, restartDelay = RESTART_DELAY) {
-    this.launch = launch;
+  /** `prepare` does whatever the desk needs before it can be started, each time it is, and says how to start it: `localLaunch`, or `wslLaunch` on Windows. */
+  constructor(prepare: () => Promise<Result<Launch>>, handlers: Handlers, restartDelay = RESTART_DELAY) {
+    this.prepare = prepare;
     this.handlers = handlers;
     this.restartDelay = restartDelay;
   }
 
+  /** Get the desk ready and start it. If it cannot be made ready there is nothing to start again, so the window says why at once. */
   public start(): void {
-    const child = spawn(this.launch.command, this.launch.args, { env: this.launch.env, stdio: "pipe", windowsHide: true });
-    this.child = child;
-    this.tail = "";
-    child.stdin.on("error", () => undefined); // A desk that has gone cannot be written to. Its going is what gets handled, in `gone`.
-    child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
-      this.tail = (this.tail + chunk).slice(-TAIL);
-    });
-    child.on("error", (error) => {
-      this.tail += error.message; // It could not be started at all. "close" follows, as it does an exit.
-    });
-    createInterface({ input: child.stdout }).on("line", (text) => {
-      this.accept(text);
-    });
-    child.on("close", (code) => {
-      this.gone(code);
-    });
-    if (this.attentive !== null) {
-      this.attend(this.attentive);
-    }
+    this.prepare().then(
+      (launch) => {
+        if (!this.wanted) {
+          return; // Stopped while it was being made ready.
+        }
+        if (launch.ok) {
+          this.spawn(launch.value);
+        } else {
+          this.handlers.view({ kind: "stopped", problem: launch.problem });
+        }
+      },
+      (error: unknown) => {
+        this.handlers.view({ kind: "stopped", problem: problemOf(error) });
+      }
+    );
   }
 
   /** Have the desk do something. Resolves with its reply, or with a problem when the desk went before it gave one. */
@@ -117,6 +155,33 @@ export class DeskProcess {
     clearTimeout(kill);
   }
 
+  private spawn(launch: Launch): void {
+    const child = spawn(launch.command, launch.args, { env: launch.env, stdio: "pipe", windowsHide: true });
+    this.child = child;
+    this.tail = "";
+    child.stdin.on("error", () => undefined); // A desk that has gone cannot be written to. Its going is what gets handled, in `gone`.
+    child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+      this.keep(chunk);
+    });
+    child.on("error", (error) => {
+      this.keep(error.message); // It could not be started at all. "close" follows, as it does an exit.
+    });
+    createInterface({ input: child.stdout }).on("line", (text) => {
+      this.accept(text);
+    });
+    child.on("close", (code) => {
+      this.gone(code);
+    });
+    if (this.attentive !== null) {
+      this.attend(this.attentive);
+    }
+  }
+
+  /** Keep the end of what the desk says that is not the protocol, to show if it will not stay up. wsl.exe may say it in UTF-16, which read as UTF-8 has a NUL after every character. */
+  private keep(said: string): void {
+    this.tail = (this.tail + said.replaceAll("\0", "")).slice(-TAIL);
+  }
+
   private write(line: WindowLine): void {
     this.child?.stdin.write(`${JSON.stringify(line)}\n`);
   }
@@ -127,6 +192,7 @@ export class DeskProcess {
     }
     const line = readLine(deskLineSchema, text);
     if (line === null) {
+      this.keep(`${text}\n`); // On Windows this may be wsl.exe saying why it could not start the desk.
       this.handlers.notice({ title: "the window ignored a line from the desk it could not read", body: text.slice(0, 200), severity: "error" });
       return;
     }

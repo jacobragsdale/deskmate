@@ -91,7 +91,7 @@ function wsl(args: readonly string[], input: string, timeoutSeconds: number): Pr
 }
 
 /** The arguments that name a distribution. With no name wsl.exe uses the default one. */
-function named(distro: string | null): string[] {
+export function named(distro: string | null): string[] {
   return distro === null ? [] : ["-d", distro];
 }
 

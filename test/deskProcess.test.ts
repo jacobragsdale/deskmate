@@ -1,7 +1,9 @@
-/** The window's hold on its desk: first on the real desk, started as a process and spoken to in lines, then on stand-ins that go away, speak another protocol, or cannot be started. */
+/** The window's hold on its desk: first on the real desk, started as a process and spoken to in lines, then on stand-ins that go away, speak another protocol, or cannot be started, and last through a stand-in wsl.exe, as on Windows. */
 
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -9,9 +11,12 @@ import type { TestContext } from "node:test";
 
 import { build } from "esbuild";
 
-import { DeskProcess } from "../src/window/main/deskProcess.ts";
+import { byCodeUnit } from "../src/core/text.ts";
+import { DeskProcess, wslLaunch } from "../src/window/main/deskProcess.ts";
 import type { Launch } from "../src/window/main/deskProcess.ts";
+import type { Result } from "../src/window/main/wsl.ts";
 import type { Notice, View } from "../src/shared/ipc.ts";
+import { standInWsl } from "./standInWsl.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 const COMMAND = join(ROOT, "src", "cli", "main.ts");
@@ -31,8 +36,8 @@ interface Held {
   readonly starts: () => number; // How many times a stand-in has been started.
 }
 
-/** Start a desk from `launch` and keep what it says. It is stopped when the test ends. */
-function hold(t: TestContext, launch: (dir: string) => Launch): Held {
+/** Start a desk the way `prepare` says and keep what it says. It is stopped when the test ends. */
+function hold(t: TestContext, prepare: (dir: string) => Promise<Result<Launch>>): Held {
   const dir = mkdtempSync(join(tmpdir(), "player-two-desk-process-"));
   const views: View[] = [];
   const notices: Notice[] = [];
@@ -46,7 +51,7 @@ function hold(t: TestContext, launch: (dir: string) => Launch): Held {
     arrival: (): void => undefined,
     ask: (): void => undefined
   };
-  const desk = new DeskProcess(launch(dir), handlers, 5);
+  const desk = new DeskProcess(() => prepare(dir), handlers, 5);
   t.after(async () => {
     await desk.stop();
     rmSync(dir, { recursive: true, force: true });
@@ -55,8 +60,12 @@ function hold(t: TestContext, launch: (dir: string) => Launch): Held {
   return { desk, views, notices, starts: () => readFileSync(join(dir, "starts"), "utf8").length };
 }
 
-function standIn(says: readonly unknown[], stays = "no"): (dir: string) => Launch {
-  return (dir) => ({ command: process.execPath, args: ["-e", STAND_IN], env: { ...process.env, STARTS: join(dir, "starts"), SAYS: JSON.stringify(says), STAYS: stays } });
+function ready(launch: Launch): Promise<Result<Launch>> {
+  return Promise.resolve({ ok: true, value: launch });
+}
+
+function standIn(says: readonly unknown[], stays = "no"): (dir: string) => Promise<Result<Launch>> {
+  return (dir) => ready({ command: process.execPath, args: ["-e", STAND_IN], env: { ...process.env, STARTS: join(dir, "starts"), SAYS: JSON.stringify(says), STAYS: stays } });
 }
 
 async function until<T>(what: string, find: () => T | undefined | false): Promise<T> {
@@ -73,7 +82,7 @@ async function until<T>(what: string, find: () => T | undefined | false): Promis
 }
 
 await test("the real desk is started, each command gets its own reply, and stopping it ends it", { timeout: 30_000 }, async (t) => {
-  const { desk, views, notices } = hold(t, (dir) => ({ command: process.execPath, args: [COMMAND, "desk"], env: { ...process.env, PLAYER_TWO_HOME: dir } }));
+  const { desk, views, notices } = hold(t, (dir) => ready({ command: process.execPath, args: [COMMAND, "desk"], env: { ...process.env, PLAYER_TWO_HOME: dir } }));
 
   await until("the join form", () => views.length > 0);
   desk.attend(false);
@@ -95,7 +104,8 @@ await test("a desk that goes away unasked is started again three times, then the
 
   const stopped = await until("the stopped view", () => views.find((view) => view.kind === "stopped"));
 
-  assert.equal(stopped.problem, "the desk keeps stopping with status 3. The last it said:\nthe desk fell over");
+  assert.match(stopped.problem, /^the desk keeps stopping with status 3\. The last it said:\n/); // What it wrote that was not the protocol, on either stream.
+  assert.deepEqual(stopped.problem.split("\n").slice(1).sort(byCodeUnit), ["not a line of the protocol", "the desk fell over"]);
   assert.equal(starts(), 4);
   assert.deepEqual(notices[0], { title: "the window ignored a line from the desk it could not read", body: "not a line of the protocol", severity: "error" });
 });
@@ -132,7 +142,7 @@ await test("a desk that speaks another protocol is refused and not started again
       "yes"
     )
   );
-  const missing = hold(t, () => ({ command: join(import.meta.dirname, "no-such-program"), args: [], env: {} }));
+  const missing = hold(t, () => ready({ command: join(import.meta.dirname, "no-such-program"), args: [], env: {} }));
 
   await until("the newer desk refused", () => newer.views.length > 0);
   await until("the missing desk given up on", () => missing.views.length > 0);
@@ -144,6 +154,42 @@ await test("a desk that speaks another protocol is refused and not started again
   assert.equal(newer.starts(), 1);
   assert.equal(missing.views.length, 1);
   assert.match(missing.views[0]?.kind === "stopped" ? missing.views[0].problem : "", /^the desk keeps stopping with status -2\. The last it said:\nspawn .*no-such-program ENOENT$/);
+});
+
+await test("on Windows the runtime the app carries is installed into the distribution and the desk is started from it through wsl.exe", { timeout: 30_000 }, async (t) => {
+  const wsl = standInWsl(t);
+  // The app's resources: a runtime archive whose launcher starts the real desk, and the digest it was shipped with.
+  const resources = join(wsl.windir, "resources");
+  mkdirSync(join(resources, "bin"), { recursive: true });
+  writeFileSync(join(resources, "bin", "player-two-desk"), `#!/bin/sh\nexec "${process.execPath}" "${COMMAND}" desk\n`, { mode: 0o755 });
+  const archive = join(resources, "wsl-runtime.tar.gz");
+  assert.equal(spawnSync("tar", ["-czf", archive, "-C", resources, "bin"]).status, 0);
+  const digest = createHash("sha256").update(readFileSync(archive)).digest("hex");
+  const launcher = join(wsl.home, ".player-two", "current", "bin", "player-two-desk");
+
+  // With no digest beside the archive there is nothing to trust, and with the wrong one nothing is installed. Neither is tried again.
+  const unshipped = hold(t, () => wslLaunch("Ubuntu", resources));
+  await until("the window saying the app has no runtime", () => unshipped.views.length > 0);
+  writeFileSync(`${archive}.sha256`, `${"0".repeat(64)}  wsl-runtime.tar.gz\n`);
+  const damaged = hold(t, () => wslLaunch("Ubuntu", resources));
+  await until("the window saying the archive is damaged", () => damaged.views.length > 0);
+  assert.deepEqual(unshipped.views, [{ kind: "stopped", problem: `this copy of Player Two has no Linux runtime to install: ${archive}.sha256 is missing or damaged. Install Player Two again` }]);
+  assert.match(damaged.views[0]?.kind === "stopped" ? damaged.views[0].problem : "", /^wsl\.exe failed with status 1: the runtime archive .*wsl-runtime\.tar\.gz is damaged: /);
+  assert.ok(!existsSync(join(wsl.home, ".player-two")));
+
+  // A distribution that is not there is said in words.
+  writeFileSync(`${archive}.sha256`, `${digest}  wsl-runtime.tar.gz\n`);
+  const elsewhere = hold(t, () => wslLaunch("Fedora", resources));
+  await until("the window saying there is no such distribution", () => elsewhere.views.length > 0);
+  assert.deepEqual(elsewhere.views, [{ kind: "stopped", problem: "WSL has no distribution of that name. In PowerShell, `wsl --list --verbose` shows the ones it has" }]);
+
+  // With everything in place the desk that answers is the one the launcher in the installed runtime started.
+  assert.deepEqual(await wslLaunch(null, resources), { ok: true, value: { command: join(wsl.windir, "System32", "wsl.exe"), args: ["--exec", launcher], env: { ...process.env, WSL_UTF8: "1" } } });
+  const { desk, views } = hold(t, () => wslLaunch("Ubuntu", resources));
+  await until("the join form", () => views.length > 0);
+  assert.deepEqual(views, [{ kind: "setup", defaultAgent: "claude -p" }]);
+  assert.deepEqual(await desk.send({ do: "open", chat: "bob" }), { ok: false, problem: "join a hub first" });
+  assert.ok(existsSync(launcher));
 });
 
 await test("nothing of the desk's is built into the window's main process or its preload script: they take its types and no more", async () => {

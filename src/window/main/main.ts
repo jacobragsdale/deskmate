@@ -8,7 +8,7 @@ import type { IpcMainInvokeEvent } from "electron";
 import { problemOf } from "../../core/text.ts";
 import { commandSchema } from "../../shared/ipc.ts";
 import type { Arrival, Outcome, Question, View } from "../../shared/ipc.ts";
-import { DeskProcess, localLaunch } from "./deskProcess.ts";
+import { DeskProcess, localLaunch, wslLaunch } from "./deskProcess.ts";
 
 let window: BrowserWindow | null = null;
 let current: View | null = null; // What the desk last said to draw; null until it has said anything.
@@ -64,7 +64,8 @@ function ask(id: number, question: Question): void {
   );
 }
 
-const desk = new DeskProcess(localLaunch(), {
+// On Windows the desk runs inside WSL, from the runtime the installer put among the app's resources. Anywhere else it runs beside the window.
+const desk = new DeskProcess(process.platform === "win32" ? () => wslLaunch(null, process.resourcesPath) : localLaunch, {
   view: show,
   notice: (notice) => {
     window?.webContents.send("notice", notice);
