@@ -47,6 +47,7 @@ const teamReposSchema = z.array(teamRepoSchema);
 const channelsSchema = z.array(channelInfoSchema);
 const noteListSchema = z.array(deliveredNoteSchema);
 const eventListSchema = z.array(deliveredSchema);
+const auditHeadSchema = z.object({ seq: z.int(), chain: z.string() }).readonly();
 const pinsSchema = z.record(z.string(), z.string());
 const hubErrorSchema = z.object({ detail: z.string() });
 
@@ -179,6 +180,11 @@ export class Client {
       params.set("limit", String(query.limit));
     }
     return eventListSchema.parse(parseJson(await this.call("GET", `/events?${params.toString()}`)));
+  }
+
+  /** The newest seq in the hub's log, and its chain value. */
+  public async head(): Promise<z.infer<typeof auditHeadSchema>> {
+    return auditHeadSchema.parse(parseJson(await this.call("GET", "/audit/head")));
   }
 
   /** Everything this user can see after `after`, oldest first, a page at a time until there is no more. */

@@ -10,6 +10,7 @@ import { AgentCancelledError, http, join as joinHub, loadClient } from "../src/d
 import { Session } from "../src/desk/session.ts";
 import { createHub } from "../src/hub/app.ts";
 import type { Arrival, ChatView, MessageView, Notice } from "../src/shared/ipc.ts";
+import { startHub as hubOfItsOwn } from "./startHub.ts";
 
 const TOKEN = "a-join-token-for-tests";
 const root = mkdtempSync(join(tmpdir(), "player-two-app-"));
@@ -223,4 +224,23 @@ await test("two people, their agents and a channel, through the real hub", { tim
     [...jacob.notices, ...bob.notices].filter((notice) => notice.severity === "error"),
     []
   );
+});
+
+await test("a session loads each chat's newest page when it starts, and the page before that when asked", { timeout: 30_000 }, async (t) => {
+  const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+  const alice = await hub.join("alice");
+  const bob = await hub.join("bob");
+  for (let count = 1; count <= 60; count += 1) {
+    await alice.publish("bob", "message", { text: `message ${String(count)}`, via: "cli" });
+  }
+  const session = new Session(bob, join(hub.dir, "dev"), { changed: () => undefined, notice: () => undefined, arrived: () => undefined, confirmClone: () => Promise.resolve(false) }, { presence: 1 });
+  session.start();
+  t.after(() => session.stop());
+  const shown = (view: ChatView): readonly [number, string | undefined, boolean | undefined] => [messages(view).length, messages(view)[0]?.body, view.current?.hasOlder];
+
+  assert.deepEqual(shown(await until(session, "the newest page", (view) => messages(view).length > 0 && view)), [50, "message 11", true]);
+  await session.handle({ do: "older" });
+  assert.deepEqual(shown(session.view()), [60, "message 1", false]);
+  await session.handle({ do: "older" }); // Nothing before the first: nothing is asked for.
+  assert.deepEqual(shown(session.view()), [60, "message 1", false]);
 });

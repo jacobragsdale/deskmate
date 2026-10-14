@@ -24,6 +24,7 @@ const PRESENCE = 25; // Seconds between asking the hub who is here, which channe
 const RETRY_DELAY = 5; // Seconds to wait before asking a hub that did not answer again.
 const UPDATE_DELAY = 60; // Seconds to wait before asking a hub on another protocol again: its answer changes only when someone updates one side.
 const STOP_WAIT = 3; // Seconds to give stopped agents to go before the session is done.
+const PAGE = 50; // Events of one chat loaded at a time: its newest when it is first listed, and as many again each time the user scrolls back.
 
 /** What the session remembers between runs, in app-state.json. */
 const savedSchema = z.strictObject({ read: z.record(z.string(), z.int()), chat: z.string().nullable() });
@@ -112,6 +113,7 @@ export class Session {
   private readonly runs = new Map<string, AgentRun>(); // By request and repo.
   private readonly autorun = new Set<string>(); // Messages just sent from here: their tags of the user's own agents run without asking.
   private readonly read: Record<string, number>; // Per chat, the seq of the newest event the user has seen.
+  private readonly paged = new Map<string, boolean>(); // Chats whose newest page has been loaded, and whether there may be events before what is loaded.
   private lastChat: string | null; // The chat that was open when the session last ran.
   private people: readonly Person[] = [];
   private channels: readonly ChannelInfo[] = [];
@@ -208,6 +210,9 @@ export class Session {
       case "clone":
         await this.clone(command.repo);
         break;
+      case "older":
+        await this.older();
+        break;
     }
   }
 
@@ -264,6 +269,7 @@ export class Session {
       chat,
       members: isChannel(chat) ? members : null,
       joined: members.includes(this.me),
+      hasOlder: this.paged.get(chat) ?? false,
       pinned:
         pinned === null
           ? null
@@ -400,8 +406,11 @@ export class Session {
         }
         await this.share();
         await this.refresh();
+        const after = this.streaming === null ? (await this.client.head()).seq : 0; // Read before the pages, so that whatever is stored while they load comes with the stream.
+        await this.pageNew();
         if (this.streaming === null) {
-          const after = await this.load();
+          this.loaded = true;
+          this.openFirst();
           this.streaming = this.client.stream(after, (batch) => this.arrive(batch), this.stopping.signal);
         }
       } catch (error) {
@@ -450,13 +459,28 @@ export class Session {
     this.hooks.changed();
   }
 
-  /** Load everything there is to see, and return the seq the stream is to follow on from. */
-  private async load(): Promise<number> {
-    const found = await this.client.catchUp(0);
+  /** Load the newest page of each chat in the list that has not had one: every chat at start-up, and later a channel joined elsewhere or a person new to the hub. */
+  private async pageNew(): Promise<void> {
+    await Promise.all(
+      this.rows()
+        .filter((row) => !this.paged.has(row.chat))
+        .map((row) => this.page(row.chat))
+    );
+  }
+
+  /** Load a chat's newest page, or with `before` the page before that seq, and note whether there may be more before it. */
+  private async page(chat: string, before?: number): Promise<void> {
+    const found = await this.client.events(before === undefined ? { chat, limit: PAGE } : { chat, before, limit: PAGE });
     this.take(await this.trust(found), false);
-    this.loaded = true;
-    this.hooks.changed();
-    return found.at(-1)?.seq ?? 0;
+    this.paged.set(chat, found.length === PAGE);
+  }
+
+  /** The page before the oldest event loaded in the open chat. */
+  private async older(): Promise<void> {
+    const oldest = this.chats.bounds(this.current)?.oldest;
+    if (this.current !== "" && oldest !== undefined && this.paged.get(this.current) === true) {
+      await this.page(this.current, oldest);
+    }
   }
 
   /** What the stream has just delivered. Should this fail, the stream delivers it again. */
@@ -487,9 +511,9 @@ export class Session {
     this.hooks.changed();
   }
 
-  /** Open a chat when none is open: where something is waiting, failing that where the user left off, failing that the first. */
+  /** Once what was there has been loaded, open a chat when none is open: where something is waiting, failing that where the user left off, failing that the first. */
   private openFirst(): void {
-    if (this.current === "") {
+    if (this.loaded && this.current === "") {
       const rows = this.rows();
       const start = rows.find((row) => row.unread > 0) ?? rows.find((row) => row.chat === this.lastChat) ?? rows[0];
       if (start !== undefined) {
@@ -635,7 +659,7 @@ export class Session {
     }
     const channel = (await this.client.joinChannel(bare.data)).name;
     this.channels = await this.client.channels();
-    this.take(await this.trust(await this.client.events({ chat: channel })), false); // A channel's earlier events are behind the stream's place in the log, so they are loaded here.
+    await this.page(channel); // A channel's earlier events are behind the stream's place in the log, so its newest page is loaded here.
     this.open(channel);
   }
 
@@ -646,6 +670,7 @@ export class Session {
     await this.client.leaveChannel(chat);
     this.channels = await this.client.channels();
     this.chats.forget(chat);
+    this.paged.delete(chat);
     this.drafts.delete(chat);
     if (this.current === chat) {
       this.current = "";

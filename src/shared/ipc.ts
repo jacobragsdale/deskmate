@@ -64,6 +64,7 @@ const currentSchema = z
     chat: z.string(),
     members: z.array(z.string()).readonly().nullable(), // Null for a direct chat.
     joined: z.boolean(),
+    hasOlder: z.boolean(), // Whether there may be events before the oldest shown: the "older" command loads them.
     pinned: z.strictObject({ name: z.string(), have: z.int(), mine: z.boolean() }).nullable(), // The repo the channel is about, how many members have it, and whether I do.
     newAfter: z.int().nullable(), // Messages after this seq arrived while the user was elsewhere.
     messages: z.array(messageSchema).readonly(),
@@ -119,6 +120,7 @@ export const commandSchema = z.discriminatedUnion("do", [
   z.strictObject({ do: z.literal("pin"), chat, repo }),
   z.strictObject({ do: z.literal("unpin"), chat }),
   z.strictObject({ do: z.literal("clone"), repo }),
+  z.strictObject({ do: z.literal("older") }), // Load the page before the oldest event shown in the open chat.
   z.strictObject({ do: z.literal("doctor") }) // Run the setup check. The reply's data is the list.
 ]);
 
