@@ -447,7 +447,7 @@ footer.down span:last-child {
   margin-top: 6px;
 }
 
-/* ── the dialogs' lists, the join form, notices ── */
+/* ── the dialogs' lists, the join form ── */
 
 .choices {
   margin-top: 8px;
@@ -503,34 +503,6 @@ footer.down span:last-child {
   background: var(--primary);
   border-color: var(--primary);
   color: var(--primary-foreground);
-}
-
-.toasts {
-  position: fixed;
-  right: 12px;
-  bottom: 36px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  width: 320px;
-  pointer-events: none;
-}
-
-.toast {
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--sidebar);
-  box-shadow: 0 4px 16px rgb(0 0 0 / 20%);
-  overflow-wrap: anywhere;
-}
-
-.toast.error {
-  border-color: var(--destructive);
-}
-
-.toast strong {
-  display: block;
 }
 
 /* ── the setup page ── */

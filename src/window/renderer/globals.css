@@ -3,6 +3,7 @@
 @layer theme, base, legacy, components, utilities; /* What is left of the old stylesheet sits under the components and the utilities, so they win over it. */
 @import "tailwindcss";
 @import "tw-animate-css";
+@import "sonner/dist/styles.css"; /* Sonner's own, which it would otherwise write into a <style> element; see vite.config.ts. */
 @import "./styles.css" layer(legacy);
 
 /* From shadcn/tailwind.css (shadcn 4.21.4): the variants and the one utility the components in components/ui are written with, copied so the shadcn command need not be a dependency. */

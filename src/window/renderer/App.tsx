@@ -2,6 +2,9 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { JSX, SyntheticEvent } from "react";
+import { toast } from "sonner";
+
+import { Toaster } from "@/components/ui/sonner";
 
 import { AGENT_CHOICES, noticeSchema, outcomeSchema, viewSchema } from "../../shared/ipc.ts";
 import type { ChatView, Check, Command, Notice, View } from "../../shared/ipc.ts";
@@ -18,8 +21,14 @@ export type Submit = (command: Command) => Promise<string>;
 /** Sends a command and shows the problem if there is one. */
 export type Act = (command: Command) => void;
 
-interface Toast extends Notice {
-  readonly id: number;
+/** Show the user something that is not part of the picture, for a few seconds, in the corner above the status line. */
+function tell(notice: Notice): void {
+  const show = notice.severity === "error" ? toast.error : toast;
+  if (notice.title === "") {
+    show(notice.body);
+  } else {
+    show(notice.title, { description: notice.body });
+  }
 }
 
 const submit: Submit = async (command) => {
@@ -209,31 +218,19 @@ function Chat({ view, act, tell, onSetup }: { readonly view: ChatView; readonly 
 
 export function App(): JSX.Element {
   const [view, setView] = useState<View | null>(null);
-  const [toasts, setToasts] = useState<readonly Toast[]>([]);
   const [setup, setSetup] = useState<{ readonly initial: readonly Check[] | null } | null>(null); // The setup page while it is open, with the list it opened on if there was one.
   const checkedAtLaunch = useRef(false);
   const up = view !== null && view.kind !== "stopped";
 
-  const tell = useCallback((notice: Notice): void => {
-    const id = Date.now() + Math.random();
-    setToasts((shown) => [...shown, { ...notice, id }]);
-    setTimeout(() => {
-      setToasts((shown) => shown.filter((toast) => toast.id !== id));
-    }, NOTICE_SECONDS * 1000);
+  const act = useCallback<Act>((command) => {
+    submit(command)
+      .then((problem) => {
+        if (problem !== "") {
+          tell({ title: "", body: problem, severity: "error" });
+        }
+      })
+      .catch(console.error);
   }, []);
-
-  const act = useCallback<Act>(
-    (command) => {
-      submit(command)
-        .then((problem) => {
-          if (problem !== "") {
-            tell({ title: "", body: problem, severity: "error" });
-          }
-        })
-        .catch(console.error);
-    },
-    [tell]
-  );
 
   useEffect(() => {
     const accept = (raw: unknown): void => {
@@ -251,7 +248,7 @@ export function App(): JSX.Element {
       offView();
       offNotice();
     };
-  }, [tell]);
+  }, []);
 
   // Once, when the desk is first up: a check that fails opens the setup page by itself. A desk that will not start shows it anyway.
   useEffect(() => {
@@ -298,14 +295,7 @@ export function App(): JSX.Element {
   return (
     <>
       {page}
-      <div className="toasts" role="status">
-        {toasts.map((toast) => (
-          <div key={toast.id} className={`toast ${toast.severity}`}>
-            {toast.title !== "" && <strong>{toast.title}</strong>}
-            {toast.body}
-          </div>
-        ))}
-      </div>
+      <Toaster duration={NOTICE_SECONDS * 1000} offset={{ bottom: 36, right: 12 }} />
     </>
   );
 }
