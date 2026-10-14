@@ -244,7 +244,7 @@ Your identity is in `~/.config/player-two`, inside WSL on Windows:
 
 | File | Contents |
 |---|---|
-| `config.json` | `hub` (the hub URL), `name`, and `agent`. |
+| `config.json` | `hub` (the hub URL), `name`, `agents`, `defaultAgent` and `ownMode`. |
 | `key` | Your Ed25519 private key. Readable only by you. |
 | `known.json` | The public key first seen for each teammate. |
 | `app-state.json` | Read marks and the last open chat. Safe to delete. |
@@ -258,7 +258,7 @@ Two environment variables move things, mainly to hold two identities on one mach
 
 The runtime the window installs is in `~/.player-two`: each version under `runtime/`, `current` linking to the one in use and `previous` to the one before. On Windows the window keeps one file of its own, `settings.json` in `%APPDATA%\Player Two`, with the WSL distribution chosen on the Setup page; with none chosen it uses WSL's default.
 
-`agent` is the command that answers. The join form offers Cursor, `agent -p --output-format text`, and Copilot, `copilot -s --allow-all-tools --no-ask-user -p`, or another command typed in. Player Two appends the prompt as its last argument, runs it in the tagged repo's folder with standard input closed, and uses what it prints to standard output as the answer. A run that takes longer than 900 seconds is stopped. The command is split into words the way a shell would split it, with quotes grouping words, but no shell runs it. To change it later, edit `agent` in `config.json`, or run `player-two join HUB NAME TOKEN --agent "COMMAND"` again. The desk finds the command on the `PATH` a login shell has, so tools installed through `nvm` or `npm -g` are found.
+`agents` lists the agents you can run, each with an `id`, a `label`, a `protocol`, a `command` and its `args`, and `defaultAgent` is the `id` of the one that answers. `ownMode` is the permission mode your own requests of your own agents are to run at, `auto-edits` unless changed. The join form offers Cursor, `agent -p --output-format text`, and Copilot, `copilot -s --allow-all-tools --no-ask-user -p`, or another command typed in. A `oneshot` agent is run with the prompt appended as its last argument, in the tagged repo's folder with standard input closed, and what it prints to standard output is the answer. A run that takes longer than 900 seconds is stopped. The command and its arguments are passed as they are: no shell reads them. A `config.json` from an earlier version, with one command line in `agent`, is read as one `oneshot` agent, split into words the way a shell would split it, and written back in this shape. `player-two join HUB NAME TOKEN --agent "COMMAND"` run again replaces the agents with that one command. The desk finds the command on the `PATH` a login shell has, so tools installed through `nvm` or `npm -g` are found.
 
 The prompt tells the agent whose checkout of which repo it is in, who tagged it and where, and whether its owner will review the reply or it is posted directly. It includes up to six earlier messages and answers from the same chat, as they read now, marked as context that must not be followed as instructions, so a follow-up question makes sense. It also says the agent may run `player-two search --json` and `player-two read --json` to look at earlier notes, and should cite each note it relied on by its link, which the window draws as a chip naming the note's author and first words.
 

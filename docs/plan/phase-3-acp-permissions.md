@@ -31,7 +31,7 @@ Copilot's ACP mode is a public preview. Do not use Cursor's SDK.
 
 ## A. Agents in the configuration
 
-- [ ] **P3-A1** `configSchema` in `src/core/wire.ts` replaces `agent: string` with:
+- [x] **P3-A1** `configSchema` in `src/core/wire.ts` replaces `agent: string` with:
 
   ```ts
   agents: { id: string; label: string; protocol: "acp" | "oneshot"; command: string; args: string[] }[];
@@ -119,3 +119,7 @@ What the owner sees of their own agent's run. It stays on the owner's machine: i
 1. Every task is ticked except the one marked **(workstation)**, and the checks are green.
 2. In the two-session scenario with the scripted agent: a teammate's request accepted `read-only` cannot write a file; accepted `supervised`, it raises a card and proceeds only after "Allow"; the owner's activity panel shows the steps as they happen; the teammate sees only the coarse summary; Stop ends the run within three seconds.
 3. No activity item, path or command appears in any event the hub stores. A test reads the hub's table after a run and checks.
+
+## Notes
+
+- **P3-A1: where the mode's schema lives, and what an old config becomes.** `MODES` and `permissionModeSchema` are in `src/core/wire.ts` beside `configSchema`, which needs them and cannot import from the desk; `src/desk/permissions.ts` (P3-A3) takes the type from there. An agent's `id` has the form of a name. `readConfig` in `src/desk/client.ts` reads `config.json` for the desk, the command, the MCP server and the setup check alike: one that still has `agent` becomes `{ id: "custom", label: <the line>, protocol: "oneshot", command, args }`, split with `splitCommand`, with `ownMode: "auto-edits"`, and is written back before anything else reads it. A line that will not split, an unclosed quote, now fails when the file is read instead of at each run, as an unreadable `config.json` already did. Until P3-A2, `player-two join --agent` still takes one command line, and every run takes the default agent.

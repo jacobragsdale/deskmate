@@ -1,7 +1,7 @@
 /** The parts of the client that have logic of their own: the fold of a chat's events and the rules that keep it honest, the tag list, links to notes, an event's envelope and what each kind says, reading what the hub answers, a hub on another protocol, splitting the agent command, and running it. */
 
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -12,7 +12,7 @@ import { z } from "zod";
 import { candidates, ChatLog, continues, rings, STALE } from "../src/core/chat.ts";
 import type { Entry, Message } from "../src/core/chat.ts";
 import { runAgent, splitCommand } from "../src/desk/agents/oneshot.ts";
-import { AgentCancelledError, Client, PlayerTwoError } from "../src/desk/client.ts";
+import { AgentCancelledError, Client, PlayerTwoError, readConfig } from "../src/desk/client.ts";
 import type { Transport } from "../src/desk/client.ts";
 import { readContent } from "../src/core/kinds.ts";
 import { noteIn, noteLink, noteOf, notesIn } from "../src/core/links.ts";
@@ -349,7 +349,8 @@ function clientOf(answers: Readonly<Record<string, unknown>>, asked: string[] = 
     asked.push(`${method} ${new URL(url).pathname}`);
     return Promise.resolve(JSON.stringify(answers[asked.at(-1) ?? ""]));
   };
-  return new Client("/nowhere", { hub: "http://hub.test", name: "jacob", agent: "fake-agent" }, key, transport, () => NOW);
+  const agent = { id: "custom", label: "fake-agent", protocol: "oneshot", command: "fake-agent", args: [] } as const;
+  return new Client("/nowhere", { hub: "http://hub.test", name: "jacob", agents: [agent], defaultAgent: "custom", ownMode: "auto-edits" }, key, transport, () => NOW);
 }
 
 await test("the client reads past a field a newer hub adds, but refuses one inside a signed event", async () => {
@@ -495,6 +496,29 @@ await test("an agent command is split the way a shell would split it", () => {
   assert.deepEqual(splitCommand(`  sh -c 'echo "a b"' "x \\" y" z\\ w '' --flag="two words"  `), ["sh", "-c", 'echo "a b"', 'x " y', "z w", "", "--flag=two words"]);
   assert.throws(() => splitCommand("claude 'oops"), PlayerTwoError);
   assert.throws(() => splitCommand('claude "oops\\"'), PlayerTwoError);
+});
+
+await test("a config.json that still names one agent command loads as one one-shot agent and is written back in the new shape; one whose default is not among its agents is refused", (t) => {
+  const home = mkdtempSync(join(tmpdir(), "player-two-config-"));
+  t.after(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+  const file = join(home, "config.json");
+  writeFileSync(file, JSON.stringify({ hub: "http://hub.test", name: "jacob", agent: `claude -p --model "big one"` }));
+  const agent = { id: "custom", label: `claude -p --model "big one"`, protocol: "oneshot", command: "claude", args: ["-p", "--model", "big one"] };
+  const now = { hub: "http://hub.test", name: "jacob", agents: [agent], defaultAgent: "custom", ownMode: "auto-edits" };
+  assert.deepEqual(readConfig(home), now);
+  assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), now);
+  assert.deepEqual(readConfig(home), now); // Read again, as it was written.
+  for (const wrong of [
+    { ...now, defaultAgent: "cursor" },
+    { ...now, agents: [agent, agent] },
+    { ...now, agents: [] },
+    { ...now, ownMode: "anything" }
+  ]) {
+    writeFileSync(file, JSON.stringify(wrong));
+    assert.throws(() => readConfig(home), z.ZodError, JSON.stringify(wrong));
+  }
 });
 
 await test("an event's envelope holds exactly the signed fields, a kind of dotted lowercase words, and content up to its kind's limit", () => {

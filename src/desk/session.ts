@@ -12,14 +12,14 @@ import type { Accepted, Entry, Message, Request } from "../core/chat.ts";
 import { readContent } from "../core/kinds.ts";
 import { notesIn } from "../core/links.ts";
 import type { Content, ContentOf } from "../core/kinds.ts";
-import { runAgent, splitCommand } from "./agents/oneshot.ts";
+import { runAgent } from "./agents/oneshot.ts";
 import { AgentCancelledError, PlayerTwoError, Refused } from "./client.ts";
 import type { Client, Found, Runner } from "./client.ts";
 import * as repos from "./repos.ts";
 import type { Checkout, Head } from "./repos.ts";
 import { cloneFolder } from "../core/remotes.ts";
 import { oneLine, problemOf } from "../core/text.ts";
-import { fitText, isChannel, nameSchema, PROTOCOL } from "../core/wire.ts";
+import { defaultAgentOf, fitText, isChannel, nameSchema, PROTOCOL } from "../core/wire.ts";
 import type { ChannelInfo, Delivered, Person, RepoRef, TeamRepo } from "../core/wire.ts";
 
 const PRESENCE = 25; // Seconds between asking the hub who is here, which channels there are and who has which repo. Each is a signed request, which is what says the user is here; the repo scan runs on the same beat.
@@ -317,7 +317,7 @@ export class Session {
       kind: "chat",
       me: this.me,
       hub: new URL(this.client.config.hub).host,
-      agent: this.client.config.agent,
+      agent: defaultAgentOf(this.client.config).label,
       dev: this.dev.startsWith(home) ? `~${this.dev.slice(home.length)}` : this.dev,
       link,
       loaded: this.loaded,
@@ -985,7 +985,8 @@ export class Session {
     if (checkout === undefined) {
       throw new PlayerTwoError(`there is no checkout of ${repo} under ${this.dev}`);
     }
-    const argv = [...splitCommand(this.client.config.agent), agentPrompt(message, this.me, repo, this.chats.earlier(message), !post)];
+    const agent = defaultAgentOf(this.client.config);
+    const argv = [agent.command, ...agent.args, agentPrompt(message, this.me, repo, this.chats.earlier(message), !post)];
     const run: AgentRun = { entry: message.entry, repo, post, cancel: new AbortController(), startedAt: Date.now(), done: Promise.resolve() };
     this.runs.set(key, run);
     run.done = this.work(key, run, checkout, argv);

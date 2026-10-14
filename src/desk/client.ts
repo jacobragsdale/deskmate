@@ -27,6 +27,7 @@ import {
 } from "../core/wire.ts";
 import type { ChannelInfo, Config, Delivered, Event, HubInfo, Person, Repo, TeamRepo } from "../core/wire.ts";
 import { AGENT_CHOICES } from "../shared/ipc.ts";
+import { agentOf } from "./agents/oneshot.ts";
 
 export const DEFAULT_AGENT: string = AGENT_CHOICES[0].command; // Cursor, as the join form offers it first.
 const CALL_TIMEOUT = 10; // Seconds any one request but the stream may take.
@@ -47,6 +48,7 @@ const eventListSchema = z.array(deliveredSchema);
 const auditHeadSchema = z.object({ seq: z.int(), chain: z.string() }).readonly();
 const pinsSchema = z.record(z.string(), z.string());
 const hubErrorSchema = z.object({ detail: z.string() });
+const legacyConfigSchema = z.strictObject({ hub: z.string(), name: z.string(), agent: z.string() }); // config.json before phase 3.
 
 /** A search result's snippet cut at the hub's marks into plain stretches and the words the search found. */
 function marked(snippet: string): { readonly text: string; readonly hit: boolean }[] {
@@ -288,9 +290,10 @@ export function defaultDev(): string {
   return override === "" ? joinPath(homedir(), "dev") : override;
 }
 
-/** Register a name with a hub, creating a key first if this machine has none. */
+/** Register a name with a hub, creating a key first if this machine has none. `agent` is a one-shot command typed as one line. */
 export async function join(home: string, hub: string, name: string, token: string, agent: string, transport: Transport): Promise<Config> {
-  const config = configSchema.parse({ hub: hub.replace(/\/+$/, ""), name, agent });
+  const chosen = agentOf(agent);
+  const config = configSchema.parse({ hub: hub.replace(/\/+$/, ""), name, agents: [chosen], defaultAgent: chosen.id, ownMode: "auto-edits" });
   mkdirSync(home, { mode: 0o700, recursive: true });
   const keyFile = joinPath(home, "key");
   if (!existsSync(keyFile)) {
@@ -309,5 +312,22 @@ export function loadClient(home: string, transport: Transport, now: () => number
   if (!existsSync(configFile) || !existsSync(keyFile)) {
     return null;
   }
-  return new Client(home, configSchema.parse(parseJson(readFileSync(configFile, "utf8"))), loadKey(readFileSync(keyFile, "utf8").trim()), transport, now);
+  return new Client(home, readConfig(home), loadKey(readFileSync(keyFile, "utf8").trim()), transport, now);
+}
+
+/**
+ * config.json in `home`. One written before agents were configured one by one holds a single command line, `agent`:
+ * it is read as one one-shot agent, split into words as a shell would split it, and written back in the new shape.
+ */
+export function readConfig(home: string): Config {
+  const file = joinPath(home, "config.json");
+  const raw = parseJson(readFileSync(file, "utf8"));
+  const before = legacyConfigSchema.safeParse(raw);
+  if (!before.success) {
+    return configSchema.parse(raw);
+  }
+  const agent = agentOf(before.data.agent);
+  const config = configSchema.parse({ hub: before.data.hub, name: before.data.name, agents: [agent], defaultAgent: agent.id, ownMode: "auto-edits" });
+  writeFileSync(file, JSON.stringify(config, null, 1));
+  return config;
 }

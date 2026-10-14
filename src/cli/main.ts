@@ -11,7 +11,7 @@ import type { Entry, Message } from "../core/chat.ts";
 import { readContent } from "../core/kinds.ts";
 import { noteLink, noteOf } from "../core/links.ts";
 import { problemOf } from "../core/text.ts";
-import { channelSchema, fitText, isChannel } from "../core/wire.ts";
+import { channelSchema, defaultAgentOf, fitText, isChannel } from "../core/wire.ts";
 import type { ChannelInfo, Delivered, Event } from "../core/wire.ts";
 import { DEFAULT_AGENT, defaultDev, defaultHome, http, join, loadClient, PlayerTwoError } from "../desk/client.ts";
 import type { Client, Transport } from "../desk/client.ts";
@@ -381,7 +381,7 @@ async function register(home: string, transport: Transport, args: string[], out:
     throw new UsageError("join takes the hub's address, your name and the join token");
   }
   const config = await join(home, hub, name, token, values.agent, transport);
-  out(`joined ${config.hub} as ${config.name}; your agent command is \`${config.agent}\``);
+  out(`joined ${config.hub} as ${config.name}; your agent command is \`${defaultAgentOf(config).label}\``);
 }
 
 /** Print the setup check, and fail when any of it failed: what is printed is the list, and the exit status says whether it is all right. */

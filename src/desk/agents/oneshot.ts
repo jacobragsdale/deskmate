@@ -3,6 +3,7 @@
 import { spawn } from "node:child_process";
 import { join as joinPath } from "node:path";
 
+import type { Agent } from "../../core/wire.ts";
 import { AgentCancelledError, defaultHome, PlayerTwoError } from "../client.ts";
 import type { Runner } from "../client.ts";
 
@@ -29,12 +30,18 @@ export function splitCommand(command: string): string[] {
   return word === null ? words : [...words, word];
 }
 
+/** A one-shot agent from a command typed as one line, as config.json held it before agents were configured one by one. */
+export function agentOf(commandLine: string): Agent {
+  const [command = "", ...args] = splitCommand(commandLine);
+  return { id: "custom", label: commandLine.trim(), protocol: "oneshot", command, args };
+}
+
 /** Run the agent command and resolve with what it printed. Aborting `cancel` stops it and everything it started. */
 export const runAgent: Runner = (argv, cwd, cancel) =>
   new Promise((resolve, reject) => {
     const [command, ...args] = argv;
     if (command === undefined) {
-      reject(new PlayerTwoError('the agent command is empty. Set "agent" in config.json'));
+      reject(new PlayerTwoError('the agent command is empty. Set it in "agents" in config.json'));
       return;
     }
     // Its own process group, so stopping it takes the agent's child processes with it.
@@ -77,7 +84,7 @@ export const runAgent: Runner = (argv, cwd, cancel) =>
     };
     child.on("error", (error) => {
       settle(() => {
-        reject(new PlayerTwoError(`could not start the agent command ${JSON.stringify(command)}: ${error.message}. Set "agent" in ${joinPath(defaultHome(), "config.json")}`));
+        reject(new PlayerTwoError(`could not start the agent command ${JSON.stringify(command)}: ${error.message}. Check "agents" in ${joinPath(defaultHome(), "config.json")}`));
       });
     });
     child.on("close", (code) => {

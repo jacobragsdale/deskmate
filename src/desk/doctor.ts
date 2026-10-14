@@ -1,17 +1,16 @@
 /** The setup check: what Player Two needs on this machine, one item at a time, each with a plain result and the command that fixes it. It never runs a fix itself. */
 
-import { accessSync, constants, existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, readdirSync, statSync } from "node:fs";
 import { basename, delimiter, join } from "node:path";
 
 import { z } from "zod";
 
 import { quote } from "../core/install.ts";
 import { problemOf } from "../core/text.ts";
-import { configSchema, MAX_SKEW, PROTOCOL } from "../core/wire.ts";
+import { defaultAgentOf, MAX_SKEW, PROTOCOL } from "../core/wire.ts";
 import type { Config, HubInfo } from "../core/wire.ts";
 import type { Check } from "../shared/ipc.ts";
-import { splitCommand } from "./agents/oneshot.ts";
-import { http, loadClient } from "./client.ts";
+import { http, loadClient, readConfig } from "./client.ts";
 import type { Client } from "./client.ts";
 import { git, origin, scan } from "./repos.ts";
 import type { Checkout } from "./repos.ts";
@@ -235,10 +234,10 @@ async function gitAuth(checkout: Checkout): Promise<Outcome> {
 }
 
 function agent(home: string, config: Config): Outcome {
-  const program = splitCommand(config.agent)[0] ?? "";
+  const program = defaultAgentOf(config).command;
   const where = findProgram(program, process.env["PATH"] ?? "");
   return where === null
-    ? fail(`looked for ${program === "" ? "the agent" : program} on the PATH and did not find it. The agent chosen when joining is "agent" in ${join(home, "config.json")}`, INSTALL.get(program) ?? "")
+    ? fail(`looked for ${program} on the PATH and did not find it. The agent that answers is "defaultAgent" among "agents" in ${join(home, "config.json")}`, INSTALL.get(program) ?? "")
     : ok(`${program} is ${where}`);
 }
 
@@ -252,7 +251,7 @@ function either(found: Found<Outcome>): Outcome {
  * A check that needs what an earlier one could not find is skipped and says why. Nothing here throws, and nothing waits for long.
  */
 export async function runChecks(home: string, dev: string): Promise<Check[]> {
-  const config = value(await attempt(() => configSchema.parse(JSON.parse(readFileSync(join(home, "config.json"), "utf8")))));
+  const config = value(await attempt(() => readConfig(home)));
   const client = value(await attempt(() => loadClient(home, http, () => Date.now() / 1000)));
   const reached = await hub(config);
   const asked = await protocol(client, reached.now);

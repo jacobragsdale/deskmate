@@ -93,7 +93,21 @@ export const deliveredSchema = z.object({ seq: z.int(), event: eventSchema }).re
 /** What the hub answers when it has stored an event: the place it gave it. */
 export const receiptSchema = z.object({ seq: z.int() }).readonly();
 
-export const configSchema = z.strictObject({ hub: z.string().regex(/^https?:\/\/\S*[^/\s]$/), name: nameSchema, agent: z.string().min(1) }).readonly();
+/** What an agent may do without asking, from least to most: the table is "Permission modes" in docs/plan/protocol.md, and src/desk/permissions.ts holds it. */
+export const MODES = ["read-only", "supervised", "auto-edits", "full"] as const;
+export const permissionModeSchema = z.enum(MODES);
+
+/** One agent the user can run: a program and its arguments, which no shell ever reads, spoken to over ACP or run once with the prompt added as its last argument. */
+export const agentSchema = z
+  .strictObject({ id: nameSchema, label: z.string().min(1), protocol: z.enum(["acp", "oneshot"]), command: z.string().min(1), args: z.array(z.string()).readonly() })
+  .readonly();
+
+/** config.json: who this is on which hub, the agents they can run, which of them answers, and the mode their own requests of their own agents run at. */
+export const configSchema = z
+  .strictObject({ hub: z.string().regex(/^https?:\/\/\S*[^/\s]$/), name: nameSchema, agents: z.array(agentSchema).min(1).readonly(), defaultAgent: nameSchema, ownMode: permissionModeSchema })
+  .refine((config) => new Set(config.agents.map((agent) => agent.id)).size === config.agents.length, { message: "two agents have the same id", path: ["agents"] })
+  .refine((config) => config.agents.some((agent) => agent.id === config.defaultAgent), { message: "the default agent is not one of the agents", path: ["defaultAgent"] })
+  .readonly();
 
 export type Person = z.infer<typeof personSchema>;
 export type HubInfo = z.infer<typeof hubInfoSchema>;
@@ -104,9 +118,20 @@ export type ChannelInfo = z.infer<typeof channelInfoSchema>;
 export type Event = z.infer<typeof eventSchema>;
 export type Delivered = z.infer<typeof deliveredSchema>;
 export type Config = z.infer<typeof configSchema>;
+export type Agent = z.infer<typeof agentSchema>;
+export type PermissionMode = z.infer<typeof permissionModeSchema>;
 
 export function isChannel(address: string): boolean {
   return address.startsWith("#");
+}
+
+/** The agent that answers. A config that has been parsed always has it. */
+export function defaultAgentOf(config: Config): Agent {
+  const agent = config.agents.find((each) => each.id === config.defaultAgent);
+  if (agent === undefined) {
+    throw new Error(`config.json names ${config.defaultAgent} as the default agent, and has no agent of that id`);
+  }
+  return agent;
 }
 
 /** Cut text so that, written as JSON in an event's content, it leaves room for the rest of the content, without leaving half a character at the end. Escaping can make text several times longer, so it is measured as written. */
