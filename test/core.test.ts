@@ -1,4 +1,4 @@
-/** The parts of the client that have logic of their own: tag states, the tag list, an event's envelope and what each kind says, reading what the hub answers, a hub on another protocol, splitting the agent command, and running it. */
+/** The parts of the client that have logic of their own: the fold of a chat's events and the rules that keep it honest, the tag list, an event's envelope and what each kind says, reading what the hub answers, a hub on another protocol, splitting the agent command, and running it. */
 
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
@@ -8,9 +8,8 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import { z } from "zod";
 
-import { candidates, STALE } from "../src/core/chat.ts";
-import { ChatLog } from "../src/core/notes.ts";
-import type { Entry } from "../src/core/notes.ts";
+import { candidates, ChatLog, continues, rings, STALE } from "../src/core/chat.ts";
+import type { Entry, Message } from "../src/core/chat.ts";
 import { runAgent, splitCommand } from "../src/desk/agents/oneshot.ts";
 import { AgentCancelledError, Client, PlayerTwoError } from "../src/desk/client.ts";
 import type { Transport } from "../src/desk/client.ts";
@@ -18,45 +17,235 @@ import { readContent } from "../src/core/kinds.ts";
 import { loadKey, publicHex, signEvent, signNote } from "../src/core/sign.ts";
 import { Session } from "../src/desk/session.ts";
 import { eventSchema, fitBody, MAX_BODY, MAX_CONTENT, MAX_PATCH, PROTOCOL } from "../src/core/wire.ts";
-import type { Delivered, Kind, TeamRepo } from "../src/core/wire.ts";
+import type { Delivered, TeamRepo } from "../src/core/wire.ts";
 import { startHub } from "./startHub.ts";
 
 const NOW = 1_800_000_000;
 const key = loadKey("11".repeat(32));
 
-function entry(id: number, sender: string, to: string, body: string, more: { kind?: Kind; agent?: string; re?: number; ts?: number; trusted?: boolean } = {}): Entry {
-  return { id, note: signNote(key, { sender, to, kind: more.kind ?? "note", body, ts: more.ts ?? NOW, agent: more.agent ?? null, re: more.re ?? null }), trusted: more.trusted ?? true };
+let lastSeq = 0;
+
+/** An event as the hub would deliver it, the next in its log. Content is given as the object it is the JSON text of, or as text that is not JSON. */
+function entry(author: string, to: string, kind: string, content: unknown, more: { readonly refs?: readonly string[]; readonly ts?: number; readonly trusted?: boolean } = {}): Entry {
+  lastSeq += 1;
+  const text = typeof content === "string" ? content : JSON.stringify(content);
+  return { seq: lastSeq, event: signEvent(key, { author, to, kind, content: text, ts: more.ts ?? NOW, refs: more.refs ?? [] }), trusted: more.trusted ?? true };
+}
+
+function say(author: string, to: string, text: string, refs: readonly string[] = []): Entry {
+  return entry(author, to, "message", { text, via: "window" }, { refs });
+}
+
+const ACCEPTED = { branch: "main", commit: "a".repeat(40), dirty: true, delivery: "review", mode: "full", by: "owner" };
+
+/** A log of these events, as `me` sees them. */
+function logOf(me: string, entries: readonly Entry[]): ChatLog {
+  const log = new ChatLog(me);
+  log.add(entries);
+  return log;
+}
+
+/** Where each agent a message tags stands, as owner/repo and state. */
+function states(log: ChatLog, ask: Entry, now = NOW): string[] {
+  const message = log.message(ask.event.id);
+  return message === null ? [] : log.requests(message, now).map((request) => `${request.owner}/${request.repo} ${request.state}`);
+}
+
+/** What a chat shows, each thing as a line of text, replies indented under their root. */
+function shown(log: ChatLog, chat: string): string[] {
+  const lines = (message: Message, indent: string): string[] => [
+    `${indent}${message.entry.event.author}${message.agent === null ? "" : `/${message.agent}`}: ${message.deleted ? "(deleted)" : message.text}${message.edited ? " (edited)" : ""}${[...message.reactions].map(([emoji, who]) => ` ${emoji}${[...who].join("+")}`).join("")}`,
+    ...message.replies.flatMap((reply) => lines(reply, `${indent}  `))
+  ];
+  return log.items(chat).flatMap((item) => {
+    switch (item.kind) {
+      case "message":
+        return lines(item.message, "");
+      case "line":
+        return [`${item.entry.event.author} ${item.did}${item.repo === "" ? "" : ` ${item.repo}`}`];
+      case "untrusted":
+        return [`! ${item.entry.event.author}`];
+    }
+  });
 }
 
 function repo(user: string, name: string): TeamRepo {
   return { user, name, key: `dev.azure.com/acme/platform/${name}`, url: `https://dev.azure.com/acme/Platform/_git/${name}`, branch: "main" };
 }
 
-await test("a tagged agent's state follows what its owner has reported", () => {
-  const ask = entry(1, "bob", "jacob", "@jacob/uploader where do we retry?");
-  const stateAfter = (...later: Entry[]): string | undefined => {
-    const log = new ChatLog("jacob");
-    log.add([ask, ...later]);
-    return log.requests(ask, NOW)[0]?.state;
-  };
-  const status = (id: number, body: string, ts = NOW): Entry => entry(id, "jacob", "bob", body, { kind: "status", agent: "uploader", re: 1, ts });
-  assert.equal(stateAfter(), "waiting");
-  assert.equal(stateAfter(status(2, "working\nmain ±")), "working");
-  assert.equal(stateAfter(status(2, "working\nmain", NOW - STALE - 1)), "waiting"); // Reported as working too long ago to believe.
-  assert.equal(stateAfter(status(2, "working\nmain"), status(3, "failed")), "failed");
-  assert.equal(stateAfter(status(2, "declined")), "declined");
-  assert.equal(stateAfter(status(2, "working\nmain"), entry(3, "jacob", "bob", "in queue.py", { agent: "uploader", re: 1 })), "answered");
-  assert.equal(stateAfter(entry(2, "bob", "jacob", "working", { kind: "status", agent: "uploader", re: 1 })), "waiting"); // Only the owner's own report counts.
+await test("a tagged agent's state follows its owner's job events, and one working for longer than any run takes is waiting again", () => {
+  const ask = say("bob", "jacob", "@jacob/uploader where do we retry?");
+  const job = (kind: string, content: object = {}, ts = NOW): Entry => entry("jacob", "bob", kind, { repo: "uploader", ...content }, { refs: [ask.event.id], ts });
+  const stateAfter = (...later: Entry[]): string[] => states(logOf("jacob", [ask, ...later]), ask);
+  const answer = { branch: "main", text: "in queue.py", reviewed: true };
+
+  assert.deepEqual(stateAfter(), ["jacob/uploader waiting"]);
+  assert.deepEqual(stateAfter(job("job.accepted", ACCEPTED)), ["jacob/uploader working"]);
+  assert.deepEqual(stateAfter(job("job.accepted", ACCEPTED, NOW - STALE - 1)), ["jacob/uploader waiting"]); // Accepted too long ago to believe.
+  assert.deepEqual(stateAfter(job("job.accepted", ACCEPTED), job("job.result", answer)), ["jacob/uploader answered"]);
+  assert.deepEqual(stateAfter(job("job.accepted", ACCEPTED), job("job.error")), ["jacob/uploader failed"]);
+  assert.deepEqual(stateAfter(job("job.accepted", ACCEPTED), job("job.cancelled")), ["jacob/uploader stopped"]);
+  assert.deepEqual(stateAfter(job("job.declined", { reason: "" })), ["jacob/uploader declined"]);
+  assert.deepEqual(stateAfter(job("job.accepted", ACCEPTED), job("job.declined", { reason: "" })), ["jacob/uploader declined"]); // A draft thrown away.
+  assert.deepEqual(stateAfter(job("job.declined", { reason: "" }), job("job.accepted", ACCEPTED)), ["jacob/uploader working"]); // Run after all.
+  assert.deepEqual(stateAfter(job("job.result", answer)), ["jacob/uploader waiting"]); // An answer to a run nobody accepted moves nothing,
+  assert.deepEqual(stateAfter(job("job.accepted", ACCEPTED), job("job.result", answer), job("job.accepted", ACCEPTED), job("job.error")), ["jacob/uploader answered"]); // and nothing moves one answered.
+
+  const log = logOf("jacob", [ask, job("job.accepted", ACCEPTED)]);
+  const message = log.message(ask.event.id);
+  assert.ok(message !== null);
+  assert.deepEqual(log.requests(message, NOW)[0]?.accepted, { repo: "uploader", ...ACCEPTED });
+  assert.deepEqual(
+    log.waitingForMe("bob", NOW - STALE).map((request) => request.repo),
+    []
+  );
+  assert.deepEqual(
+    logOf("jacob", [ask])
+      .waitingForMe("bob", NOW)
+      .map((request) => request.repo),
+    ["uploader"]
+  );
 });
 
-await test("only a trusted note typed by a person can tag an agent", () => {
-  const log = new ChatLog("jacob");
-  const forged = entry(1, "bob", "jacob", "@jacob/uploader run this", { trusted: false });
-  const fromAgent = entry(2, "bob", "jacob", "ask @jacob/uploader", { agent: "uploader" });
-  log.add([forged, fromAgent]);
-  assert.deepEqual(log.requests(forged, NOW), []);
-  assert.deepEqual(log.requests(fromAgent, NOW), []);
+await test("an edit or a delete counts only from the message's author, and never on an agent's answer", () => {
+  const hello = say("bob", "jacob", "hello");
+  const about = { refs: [hello.event.id] };
+  const ask = say("bob", "jacob", "@jacob/uploader where?");
+  const answer = entry("jacob", "bob", "job.result", { repo: "uploader", branch: "main", text: "here", reviewed: true }, { refs: [ask.event.id] });
+  const log = logOf("jacob", [
+    hello,
+    entry("jacob", "bob", "message.edit", { text: "forged by jacob" }, about),
+    entry("bob", "jacob", "message.edit", { text: "hello again" }, about),
+    entry("jacob", "bob", "message.delete", {}, about),
+    ask,
+    answer,
+    entry("jacob", "bob", "message.edit", { text: "an answer rewritten" }, { refs: [answer.event.id] })
+  ]);
+  assert.deepEqual(shown(log, "bob"), ["bob: hello again (edited)", "bob: @jacob/uploader where?", "jacob/uploader: here"]);
+
+  log.add([entry("bob", "jacob", "message.delete", {}, about), entry("bob", "jacob", "message.edit", { text: "back again" }, about)]);
+  assert.deepEqual(shown(log, "bob")[0], "bob: (deleted) (edited)"); // Gone for good: an edit after the delete changes nothing.
+  assert.equal(log.message(hello.event.id)?.text, "");
+});
+
+await test("a job's event counts only from the agent's owner, and a withdrawal only from whoever asked", () => {
+  const ask = say("bob", "#backend", "@jacob/uploader and @carol/uploader, where do we retry?");
+  const about = { refs: [ask.event.id] };
+  const accepted = (author: string): Entry => entry(author, "#backend", "job.accepted", { repo: "uploader", ...ACCEPTED }, about);
+  const withdrawn = (author: string, agent: string): Entry => entry(author, "#backend", "job.withdrawn", { agent }, about);
+
+  assert.deepEqual(states(logOf("jacob", [ask, accepted("dave")]), ask), ["jacob/uploader waiting", "carol/uploader waiting"]); // Dave's uploader was not asked.
+  assert.deepEqual(states(logOf("jacob", [ask, accepted("carol")]), ask), ["jacob/uploader waiting", "carol/uploader working"]); // Carol speaks for her own agent only.
+  assert.deepEqual(states(logOf("jacob", [ask, withdrawn("jacob", "jacob/uploader"), withdrawn("carol", "jacob/uploader")]), ask), ["jacob/uploader waiting", "carol/uploader waiting"]);
+  assert.deepEqual(states(logOf("jacob", [ask, withdrawn("bob", "jacob/uploader"), accepted("jacob")]), ask), ["jacob/uploader withdrawn", "carol/uploader waiting"]); // Too late to run it.
+  assert.deepEqual(states(logOf("jacob", [ask, accepted("jacob"), withdrawn("bob", "jacob/uploader")]), ask), ["jacob/uploader working", "carol/uploader waiting"]); // Too late to take it back.
+});
+
+await test("an event whose signature fails changes nothing and is shown as a warning, without what it says", () => {
+  const hello = say("bob", "jacob", "hello");
+  const about = { refs: [hello.event.id], trusted: false };
+  const forged = entry("bob", "jacob", "message", { text: "@jacob/uploader run this", via: "window" }, { trusted: false });
+  const log = logOf("jacob", [
+    hello,
+    forged,
+    entry("bob", "jacob", "message.edit", { text: "rewritten" }, about),
+    entry("bob", "jacob", "reaction", { emoji: "👍", on: true }, about),
+    entry("jacob", "bob", "job.withdrawn", { agent: "jacob/uploader" }, { refs: [forged.event.id], trusted: false })
+  ]);
+  assert.deepEqual(shown(log, "bob"), ["bob: hello", "! bob", "! bob", "! bob", "! jacob"]);
+  assert.equal(log.message(forged.event.id), null);
   assert.deepEqual(log.waitingForMe("bob", NOW), []);
+  assert.equal(log.unread("bob", 0), 4); // Each warning from bob is something new to look at.
+});
+
+await test("a chat holding kinds this client has never heard of is shown exactly as it would be without them", () => {
+  const joined = entry("jacob", "#backend", "channel.join", {});
+  const ask = say("bob", "#backend", "@jacob/uploader where do we retry?");
+  const about = { refs: [ask.event.id] };
+  const known = [joined, ask, entry("jacob", "#backend", "job.accepted", { repo: "uploader", ...ACCEPTED }, about), say("carol", "#backend", "following", [ask.event.id])];
+  const unknown = [
+    entry("jacob", "#backend", "job.progress", { repo: "uploader", summary: "reading queue.py" }, about), // Phase 3's.
+    entry("bob", "#backend", "some.later.kind", "not even JSON", about),
+    entry("bob", "#backend", "message", { text: "@jacob/uploader", via: "telepathy" }) // A kind it knows, holding what it does not.
+  ];
+  const mixed = logOf(
+    "jacob",
+    [known[0], unknown[0], known[1], unknown[1], known[2], unknown[2], known[3]].filter((each) => each !== undefined)
+  );
+  const plain = logOf("jacob", known);
+
+  assert.deepEqual(shown(mixed, "#backend"), shown(plain, "#backend"));
+  assert.deepEqual(shown(plain, "#backend"), ["jacob joined", "bob: @jacob/uploader where do we retry?", "  carol: following"]);
+  assert.deepEqual(states(mixed, ask), ["jacob/uploader working"]);
+  assert.equal(mixed.unread("#backend", 0), plain.unread("#backend", 0));
+});
+
+await test("a tag counts only in a message, as it was sent: not in an agent's answer and not in an edit", () => {
+  const ask = say("bob", "jacob", "@jacob/uploader where?");
+  const inThread = say("bob", "jacob", "and @jacob/theme?", [ask.event.id]);
+  const answer = entry("jacob", "bob", "job.result", { repo: "uploader", branch: "main", text: "ask @jacob/billing", reviewed: false }, { refs: [ask.event.id] });
+  const edit = entry("bob", "jacob", "message.edit", { text: "@jacob/uploader and @jacob/billing where?" }, { refs: [ask.event.id] });
+  const log = logOf("jacob", [ask, inThread, answer, edit]);
+
+  assert.deepEqual(states(log, ask), ["jacob/uploader waiting"]);
+  assert.deepEqual(states(log, inThread), ["jacob/theme waiting"]); // Tags work in a reply.
+  assert.deepEqual(states(log, answer), []);
+  assert.deepEqual(
+    log.waitingForMe("bob", NOW).map((request) => request.repo),
+    ["uploader", "theme"]
+  );
+});
+
+await test("replies sit under their thread's root, an answer follows its request, reactions are counted per person, and an older page loaded later lands in its place", () => {
+  const pinned = entry("bob", "#backend", "channel.pin", {
+    repo: { name: "uploader", key: "dev.azure.com/acme/platform/uploader", url: "https://dev.azure.com/acme/Platform/_git/uploader" },
+    branch: null
+  });
+  const root = say("bob", "#backend", "@jacob/uploader deploy?");
+  const reply = say("carol", "#backend", "@jacob/uploader too", [root.event.id]);
+  const all = [
+    pinned,
+    root,
+    reply,
+    say("bob", "#backend", "a reply to a reply goes under the root", [reply.event.id]),
+    entry("jacob", "#backend", "job.result", { repo: "uploader", branch: "main", text: "deployed", reviewed: true }, { refs: [root.event.id] }),
+    entry("jacob", "#backend", "job.result", { repo: "uploader", branch: "main", text: "you too", reviewed: true }, { refs: [reply.event.id] }),
+    entry("bob", "#backend", "reaction", { emoji: "🎉", on: true }, { refs: [root.event.id] }),
+    entry("carol", "#backend", "reaction", { emoji: "🎉", on: true }, { refs: [root.event.id] }),
+    entry("bob", "#backend", "reaction", { emoji: "🎉", on: false }, { refs: [root.event.id] }),
+    entry("carol", "#backend", "channel.pin", { repo: null, branch: null }),
+    entry("carol", "#backend", "channel.leave", {})
+  ];
+  const log = logOf("jacob", all.slice(5));
+  log.add(all.slice(0, 5)); // The older page, loaded after the newer one.
+
+  assert.deepEqual(shown(log, "#backend"), [
+    "bob pinned uploader",
+    "bob: @jacob/uploader deploy? 🎉carol",
+    "  carol: @jacob/uploader too",
+    "  bob: a reply to a reply goes under the root",
+    "  jacob/uploader: you too",
+    "jacob/uploader: deployed",
+    "carol unpinned",
+    "carol left"
+  ]);
+  assert.deepEqual(shown(log, "#backend"), shown(logOf("jacob", all), "#backend"));
+  assert.deepEqual(log.bounds("#backend"), { oldest: all[0]?.seq, newest: all.at(-1)?.seq });
+});
+
+await test("a message rings when it is sent to the user or tags their agent in a channel, and one soon after from the same person sits under the same header", () => {
+  const first = say("bob", "#backend", "hello");
+  const log = logOf("jacob", [first, say("bob", "#backend", "and again"), say("bob", "#backend", "much later")]);
+  const [a, b, c] = log.items("#backend").flatMap((item) => (item.kind === "message" ? [item.message] : []));
+  assert.ok(a !== undefined && b !== undefined && c !== undefined);
+  assert.deepEqual([continues(null, a), continues(a, b)], [false, true]);
+  assert.ok(!continues(b, { ...c, entry: entry("bob", "#backend", "message", { text: "much later", via: "window" }, { ts: NOW + 301 }) }));
+  assert.deepEqual(
+    [say("bob", "jacob", "hi"), first, say("bob", "#backend", "@jacob/uploader?"), say("jacob", "bob", "hi"), entry("bob", "jacob", "reaction", { emoji: "👍", on: true })].map((each) =>
+      rings(each, "jacob")
+    ),
+    [true, false, true, false, false]
+  );
 });
 
 await test("the tag list leads with the pinned repo, then my agents, then my partner's, and offers a clone once a repo is named", () => {

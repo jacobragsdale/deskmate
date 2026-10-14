@@ -70,7 +70,7 @@ This phase starts a fresh database. Version `0.5.0`, protocol `2`.
 
   The rules that keep it honest, each with a test: an edit or delete counts only from the message's author; a `job.*` event counts only from the agent's owner, except `job.withdrawn`, which counts only from the asker; an untrusted event changes nothing and is shown as a warning without its text; an unknown kind changes nothing and breaks nothing; a tag counts only in a `message`.
 - [x] **P1-C4** Keep `mentions`, `candidates`, `continues`, `rings`, `agentPrompt` and `spans` working over the new shapes. `agentPrompt` is unchanged in what it says.
-- [ ] **P1-C5** `test/core.test.ts`: rewrite the state tests for events and add one per rule in P1-C3.
+- [x] **P1-C5** `test/core.test.ts`: rewrite the state tests for events and add one per rule in P1-C3.
 
 ## D. The session
 
