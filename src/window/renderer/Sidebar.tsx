@@ -35,7 +35,7 @@ export function Sidebar({ view, act, onJoin }: { readonly view: ChatView; readon
   const people = view.rows.filter((row) => row.here !== null);
   const open = view.current?.chat ?? "";
   return (
-    <ScrollArea className="w-[220px] flex-none border-r bg-sidebar">
+    <ScrollArea className="h-full bg-sidebar">
       <nav className="sidebar">
         <h2>Channels</h2>
         <ul>

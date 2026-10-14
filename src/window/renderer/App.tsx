@@ -2,8 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { JSX, SyntheticEvent } from "react";
+import { useDefaultLayout } from "react-resizable-panels";
 import { toast } from "sonner";
 
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Toaster } from "@/components/ui/sonner";
 
 import { AGENT_CHOICES, noticeSchema, outcomeSchema, viewSchema } from "../../shared/ipc.ts";
@@ -119,6 +121,8 @@ function Chat({ view, act, tell, onSetup }: { readonly view: ChatView; readonly 
   const [sidebar, setSidebar] = useState(true);
   const current = view.current;
   const chats = view.rows.map((row) => row.chat);
+  // The chat list's width as the user last dragged it, kept in localStorage; one layout with the list shown and one without.
+  const layout = useDefaultLayout({ id: "player-two", panelIds: sidebar ? ["chats", "chat"] : ["chat"], onlySaveAfterUserInteractions: true });
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
@@ -151,44 +155,51 @@ function Chat({ view, act, tell, onSetup }: { readonly view: ChatView; readonly 
     link = `◌ ${view.link.problem} · retrying`;
   }
   return (
-    <div className="app">
+    <ResizablePanelGroup orientation="horizontal" defaultLayout={layout.defaultLayout} onLayoutChanged={layout.onLayoutChanged}>
       {sidebar && (
-        <Sidebar
-          view={view}
-          act={act}
-          onJoin={() => {
-            setDialog("join");
-          }}
-        />
-      )}
-      <main>
-        {current === null ? (
-          <p className="empty">{view.loaded ? "Nobody else has joined this hub yet. Share the install line with a teammate, or start a channel." : "Loading…"}</p>
-        ) : (
-          <>
-            <Thread
+        <>
+          <ResizablePanel id="chats" defaultSize={220} minSize={160} maxSize="50" groupResizeBehavior="preserve-pixel-size">
+            <Sidebar
               view={view}
-              current={current}
               act={act}
-              onPin={() => {
-                setDialog("pin");
+              onJoin={() => {
+                setDialog("join");
               }}
             />
-            <Composer view={view} current={current} act={act} submit={submit} tell={tell} />
-          </>
-        )}
-        <footer className={view.link.state === "down" ? "down" : ""}>
-          <span>
-            {view.me} on {view.hub} · {view.agent} · {view.myRepos.length} {view.myRepos.length === 1 ? "repo" : "repos"} in {view.dev}
-          </span>
-          <span>
-            {link} ·{" "}
-            <button type="button" className="link" onClick={onSetup}>
-              Setup
-            </button>
-          </span>
-        </footer>
-      </main>
+          </ResizablePanel>
+          <ResizableHandle />
+        </>
+      )}
+      <ResizablePanel id="chat">
+        <main className="flex h-full min-w-0 flex-col">
+          {current === null ? (
+            <p className="empty">{view.loaded ? "Nobody else has joined this hub yet. Share the install line with a teammate, or start a channel." : "Loading…"}</p>
+          ) : (
+            <>
+              <Thread
+                view={view}
+                current={current}
+                act={act}
+                onPin={() => {
+                  setDialog("pin");
+                }}
+              />
+              <Composer view={view} current={current} act={act} submit={submit} tell={tell} />
+            </>
+          )}
+          <footer className={view.link.state === "down" ? "down" : ""}>
+            <span>
+              {view.me} on {view.hub} · {view.agent} · {view.myRepos.length} {view.myRepos.length === 1 ? "repo" : "repos"} in {view.dev}
+            </span>
+            <span>
+              {link} ·{" "}
+              <button type="button" className="link" onClick={onSetup}>
+                Setup
+              </button>
+            </span>
+          </footer>
+        </main>
+      </ResizablePanel>
       {dialog === "join" && (
         <JoinChannel
           others={view.otherChannels}
@@ -212,7 +223,7 @@ function Chat({ view, act, tell, onSetup }: { readonly view: ChatView; readonly 
           }}
         />
       )}
-    </div>
+    </ResizablePanelGroup>
   );
 }
 
