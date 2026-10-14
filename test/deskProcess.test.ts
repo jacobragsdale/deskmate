@@ -12,7 +12,7 @@ import type { TestContext } from "node:test";
 import { build } from "esbuild";
 
 import { byCodeUnit } from "../src/core/text.ts";
-import { DeskProcess, wslLaunch } from "../src/window/main/deskProcess.ts";
+import { DeskProcess, windowChecks, wslLaunch } from "../src/window/main/deskProcess.ts";
 import type { Launch } from "../src/window/main/deskProcess.ts";
 import type { Result } from "../src/window/main/wsl.ts";
 import type { Notice, View } from "../src/shared/ipc.ts";
@@ -85,6 +85,7 @@ await test("the real desk is started, each command gets its own reply, and stopp
   const { desk, views, notices } = hold(t, (dir) => ready({ command: process.execPath, args: [COMMAND, "desk"], env: { ...process.env, PLAYER_TWO_HOME: dir } }));
 
   await until("the join form", () => views.length > 0);
+  assert.equal(desk.saidHello, true);
   desk.attend(false);
   const [first, second] = await Promise.all([
     desk.send({ do: "join", hub: "nowhere", name: "alice", token: "", agent: "" }),
@@ -182,6 +183,7 @@ await test("a desk that speaks another protocol is refused and not started again
 
   assert.deepEqual(newer.views, [{ kind: "stopped", problem: "the desk speaks protocol 99 and this window speaks protocol 1: update the window" }]);
   assert.equal(newer.starts(), 1);
+  assert.equal(newer.desk.saidHello, false); // Not in this window's protocol, which is what the setup check needs to know.
   assert.equal(missing.views.length, 1);
   assert.match(missing.views[0]?.kind === "stopped" ? missing.views[0].problem : "", /^the desk keeps stopping with status -2\. The last it said:\nspawn .*no-such-program ENOENT$/);
 });
@@ -220,6 +222,43 @@ await test("on Windows the runtime the app carries is installed into the distrib
   assert.deepEqual(views, [{ kind: "setup", defaultAgent: "agent -p --output-format text" }]);
   assert.deepEqual(await desk.send({ do: "open", chat: "bob" }), { ok: false, problem: "join a hub first" });
   assert.ok(existsSync(launcher));
+});
+
+await test("on Windows the window checks WSL, the distribution, the runtime and the desk in turn, and skips what waits on one that failed", { timeout: 30_000 }, async (t) => {
+  const wsl = standInWsl(t);
+  const resources = join(wsl.windir, "resources");
+  mkdirSync(join(resources, "bin"), { recursive: true });
+  writeFileSync(join(resources, "bin", "player-two-desk"), "#!/bin/sh\n", { mode: 0o755 });
+  const archive = join(resources, "wsl-runtime.tar.gz");
+  assert.equal(spawnSync("tar", ["-czf", archive, "-C", resources, "bin"]).status, 0);
+  const digest = createHash("sha256").update(readFileSync(archive)).digest("hex");
+  writeFileSync(`${archive}.sha256`, `${digest}  wsl-runtime.tar.gz\n`);
+  const statuses = async (distro: string | null, greeted: boolean): Promise<string[]> => (await windowChecks(distro, resources, greeted)).map((check) => `${check.id} ${check.status}`);
+
+  process.env["WINDIR"] = join(wsl.windir, "no windows here");
+  assert.deepEqual(await statuses(null, false), ["wsl fail", "distro skip", "runtime skip", "hello skip"]);
+  process.env["WINDIR"] = wsl.windir;
+
+  const legacy = await windowChecks("Legacy", resources, false);
+  assert.deepEqual(legacy[1], {
+    id: "distro",
+    title: "The distribution is there and on WSL 2",
+    status: "fail",
+    detail: "Legacy runs on WSL 1, and Player Two needs WSL 2",
+    fix: "wsl --set-version Legacy 2"
+  });
+  assert.deepEqual(legacy[2], { id: "runtime", title: "This copy's Linux runtime is installed in it", status: "skip", detail: "waits on: The distribution is there and on WSL 2", fix: "" });
+  assert.deepEqual(await statuses("Fedora", false), ["wsl ok", "distro fail", "runtime skip", "hello skip"]);
+
+  // Nothing installed yet, then installed as the window installs it before it starts the desk, then the desk said hello.
+  assert.deepEqual(await statuses("Ubuntu", false), ["wsl ok", "distro ok", "runtime fail", "hello skip"]);
+  assert.ok((await wslLaunch("Ubuntu", resources)).ok);
+  assert.deepEqual(await statuses("Ubuntu", false), ["wsl ok", "distro ok", "runtime ok", "hello fail"]);
+  assert.deepEqual(await statuses(null, true), ["wsl ok", "distro ok", "runtime ok", "hello ok"]);
+
+  // A runtime from another copy of Player Two is not this one's.
+  writeFileSync(`${archive}.sha256`, `${"0".repeat(64)}  wsl-runtime.tar.gz\n`);
+  assert.match((await windowChecks("Ubuntu", resources, true))[2]?.detail ?? "", /^the runtime in use is .*\/sha256-[0-9a-f]{64}, not the one this copy carries, sha256-0{12}$/);
 });
 
 await test("nothing of the desk's is built into the window's main process or its preload script: they take its types and no more", async () => {

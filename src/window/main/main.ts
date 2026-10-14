@@ -7,8 +7,8 @@ import type { IpcMainInvokeEvent } from "electron";
 
 import { problemOf } from "../../core/text.ts";
 import { commandSchema } from "../../shared/ipc.ts";
-import type { Arrival, Outcome, Question, View } from "../../shared/ipc.ts";
-import { DeskProcess, localLaunch, wslLaunch } from "./deskProcess.ts";
+import type { Arrival, Check, Outcome, Question, View } from "../../shared/ipc.ts";
+import { DeskProcess, localLaunch, windowChecks, wslLaunch } from "./deskProcess.ts";
 import { distroSchema, loadSettings, saveSettings } from "./settings.ts";
 
 let window: BrowserWindow | null = null;
@@ -92,6 +92,17 @@ ipcMain.handle("command", async (event, raw: unknown): Promise<Outcome> => {
   // Checked here as well as in the desk: the desk answers only a line it can read, so one it cannot would leave the window waiting.
   const command = commandSchema.safeParse(raw);
   return command.success ? desk.send(command.data) : { ok: false, problem: problemOf(command.error) };
+});
+
+// The setup check. On Windows the window's own part comes first, and only once it passes is there a desk to ask for the rest.
+ipcMain.handle("doctor", async (event): Promise<Check[]> => {
+  fromWindow(event);
+  const own = process.platform === "win32" ? await windowChecks(loadSettings(app.getPath("userData")).distro, process.resourcesPath, desk.saidHello) : [];
+  if (own.some((check) => check.status === "fail")) {
+    return own;
+  }
+  const asked = await desk.send({ do: "doctor" });
+  return [...own, ...(asked.ok ? (asked.data ?? []) : [{ id: "desk", title: "The desk answers", status: "fail" as const, detail: asked.problem, fix: "" }])];
 });
 
 // Run the desk in another WSL distribution from now on, or with null in the default one. For the setup page, which task P0-I5 adds to the preload's calls.

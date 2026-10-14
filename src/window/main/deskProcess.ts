@@ -3,7 +3,7 @@
 import { spawn } from "node:child_process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join as joinPath } from "node:path";
 import { createInterface } from "node:readline";
 
@@ -11,8 +11,8 @@ import { digestIn, installScript } from "../../core/install.ts";
 import { problemOf } from "../../core/text.ts";
 import { PROTOCOL } from "../../core/wire.ts";
 import { deskLineSchema, readLine } from "../../shared/ipc.ts";
-import type { Arrival, Command, Notice, Outcome, Question, View, WindowLine } from "../../shared/ipc.ts";
-import { home, named, runScript, toLinuxPath, wslExe } from "./wsl.ts";
+import type { Arrival, Check, Command, Notice, Outcome, Question, View, WindowLine } from "../../shared/ipc.ts";
+import { home, listDistros, named, runScript, toLinuxPath, wslExe } from "./wsl.ts";
 import type { Result } from "./wsl.ts";
 
 const RESTARTS = 3; // Times a desk that went away unasked is started again before the window gives up on it.
@@ -67,6 +67,68 @@ export async function wslLaunch(distro: string | null, resources: string): Promi
   return { ok: true, value: { command: wslExe(), args: [...named(distro), "--exec", `${linuxHome.value}/.player-two/current/bin/player-two-desk`], env: { ...process.env, WSL_UTF8: "1" } } };
 }
 
+type Finding = Pick<Check, "status" | "detail" | "fix">;
+
+function found(detail: string): Finding {
+  return { status: "ok", detail, fix: "" };
+}
+
+function failed(detail: string, fix: string): Finding {
+  return { status: "fail", detail, fix };
+}
+
+async function distroFinding(distro: string | null): Promise<Finding> {
+  const listed = await listDistros();
+  if (!listed.ok) {
+    return failed(listed.problem, "");
+  }
+  const chosen = listed.value.find((each) => (distro === null ? each.isDefault : each.name === distro));
+  if (chosen === undefined) {
+    return distro === null ? failed("WSL has no default distribution", "wsl --install -d Ubuntu") : failed(`WSL has no distribution named ${distro}; choose another below`, "wsl --install -d Ubuntu");
+  }
+  return chosen.version === 2
+    ? found(`${chosen.name}, on WSL 2${chosen.isDefault ? ", the default" : ""}`)
+    : failed(`${chosen.name} runs on WSL ${String(chosen.version)}, and Player Two needs WSL 2`, `wsl --set-version ${chosen.name} 2`);
+}
+
+async function runtimeFinding(distro: string | null, resources: string): Promise<Finding> {
+  const archive = joinPath(resources, "wsl-runtime.tar.gz");
+  const digest = shippedDigest(archive);
+  if (digest === "") {
+    return failed(`this copy of Player Two has no Linux runtime to install: ${archive}.sha256 is missing or damaged`, "Install Player Two again");
+  }
+  const current = await runScript(distro, 'readlink "$HOME/.player-two/current" || true\n');
+  if (!current.ok) {
+    return failed(current.problem, "");
+  }
+  const using = current.value.trim();
+  return using.endsWith(`/sha256-${digest}`)
+    ? found(`the one this copy carries, sha256-${digest.slice(0, 12)}`)
+    : failed(
+        `${using === "" ? "no runtime is installed" : `the runtime in use is ${using}`}, not the one this copy carries, sha256-${digest.slice(0, 12)}`,
+        "Press Check again: Player Two installs its runtime each time it starts the desk"
+      );
+}
+
+/**
+ * The window's own part of the setup check on Windows, ahead of the desk's: WSL, the distribution, the runtime this copy carries, and the desk itself, which `greeted` says has said hello.
+ * Each needs the one before it, so after the first that fails the rest are skipped; and while any fails there is no desk to ask for the rest.
+ */
+export async function windowChecks(distro: string | null, resources: string, greeted: boolean): Promise<Check[]> {
+  const steps: readonly (readonly [id: string, title: string, find: () => Finding | Promise<Finding>])[] = [
+    ["wsl", "WSL is installed", () => (existsSync(wslExe()) ? found(wslExe()) : failed(`there is no ${wslExe()}`, "wsl --install"))],
+    ["distro", "The distribution is there and on WSL 2", () => distroFinding(distro)],
+    ["runtime", "This copy's Linux runtime is installed in it", () => runtimeFinding(distro, resources)],
+    ["hello", "The desk has started", () => (greeted ? found("the desk said hello") : failed("the desk has not said hello", "Press Check again to start it afresh"))]
+  ];
+  const checks: Check[] = [];
+  for (const [id, title, find] of steps) {
+    const before = checks.find((check) => check.status === "fail");
+    checks.push({ id, title, ...(before === undefined ? await find() : { status: "skip", detail: `waits on: ${before.title}`, fix: "" }) });
+  }
+  return checks;
+}
+
 /** What the desk says that is not the answer to a command. */
 export interface Handlers {
   readonly view: (view: View) => void;
@@ -88,6 +150,7 @@ export class DeskProcess {
   private commands = 0;
   private attentive: boolean | null = null; // What the desk was last told, so one started again is told too.
   private tail = "";
+  private greeted = false; // Whether the desk now running has said hello in this window's protocol.
 
   /** `prepare` does whatever the desk needs before it can be started, each time it is, and says how to start it: `localLaunch`, or `wslLaunch` on Windows. */
   constructor(prepare: () => Promise<Result<Launch>>, handlers: Handlers, restartDelay = RESTART_DELAY) {
@@ -115,6 +178,11 @@ export class DeskProcess {
         this.handlers.view({ kind: "stopped", problem: problemOf(error) });
       }
     );
+  }
+
+  /** Whether the desk now running has said hello, for the setup check. */
+  public get saidHello(): boolean {
+    return this.greeted;
   }
 
   /** Have the desk do something. Resolves with its reply, or with a problem when the desk went before it gave one. */
@@ -170,6 +238,7 @@ export class DeskProcess {
     const child = spawn(launch.command, launch.args, { env: launch.env, stdio: "pipe", windowsHide: true });
     this.child = child;
     this.tail = "";
+    this.greeted = false;
     child.stdin.on("error", () => undefined); // A desk that has gone cannot be written to. Its going is what gets handled, in `gone`.
     child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
       this.keep(chunk);
@@ -209,7 +278,8 @@ export class DeskProcess {
     }
     switch (line.t) {
       case "hello":
-        if (line.protocol !== PROTOCOL) {
+        this.greeted = line.protocol === PROTOCOL;
+        if (!this.greeted) {
           this.wanted = false;
           this.child?.kill();
           const stale = line.protocol > PROTOCOL ? "window" : "desk";
