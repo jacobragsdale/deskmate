@@ -158,6 +158,20 @@ export const commandSchema = z.discriminatedUnion("do", [
   z.strictObject({ do: z.literal("doctor") }) // Run the setup check. The reply's data is the list.
 ]);
 
+/** One step of an agent's run as its owner sees it: what the agent said or thought, a tool it used, its plan, a permission asked, an error, or how the run stands. It stays on the owner's machine, in the desk's view and never in an event. */
+export const activityItemSchema = z
+  .strictObject({
+    id: z.string(), // An item that changes keeps its id: a newer version takes the older one's place.
+    run: z.string(), // Which run it is part of.
+    kind: z.enum(["message", "thought", "tool", "plan", "permission", "error", "state"]),
+    title: z.string(), // Verb and object: "Edited src/queue.py", "Ran npm test".
+    outcome: z.string(), // "+12 −3", "exit 0", "refused"; "" while running.
+    status: z.enum(["running", "done", "failed"]),
+    quiet: z.boolean(), // Reads, searches and thoughts.
+    detail: z.string() // Raw input and output, at most 8 KB; "" when there is none.
+  })
+  .readonly();
+
 /** A message or an answer a search found: where it is, who wrote it, and a stretch of its text as last edited, in pieces, the words found marked. All of it is drawn as text. */
 const hitSchema = z
   .strictObject({
@@ -231,6 +245,7 @@ export type CurrentView = z.infer<typeof currentSchema>;
 export type View = z.infer<typeof viewSchema>;
 export type ChatView = Extract<View, { kind: "chat" }>;
 export type Check = z.infer<typeof checkSchema>;
+export type ActivityItem = z.infer<typeof activityItemSchema>;
 export type Hit = z.infer<typeof hitSchema>;
 export type Command = z.infer<typeof commandSchema>;
 export type Outcome = z.infer<typeof outcomeSchema>;

@@ -12,8 +12,9 @@ import type { Accepted, Entry, Message, Request } from "../core/chat.ts";
 import { readContent } from "../core/kinds.ts";
 import { notesIn } from "../core/links.ts";
 import type { Content, ContentOf } from "../core/kinds.ts";
-import { runAgent } from "./agents/oneshot.ts";
+import { oneshotRunner, runAgent } from "./agents/oneshot.ts";
 import { PRESETS } from "./agents/presets.ts";
+import type { AgentRunner, RunHandlers } from "./agents/runner.ts";
 import { AgentCancelledError, PlayerTwoError, Refused } from "./client.ts";
 import type { Client, Found, Runner } from "./client.ts";
 import * as repos from "./repos.ts";
@@ -21,13 +22,16 @@ import type { Checkout, Head } from "./repos.ts";
 import { cloneFolder } from "../core/remotes.ts";
 import { oneLine, problemOf } from "../core/text.ts";
 import { defaultAgentOf, fitText, isChannel, nameSchema, PROTOCOL } from "../core/wire.ts";
-import type { ChannelInfo, Delivered, Person, RepoRef, TeamRepo } from "../core/wire.ts";
+import type { ChannelInfo, Delivered, PermissionMode, Person, RepoRef, TeamRepo } from "../core/wire.ts";
 
 const PRESENCE = 25; // Seconds between asking the hub who is here, which channels there are and who has which repo. Each is a signed request, which is what says the user is here; the repo scan runs on the same beat.
 const RETRY_DELAY = 5; // Seconds to wait before asking a hub that did not answer again.
 const UPDATE_DELAY = 60; // Seconds to wait before asking a hub on another protocol again: its answer changes only when someone updates one side.
 const STOP_WAIT = 3; // Seconds to give stopped agents to go before the session is done.
 const PAGE = 50; // Events of one chat loaded at a time: its newest when it is first listed, and as many again each time the user scrolls back.
+// Every run is let go at "full", as its job.accepted says, until P3-C1 gives each its own mode. Nothing is asked of the owner at "full", and the activity feed is P3-D3's.
+const RUN_MODE: PermissionMode = "full";
+const IN_THE_DARK: RunHandlers = { activity: () => undefined, permission: () => Promise.resolve("refuse") };
 
 /** What the session remembers between runs, in app-state.json. */
 const savedSchema = z.strictObject({ read: z.record(z.string(), z.int()), chat: z.string().nullable() });
@@ -993,10 +997,13 @@ export class Session {
       throw new PlayerTwoError(`there is no checkout of ${repo} under ${this.dev}`);
     }
     const agent = defaultAgentOf(this.client.config);
-    const argv = [agent.command, ...agent.args, agentPrompt(message, this.me, repo, this.chats.earlier(message), !post)];
+    if (agent.protocol === "acp") {
+      throw new PlayerTwoError(`${agent.label} is spoken to over ACP, which this version cannot do yet: choose a one-shot agent on the Setup page`);
+    }
+    const prompt = agentPrompt(message, this.me, repo, this.chats.earlier(message), !post);
     const run: AgentRun = { entry: message.entry, repo, post, cancel: new AbortController(), startedAt: Date.now(), done: Promise.resolve() };
     this.runs.set(key, run);
-    run.done = this.work(key, run, checkout, argv);
+    run.done = this.work(key, run, checkout, oneshotRunner(agent, this.runner), prompt);
     this.hooks.changed();
   }
 
@@ -1004,7 +1011,7 @@ export class Session {
    * Tell the chat the user let the agent run, on which branch and commit, then run it and see its answer to where it belongs. Never rejects: every way a run can end is told to the user.
    * Nothing runs until the chat has been told: when that cannot be published, the agent does not start. Once it has, the chat hears one ending: the answer (now, or when the draft is sent, or a decline when it is thrown away), a failure, or a stop.
    */
-  private async work(key: string, run: AgentRun, checkout: Checkout, argv: readonly string[]): Promise<void> {
+  private async work(key: string, run: AgentRun, checkout: Checkout, runner: AgentRunner, prompt: string): Promise<void> {
     const { entry, repo } = run;
     const chat = chatOf(entry.event, this.me);
     const request = [entry.event.id];
@@ -1029,7 +1036,7 @@ export class Session {
       if (stopped()) {
         throw new AgentCancelledError("stopped"); // While the chat was being told: it ends as stopped, without the agent being started only to be killed.
       }
-      const text = fitText(await this.runner(argv, checkout.path, run.cancel.signal));
+      const text = fitText(await runner.run(prompt, checkout.path, RUN_MODE, IN_THE_DARK, run.cancel.signal));
       if (text === "") {
         ending = "the agent returned nothing";
       } else if (run.post) {

@@ -1,10 +1,12 @@
-/** An agent as a one-shot command: split the configured command into words, run it with the prompt as its last argument, and take what it prints as the answer. */
+/** An agent as a one-shot command: run its program and arguments with the prompt as the last argument, and take what it prints as the answer. */
 
 import { spawn } from "node:child_process";
 import { join as joinPath } from "node:path";
 
+import type { Agent } from "../../core/wire.ts";
 import { AgentCancelledError, defaultHome, PlayerTwoError } from "../client.ts";
 import type { Runner } from "../client.ts";
+import type { AgentRunner } from "./runner.ts";
 
 export const AGENT_TIMEOUT = 900; // Seconds an approved agent run may take.
 
@@ -94,3 +96,8 @@ export const runAgent: Runner = (argv, cwd, cancel) =>
       });
     });
   });
+
+/** A one-shot command as an agent runner: the agent's program and arguments with the prompt added as the last argument. It takes no questions, so it cannot be held to a mode. */
+export function oneshotRunner(agent: Agent, exec: Runner = runAgent): AgentRunner {
+  return { restrictable: false, run: (prompt, cwd, _mode, _handlers, cancel) => exec([agent.command, ...agent.args, prompt], cwd, cancel) };
+}
