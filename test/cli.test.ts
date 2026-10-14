@@ -10,6 +10,7 @@ import { z } from "zod";
 
 import { main, render } from "../src/cli/main.ts";
 import { readContent } from "../src/core/kinds.ts";
+import { noteLink } from "../src/core/links.ts";
 import { loadKey, signEvent } from "../src/core/sign.ts";
 import { eventSchema } from "../src/core/wire.ts";
 import type { Delivered } from "../src/core/wire.ts";
@@ -283,4 +284,26 @@ await test("doctor prints the setup check as aligned text, or as one JSON array 
   assert.equal(lines[at + 1], "      fix: Join from the window, or run: player-two join HUB NAME TOKEN");
   assert.equal(lines.filter((line) => !line.startsWith("      fix: ")).length, checks.length);
   assert.equal(words.status, 1);
+});
+
+await test("search prints each match with its author, chat, time, a stretch of its text and its link, and --in keeps to one chat", async (t) => {
+  const hub = await startHub(t);
+  const [alice, bob] = [await hub.join("alice"), await hub.join("bob")];
+  await alice.publish("#backend", "channel.join", {});
+  await bob.publish("#backend", "channel.join", {});
+  const said = await alice.publish("#backend", "message", { text: "the retry lives in queue.py", via: "cli" });
+  const mine = await bob.publish("alice", "message", { text: "and the retry limit?", via: "cli" });
+
+  const found = await playerTwo(hub, "bob", ["search", "retry"]);
+  assert.equal(found.status, 0, found.err);
+  assert.match(found.out, new RegExp(`┌ ${String(said.seq)} · alice in #backend · ${WHEN}\n│ the retry lives in queue\\.py\n└ ${noteLink(said.event.id)}`));
+  assert.match(found.out, new RegExp(`┌ ${String(mine.seq)} · bob to alice · ${WHEN}\n│ and the retry limit\\?\n└ ${noteLink(mine.event.id)}`)); // His own message in a direct chat says whom it went to.
+  const json = z.array(z.strictObject({ seq: z.int(), event: eventSchema, snippet: z.array(z.strictObject({ text: z.string(), hit: z.boolean() })), trusted: z.boolean(), link: z.string() }));
+  const inChannel = json.parse(printed(await playerTwo(hub, "bob", ["search", "retry", "queue", "--in", "#backend", "--json"])));
+  assert.deepEqual(
+    inChannel.map((match) => [match.seq, match.trusted, match.link, match.snippet.filter((piece) => piece.hit).map((piece) => piece.text)]),
+    [[said.seq, true, noteLink(said.event.id), ["retry", "queue"]]]
+  );
+  assert.equal((await playerTwo(hub, "bob", ["search", "nothing", "like", "this"])).out, "nothing found");
+  assert.equal((await playerTwo(hub, "bob", ["search"])).status, 2);
 });

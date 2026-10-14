@@ -8,6 +8,7 @@ import { z } from "zod";
 import { chatOf } from "../core/chat.ts";
 import type { Entry } from "../core/chat.ts";
 import { readContent } from "../core/kinds.ts";
+import { noteLink } from "../core/links.ts";
 import { problemOf } from "../core/text.ts";
 import { channelSchema, fitText, isChannel } from "../core/wire.ts";
 import type { ChannelInfo, Delivered, Event } from "../core/wire.ts";
@@ -15,6 +16,7 @@ import { DEFAULT_AGENT, defaultDev, defaultHome, http, join, loadClient, PlayerT
 import type { Client, Transport } from "../desk/client.ts";
 import { runChecks } from "../desk/doctor.ts";
 import { runDesk } from "../desk/main.ts";
+import { trust } from "../desk/notes.ts";
 import { runHub, verifyHub } from "../hub/main.ts";
 import type { Check } from "../shared/ipc.ts";
 
@@ -27,13 +29,14 @@ const USAGE = `usage: player-two COMMAND
   inbox [--after SEQ] [--wait SECONDS]  print the messages and agents' answers other people sent you or your channels
   who                                   list everyone who has joined
   repos                                 list every agent as @person/repo with the branch it is on
+  search WORDS... [--in CHAT]           find the messages and answers that hold every word, in every chat or in one, each with its link
   channel [join NAME | leave NAME]      list the channels, or join or leave one
   hub [--host HOST] [--port PORT]       run the hub; it reads PLAYER_TWO_JOIN_TOKEN, PLAYER_TWO_DB, PLAYER_TWO_REPOS and, if set, PLAYER_TWO_DOWNLOADS
   hub verify                            check that no event in the log in PLAYER_TWO_DB was changed or taken out since it was stored
   desk                                  run your side with no window, for the window to start: it speaks JSON lines on standard input and output
   doctor                                check what Player Two needs on this machine, and say how to fix what is missing
 
-send, inbox, who, repos, channel and doctor take --json, and then print one JSON value and nothing else.
+send, inbox, who, repos, channel, search and doctor take --json, and then print one JSON value and nothing else.
 A command exits with 0 on success, 1 after printing a failure, and 2 when it was not given what it takes.`;
 
 /** The command was not given what it takes. The usage is printed, and the exit status says so. */
@@ -83,17 +86,24 @@ function saying(event: Event): { readonly text: string; readonly agent: string |
   return said.kind === "job.result" ? { text: said.content.text, agent: said.content.repo } : null;
 }
 
-/** One message or answer as the terminal shows it, numbered by its seq, which `inbox --after` takes. One that failed its signature check is never shown with its text. */
-export function render(delivered: Delivered, trusted: boolean): string {
+/**
+ * One message or answer as the terminal shows it, numbered by its seq, which `inbox --after` takes. One that failed its signature check is never shown with its text.
+ * Cited, as `search` and `read` show a note, it shows `cite.text` in place of what the event says, says whom the reader's own message in a direct chat went to, and ends with the note's link.
+ */
+export function render(delivered: Delivered, trusted: boolean, cite: { readonly me: string; readonly text: string } | null = null): string {
   const { seq, event } = delivered;
   if (!trusted) {
     return `!! ${String(seq)} claims to be from ${event.author}, but its signature does not match the key first seen for them. Ignored.`;
   }
   const said = saying(event);
   const when = new Date(event.ts * 1000).toLocaleString("en-GB", { weekday: "short", hour: "2-digit", minute: "2-digit" }); // "Fri 14:05", in this machine's own time.
-  const lines = (said?.text ?? `(${event.kind})`).split(/\r\n|\r|\n/).map((line) => `│ ${line}`);
+  const lines = (cite?.text ?? said?.text ?? `(${event.kind})`).split(/\r\n|\r|\n/).map((line) => `│ ${line}`);
   const agent = said?.agent ?? null;
-  return [`┌ ${String(seq)} · ${event.author}${agent === null ? "" : ` (${agent} agent)`}${isChannel(event.to) ? ` in ${event.to}` : ""} · ${when}`, ...lines, "└"].join("\n");
+  let where = isChannel(event.to) ? ` in ${event.to}` : "";
+  if (cite?.me === event.author && where === "") {
+    where = ` to ${event.to}`;
+  }
+  return [`┌ ${String(seq)} · ${event.author}${agent === null ? "" : ` (${agent} agent)`}${where} · ${when}`, ...lines, cite === null ? "└" : `└ ${noteLink(event.id)}`].join("\n");
 }
 
 /** The setup check as aligned text: how each item stands, what was checked and what was found, and under one that is not right, the fix to copy. */
@@ -103,14 +113,11 @@ function layout(checks: readonly Check[]): string {
 }
 
 /** The messages and answers among what the hub delivered that someone else sent, as delivered, each with whether it holds under the key first seen for its author. */
-async function fromOthers(client: Client, found: readonly Delivered[]): Promise<Entry[]> {
-  const kept: Entry[] = [];
-  for (const delivered of found) {
-    if (delivered.event.author !== client.config.name && saying(delivered.event) !== null) {
-      kept.push({ ...delivered, trusted: await client.isTrusted(delivered.event) });
-    }
-  }
-  return kept;
+function fromOthers(client: Client, found: readonly Delivered[]): Promise<Entry[]> {
+  return trust(
+    client,
+    found.filter((delivered) => delivered.event.author !== client.config.name && saying(delivered.event) !== null)
+  );
 }
 
 /** The first messages and answers from someone else after `after` that `wanted` keeps, from the hub's stream as soon as there are any; none once `seconds` have passed. */
@@ -190,6 +197,21 @@ async function inbox(joined: () => Client, args: string[], out: (line: string) =
   show(out, values.json, found, found.length === 0 ? "no messages" : found.map((each) => render(each, each.trusted)).join("\n"));
 }
 
+/** Print the messages and answers that hold every word given, best match first, each with a stretch of its text as last edited and its link. */
+async function search(joined: () => Client, args: string[], out: (line: string) => void): Promise<void> {
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { in: { type: "string" }, json: { type: "boolean", default: false } } });
+  if (positionals.length === 0) {
+    throw new UsageError("search takes the words to look for");
+  }
+  const client = joined();
+  const q = positionals.join(" ");
+  const found = await client.search(values.in === undefined ? { q } : { q, chat: values.in });
+  const trusted = await trust(client, found);
+  const matches = found.map((match, index) => ({ ...match, trusted: trusted[index]?.trusted ?? false, link: noteLink(match.event.id) }));
+  const words = matches.map((match) => render(match, match.trusted, { me: client.config.name, text: match.snippet.map((piece) => piece.text).join("") }));
+  show(out, values.json, matches, words.length === 0 ? "nothing found" : words.join("\n"));
+}
+
 /** Join or leave a channel, given with or without its "#", unless the user is already in it or already out of it, and return it as the hub then reports it. */
 async function joinOrLeave(client: Client, action: "join" | "leave", name: string): Promise<ChannelInfo> {
   const channel = channelSchema.safeParse(name.startsWith("#") ? name : `#${name}`);
@@ -253,6 +275,30 @@ function hub(args: string[], out: (line: string) => void): void {
   }
 }
 
+async function who(joined: () => Client, args: string[], out: (line: string) => void): Promise<void> {
+  const { json } = parseArgs({ args, options: { json: { type: "boolean", default: false } } }).values;
+  const client = joined();
+  const people = await client.users();
+  show(out, json, people, people.map((user) => `${user.name}${user.name === client.config.name ? " (you)" : ""}`).join("\n"));
+}
+
+async function repos(joined: () => Client, args: string[], out: (line: string) => void): Promise<void> {
+  const { json } = parseArgs({ args, options: { json: { type: "boolean", default: false } } }).values;
+  const team = await joined().repos();
+  const lines = team.map((repo) => `@${repo.user}/${repo.name}  ${repo.branch}`);
+  show(out, json, team, lines.length === 0 ? "nobody has shared a repo yet; repos under ~/dev are shared once the window has run" : lines.join("\n"));
+}
+
+/** The commands that act as the person who joined from here, by name. */
+const AS_USER = new Map<string, (joined: () => Client, args: string[], out: (line: string) => void, options: Options) => Promise<void>>([
+  ["send", (joined, args, out, options) => send(joined, args, out, options.stdin)],
+  ["inbox", inbox],
+  ["channel", channel],
+  ["who", who],
+  ["repos", repos],
+  ["search", search]
+]);
+
 async function run(argv: readonly string[], options: Options, out: (line: string) => void): Promise<void> {
   const [command = "", ...args] = argv;
   const home = options.home ?? defaultHome();
@@ -264,6 +310,7 @@ async function run(argv: readonly string[], options: Options, out: (line: string
     }
     return client;
   };
+  const asUser = AS_USER.get(command);
   switch (command) {
     case "hub":
       hub(args, out);
@@ -278,31 +325,11 @@ async function run(argv: readonly string[], options: Options, out: (line: string
     case "doctor":
       await doctor(home, args, out);
       break;
-    case "send":
-      await send(joined, args, out, options.stdin);
-      break;
-    case "inbox":
-      await inbox(joined, args, out);
-      break;
-    case "channel":
-      await channel(joined, args, out);
-      break;
-    case "who": {
-      const { json } = parseArgs({ args, options: { json: { type: "boolean", default: false } } }).values;
-      const client = joined();
-      const people = await client.users();
-      show(out, json, people, people.map((user) => `${user.name}${user.name === client.config.name ? " (you)" : ""}`).join("\n"));
-      break;
-    }
-    case "repos": {
-      const { json } = parseArgs({ args, options: { json: { type: "boolean", default: false } } }).values;
-      const team = await joined().repos();
-      const lines = team.map((repo) => `@${repo.user}/${repo.name}  ${repo.branch}`);
-      show(out, json, team, lines.length === 0 ? "nobody has shared a repo yet; repos under ~/dev are shared once the window has run" : lines.join("\n"));
-      break;
-    }
     default:
-      throw new UsageError(command === "" ? "which command?" : `no such command: ${command}`);
+      if (asUser === undefined) {
+        throw new UsageError(command === "" ? "which command?" : `no such command: ${command}`);
+      }
+      await asUser(joined, args, out, options);
   }
 }
 
