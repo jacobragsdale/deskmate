@@ -9,8 +9,10 @@ Agreed on 2026-10-13. This is the order of work from where the repository stands
 | Client | TypeScript only. The Python interface and `deskmate` command are deleted. | One implementation of the wire format instead of two that must move together. |
 | Hub | Ported to Node and TypeScript. | It then shares its schemas and signing code with the client. It is about 300 lines, and phase 1 rewrites its core anyway. |
 | Desktop app | Electron, React, shadcn/ui. | Already built and working without shadcn; the styling moves in phase 0. |
-| Where it runs | On each person's cloud workstation, which runs Windows with the repos and the agent CLI inside WSL. | The window is a Windows app; everything that touches `~/dev` runs in WSL. No split between a laptop and a remote machine. |
+| Where it runs | On each person's cloud workstation: Windows 11, with the repos and the agent CLI inside WSL2 Ubuntu. | The window is a Windows app; everything that touches `~/dev` runs in WSL. No split between a laptop and a remote machine. |
 | Windows and WSL | Two processes: the window, and a headless "desk" that holds the session. The window starts the desk with `wsl.exe` and they exchange JSON lines over standard input and output. | Scanning, cloning and running agents all happen in Linux, where the checkouts are, at native speed and with process groups that can be stopped. The window stays a real Windows app, with Windows notifications, a tray icon and start at login. No network port is opened. |
+| Agents | Cursor's CLI and GitHub Copilot's CLI, both installed inside WSL. Both speak ACP over standard input and output: `agent acp` and `copilot --acp --stdio`. | They are what the team uses. Copilot's ACP mode is a public preview and may change. Cursor's model calls leave the network, so its endpoints must be allowed through the proxy. |
+| Hub deployment | One Docker container on AKS, one replica, the SQLite file on an Azure Disk volume. | The manifest in `deploy/k8s.yaml` already has this shape. A file share is not safe for SQLite. |
 | Agents that outlive the machine | Not doing. | Workstations are cloud machines that are already always on. |
 | Storage | One SQLite file on the hub, as now. | Right for a team. No Postgres, Redis or object store. |
 
@@ -31,10 +33,16 @@ Goal: Python leaves the repository and nothing a user can do today is lost.
 1. Commit the app on `electron-app` and merge it.
 2. Port the hub to Node: the same routes, the same SQLite schema, `async` handlers in place of one thread per waiting client. Use Node's built-in `node:sqlite` if it is stable in the Node version we pin, otherwise `better-sqlite3`. Port the cases in `tests/test_hub.py`.
 3. Rebuild the command line in TypeScript on `app/src/core`: `send`, `inbox`, `who`, `repos`, `channel`, `hub`. Every command takes `--json` and keeps the exit codes the README documents. Agents use `deskmate send --wait`, so this cannot be skipped.
-4. Reshape the repository into one package with the hub, the desk, the command and the window as entry points of one build. Swap the Dockerfile and the Kubernetes manifest's image for the Node hub.
-5. Split the desk from the window. The desk is a headless Node program that owns the identity, the session, the repo scan and the agent runs; it reads commands and writes views as JSON lines. The window starts it as a child process: directly on Linux and macOS, and through `wsl.exe` on Windows, in the default distribution unless a setting names another. Stopping the window stops the desk, and the desk stops its agents.
+4. Reshape the repository into one package with the hub, the desk, the command and the window as entry points of one build. Swap the Dockerfile for the Node hub, push the image to the team's registry, and keep the manifest's single replica, `Recreate` strategy and disk-backed volume.
+5. Split the desk from the window. The desk is a headless Node program that owns the identity, the session, the repo scan and the agent runs; it reads commands and writes views as JSON lines. The window starts it as a child process: directly on Linux and macOS, and through `wsl.exe` on Windows, in the default distribution unless a setting names another. Stopping the window stops the desk, and the desk stops its agents. Three lessons taken from T3 Code's WSL support:
+   - Call `wsl.exe` by its full path under `System32`, and feed any script to `sh -s` on standard input. `wsl.exe` re-escapes arguments and mangles quotes.
+   - Check first that WSL and the distribution answer, and say which one failed in words the user can act on.
+   - Stay on standard input and output. T3 Code reaches its WSL server over the loopback address and records that Windows can take thirty seconds or more to start forwarding it.
 6. Move the window's styling to shadcn/ui: Vite and Tailwind replace the hand-written stylesheet; shadcn's Dialog, Command, ScrollArea, Tooltip and Sonner replace the native `<dialog>`, the tag list and the home-made toasts. The window keeps its content security policy; check that Radix's positioning works under it before relaxing anything.
-7. Package two things. A Windows installer for the window. A WSL-side install, run from the hub's install line inside WSL, that puts the desk and the `deskmate` command there, where agents can call it. The identity in `~/.config/deskmate` lives in WSL only.
+7. Package one Windows installer that carries the Linux half inside it, as T3 Code does: an archive of the desk, the `deskmate` command and their own Node, with its SHA-256. On first launch, and after each update, the window unpacks it into the chosen distribution under a folder named by that digest and links `deskmate` onto the `PATH` there, where agents can call it. Ubuntu then needs nothing installed by hand. The identity in `~/.config/deskmate` lives in WSL only.
+   - Build and sign the installer ourselves, with the hub's address baked in so a first launch asks only for a name and the join token.
+   - The hub serves the installer, so nothing is fetched from outside the network.
+   - The join form offers Cursor and Copilot as the agent, in place of today's `claude -p` default. Confirm each one's one-shot flags on a workstation.
 8. Keep the development loop inside WSL: `npm start` there runs the Linux build of the window under WSLg and starts the desk directly, so day-to-day work needs no Windows build.
 9. Fix what the review found, while the hub is open:
    - `/info` reports a version, and clients ignore fields they do not know, so an update on one side stops breaking the other.
@@ -51,7 +59,7 @@ Borrowed from Buzz: every action is a signed event with a kind, in one log.
 1. Replace the note, whose kind is `note` or `status`, with an event: author, chat, kind, content, time, what it refers to, signature. Kinds are dotted names such as `message`, `message.edit`, `reaction`, `run.approved`, `channel.pin`. The signing stays Ed25519 over the same fixed-position JSON array.
 2. The hub checks the envelope, the signature and membership, and nothing else. It stores and relays kinds it does not know, and clients skip them. Later phases then add kinds without breaking older clients.
 3. Status notes with `working\nmain` in the body become `run.*` events with fields. An approval becomes a signed record: who let which agent run, for whom, in which repo, on which branch and commit.
-4. The hub pushes events over one streaming response in place of long-polling, and chains each stored event to the hash of the one before it, so the log shows if it has been altered.
+4. The hub pushes events over one streaming response in place of long-polling (raise the ingress's read timeout and turn off its buffering for that route, or clients drop every minute), and chains each stored event to the hash of the one before it, so the log shows if it has been altered.
 5. The chat state in `app/src/core/chat.ts` becomes a fold over events.
 6. In the window: threads, reactions, editing and deleting your own messages, and a line when someone joins, leaves or pins a repo.
 
@@ -75,7 +83,7 @@ Done when: an agent asked "have we seen this before?" answers with links to earl
 
 Borrowed from Buzz: the Agent Client Protocol in place of a command that prints once, and a feed that reads as verb, object, outcome.
 
-1. Add a second way to run an agent beside the one-shot command: an ACP session over standard input and output. Claude Code, Codex and Goose speak it; an agent that does not keeps the one-shot path.
+1. Add a second way to run an agent beside the one-shot command: an ACP session over standard input and output, using the protocol's TypeScript SDK. Cursor starts with `agent acp` and Copilot with `copilot --acp --stdio`; any other ACP agent is a command and its arguments. An agent that does not speak ACP keeps the one-shot path.
 2. Show the owner what their agent is doing as it happens: one row per action that updates in place, failures loud and reads quiet, "waiting" and "timed out" shown rather than silence, raw detail one click away.
 3. The feed stays on the owner's machine. Teammates see coarse `run.progress` events only, because what an agent reads on the way may not be fit to share.
 4. A permission request from the agent becomes a card for the owner: allow once, allow for this run, or deny. For a run a teammate asked for, reading is allowed by default and writing or running commands asks first.
@@ -135,8 +143,11 @@ Done when: a failing CI run posts to the branch's channel and tags the branch ow
 - Git hosting, issues and a forge.
 - Nostr compatibility, several teams on one hub, voice, pooled GPU compute, a mobile app.
 
-## Open questions
+## To confirm on a workstation
 
-1. Which Windows version and WSL distribution do the workstations have, and is Node already in WSL? If not, the WSL-side install has to bring its own.
-2. Which agent CLIs does the team use day to day? Phase 3 depends on each one's ACP support.
-3. Does the hub stay where it is deployed today? The Node image changes; the single replica and the disk-backed SQLite file do not.
+Nothing here has run on Windows or in WSL yet. Before phase 0 is called done, check on a real workstation:
+
+1. The window starts its desk through `wsl.exe` in Ubuntu, and stopping an agent there ends its whole process group.
+2. Cursor's and Copilot's command lines, installed and signed in inside WSL, answer a one-shot prompt from a checkout. Note the exact flags.
+3. Both answer an ACP `initialize` when started as above, and each sends a permission request before it writes a file. Phase 3 depends on this. T3 Code moved its Cursor support from ACP to Cursor's SDK, which has no approval callback, so Cursor's ACP path deserves an early look.
+4. Windows shows the window's notifications and tray icon.
