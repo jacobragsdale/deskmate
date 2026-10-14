@@ -1,4 +1,4 @@
-/** The hub: keeps everyone's public key and which repos each has checked out, relays signed notes, and keeps them for later reading. Ported from src/deskmate/hub.py route for route: the same paths, the same statuses, the same words. */
+/** The hub: keeps everyone's public key and channel memberships, relays signed notes, and keeps them for later reading. Ported from src/deskmate/hub.py route for route: the same paths, the same statuses, the same words. */
 
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
@@ -6,10 +6,10 @@ import type { IncomingMessage, Server, ServerResponse } from "node:http";
 
 import { z } from "zod";
 
-import { isUnder, prefixKey } from "../core/remotes.ts";
+import { isUnder, prefixKey, unquote } from "../core/remotes.ts";
 import { authClaim, authIsValid, isFresh, noteIsAuthentic } from "../core/sign.ts";
-import { isChannel, joinSchema, noteSchema, repoSchema } from "../core/wire.ts";
-import type { RepoRef } from "../core/wire.ts";
+import { isChannel, joinSchema, nameSchema, noteSchema, repoRefSchema, repoSchema } from "../core/wire.ts";
+import type { ChannelInfo, RepoRef } from "../core/wire.ts";
 import { Database } from "./db.ts";
 
 const MAX_WAIT = 30; // Longest a client may hold one long-poll open, in seconds.
@@ -45,6 +45,7 @@ const notesQuerySchema = z.object({
 /** One request as a route sees it. */
 interface Ask {
   readonly me: string; // Who is asking, proved by their signature; "" on the routes open to anyone.
+  readonly channel: string; // The channel the path names, with its "#"; "" on a route that names none.
   readonly query: URLSearchParams;
   readonly body: string; // What the request carried, not yet parsed.
   readonly response: ServerResponse; // Only for a long-poll to see that its reader has hung up.
@@ -54,7 +55,7 @@ type Answer = readonly [status: number, body: unknown];
 
 interface Route {
   readonly method: string;
-  readonly path: string;
+  readonly path: string; // As hub.py writes it, with "{name}" where a channel's name goes.
   readonly open?: true; // Answered without asking who is calling.
   readonly answer: (ask: Ask) => Answer | Promise<Answer>;
 }
@@ -150,6 +151,16 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     return claim.name;
   }
 
+  function channelInfo(channel: string): ChannelInfo {
+    return { name: channel, members: db.members(channel), repo: db.pinOf(channel) };
+  }
+
+  function mustBeIn(channel: string, me: string): void {
+    if (!db.members(channel).includes(me)) {
+      throw new Refusal(403, `join ${channel} first`);
+    }
+  }
+
   function shareable(repo: RepoRef): void {
     if (!isUnder(repo.key, prefix)) {
       throw new Refusal(422, `${repo.name} is not under ${prefix}, so this hub does not share it`);
@@ -228,6 +239,34 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     }
   }
 
+  /** Join a channel, creating it if nobody is in it yet. */
+  function joinChannel(ask: Ask): Answer {
+    db.addMember(ask.channel, ask.me);
+    log("channel joined", { channel: ask.channel, user: ask.me });
+    return [200, channelInfo(ask.channel)];
+  }
+
+  function leaveChannel(ask: Ask): Answer {
+    db.removeMember(ask.channel, ask.me);
+    log("channel left", { channel: ask.channel, user: ask.me });
+    return [200, channelInfo(ask.channel)];
+  }
+
+  /** Say which repo a channel is about. Any member may set or change it. */
+  function pinRepo(ask: Ask): Answer {
+    const repo = jsonBody(repoRefSchema, ask.body);
+    mustBeIn(ask.channel, ask.me);
+    shareable(repo);
+    db.setPin(ask.channel, repo);
+    return [200, channelInfo(ask.channel)];
+  }
+
+  function unpinRepo(ask: Ask): Answer {
+    mustBeIn(ask.channel, ask.me);
+    db.removePin(ask.channel);
+    return [200, channelInfo(ask.channel)];
+  }
+
   const routes: readonly Route[] = [
     { method: "GET", path: "/healthz", open: true, answer: () => [200, { ok: true }] },
     { method: "POST", path: "/join", open: true, answer: join },
@@ -236,18 +275,28 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     { method: "PUT", path: "/repos", answer: putRepos },
     { method: "GET", path: "/repos", answer: () => [200, db.repos()] },
     { method: "POST", path: "/notes", open: true, answer: postNote }, // A note carries its own signature, so it needs no header.
-    { method: "GET", path: "/notes", answer: getNotes }
+    { method: "GET", path: "/notes", answer: getNotes },
+    { method: "GET", path: "/channels", answer: () => [200, db.channels().map(channelInfo)] },
+    { method: "POST", path: "/channels/{name}/join", answer: joinChannel },
+    { method: "POST", path: "/channels/{name}/leave", answer: leaveChannel },
+    { method: "PUT", path: "/channels/{name}/repo", answer: pinRepo },
+    { method: "DELETE", path: "/channels/{name}/repo", answer: unpinRepo }
   ];
+  const table = routes.map((route) => ({ route, pattern: new RegExp(`^${route.path.replace("{name}", "([^/]+)")}$`) }));
 
   async function answer(request: IncomingMessage, response: ServerResponse): Promise<Answer> {
-    const [path, ...query] = (request.url ?? "").split("?");
-    const there = routes.filter((route) => route.path === path);
-    const route = there.find((candidate) => candidate.method === request.method);
-    if (route === undefined) {
+    const [path = "", ...query] = (request.url ?? "").split("?");
+    const there = table.flatMap(({ route, pattern }) => {
+      const found = pattern.exec(path);
+      return found === null ? [] : [{ route, name: found[1] }];
+    });
+    const hit = there.find((candidate) => candidate.route.method === request.method);
+    if (hit === undefined) {
       throw there.length === 0 ? new Refusal(404, "Not Found") : new Refusal(405, "Method Not Allowed");
     }
-    const me = route.open === true ? "" : caller(request.headers.authorization ?? "");
-    return route.answer({ me, query: new URLSearchParams(query.join("?")), body: await bodyText(request), response });
+    const me = hit.route.open === true ? "" : caller(request.headers.authorization ?? "");
+    const channel = hit.name === undefined ? "" : `#${parsed(nameSchema, unquote(hit.name), "name")}`;
+    return hit.route.answer({ me, channel, query: new URLSearchParams(query.join("?")), body: await bodyText(request), response });
   }
 
   const server = createServer((request, response) => {

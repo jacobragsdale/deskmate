@@ -4,8 +4,8 @@ import { DatabaseSync } from "node:sqlite";
 
 import { z } from "zod";
 
-import { deliveredSchema, personSchema, teamRepoSchema } from "../core/wire.ts";
-import type { Delivered, Note, Person, Repo, TeamRepo } from "../core/wire.ts";
+import { deliveredSchema, personSchema, repoRefSchema, teamRepoSchema } from "../core/wire.ts";
+import type { Delivered, Note, Person, Repo, RepoRef, TeamRepo } from "../core/wire.ts";
 
 const SCHEMA_VERSION = 3;
 const PAGE = 100; // Most notes one request gets when it does not ask for the newest few.
@@ -39,6 +39,8 @@ const pubkeySchema = z.strictObject({ pubkey: z.string() }).optional();
 const peopleSchema = z.array(personSchema);
 const teamReposSchema = z.array(teamRepoSchema);
 const membersSchema = z.array(z.strictObject({ user: z.string() }));
+const channelsSchema = z.array(z.strictObject({ channel: z.string() }));
+const pinSchema = repoRefSchema.optional();
 const deliveredListSchema = z.array(deliveredSchema);
 
 export class Database {
@@ -100,9 +102,35 @@ export class Database {
     return teamReposSchema.parse(this.db.prepare("SELECT name, key, url, branch, user FROM repos ORDER BY name, user").all());
   }
 
+  /** Every channel with somebody in it. */
+  public channels(): readonly string[] {
+    return channelsSchema.parse(this.db.prepare("SELECT DISTINCT channel FROM members ORDER BY channel").all()).map((row) => row.channel);
+  }
+
   /** Who is in a channel, by name. */
   public members(channel: string): readonly string[] {
     return membersSchema.parse(this.db.prepare("SELECT user FROM members WHERE channel = ? ORDER BY user").all(channel)).map((row) => row.user);
+  }
+
+  public addMember(channel: string, user: string): void {
+    this.db.prepare("INSERT OR IGNORE INTO members (channel, user) VALUES (?, ?)").run(channel, user);
+  }
+
+  public removeMember(channel: string, user: string): void {
+    this.db.prepare("DELETE FROM members WHERE channel = ? AND user = ?").run(channel, user);
+  }
+
+  /** The repo a channel is about, or null when none is pinned. */
+  public pinOf(channel: string): RepoRef | null {
+    return pinSchema.parse(this.db.prepare("SELECT name, key, url FROM pins WHERE channel = ?").get(channel)) ?? null;
+  }
+
+  public setPin(channel: string, repo: RepoRef): void {
+    this.db.prepare("INSERT OR REPLACE INTO pins (channel, name, key, url) VALUES (?, ?, ?, ?)").run(channel, repo.name, repo.key, repo.url);
+  }
+
+  public removePin(channel: string): void {
+    this.db.prepare("DELETE FROM pins WHERE channel = ?").run(channel);
   }
 
   /** Keep a note and return the id it was given. Null when this exact note is already kept: a signature is stored once, which is what stops a replay. */

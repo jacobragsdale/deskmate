@@ -20,7 +20,7 @@ interface Located {
 }
 
 /** Percent-decode what can be decoded and leave the rest alone, as Python's unquote does with a stray "%". */
-function unquote(text: string): string {
+export function unquote(text: string): string {
   return text.replace(/(?:%[0-9a-fA-F]{2})+/g, (run) => {
     try {
       return decodeURIComponent(run);
