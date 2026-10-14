@@ -17,6 +17,7 @@ import type { Result } from "./wsl.ts";
 
 const RESTARTS = 3; // Times a desk that went away unasked is started again before the window gives up on it.
 const RESTART_DELAY = 1000; // Milliseconds before the first of them; each one after waits twice as long.
+const STEADY = 60_000; // Milliseconds a desk must stay up before its going is a new failure, counted afresh, rather than one more of the same.
 const STOP_WAIT = 3000; // Milliseconds a desk gets to stop its agents and tell the chat before it is killed.
 const TAIL = 2000; // Characters kept of what the desk says outside the protocol, to show if it will not stay up.
 
@@ -141,12 +142,14 @@ export class DeskProcess {
   private readonly prepare: () => Promise<Result<Launch>>;
   private readonly handlers: Handlers;
   private readonly restartDelay: number;
+  private readonly steady: number;
   private readonly waiting = new Map<number, (outcome: Outcome) => void>(); // Commands the desk has not answered yet, by id.
   private readonly starting = new Set<(greeted: boolean) => void>(); // Those waiting to hear whether the desk now starting has said hello or been given up on.
   private child: ChildProcessWithoutNullStreams | null = null;
   private startAgain: NodeJS.Timeout | undefined; // The timer that starts a desk that went away unasked again.
   private wanted = true; // False once the window has stopped the desk or refused it: a desk that goes after that is not started again.
   private restarts = 0;
+  private spawnedAt = 0; // When the desk now running was started, to tell one that stayed up from one that keeps falling over.
   private attempt = 0; // Counts the starts, so that a desk made ready for one that has since been stopped or replaced is not started.
   private commands = 0;
   private attentive: boolean | null = null; // What the desk was last told, so one started again is told too.
@@ -154,10 +157,11 @@ export class DeskProcess {
   private greeted = false; // Whether the desk now running has said hello in this window's protocol.
 
   /** `prepare` does whatever the desk needs before it can be started, each time it is, and says how to start it: `localLaunch`, or `wslLaunch` on Windows. */
-  constructor(prepare: () => Promise<Result<Launch>>, handlers: Handlers, restartDelay = RESTART_DELAY) {
+  constructor(prepare: () => Promise<Result<Launch>>, handlers: Handlers, restartDelay = RESTART_DELAY, steady = STEADY) {
     this.prepare = prepare;
     this.handlers = handlers;
     this.restartDelay = restartDelay;
+    this.steady = steady;
   }
 
   /** Get the desk ready and start it. If it cannot be made ready there is nothing to start again, so the window says why at once. */
@@ -247,6 +251,7 @@ export class DeskProcess {
   private spawn(launch: Launch): void {
     const child = spawn(launch.command, launch.args, { env: launch.env, stdio: "pipe", windowsHide: true });
     this.child = child;
+    this.spawnedAt = Date.now();
     this.tail = "";
     this.greeted = false;
     child.stdin.on("error", () => undefined); // A desk that has gone cannot be written to. Its going is what gets handled, in `gone`.
@@ -299,7 +304,6 @@ export class DeskProcess {
         }
         break;
       case "view":
-        this.restarts = 0; // A desk that got as far as showing something has started: if it goes later, that is a new failure and is counted afresh.
         this.handlers.view(line.view);
         break;
       case "notice":
@@ -342,6 +346,11 @@ export class DeskProcess {
     if (!this.wanted) {
       this.settle(false);
       return;
+    }
+    // A desk that stayed up a while and then went, say when WSL was shut down under a window left open for days, is a new failure.
+    // Counting from its first view instead would let a desk that falls over moments after showing something be started for ever.
+    if (Date.now() - this.spawnedAt >= this.steady) {
+      this.restarts = 0;
     }
     if (this.restarts < RESTARTS) {
       this.startAgain = setTimeout(

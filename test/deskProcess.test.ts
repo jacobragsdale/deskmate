@@ -37,7 +37,7 @@ interface Held {
 }
 
 /** Start a desk the way `prepare` says and keep what it says. It is stopped when the test ends. */
-function hold(t: TestContext, prepare: (dir: string) => Promise<Result<Launch>>): Held {
+function hold(t: TestContext, prepare: (dir: string) => Promise<Result<Launch>>, steady = 60_000): Held {
   const dir = mkdtempSync(join(tmpdir(), "player-two-desk-process-"));
   const views: View[] = [];
   const notices: Notice[] = [];
@@ -51,7 +51,7 @@ function hold(t: TestContext, prepare: (dir: string) => Promise<Result<Launch>>)
     arrival: (): void => undefined,
     ask: (): void => undefined
   };
-  const desk = new DeskProcess(() => prepare(dir), handlers, 5);
+  const desk = new DeskProcess(() => prepare(dir), handlers, 5, steady);
   t.after(async () => {
     await desk.stop();
     rmSync(dir, { recursive: true, force: true });
@@ -117,7 +117,7 @@ await test("a desk that goes away unasked is started again three times, then the
   assert.equal(starts(), 8);
 });
 
-await test("a desk that goes with a command unanswered has it answered for it, and one that had shown something is started again however often it goes", { timeout: 30_000 }, async (t) => {
+await test("a desk that goes with a command unanswered has it answered for it, and one that stayed up a while is started again however often it goes", { timeout: 30_000 }, async (t) => {
   const { desk, views, starts } = hold(
     t,
     standIn(
@@ -126,7 +126,8 @@ await test("a desk that goes with a command unanswered has it answered for it, a
         { t: "view", view: { kind: "setup", defaultAgent: "an-agent" } }
       ],
       "yes"
-    )
+    ),
+    0 // Every desk has stayed up long enough, so each going is a new failure.
   );
 
   for (let round = 1; round <= 6; round += 1) {
@@ -136,6 +137,19 @@ await test("a desk that goes with a command unanswered has it answered for it, a
 
   assert.equal(starts(), 6);
   assert.ok(views.every((view) => view.kind === "setup"));
+});
+
+await test("a desk that falls over moments after showing something is given up on after three restarts all the same", { timeout: 30_000 }, async (t) => {
+  const { views, starts } = hold(
+    t,
+    standIn([
+      { t: "hello", version: "0.4.0", protocol: 1 },
+      { t: "view", view: { kind: "setup", defaultAgent: "an-agent" } }
+    ])
+  );
+
+  await until("the stopped view", () => views.some((view) => view.kind === "stopped"));
+  assert.equal(starts(), 4);
 });
 
 await test("a desk started afresh while it was still being made ready is started once", { timeout: 30_000 }, async (t) => {
