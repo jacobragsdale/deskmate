@@ -152,7 +152,9 @@ export class Session {
     for (const run of runs) {
       run.cancel.abort();
     }
-    await Promise.race([Promise.all([this.polling, ...runs.map((run) => run.done)]), sleep(STOP_WAIT)]);
+    const settled = new AbortController();
+    await Promise.race([Promise.all([this.polling, ...runs.map((run) => run.done)]), sleep(STOP_WAIT, settled.signal)]);
+    settled.abort(); // Take the timer down with it, so a desk that has stopped is free to exit at once.
   }
 
   public isOpen(chat: string): boolean {

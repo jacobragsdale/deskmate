@@ -149,6 +149,15 @@ export const windowLineSchema = z.discriminatedUnion("t", [
   z.strictObject({ t: z.literal("attend"), attentive: z.boolean() }) // Whether the user is looking at the window.
 ]);
 
+/** One line as its sender wrote it, read with the schema for its direction. Null when it is not a line of the protocol. */
+export function readLine<T>(schema: z.ZodType<T>, text: string): T | null {
+  try {
+    return schema.parse(JSON.parse(text));
+  } catch {
+    return null;
+  }
+}
+
 export type RequestView = z.infer<typeof requestSchema>;
 export type MessageView = z.infer<typeof messageSchema>;
 export type RowView = z.infer<typeof rowSchema>;

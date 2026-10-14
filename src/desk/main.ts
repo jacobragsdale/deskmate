@@ -1,0 +1,143 @@
+/** The desk as a program: one person's session with no window. It reads the window's lines on one stream, writes its own on another, and opens nothing else. */
+
+import { createInterface } from "node:readline";
+
+import { VERSION } from "../core/version.ts";
+import { PROTOCOL } from "../core/wire.ts";
+import { readLine, windowLineSchema } from "../shared/ipc.ts";
+import type { Command, DeskLine, Question, View } from "../shared/ipc.ts";
+import { DEFAULT_AGENT, defaultDev, defaultHome, http, join, loadClient, PlayerTwoError } from "./client.ts";
+import { problemOf, Session } from "./session.ts";
+import type { Hooks } from "./session.ts";
+
+class Desk {
+  private readonly home = defaultHome();
+  private readonly asked = new Map<number, (ok: boolean) => void>(); // Questions the user has not answered yet, by id.
+  private readonly output: NodeJS.WritableStream;
+  private readonly hooks: Hooks;
+  private session: Session | null = null; // Null until someone has joined a hub from this machine.
+  private attentive = true; // What the window last said, kept for a session that starts later.
+  private viewQueued = false;
+  private asks = 0;
+  private ended = false;
+
+  constructor(output: NodeJS.WritableStream) {
+    this.output = output;
+    this.hooks = {
+      changed: () => {
+        this.changed();
+      },
+      notice: (notice) => {
+        this.write({ t: "notice", notice });
+      },
+      arrived: (arrival) => {
+        this.write({ t: "arrival", arrival });
+      },
+      confirmClone: (url, destination) =>
+        this.ask({
+          message: "Clone this repository?",
+          detail: `From ${url}\nInto ${destination}\n\nIt is cloned with your own git credentials. An agent started in a repo reads that repo's instruction files.`,
+          confirm: "Clone"
+        })
+    };
+  }
+
+  public async run(input: NodeJS.ReadableStream): Promise<void> {
+    this.write({ t: "hello", version: VERSION, protocol: PROTOCOL });
+    this.start();
+    this.changed();
+    for await (const text of createInterface({ input })) {
+      this.accept(text);
+    }
+    this.ended = true;
+    await this.session?.stop();
+  }
+
+  private write(line: DeskLine): void {
+    // Once the window has stopped listening there is nobody to tell, and writing to a pipe it has closed would end the desk before its agents are stopped.
+    if (!this.ended) {
+      this.output.write(`${JSON.stringify(line)}\n`);
+    }
+  }
+
+  private view(): View {
+    return this.session === null ? { kind: "setup", defaultAgent: DEFAULT_AGENT } : this.session.view();
+  }
+
+  /** Several changes in one turn of the event loop are drawn once. */
+  private changed(): void {
+    if (!this.viewQueued) {
+      this.viewQueued = true;
+      setImmediate(() => {
+        this.viewQueued = false;
+        this.write({ t: "view", view: this.view() });
+      });
+    }
+  }
+
+  /** Put a question to the user and wait for the window's answer. */
+  private ask(question: Question): Promise<boolean> {
+    return new Promise((resolve) => {
+      this.asks += 1;
+      this.asked.set(this.asks, resolve);
+      this.write({ t: "ask", id: this.asks, question });
+    });
+  }
+
+  /** Start following the hub as whoever has joined from this machine, if anyone has. */
+  private start(): void {
+    const client = loadClient(this.home, http, () => Date.now() / 1000);
+    if (client !== null) {
+      this.session = new Session(client, defaultDev(), this.hooks);
+      this.session.attend(this.attentive);
+      this.session.start();
+    }
+  }
+
+  private async handle(command: Command): Promise<void> {
+    if (command.do !== "join") {
+      if (this.session === null) {
+        throw new PlayerTwoError("join a hub first");
+      }
+      await this.session.handle(command);
+    } else if (this.session === null) {
+      await join(this.home, command.hub.trim(), command.name.trim(), command.token.trim(), command.agent.trim() === "" ? DEFAULT_AGENT : command.agent.trim(), http);
+      this.start();
+      this.changed();
+    }
+  }
+
+  private accept(text: string): void {
+    const line = readLine(windowLineSchema, text);
+    if (line === null) {
+      this.write({ t: "notice", notice: { title: "the desk ignored a line it could not read", body: text.slice(0, 200), severity: "error" } });
+      return;
+    }
+    switch (line.t) {
+      case "command":
+        // Not awaited: a command may wait on the user, and the lines that carry their answer come in behind it.
+        this.handle(line.command).then(
+          () => {
+            this.write({ t: "reply", id: line.id, outcome: { ok: true } });
+          },
+          (error: unknown) => {
+            this.write({ t: "reply", id: line.id, outcome: { ok: false, problem: problemOf(error) } });
+          }
+        );
+        break;
+      case "answer":
+        this.asked.get(line.id)?.(line.ok);
+        this.asked.delete(line.id);
+        break;
+      case "attend":
+        this.attentive = line.attentive;
+        this.session?.attend(line.attentive);
+        break;
+    }
+  }
+}
+
+/** Run the desk until `input` ends: say hello, show the join form or the chats, do what the window's lines ask, and at the end stop the agents and tell the chat. */
+export async function runDesk(input: NodeJS.ReadableStream, output: NodeJS.WritableStream): Promise<void> {
+  await new Desk(output).run(input);
+}
