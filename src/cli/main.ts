@@ -13,7 +13,7 @@ import { DEFAULT_AGENT, defaultDev, defaultHome, http, join, loadClient, PlayerT
 import type { Client, Transport } from "../desk/client.ts";
 import { runChecks } from "../desk/doctor.ts";
 import { runDesk } from "../desk/main.ts";
-import { runHub } from "../hub/main.ts";
+import { runHub, verifyHub } from "../hub/main.ts";
 import type { Check } from "../shared/ipc.ts";
 
 const INBOX = 20; // Notes `inbox` prints when it is not told where to start.
@@ -27,6 +27,7 @@ const USAGE = `usage: player-two COMMAND
   repos                                 list every agent as @person/repo with the branch it is on
   channel [join NAME | leave NAME]      list the channels, or join or leave one
   hub [--host HOST] [--port PORT]       run the hub; it reads PLAYER_TWO_JOIN_TOKEN, PLAYER_TWO_DB, PLAYER_TWO_REPOS and, if set, PLAYER_TWO_DOWNLOADS
+  hub verify                            check that no event in the log in PLAYER_TWO_DB was changed or taken out since it was stored
   desk                                  run your side with no window, for the window to start: it speaks JSON lines on standard input and output
   doctor                                check what Player Two needs on this machine, and say how to fix what is missing
 
@@ -179,6 +180,15 @@ async function doctor(home: string, args: string[], out: (line: string) => void)
   }
 }
 
+/** Run the hub, or with `verify`, check the chain of its log and say that it holds. */
+function hub(args: string[], out: (line: string) => void): void {
+  if (args[0] === "verify") {
+    out(verifyHub(process.env));
+  } else {
+    runHub(args, process.env); // It keeps the program alive from here, until it is told to stop.
+  }
+}
+
 async function run(argv: readonly string[], options: Options, out: (line: string) => void): Promise<void> {
   const [command = "", ...args] = argv;
   const home = options.home ?? defaultHome();
@@ -192,7 +202,7 @@ async function run(argv: readonly string[], options: Options, out: (line: string
   };
   switch (command) {
     case "hub":
-      runHub(args, process.env); // It keeps the program alive from here, until it is told to stop.
+      hub(args, out);
       break;
     case "desk":
       globalThis.console = new console.Console(process.stderr); // Standard output carries the protocol's lines and nothing else, so whatever anything logs goes to standard error.

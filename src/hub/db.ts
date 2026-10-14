@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import { z } from "zod";
 
+import { eventId } from "../core/sign.ts";
 import { deliveredNoteSchema, deliveredSchema, isChannel, personSchema, teamRepoSchema } from "../core/wire.ts";
 import type { Delivered, DeliveredNote, Event, Note, Person, Repo, RepoRef, TeamRepo } from "../core/wire.ts";
 
@@ -66,12 +67,12 @@ const channelsSchema = z.array(z.strictObject({ channel: z.string() }));
 const pinSchema = z.strictObject({ name: z.string(), key: z.string(), url: z.string(), branch: z.string().nullable() }).optional();
 const deliveredListSchema = z.array(deliveredNoteSchema);
 const foundSchema = z.strictObject({ found: z.literal(1) }).optional();
-const eventRowsSchema = z.array(
-  z
-    .strictObject({ seq: z.int(), id: z.string(), author: z.string(), to: z.string(), kind: z.string(), content: z.string(), ts: z.int(), refs: z.string(), nonce: z.string(), sig: z.string() })
-    .transform(({ seq, refs, ...event }) => ({ seq, event: { ...event, refs: parseJson(refs) } }))
-    .pipe(deliveredSchema)
-);
+const eventRowSchema = z
+  .strictObject({ seq: z.int(), id: z.string(), author: z.string(), to: z.string(), kind: z.string(), content: z.string(), ts: z.int(), refs: z.string(), nonce: z.string(), sig: z.string() })
+  .transform(({ seq, refs, ...event }) => ({ seq, event: { ...event, refs: parseJson(refs) } }))
+  .pipe(deliveredSchema);
+const eventRowsSchema = z.array(eventRowSchema);
+const linkSchema = z.object({ seq: z.int(), chain: z.string() });
 
 function parseJson(text: string): unknown {
   return JSON.parse(text);
@@ -83,6 +84,31 @@ function chainAfter(previous: string, id: string): string {
   return createHash("sha256")
     .update(previous + id)
     .digest("hex");
+}
+
+/**
+ * Walk the event log in the database at `path`, without changing it, and say how far its chain holds: how many events there are and the newest chain value,
+ * or the first seq whose chain does not follow from the one before. Each event's id is worked out again from its fields, so a row changed by hand breaks the chain at that row.
+ */
+export function verifyChain(path: string): { readonly events: number; readonly head: string; readonly broken: number | null } {
+  const db = new DatabaseSync(path, { readOnly: true });
+  try {
+    let previous = FIRST_CHAIN;
+    let events = 0;
+    for (const row of db.prepare(`SELECT ${EVENT_COLUMNS}, chain FROM events ORDER BY seq`).iterate()) {
+      const { seq, chain } = linkSchema.parse(row);
+      const stored = eventRowSchema.safeParse(Object.fromEntries(Object.entries(row).filter(([column]) => column !== "chain")));
+      const id = stored.success ? eventId(stored.data.event) : "";
+      if (!stored.success || id !== stored.data.event.id || chain !== chainAfter(previous, id)) {
+        return { events, head: previous, broken: seq };
+      }
+      previous = chain;
+      events += 1;
+    }
+    return { events, head: previous, broken: null };
+  } finally {
+    db.close();
+  }
 }
 
 export class Database {

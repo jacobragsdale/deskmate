@@ -1,6 +1,7 @@
 /** The hub's routes, one behaviour at a time, each against a hub of its own on a clock that stands still. */
 
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import type { KeyObject } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -26,6 +27,7 @@ const UPLOADER: Repo = { name: "uploader", key: "dev.azure.com/acme/platform/upl
 const BILLING: Repo = { name: "billing", key: "dev.azure.com/acme/billing/billing", url: "https://dev.azure.com/acme/Billing/_git/billing", branch: "feature/invoices" };
 const ELSEWHERE: Repo = { name: "side-project", key: "github.com/jacob/side-project", url: "https://github.com/jacob/side-project", branch: "main" };
 
+const COMMAND = join(import.meta.dirname, "..", "src", "cli", "main.ts");
 const refusalSchema = z.object({ detail: z.string() });
 
 /** The key someone joined with, read from their home folder as their client reads it. */
@@ -351,6 +353,38 @@ await test("a stream whose reader hangs up is closed, leaving no timer behind", 
   }
   assert.equal(timers(), before);
   assert.equal(await say(hub, "alice", "alice", "nobody is listening"), 1); // And the hub goes on.
+});
+
+await test("the audit head is the newest seq and chain value, and hub verify passes a clean log and names the first row changed by hand", async (t) => {
+  const hub = await startHub(t);
+  await hub.join("alice");
+  await hub.join("bob");
+  const head = async (): Promise<unknown> => (await fetch(`${hub.url}/audit/head`, { headers: signedBy(hub, "alice", "GET", "/audit/head") })).json();
+  const verify = (): readonly [number | null, string] => {
+    const ran = spawnSync(process.execPath, [COMMAND, "hub", "verify"], { env: { PLAYER_TWO_DB: join(hub.dir, "hub.db") }, encoding: "utf8" });
+    return [ran.status, ran.stdout + ran.stderr];
+  };
+
+  assert.deepEqual(await head(), { seq: 0, chain: "0".repeat(64) });
+  assert.deepEqual(verify(), [0, `the chain holds: 0 events, the last chain value ${"0".repeat(64)}\n`]);
+
+  let chain = "0".repeat(64);
+  for (const text of ["one", "two", "three"]) {
+    const event = signed(hub, "alice", "bob", "message", { text, via: "cli" });
+    await post(hub, "alice", event);
+    chain = createHash("sha256")
+      .update(chain + event.id)
+      .digest("hex");
+  }
+
+  assert.deepEqual(await head(), { seq: 3, chain });
+  assert.deepEqual(verify(), [0, `the chain holds: 3 events, the last chain value ${chain}\n`]);
+
+  const kept = new DatabaseSync(join(hub.dir, "hub.db"));
+  kept.prepare("UPDATE events SET content = ? WHERE seq = 2").run(JSON.stringify({ text: "TWO", via: "cli" }));
+  kept.close();
+
+  assert.deepEqual(verify(), [1, "player-two: the chain breaks at seq 2: that event, or its chain value, is not what was stored after the 1 before it\n"]);
 });
 
 await test("joining again with the same key is allowed", async (t) => {

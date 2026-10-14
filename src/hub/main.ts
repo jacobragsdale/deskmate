@@ -1,5 +1,6 @@
-/** The hub as a program: settings from the environment, where to listen from the arguments, and a line on standard error for each thing worth knowing. */
+/** The hub as a program: settings from the environment, where to listen from the arguments, and a line on standard error for each thing worth knowing; and checking its log's chain. */
 
+import { existsSync } from "node:fs";
 import type { Server } from "node:http";
 import { parseArgs } from "node:util";
 
@@ -7,6 +8,7 @@ import { z } from "zod";
 
 import { createHub } from "./app.ts";
 import type { Log } from "./app.ts";
+import { verifyChain } from "./db.ts";
 
 const settingsSchema = z
   .object({
@@ -17,6 +19,7 @@ const settingsSchema = z
   })
   .transform((env) => ({ joinToken: env.PLAYER_TWO_JOIN_TOKEN, db: env.PLAYER_TWO_DB, repos: env.PLAYER_TWO_REPOS, downloads: env.PLAYER_TWO_DOWNLOADS }));
 const portSchema = z.string().regex(/^\d+$/).transform(Number).pipe(z.int().max(65_535));
+const dbSchema = z.object({ PLAYER_TWO_DB: z.string("is not set").min(1, "is empty") });
 
 const log: Log = (event, facts) => {
   console.error([event, ...Object.entries(facts).map(([key, value]) => `${key}=${String(value)}`)].join(" "));
@@ -45,4 +48,20 @@ export function runHub(args: readonly string[], env: NodeJS.ProcessEnv): Server 
     server.closeAllConnections();
   });
   return server;
+}
+
+/** `player-two hub verify`: walk the log in the database PLAYER_TWO_DB names and return what to say when its chain holds. Throws, naming the first seq that breaks it, when it does not. */
+export function verifyHub(env: NodeJS.ProcessEnv): string {
+  const setting = dbSchema.safeParse(env);
+  if (!setting.success) {
+    throw new Error(`PLAYER_TWO_DB ${setting.error.issues[0]?.message ?? "is not set"}`);
+  }
+  if (!existsSync(setting.data.PLAYER_TWO_DB)) {
+    throw new Error(`there is no database at ${setting.data.PLAYER_TWO_DB}`); // Rather than SQLite's words, which do not say where it looked.
+  }
+  const { events, head, broken } = verifyChain(setting.data.PLAYER_TWO_DB);
+  if (broken !== null) {
+    throw new Error(`the chain breaks at seq ${String(broken)}: that event, or its chain value, is not what was stored after the ${String(events)} before it`);
+  }
+  return `the chain holds: ${String(events)} events, the last chain value ${head}`;
 }

@@ -472,6 +472,7 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     { method: "POST", path: "/events", answer: postEvent },
     { method: "GET", path: "/events", answer: getEvents },
     { method: "GET", path: "/stream", answer: stream },
+    { method: "GET", path: "/audit/head", answer: () => [200, db.head()] }, // For comparing with what someone saw before: a log changed since cannot end in the same chain value.
     { method: "GET", path: "/channels", answer: () => [200, db.channels().map(channelInfo)] },
     { method: "POST", path: "/channels/{name}/join", answer: joinChannel },
     { method: "POST", path: "/channels/{name}/leave", answer: leaveChannel },

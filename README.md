@@ -205,6 +205,7 @@ The Setup page lists what Player Two needs and whether it found it: Node, your i
 | `player-two doctor` | Checks what Player Two needs on this machine, as the window's Setup page does, and prints each check with the command that fixes it. Exits `1` when a check failed. |
 | `player-two desk` | Runs the desk with no window, speaking JSON lines on standard input and output. The window starts it; it is not for typing at. |
 | `player-two hub [--host HOST] [--port PORT]` | Runs the hub. Defaults: `127.0.0.1`, `8787`. |
+| `player-two hub verify` | Walks the event log in the database `PLAYER_TWO_DB` names and says whether its chain holds, or the first `seq` where it breaks: an event changed or taken out since it was stored. Exits `1` when it breaks. |
 
 `send`, `inbox`, `who`, `repos`, `channel` and `doctor` take `--json`, and then print one JSON value and nothing else. `inbox` prints an array of notes as the hub delivered them, each `{ "id", "note", "trusted" }`, where `trusted` is `false` for a note that failed its signature check: its text is there, so check before using it. `send --wait` prints one such note, or `null` when none came; `send` without `--wait` prints `{ "id" }`, the id the hub gave the note. `who`, `repos`, `channel` and `doctor` print arrays; `channel join` and `channel leave` print the one channel.
 
