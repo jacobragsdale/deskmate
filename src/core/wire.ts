@@ -1,4 +1,4 @@
-/** Wire format shared with the hub: the shapes of signed notes and of what the hub answers. Mirrors src/deskmate/wire.py. */
+/** Wire format shared with the hub: the shapes of signed notes and of what the hub answers. */
 
 import { z } from "zod";
 

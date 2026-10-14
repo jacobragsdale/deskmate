@@ -1,4 +1,4 @@
-/** Local checkouts: which team repos sit under ~/dev, what branch each is on, and how to fetch one that is missing. Mirrors src/deskmate/repos.py. */
+/** Local checkouts: which team repos sit under ~/dev, what branch each is on, and how to fetch one that is missing. */
 
 import { execFile } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";

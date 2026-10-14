@@ -1,4 +1,4 @@
-/** Chat state behind the interface: which chat a note belongs to, what is unread, what each tagged agent is doing, and what an agent is told. No IO. Mirrors src/deskmate/chat.py. */
+/** Chat state behind the interface: which chat a note belongs to, what is unread, what each tagged agent is doing, and what an agent is told. No IO. */
 
 import { byCodeUnit, head } from "./text.ts";
 import { isChannel, NAME, REPO_NAME } from "./wire.ts";

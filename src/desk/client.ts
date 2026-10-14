@@ -1,4 +1,4 @@
-/** Talking to the hub as one person: identity, signed requests and key pinning. Mirrors src/deskmate/client.py, whose agent runner is in agents/oneshot.ts. */
+/** Talking to the hub as one person: identity, signed requests and key pinning. Running an agent is in agents/oneshot.ts. */
 
 import type { KeyObject } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";

@@ -1,4 +1,4 @@
-/** The hub's database: opening it, its schema, and one function for each thing the hub asks of it. The schema is the one src/deskmate/hub.py made, so either hub can open the other's file. */
+/** The hub's database: opening it, its schema, and one function for each thing the hub asks of it. */
 
 import { DatabaseSync } from "node:sqlite";
 

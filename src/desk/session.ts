@@ -23,7 +23,7 @@ const RETRY_DELAY = 5; // Seconds to wait before asking a hub that did not answe
 const UPDATE_DELAY = 60; // Seconds to wait before asking a hub on another protocol again: its answer changes only when someone updates one side.
 const STOP_WAIT = 3; // Seconds to give stopped agents to go before the session is done.
 
-/** What the session remembers between runs. Kept apart from the terminal interface's state.json, which refuses fields it does not know. */
+/** What the session remembers between runs, in app-state.json. */
 const savedSchema = z.strictObject({ read: z.record(z.string(), z.int()), chat: z.string().nullable() });
 
 /** A note from someone else, or a draft ready for review: something the user may want to be told about while they are looking elsewhere. */

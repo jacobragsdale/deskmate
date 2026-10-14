@@ -1,4 +1,4 @@
-/** Which repo a remote URL names, whatever form the URL takes, and whether a repo sits under the address a hub shares. Text in, text out: nothing here reads the disk, so the hub uses it too. Mirrors the parsing half of src/deskmate/repos.py. */
+/** Which repo a remote URL names, whatever form the URL takes, and whether a repo sits under the address a hub shares. Text in, text out: nothing here reads the disk, so the hub uses it too. */
 
 import { REPO_NAME } from "./wire.ts";
 
@@ -19,7 +19,7 @@ interface Located {
   readonly segments: readonly string[];
 }
 
-/** Percent-decode what can be decoded and leave the rest alone, as Python's unquote does with a stray "%". */
+/** Percent-decode what can be decoded and leave the rest alone, a stray "%" included. */
 export function unquote(text: string): string {
   return text.replace(/(?:%[0-9a-fA-F]{2})+/g, (run) => {
     try {
@@ -30,7 +30,7 @@ export function unquote(text: string): string {
   });
 }
 
-/** Percent-encode one path segment exactly as Python's quote does, so every client arrives at the same key for one repo. */
+/** Percent-encode one path segment, all of it but letters, digits and "-", ".", "_" and "~", so every client arrives at the same key for one repo. */
 function quote(segment: string): string {
   return encodeURIComponent(segment).replace(/[!'()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
 }

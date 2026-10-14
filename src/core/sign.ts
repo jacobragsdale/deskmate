@@ -1,4 +1,4 @@
-/** Ed25519 keys and the two things signed with them: notes, and the header that proves who is asking. Mirrors the signing half of src/deskmate/wire.py. */
+/** Ed25519 keys and the two things signed with them: notes, and the header that proves who is asking. */
 
 import { createPrivateKey, createPublicKey, generateKeyPairSync, sign, verify } from "node:crypto";
 import type { KeyObject } from "node:crypto";
@@ -58,7 +58,7 @@ interface NoteFields {
 
 function notePayload(note: NoteFields): Buffer {
   // A JSON array of fixed positions has exactly one encoding, so both sides sign the same bytes.
-  // JSON.stringify writes it as Python's json.dumps(ensure_ascii=False, separators=(",", ":")) does; test/vectors.test.ts holds that to account.
+  // JSON.stringify writes it with no spaces and leaves every character outside ASCII as it is; test/vectors.test.ts holds the bytes to the record.
   return Buffer.from(JSON.stringify(["deskmate-note-v3", note.sender, note.to, note.kind, note.body, note.ts, note.agent, note.re]), "utf8");
 }
 

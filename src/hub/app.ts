@@ -1,4 +1,4 @@
-/** The hub: keeps everyone's public key and channel memberships, relays signed notes, and keeps them for later reading. Ported from src/deskmate/hub.py route for route: the same paths, the same statuses, the same words. */
+/** The hub: keeps everyone's public key and channel memberships, relays signed notes, and keeps them for later reading. One table of routes on node:http. */
 
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
