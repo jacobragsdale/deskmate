@@ -362,11 +362,11 @@ await test("read prints one note as it reads now, where each agent it tags stand
   }
 });
 
-/** The request an `ask` sent to bob, once it has landed. */
-async function requestTo(bob: Client, chat: string): Promise<Delivered> {
+/** The request an `ask` sent to bob, once it has landed after `after`. */
+async function requestTo(bob: Client, chat: string, after = 0): Promise<Delivered> {
   for (let tries = 0; tries < 500; tries += 1) {
     const [newest] = await bob.events({ chat, limit: 1 });
-    if (newest?.event.kind === "message") {
+    if (newest?.event.kind === "message" && newest.seq > after) {
       return newest;
     }
     await pause(20);
@@ -419,4 +419,62 @@ await test("status prints the hub, your name, the repos you share and the reques
       ["bob/uploader", noteLink(fromAlice.event.id), true]
     ]
   );
+});
+
+await test("ask exits 0 answered, 3 declined, 4 failed, stopped or withdrawn, and 5 with the read command that checks later when nothing final came in time", { timeout: 30_000 }, async (t) => {
+  const hub = await startHub(t);
+  const [alice, bob] = [await hub.join("alice"), await hub.join("bob")];
+  for (const who of [alice, bob]) {
+    await who.publish("#backend", "channel.join", {});
+  }
+  const asking = (words: string, ...more: string[]): Promise<Ran> => playerTwo(hub, "alice", ["ask", "@bob/uploader", words, "--wait", "20", ...more]);
+  const accepted = (chat: string, request: string): Promise<Delivered> =>
+    bob.publish(chat, "job.accepted", { repo: "uploader", branch: "main", commit: "c0ffee".padEnd(40, "0"), dirty: false, delivery: "post", mode: "full", by: "owner" }, [request]);
+
+  // 0, in a channel named without its "#", printing the answer as the hub delivered it.
+  const answering = playerTwo(hub, "alice", ["ask", "bob/uploader", "where?", "--in", "backend", "--json"]);
+  const first = await requestTo(bob, "#backend");
+  const answered = await answer(bob, "#backend", first.event.id, "here");
+  assert.deepEqual(printedSchema.parse(printed(await answering)), { ...answered, trusted: true });
+
+  // 3: bob says no.
+  const declining = asking("again?");
+  const second = await requestTo(bob, "alice");
+  await bob.publish("alice", "job.declined", { repo: "uploader", reason: "" }, [second.event.id]);
+  assert.deepEqual(await declining, { status: 3, out: "", err: `player-two: bob declined to run @bob/uploader: ${noteLink(second.event.id)}` });
+
+  // 4: the run fails, or bob stops it, or alice takes the request back from somewhere else.
+  const failing = asking("fail", "--json");
+  const third = await requestTo(bob, "alice");
+  await accepted("alice", third.event.id);
+  await bob.publish("alice", "job.error", { repo: "uploader" }, [third.event.id]);
+  assert.deepEqual(await failing, { status: 4, out: "null", err: `player-two: @bob/uploader failed: ${noteLink(third.event.id)}` });
+  const stopping = asking("stop");
+  const fourth = await requestTo(bob, "alice");
+  await accepted("alice", fourth.event.id);
+  await bob.publish("alice", "job.cancelled", { repo: "uploader" }, [fourth.event.id]);
+  assert.deepEqual(await stopping, { status: 4, out: "", err: `player-two: @bob/uploader was stopped: ${noteLink(fourth.event.id)}` });
+  const withdrawing = asking("never mind");
+  const fifth = await requestTo(bob, "alice");
+  await bob.publish("alice", "job.withdrawn", { agent: "bob/uploader" }, [fifth.event.id]); // From bob, it counts for nothing:
+  await alice.publish("bob", "job.withdrawn", { agent: "bob/uploader" }, [fifth.event.id]); // only the one who asked can take it back.
+  assert.deepEqual(await withdrawing, { status: 4, out: "", err: `player-two: @bob/uploader was withdrawn: ${noteLink(fifth.event.id)}` });
+
+  // 5: nothing final in time, whether bob has not acted or his agent is still at work; the last line says how to look again.
+  const waited = await playerTwo(hub, "alice", ["ask", "@bob/uploader", "anyone?", "--wait", "0.2"]);
+  const sixth = await requestTo(bob, "alice");
+  const later = `player-two read ${noteLink(sixth.event.id)}`;
+  assert.deepEqual(waited, { status: 5, out: "", err: `player-two: nothing final within 0.2 seconds: it is waiting for bob to let @bob/uploader run. Check later with:\n${later}` });
+  const working = asking("slowly", "--wait", "1.5");
+  const seventh = await requestTo(bob, "alice", sixth.seq);
+  await accepted("alice", seventh.event.id);
+  assert.match((await working).err, /: @bob\/uploader is working on it\. Check later with:\nplayer-two read player-two:\/\/note\/[0-9a-f]{64}$/);
+  const checked = await playerTwo(hub, "alice", later.split(" ").slice(1));
+  assert.match(checked.out, /\n@bob\/uploader: waiting$/);
+
+  for (const argv of [["ask"], ["ask", "bob", "hi"], ["ask", "@bob/uploader"], ["ask", "@bob/uploader", "hi", "--in", "Back End"], ["ask", "@bob/uploader", "hi", "--wait", "soon"]]) {
+    const ran = await playerTwo(hub, "alice", argv);
+    assert.deepEqual([ran.status, ran.out], [2, ""], argv.join(" "));
+  }
+  assert.equal((await bob.events({ chat: "alice", limit: 1 }))[0]?.event.kind, "job.accepted"); // A command line that is wrong sends nothing.
 });

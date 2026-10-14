@@ -37,7 +37,7 @@ Every command below takes `--json`. Add each to the README's Commands table.
   | `5` | Nothing final arrived in time. The last line on standard error is the `player-two read` command that checks later. |
 
 - [x] **P2-C4** `player-two status` prints the hub, your name, the repos you share with their branches, and the requests waiting for your agents.
-- [ ] **P2-C5** Tests for each in `test/cli.test.ts`, including `ask` reaching each of the four exits against scripted events.
+- [x] **P2-C5** Tests for each in `test/cli.test.ts`, including `ask` reaching each of the four exits against scripted events.
 
 ## D. The MCP server
 
