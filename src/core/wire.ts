@@ -32,7 +32,7 @@ const repoKeySchema = sized(0, 300).regex(/^[a-z0-9.-]+(\/[^/\x00-\x20]+)+$/);
 // eslint-disable-next-line no-control-regex -- as above
 const repoUrlSchema = sized(0, 400).regex(/^https:\/\/[^\x00-\x20]+$/);
 // eslint-disable-next-line no-control-regex -- as above
-const branchSchema = sized(1, 200).regex(/^[^\x00-\x1f]+$/);
+export const branchSchema = sized(1, 200).regex(/^[^\x00-\x1f]+$/);
 const pubKeySchema = z.string().regex(/^[0-9a-f]{64}$/);
 const signatureSchema = z.string().regex(/^[0-9a-f]{128}$/);
 const hashSchema = z.string().regex(/^[0-9a-f]{64}$/); // An event's id, or a link in the hub's chain: a sha256 in hex.

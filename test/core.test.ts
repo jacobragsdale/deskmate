@@ -1,4 +1,4 @@
-/** The parts of the client that have logic of their own: tag states, the tag list, reading what the hub answers, a hub on another protocol, splitting the agent command, and running it. */
+/** The parts of the client that have logic of their own: tag states, the tag list, an event's envelope and what each kind says, reading what the hub answers, a hub on another protocol, splitting the agent command, and running it. */
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -8,7 +8,8 @@ import type { Entry } from "../src/core/chat.ts";
 import { runAgent, splitCommand } from "../src/desk/agents/oneshot.ts";
 import { AgentCancelledError, Client, PlayerTwoError } from "../src/desk/client.ts";
 import type { Transport } from "../src/desk/client.ts";
-import { loadKey, publicHex, signNote } from "../src/core/sign.ts";
+import { readContent } from "../src/core/kinds.ts";
+import { loadKey, publicHex, signEvent, signNote } from "../src/core/sign.ts";
 import { Session } from "../src/desk/session.ts";
 import { eventSchema, fitBody, MAX_BODY, MAX_CONTENT, MAX_PATCH, PROTOCOL } from "../src/core/wire.ts";
 import type { Kind, TeamRepo } from "../src/core/wire.ts";
@@ -146,6 +147,44 @@ await test("an event's envelope holds exactly the signed fields, a kind of dotte
   assert.ok(!fits({ nonce: "ef" }));
   assert.ok(!fits({ content: "x".repeat(MAX_CONTENT + 1) }));
   assert.ok(!fits({ kind: "patch", content: "x".repeat(MAX_PATCH + 1) }));
+});
+
+await test("each kind's content is read by its kind, and anything else is unknown", () => {
+  const read = (kind: string, content: unknown): string => {
+    const found = readContent(signEvent(key, { author: "jacob", to: "bob", kind, content: typeof content === "string" ? content : JSON.stringify(content), ts: NOW, refs: [] }));
+    return found.kind === "unknown" ? "unknown" : `${found.kind} ${JSON.stringify(found.content)}`;
+  };
+  const accepted = { repo: "uploader", branch: "main", commit: "a".repeat(40), dirty: false, delivery: "review", mode: "full", by: "owner" };
+  const known: readonly (readonly [string, unknown])[] = [
+    ["message", { text: "hi @bob/uploader", via: "window" }],
+    ["message.edit", { text: "hello" }],
+    ["message.delete", {}],
+    ["reaction", { emoji: "👍", on: false }],
+    ["channel.join", {}],
+    ["channel.leave", {}],
+    ["channel.pin", { repo: { name: "uploader", key: "dev.azure.com/acme/platform/uploader", url: "https://dev.azure.com/acme/Platform/_git/uploader" }, branch: null }],
+    ["channel.pin", { repo: null, branch: null }],
+    ["job.accepted", accepted],
+    ["job.declined", { repo: "uploader", reason: "" }],
+    ["job.result", { repo: "uploader", branch: "main", text: "in queue.py", reviewed: true }],
+    ["job.error", { repo: "uploader" }],
+    ["job.cancelled", { repo: "uploader" }],
+    ["job.withdrawn", { agent: "jacob/uploader" }]
+  ];
+
+  for (const [kind, content] of known) {
+    assert.equal(read(kind, content), `${kind} ${JSON.stringify(content)}`);
+  }
+  assert.equal(read("message", { text: "hi", via: "window", lang: "en" }), `message ${JSON.stringify({ text: "hi", via: "window" })}`); // A field a later version adds is passed over.
+  assert.equal(read("job.accepted", { ...accepted, commit: "a".repeat(64) }), `job.accepted ${JSON.stringify({ ...accepted, commit: "a".repeat(64) })}`);
+  assert.equal(read("workflow.run", { workflow: "deploy" }), "unknown"); // A kind from a later phase.
+  assert.equal(read("message", { text: "", via: "window" }), "unknown");
+  assert.equal(read("message", { text: "hi", via: "email" }), "unknown");
+  assert.equal(read("message", "not JSON"), "unknown");
+  assert.equal(read("message", [{ text: "hi", via: "window" }]), "unknown");
+  assert.equal(read("job.accepted", { ...accepted, mode: "supervised" }), "unknown"); // Not until phase 3.
+  assert.equal(read("channel.pin", { repo: null, branch: "main" }), "unknown"); // Not until phase 6.
+  assert.equal(read("job.withdrawn", { agent: "uploader" }), "unknown");
 });
 
 await test("a note is cut to what the hub accepts without splitting a character", () => {
