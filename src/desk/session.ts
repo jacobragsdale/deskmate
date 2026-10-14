@@ -34,6 +34,8 @@ const UPDATE_DELAY = 60; // Seconds to wait before asking a hub on another proto
 const STOP_WAIT = 3; // Seconds to give stopped agents to go before the session is done.
 const PAGE = 50; // Events of one chat loaded at a time: its newest when it is first listed, and as many again each time the user scrolls back.
 const PROGRESS = 10; // Least seconds between two job.progress events of one run.
+const ITEMS = 500; // Items of one run's activity kept, the newest.
+const FEEDS = 20; // Runs that have ended whose activity is kept, the newest.
 
 /** What the session remembers between runs, in app-state.json. */
 const savedSchema = z.strictObject({ read: z.record(z.string(), z.int()), chat: z.string().nullable() });
@@ -156,6 +158,7 @@ export class Session {
   private readonly drafts = new Map<string, Draft[]>(); // Per chat, answers waiting for review, oldest first.
   private readonly runs = new Map<string, AgentRun>(); // By request and repo.
   private readonly waiting = new Map<string, Waiting>(); // Asks the user has not answered, by the id the view gives each.
+  private readonly feeds = new Map<string, { readonly chat: string; readonly items: ActivityItem[] }>(); // Each run's activity, by its key, oldest run first. Only ever in memory.
   private asked = 0; // Asks made so far, for each one's id.
   private readonly read: Record<string, number>; // Per chat, the seq of the newest event the user has seen.
   private readonly paged = new Map<string, boolean>(); // Chats whose newest page has been loaded, and whether there may be events before what is loaded.
@@ -406,6 +409,7 @@ export class Session {
       lines: this.lines(chat),
       drafts: (this.drafts.get(chat) ?? []).map((draft) => ({ id: draft.entry.event.id, repo: draft.repo, asker: draft.entry.event.author, text: draft.text })),
       running: [...this.runs.values()].some((run) => chatOf(run.entry.event, this.me) === chat),
+      activity: [...this.feeds.values()].flatMap((feed) => (feed.chat === chat ? feed.items : [])),
       asks: [...this.waiting].flatMap(([id, waiting]): AskView[] =>
         waiting.chat === chat ? [{ id, run: waiting.run, action: waiting.ask.action, title: oneLine(waiting.ask.title, 200), detail: waiting.ask.detail }] : []
       ),
@@ -1142,8 +1146,36 @@ export class Session {
     );
   }
 
-  /** One step of a run, from its runner or how it started and ended, and with it what the agent is doing in the coarse words the chat is told, when it says. */
-  private noted(key: string, _item: ActivityItem, doing?: Summary): void {
+  /**
+   * Start a run's activity afresh, in place of what an earlier run on the same request kept.
+   * ponytail: what runs that have ended did is kept for the newest FEEDS of them, whatever chat they were in; keep it for the open chat's alone if that holds too much.
+   */
+  private keepFeed(key: string, chat: string): void {
+    this.feeds.delete(key);
+    this.feeds.set(key, { chat, items: [] });
+    const ended = [...this.feeds.keys()].filter((each) => !this.runs.has(each));
+    for (const old of ended.slice(0, Math.max(0, ended.length - FEEDS))) {
+      this.feeds.delete(old);
+    }
+  }
+
+  /**
+   * One step of a run, from its runner or how it started and ended: kept in the run's activity, new or in place of the item with its id, and with it what the agent is doing,
+   * when it says, in the coarse words the chat is told.
+   */
+  private noted(key: string, item: ActivityItem, doing?: Summary): void {
+    const items = this.feeds.get(key)?.items;
+    if (items !== undefined) {
+      const kept = { ...item, run: key };
+      const at = items.findIndex((each) => each.id === item.id);
+      if (at === -1) {
+        items.push(kept);
+        items.splice(0, items.length - ITEMS);
+      } else {
+        items[at] = kept;
+      }
+      this.hooks.changed();
+    }
     if (doing !== undefined) {
       this.progress(key, doing);
     }
@@ -1183,6 +1215,7 @@ export class Session {
         throw new AgentCancelledError(`Stopped your ${repo} agent before it started.`); // While git was asked where the checkout stands: nothing ran, so the chat hears nothing.
       }
       await this.client.publish(chat, "job.accepted", { repo, ...head, delivery: run.post ? "post" : "review", mode: run.mode, by: "owner" }, request);
+      this.keepFeed(key, chat);
       this.noted(key, startedItem(run.agent, run.mode));
     } catch (error) {
       this.hooks.notice(

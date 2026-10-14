@@ -780,6 +780,16 @@ await test("a teammate's request runs at the mode its owner chose, which job.acc
       ["agent", "-p", "--output-format", "text", "--force"]
     ]
   );
+  await bob.session.handle({ do: "open", chat: "alice" });
+  assert.deepEqual(
+    bob.session.view().current?.activity.map((item) => [item.kind, item.title]),
+    [
+      ["state", "Started Cursor one-shot, read-only"],
+      ["state", "Answered"],
+      ["state", "Started Cursor one-shot, full"],
+      ["state", "Answered"]
+    ]
+  ); // A one-shot run says only that it started and how it ended.
 });
 
 await test(

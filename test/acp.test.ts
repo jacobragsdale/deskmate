@@ -21,7 +21,7 @@ import type { Agent, PermissionMode } from "../src/core/wire.ts";
 import { acpRunner } from "../src/desk/agents/acp.ts";
 import { Feed } from "../src/desk/agents/activity.ts";
 import type { FollowUp, PermissionAsk, RunHandlers } from "../src/desk/agents/runner.ts";
-import { AgentCancelledError } from "../src/desk/client.ts";
+import { AgentCancelledError, AgentTimedOutError } from "../src/desk/client.ts";
 import type { Client } from "../src/desk/client.ts";
 import { Session } from "../src/desk/session.ts";
 import { runOf } from "../src/shared/ipc.ts";
@@ -266,7 +266,7 @@ await test("the time limit ends a run, and time spent waiting for the owner's an
   const slowOwner: RunHandlers = { activity: () => undefined, permission: () => delay(1500).then((): "allow-once" => "allow-once") };
   assert.equal(await runner.run("edit", folder(t), "supervised", slowOwner, never), "turn 1: edit allowed");
   const dir = folder(t);
-  await assert.rejects(runner.run("deaf", dir, "full", recorder().handlers, never), { message: "the agent did not finish within 1 seconds" });
+  await assert.rejects(runner.run("deaf", dir, "full", recorder().handlers, never), (error) => error instanceof AgentTimedOutError && error.message === "the agent did not finish within 1 seconds");
   assert.deepEqual(await left(dir), []);
 });
 
@@ -346,7 +346,7 @@ await test(
  * reaches the agent's prompt as context: the agent acts on every word of the prompt it knows. Bob reviews what it drafts, as a teammate's request is first offered, except where it posts.
  */
 await test(
-  "two sessions and the scripted agent: a teammate's request accepted read-only cannot write a file, accepted supervised it asks the owner and writes only once allowed, the owner's own runs at the mode for their own, and Stop ends a run within three seconds",
+  "two sessions and the scripted agent: a teammate's request accepted read-only cannot write a file; accepted supervised it asks the owner and writes only once allowed, the owner seeing each step as it happens and the teammate only the coarse summary; the owner's own runs at the mode for their own; and Stop ends a run within three seconds",
   { timeout: 60_000 },
   async (t) => {
     const hub = await startHub(t, () => Date.now() / 1000);
@@ -424,6 +424,15 @@ await test(
     // Accepted supervised, the agent's edit waits for bob's answer, in his view and as an arrival for when he is not looking, and the file is written only once he allows it. Alice sees no ask.
     const supervised = await asked("#supervised", "@bob/uploader edit the README", "supervised", true);
     const ask = await until("bob is asked", () => owner.view().current?.asks[0]);
+    /** Bob's view of the supervised run's activity, each item as its kind, title, status and outcome. */
+    const steps = (): string[][] =>
+      (owner.view().current?.activity ?? []).filter((item) => item.run === runOf(supervised, "uploader")).map((item) => [item.kind, item.title, item.status, item.outcome]);
+    assert.deepEqual(steps(), [
+      ["state", "Started Fake, supervised", "done", ""],
+      ["tool", "Read README.md", "done", "done"],
+      ["tool", "Edit edited.txt", "running", ""],
+      ["permission", "Edit edited.txt", "running", ""]
+    ]); // As it happens: the edit waits on his answer.
     assert.deepEqual({ ...ask, id: "" }, { id: "", run: runOf(supervised, "uploader"), action: "edit", title: "Edit edited.txt", detail: JSON.stringify({ title: "Edit edited.txt" }, null, 1) });
     assert.deepEqual(arrivals.at(-1), { chat: "#supervised", title: "Your uploader agent is waiting for your answer", body: "Edit edited.txt", forMe: true, rings: true });
     await delay(300);
@@ -434,12 +443,21 @@ await test(
       return status?.kind === "working" && status.summary === "waiting for approval" && status;
     });
     assert.deepEqual(coarse, { kind: "working", branch: "main", summary: "waiting for approval" });
-    assert.deepEqual(asker.view().current?.asks, []);
+    assert.deepEqual([asker.view().current?.asks, asker.view().current?.activity], [[], []]);
     assert.ok(!JSON.stringify(asker.view()).includes("edited.txt"));
     await owner.handle({ do: "permit", ask: ask.id, answer: "allow-once" });
     await until("the answer, posted", () => asker.view().current?.messages.some((message) => message.agent === "uploader" && message.body === "turn 1: read; edit allowed"));
     assert.equal(existsSync(edited), true);
     assert.deepEqual(owner.view().current?.asks, []);
+    await until("bob's feed of the run to its end", () => steps().at(-1)?.[1] === "Answered");
+    assert.deepEqual(steps(), [
+      ["state", "Started Fake, supervised", "done", ""],
+      ["tool", "Read README.md", "done", "done"],
+      ["tool", "Edit edited.txt", "done", "done"],
+      ["permission", "Edit edited.txt", "done", "allowed"],
+      ["message", "turn 1: read; edit allowed", "done", ""],
+      ["state", "Answered", "done", ""]
+    ]);
     await assert.rejects(owner.handle({ do: "permit", ask: ask.id, answer: "allow-once" }), { message: "your agent is no longer waiting for that answer" });
     rmSync(edited);
 
@@ -459,6 +477,10 @@ await test(
     await until("bob sees it stopped", () => shown(owner, "#stop", slow)?.status.kind === "ready");
     await until("alice sees it stopped", () => shown(asker, "#stop", slow)?.status.kind === "stopped");
     assert.ok(Date.now() - stoppedAt < 3000, `took ${String(Date.now() - stoppedAt)} ms to stop`);
+    assert.deepEqual(
+      owner.view().current?.activity.map((item) => item.title),
+      ["Started Fake, read-only", "Read README.md", "Stopped"]
+    );
     await owner.stop(); // And the sessions the answered runs kept for a follow-up with it.
     assert.deepEqual(await left(checkout), []);
 
@@ -473,7 +495,7 @@ await test(
       progress.every((each, index) => index === 0 || progress[index - 1]?.request !== each.request || progress[index - 1]?.summary !== each.summary),
       said.join(", ")
     ); // Only when it changed.
-    for (const leak of ["README.md", "edited.txt", "npm test", checkout]) {
+    for (const leak of ["README.md", "edited.txt", "npm test", "Started Fake", checkout]) {
       assert.deepEqual(
         rows.filter((row) => JSON.stringify(row).includes(leak)),
         [],

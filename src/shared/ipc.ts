@@ -80,6 +80,20 @@ const rowSchema = z
   })
   .readonly();
 
+/** One step of an agent's run as its owner sees it: what the agent said or thought, a tool it used, its plan, a permission asked, an error, or how the run stands. It stays on the owner's machine, in the desk's view and never in an event. */
+export const activityItemSchema = z
+  .strictObject({
+    id: z.string(), // An item that changes keeps its id: a newer version takes the older one's place.
+    run: z.string(), // Which run it is part of.
+    kind: z.enum(["message", "thought", "tool", "plan", "permission", "error", "state"]),
+    title: z.string(), // Verb and object: "Edited src/queue.py", "Ran npm test".
+    outcome: z.string(), // "+12 −3", "exit 0", "refused"; "" while running.
+    status: z.enum(["running", "done", "failed"]),
+    quiet: z.boolean(), // Reads, searches and thoughts.
+    detail: z.string() // Raw input and output, at most 8 KB; "" when there is none.
+  })
+  .readonly();
+
 /** Something the user's agent asks before it acts, that its run's mode leaves to them: which run, what in one line, and the detail, the command or the file and its change, at most 8 KB. */
 const askSchema = z
   .strictObject({
@@ -104,6 +118,7 @@ const currentSchema = z
     drafts: z.array(z.strictObject({ id: z.string(), repo: z.string(), asker: z.string(), text: z.string() }).readonly()).readonly(), // Answers waiting for review, oldest first, each with its request's id.
     running: z.boolean(), // Whether one of the user's agents is at work here.
     asks: z.array(askSchema).readonly(), // What the user's agents at work on requests here are waiting for them to allow or refuse, oldest first.
+    activity: z.array(activityItemSchema).readonly(), // What the user's agents did on requests here, run by run, oldest first: at most 500 items a run, of the runs this desk still holds.
     // The message or answer the user last opened a link to, for the window to scroll to and highlight; null once another chat is opened.
     // `nth` counts the links opened, so the same one opened again is scrolled to again.
     focus: z.strictObject({ id: z.string(), nth: z.int() }).readonly().nullable()
@@ -174,20 +189,6 @@ export const commandSchema = z.discriminatedUnion("do", [
   z.strictObject({ do: z.literal("openNote"), id }), // Open the chat a message or an answer is in, with it loaded, and set the view's `focus` on it.
   z.strictObject({ do: z.literal("doctor") }) // Run the setup check. The reply's data is the list.
 ]);
-
-/** One step of an agent's run as its owner sees it: what the agent said or thought, a tool it used, its plan, a permission asked, an error, or how the run stands. It stays on the owner's machine, in the desk's view and never in an event. */
-export const activityItemSchema = z
-  .strictObject({
-    id: z.string(), // An item that changes keeps its id: a newer version takes the older one's place.
-    run: z.string(), // Which run it is part of.
-    kind: z.enum(["message", "thought", "tool", "plan", "permission", "error", "state"]),
-    title: z.string(), // Verb and object: "Edited src/queue.py", "Ran npm test".
-    outcome: z.string(), // "+12 −3", "exit 0", "refused"; "" while running.
-    status: z.enum(["running", "done", "failed"]),
-    quiet: z.boolean(), // Reads, searches and thoughts.
-    detail: z.string() // Raw input and output, at most 8 KB; "" when there is none.
-  })
-  .readonly();
 
 /** A message or an answer a search found: where it is, who wrote it, and a stretch of its text as last edited, in pieces, the words found marked. All of it is drawn as text. */
 const hitSchema = z
