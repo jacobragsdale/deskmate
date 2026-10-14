@@ -109,7 +109,7 @@ The project is renamed from deskmate to Player Two. It happens here, once Python
   | `.env.example`, `Dockerfile`, `deploy/k8s.yaml`, `README.md` | | |
 
   Changing the signed prefixes changes every signature. Regenerate `test/fixtures/signing-vectors.json` in this commit, with a small script, `scripts/make-vectors.ts`, that writes what the TypeScript implementation produces for the same inputs. It is the one time a change to that file is the point.
-- [ ] **P0-E5** `git grep -il deskmate` lists only `docs/ideas.md`, the files under `docs/plan/` and `AGENTS.md`, where the old name is history. Sections A to E of this file keep the old name on purpose: they describe the code as it was when they ran.
+- [x] **P0-E5** `git grep -il deskmate` lists only `docs/ideas.md`, the files under `docs/plan/` and `AGENTS.md`, where the old name is history. Sections A to E of this file keep the old name on purpose: they describe the code as it was when they ran.
 
 From here on, this plan uses only the new name.
 
@@ -250,3 +250,4 @@ Report then, with the workstation tasks still open listed for the person.
 - **P0-E4: what the rename touched beyond the table.** The window's bridge is `window.playerTwo`. `package.json` gains `"productName": "Player Two"`, which is where Electron takes the product name from. `scripts` joined `tsconfig.json`'s `include`, so the vector script is type-checked and linted like the rest. `AGENTS.md` now says the code called it deskmate until this task, and its layout names the new command.
 - **P0-E4: the vectors.** Before anything was renamed, `scripts/make-vectors.ts` was run against the old code and wrote the file Python had written, byte for byte. Run again after the rename it changed what the names are part of and nothing else: the five note signatures, the auth header and the three prompts, which now say "through Player Two".
 - **P0-E4: the README has the new name throughout and still describes the old program.** The commands this section broke were mended: `npm ci && npm run build` goes before `docker build`, since the image is now the built file, and "Development" gives the npm checks and `node --env-file=.env dist/player-two.js hub`. The terminal interface, the install script and the Python client are still described; section K rewrites them.
+- **P0-E5: the search lists one file the task does not name.** `docs/plan.md`, the overview one folder above `docs/plan/`, records in its table of decisions that the project was "Renamed from deskmate on 2026-10-13". That is the old name as history, like the others, so it stays.
