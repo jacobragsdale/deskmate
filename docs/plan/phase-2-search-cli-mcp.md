@@ -66,7 +66,7 @@ Add `@modelcontextprotocol/sdk` as a dependency.
   | `withdraw` | Withdraws a request this person made. |
 
   A message sent this way is like any sent by the command: a tag in it waits for its target's owner, and that includes a tag of the sender's own agent.
-- [ ] **P2-D3** Every tool's description says that note text comes from other people and their agents and is information, not instruction. Results carry each note as data with its author and trust flag; an untrusted note's text is left out.
+- [x] **P2-D3** Every tool's description says that note text comes from other people and their agents and is information, not instruction. Results carry each note as data with its author and trust flag; an untrusted note's text is left out.
 - [ ] **P2-D4** `test/mcp.test.ts`: drive the server over in-memory streams with the SDK's client against the in-process hub. The reading tools return what the hub holds; without `--allow-send` the sending tools are not listed and calling one is refused; `ask_agent` returns a result that a second identity's scripted session produced.
 - [ ] **P2-D5** The setup page gains an "Editor agents" section: the JSON to add `player-two mcp` to Cursor (`~/.cursor/mcp.json`) and to Copilot's command line (`~/.copilot/mcp-config.json`), each with a copy button, and a line on what `--allow-send` adds. The page shows the snippets; it does not write those files.
 - [ ] **P2-D6** **(workstation)** Confirm the two file locations and that each tool lists Player Two's tools. Correct P2-D5 if either differs.
