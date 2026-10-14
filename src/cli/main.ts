@@ -47,7 +47,8 @@ const USAGE = `usage: player-two COMMAND
 
 send, inbox, who, repos, channel, search, read, ask, status and doctor take --json, and then print one JSON value and nothing else.
 A command exits with 0 on success, 1 after printing a failure, and 2 when it was not given what it takes.
-ask also exits with 3 when the owner declined, 4 when the run failed, was stopped or was withdrawn, and 5 when nothing final came in time.`;
+ask also exits with 3 when the owner declined, 4 when the run failed, was stopped or was withdrawn, and 5 when nothing final came in time.
+--wait takes at most 86400 seconds, a day.`;
 
 /** The command was not given what it takes. The usage is printed, and the exit status says so. */
 class UsageError extends Error {}
@@ -77,6 +78,8 @@ export interface Options {
   readonly err?: (line: string) => void;
 }
 
+const MAX_WAIT = 86_400; // Most seconds a --wait may be: a day. Node fires a timer set further off than 2^31 ms, about 24.8 days, at once.
+
 // An argument is text whatever it stands for, so a number is checked before anything is sent.
 const secondsSchema = z
   .string()
@@ -90,6 +93,15 @@ function numberOf(schema: z.ZodType<number>, given: string, option: string): num
     throw new UsageError(`--${option} takes a number, not ${given}`);
   }
   return result.data;
+}
+
+/** The seconds a --wait was given, at most a day. */
+function waitOf(given: string): number {
+  const seconds = numberOf(secondsSchema, given, "wait");
+  if (seconds > MAX_WAIT) {
+    throw new UsageError(`--wait takes at most ${String(MAX_WAIT)} seconds, a day, not ${given}`);
+  }
+  return seconds;
 }
 
 /** Print what a command found: the thing itself as one line of JSON when --json was given, and otherwise in words. */
@@ -184,7 +196,7 @@ async function newest(client: Client, count: number): Promise<Entry[]> {
 async function send(joined: () => Client, args: string[], out: (line: string) => void, stdin: NodeJS.ReadableStream = process.stdin): Promise<void> {
   const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { wait: { type: "string", default: "0" }, json: { type: "boolean", default: false } } });
   const [to, ...words] = positionals;
-  const seconds = numberOf(secondsSchema, values.wait, "wait");
+  const seconds = waitOf(values.wait);
   if (to === undefined || words.length === 0) {
     throw new UsageError("send takes who it is to and the message");
   }
@@ -209,7 +221,7 @@ async function send(joined: () => Client, args: string[], out: (line: string) =>
 
 async function inbox(joined: () => Client, args: string[], out: (line: string) => void): Promise<void> {
   const { values } = parseArgs({ args, options: { after: { type: "string" }, wait: { type: "string", default: "0" }, json: { type: "boolean", default: false } } });
-  const wait = numberOf(secondsSchema, values.wait, "wait");
+  const wait = waitOf(values.wait);
   const after = values.after === undefined ? null : numberOf(seqSchema, values.after, "after");
   const client = joined();
   let found: Entry[];
@@ -331,7 +343,7 @@ async function askAgent(joined: () => Client, args: string[], out: (line: string
   const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { in: { type: "string" }, wait: { type: "string", default: "900" }, json: { type: "boolean", default: false } } });
   const [given = "", ...words] = positionals;
   const agent = agentOf(given);
-  const seconds = numberOf(secondsSchema, values.wait, "wait");
+  const seconds = waitOf(values.wait);
   const channel = values.in === undefined ? agent?.owner : channelNamed(values.in);
   if (agent === null || words.length === 0) {
     throw new UsageError("ask takes an agent, as @person/repo, and what to ask it");

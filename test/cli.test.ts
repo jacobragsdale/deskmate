@@ -495,9 +495,16 @@ await test("ask exits 0 answered, 3 declined, 4 failed, stopped or withdrawn, an
   const checked = await playerTwo(hub, "alice", later.split(" ").slice(1));
   assert.match(checked.out, /\n@bob\/uploader: waiting$/);
 
-  for (const argv of [["ask"], ["ask", "bob", "hi"], ["ask", "@bob/uploader"], ["ask", "@bob/uploader", "hi", "--in", "Back End"], ["ask", "@bob/uploader", "hi", "--wait", "soon"]]) {
+  // Past a day, which a timer cannot be set for past 24.8 days: refused before anything is sent, rather than given up on at once.
+  const tooLong = [
+    ["ask", "@bob/uploader", "hi", "--wait", "2147484"],
+    ["send", "bob", "hi", "--wait", "86401"],
+    ["inbox", "--after", "0", "--wait", "86400.5"]
+  ];
+  for (const argv of [["ask"], ["ask", "bob", "hi"], ["ask", "@bob/uploader"], ["ask", "@bob/uploader", "hi", "--in", "Back End"], ["ask", "@bob/uploader", "hi", "--wait", "soon"], ...tooLong]) {
     const ran = await playerTwo(hub, "alice", argv);
     assert.deepEqual([ran.status, ran.out], [2, ""], argv.join(" "));
   }
+  assert.match((await playerTwo(hub, "alice", tooLong[0] ?? [])).err, /^player-two: --wait takes at most 86400 seconds, a day, not 2147484\n/);
   assert.equal((await bob.events({ chat: "alice", limit: 1 }))[0]?.event.kind, "job.accepted"); // A command line that is wrong sends nothing.
 });
