@@ -229,7 +229,7 @@ Inside WSL (or the home folder on Linux and macOS):
 | `~/.config/player-two/app-state.json` | Read marks, last open chat. Safe to delete. |
 | `~/.config/player-two/agents/<repo>.key` | Phase 4. One key per checkout's agent. Mode `0600`. |
 | `~/.config/player-two/azure.json` | Phase 6. An Azure DevOps token, if one was saved. Mode `0600`. |
-| `~/.player-two/runtime/sha256-<digest>/` | The Linux runtime the window unpacked. `~/.player-two/current` links to the one in use. |
+| `~/.player-two/runtime/sha256-<digest>/` | The Linux runtime the window unpacked. `~/.player-two/current` links to the one in use, and `~/.player-two/previous` to the one before it; any other is removed. |
 | `~/.player-two/worktrees/` | Phase 6. Throwaway git worktrees for runs that change files. |
 
 `PLAYER_TWO_HOME` moves `~/.config/player-two`; `PLAYER_TWO_DEV` moves `~/dev`. On Windows the window keeps one file of its own, `settings.json` in Electron's user-data folder, with the name of the WSL distribution.
