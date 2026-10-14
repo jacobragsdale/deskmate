@@ -21,7 +21,8 @@ jobs:
       - run: npm run format:check
       - run: npm test
       - run: npm run build
-      # The smoke test is task P0-J6's. Until that file exists there is nothing to run, and the step is skipped rather than failed.
+      # xvfb is part of the runner's image. Electron's sandbox needs unprivileged user namespaces, which Ubuntu 24.04's AppArmor withholds unless a profile allows them, so the runner, thrown away after the job, allows them all.
       - name: Window smoke test
-        if: hashFiles('test/window.smoke.ts') != ''
-        run: xvfb-run --auto-servernum node --test test/window.smoke.ts
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          xvfb-run --auto-servernum node --test test/window.smoke.ts
