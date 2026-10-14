@@ -10,6 +10,7 @@ import { isChannel } from "../core/wire.ts";
 import type { Delivered } from "../core/wire.ts";
 import { DEFAULT_AGENT, defaultHome, http, join, loadClient, PlayerTwoError, POLL_WAIT } from "../desk/client.ts";
 import type { Client, Transport } from "../desk/client.ts";
+import { runDesk } from "../desk/main.ts";
 import { problemOf } from "../desk/session.ts";
 import { runHub } from "../hub/main.ts";
 
@@ -24,6 +25,7 @@ const USAGE = `usage: player-two COMMAND
   repos                                 list every agent as @person/repo with the branch it is on
   channel [join NAME | leave NAME]      list the channels, or join or leave one
   hub [--host HOST] [--port PORT]       run the hub; it reads PLAYER_TWO_JOIN_TOKEN, PLAYER_TWO_DB and PLAYER_TWO_REPOS
+  desk                                  run your side with no window, for the window to start: it speaks JSON lines on standard input and output
 
 send, inbox, who, repos and channel take --json, and then print one JSON value and nothing else.
 A command exits with 0 on success, 1 after printing a failure, and 2 when it was not given what it takes.`;
@@ -171,6 +173,10 @@ async function run(argv: readonly string[], options: Options, out: (line: string
   switch (command) {
     case "hub":
       runHub(args, process.env); // It keeps the program alive from here, until it is told to stop.
+      break;
+    case "desk":
+      globalThis.console = new console.Console(process.stderr); // Standard output carries the protocol's lines and nothing else, so whatever anything logs goes to standard error.
+      await runDesk(process.stdin, process.stdout);
       break;
     case "join":
       await register(home, transport, args, out);
