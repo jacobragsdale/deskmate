@@ -8,7 +8,8 @@ import { z } from "zod";
 
 import { isUnder, prefixKey, unquote } from "../core/remotes.ts";
 import { authClaim, authIsValid, isFresh, noteIsAuthentic } from "../core/sign.ts";
-import { isChannel, joinSchema, nameSchema, noteSchema, repoRefSchema, repoSchema } from "../core/wire.ts";
+import { VERSION } from "../core/version.ts";
+import { isChannel, joinSchema, nameSchema, noteSchema, PROTOCOL, repoRefSchema, repoSchema } from "../core/wire.ts";
 import type { ChannelInfo, RepoRef } from "../core/wire.ts";
 import { Database } from "./db.ts";
 
@@ -270,7 +271,7 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
   const routes: readonly Route[] = [
     { method: "GET", path: "/healthz", open: true, answer: () => [200, { ok: true }] },
     { method: "POST", path: "/join", open: true, answer: join },
-    { method: "GET", path: "/info", answer: () => [200, { repos: prefix }] },
+    { method: "GET", path: "/info", answer: () => [200, { version: VERSION, protocol: PROTOCOL, repos: prefix, now: Math.floor(now()) }] },
     { method: "GET", path: "/users", answer: () => [200, db.users()] },
     { method: "PUT", path: "/repos", answer: putRepos },
     { method: "GET", path: "/repos", answer: () => [200, db.repos()] },

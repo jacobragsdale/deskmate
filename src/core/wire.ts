@@ -2,6 +2,7 @@
 
 import { z } from "zod";
 
+export const PROTOCOL = 1; // Goes up when the hub and its clients must be updated together.
 export const MAX_BODY = 64_000;
 export const MAX_SKEW = 300; // Seconds a signed timestamp may differ from the verifier's clock.
 export const REPO_NAME = "[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?";
@@ -37,8 +38,8 @@ export const joinSchema = z.strictObject({ name: nameSchema, pubkey: pubKeySchem
 /** Someone who has joined, and the Unix seconds of their last signed request; 0 if they have never made one. */
 export const personSchema = z.strictObject({ name: nameSchema, pubkey: pubKeySchema, seen: z.int() }).readonly();
 
-/** `repos` is the key every shareable repo starts with, such as "dev.azure.com/acme". */
-export const hubInfoSchema = z.strictObject({ repos: z.string() }).readonly();
+/** What the hub says about itself. `repos` is the key every shareable repo starts with, such as "dev.azure.com/acme"; `now` is the hub's clock in Unix seconds. */
+export const hubInfoSchema = z.strictObject({ version: z.string(), protocol: z.int(), repos: z.string(), now: z.int() }).readonly();
 
 /** A repo as everyone can refer to it. */
 export const repoRefSchema = z.strictObject({ name: repoNameSchema, key: repoKeySchema, url: repoUrlSchema }).readonly();

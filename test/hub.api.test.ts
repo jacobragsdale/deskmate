@@ -12,6 +12,7 @@ import type { TestContext } from "node:test";
 import { z } from "zod";
 
 import { authHeader, loadKey, signNote } from "../src/core/sign.ts";
+import { VERSION } from "../src/core/version.ts";
 import { MAX_SKEW } from "../src/core/wire.ts";
 import type { Note, Repo } from "../src/core/wire.ts";
 import { http, join as joinHub, loadClient } from "../src/desk/client.ts";
@@ -311,10 +312,11 @@ await test("a channel name must be a plain name", async (t) => {
   assert.deepEqual(await alice.channels(), []);
 });
 
-await test("the hub says which repos it shares", async (t) => {
+await test("the hub says which repos it shares, which version and protocol it is, and what time it has", async (t) => {
   const hub = await startHub(t);
 
-  assert.equal((await (await hub.join("alice")).info()).repos, "dev.azure.com/acme");
+  assert.deepEqual(await (await hub.join("alice")).info(), { version: VERSION, protocol: 1, repos: "dev.azure.com/acme", now: NOW });
+  assert.match(VERSION, /^\d+\.\d+\.\d+$/);
 });
 
 await test("everyone sees which repos each person has and a new list replaces the old", async (t) => {
