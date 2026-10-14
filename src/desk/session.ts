@@ -902,15 +902,26 @@ export class Session {
     this.open(channel);
   }
 
+  /**
+   * Leave a channel, and forget what was said in it here. Not while one of the user's agents is at work there or its draft waits there:
+   * the channel would be gone from the window, Stop and the draft with it, and the hub takes nothing more from the user there, so neither could end in it.
+   */
   private async leaveChannel(chat: string): Promise<void> {
     if (!isChannel(chat)) {
       return;
+    }
+    const run = [...this.runs.values()].find((each) => chatOf(each.entry.event, this.me) === chat);
+    if (run !== undefined) {
+      throw new PlayerTwoError(`your ${run.repo} agent is still working in ${chat}: stop it before you leave`);
+    }
+    const draft = this.drafts.get(chat)?.[0];
+    if (draft !== undefined) {
+      throw new PlayerTwoError(`your ${draft.repo} agent's draft is waiting in ${chat}: send or discard it before you leave`);
     }
     await this.client.publish(chat, "channel.leave", {}); // Not folded: what was said in the channel is forgotten here.
     await this.refreshChannels();
     this.chats.forget(chat);
     this.paged.delete(chat);
-    this.drafts.delete(chat);
     if (this.current === chat) {
       this.current = "";
       const first = this.rows()[0];

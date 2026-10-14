@@ -623,6 +623,49 @@ await test("Esc's stopAll stops every run of the user's in the chat, a request i
   );
 });
 
+await test(
+  "leaving a channel is refused, saying why, while the user's agent works there or its draft waits there, and goes ahead once each has ended in the channel",
+  { timeout: 30_000 },
+  async (t) => {
+    const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+    const alice = await hub.join("alice");
+    const dev = join(hub.dir, "dev-bob");
+    checkout(dev, "uploader");
+    const bob = deskOf(t, await hub.join("bob"), dev, { describe: () => Promise.resolve({ branch: "main", commit: COMMIT, dirty: false }), runner: patient });
+    await alice.publish("#side", "channel.join", {});
+    await bob.session.handle({ do: "joinChannel", name: "side" });
+    const leave = (): Promise<void> => bob.session.handle({ do: "leaveChannel", chat: "#side" });
+    const asked = async (text: string): Promise<string> => {
+      const { id } = (await alice.publish("#side", "message", { text, via: "cli" })).event;
+      await until(bob.session, text, () => shownTo(bob.session, id)?.requests[0]?.status.kind === "ready");
+      return id;
+    };
+
+    const slow = await asked("@bob/uploader take your time");
+    await run(bob.session, slow, false);
+    await until(bob.session, "it running", () => shownTo(bob.session, slow)?.requests[0]?.status.kind === "running");
+    await assert.rejects(leave(), /^Error: your uploader agent is still working in #side: stop it before you leave$/);
+    await bob.session.handle({ do: "stopAll", chat: "#side" });
+    await until(bob.session, "it stopped", (view) => view.busy.working === 0);
+
+    const quick = await asked("@bob/uploader a quick one");
+    await run(bob.session, quick, false);
+    await until(bob.session, "its draft", (view) => view.busy.unsent === 1);
+    await assert.rejects(leave(), /^Error: your uploader agent's draft is waiting in #side: send or discard it before you leave$/);
+    await bob.session.handle({ do: "discardDraft", chat: "#side", id: quick, repo: "uploader" });
+
+    await leave();
+    assert.ok(!bob.session.view().rows.some((row) => row.chat === "#side"));
+    assert.deepEqual(
+      (await alice.events({ chat: "#side" }))
+        .map((delivered) => delivered.event.kind)
+        .filter((kind) => kind.startsWith("job.") || kind === "channel.leave")
+        .reverse(),
+      ["job.accepted", "job.cancelled", "job.accepted", "job.declined", "channel.leave"]
+    ); // Each run told the channel how it ended before bob left it.
+  }
+);
+
 await test("a run is refused when its request was edited after its owner saw it, and given the text they saw when it was not", { timeout: 30_000 }, async (t) => {
   const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
   const alice = await hub.join("alice");
