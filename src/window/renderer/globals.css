@@ -283,3 +283,13 @@
     color: var(--tag);
   }
 }
+
+/* Whoever asks the system for less motion gets none: dialogs, lists and toasts appear where they belong without sliding or zooming there. Radix waits for a closing animation only when there is one, so nothing is left open. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

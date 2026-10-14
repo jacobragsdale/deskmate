@@ -70,8 +70,8 @@ class Page {
     // Both send what was logged before they were enabled, so nothing from the page's first moments is missed.
     await page.send("Log.enable");
     await page.send("Runtime.enable");
-    // The test is about where things land, not how they get there. On CI's virtual display a transition sometimes never runs, leaving a toast
-    // where it started sliding in from; asking for reduced motion, which the window honours, takes the transitions out.
+    // The test is about where things land, not how they get there. On CI's virtual display an animation sometimes never runs, leaving a toast or
+    // a dialog where it started from; asking for reduced motion, which the window honours with none at all, takes them out.
     await page.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
     return page;
   }
