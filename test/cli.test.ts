@@ -460,9 +460,10 @@ await test("ask exits 0 answered, 3 declined, 4 failed, stopped or withdrawn, an
   const answered = await answer(bob, "#backend", first.event.id, "here");
   assert.deepEqual(printedSchema.parse(printed(await answering)), { ...answered, trusted: true });
 
-  // 3: bob says no.
+  // 3: bob says no. His withdrawal first counts for nothing, as only the one who asked can take a request back: had it counted, this would exit 4.
   const declining = asking("again?");
   const second = await requestTo(bob, "alice");
+  await bob.publish("alice", "job.withdrawn", { agent: "bob/uploader" }, [second.event.id]);
   await bob.publish("alice", "job.declined", { repo: "uploader", reason: "" }, [second.event.id]);
   assert.deepEqual(await declining, { status: 3, out: "", err: `player-two: bob declined to run @bob/uploader: ${noteLink(second.event.id)}` });
 
@@ -479,8 +480,7 @@ await test("ask exits 0 answered, 3 declined, 4 failed, stopped or withdrawn, an
   assert.deepEqual(await stopping, { status: 4, out: "", err: `player-two: @bob/uploader was stopped: ${noteLink(fourth.event.id)}` });
   const withdrawing = asking("never mind");
   const fifth = await requestTo(bob, "alice");
-  await bob.publish("alice", "job.withdrawn", { agent: "bob/uploader" }, [fifth.event.id]); // From bob, it counts for nothing:
-  await alice.publish("bob", "job.withdrawn", { agent: "bob/uploader" }, [fifth.event.id]); // only the one who asked can take it back.
+  await alice.publish("bob", "job.withdrawn", { agent: "bob/uploader" }, [fifth.event.id]);
   assert.deepEqual(await withdrawing, { status: 4, out: "", err: `player-two: @bob/uploader was withdrawn: ${noteLink(fifth.event.id)}` });
 
   // 5: nothing final in time, whether bob has not acted or his agent is still at work; the last line says how to look again.

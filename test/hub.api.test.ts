@@ -659,14 +659,13 @@ await test("the hub refuses to start on a database from another version, such as
 
 await test("the search index holds each message and answer as its author last edited it, and is filled from the events of a database 0.5 made", async (t) => {
   const hub = await startHub(t);
-  for (const name of ["alice", "bob", "carol"]) {
-    await hub.join(name);
-  }
+  const [, bob] = [await hub.join("alice"), await hub.join("bob"), await hub.join("carol")];
   const message = (author: string, to: string, text: string): Event => signed(hub, author, to, "message", { text, via: "cli" });
   const edited = message("alice", "bob", "the words before");
   const kept = message("alice", "bob", "words nobody could change");
   const deleted = message("alice", "bob", "words taken back");
   const asked = message("bob", "alice", "@alice/uploader a question");
+  const answered = signed(hub, "alice", "bob", "job.result", { repo: "uploader", branch: "main", text: "an agent's answer", reviewed: false }, { refs: [asked.id] });
   for (const event of [
     edited,
     kept,
@@ -677,10 +676,13 @@ await test("the search index holds each message and answer as its author last ed
     signed(hub, "alice", "carol", "message.edit", { text: "words for carol" }, { refs: [kept.id] }), // Not the message's chat.
     signed(hub, "alice", "bob", "message.delete", {}, { refs: [deleted.id] }),
     signed(hub, "alice", "bob", "message.edit", { text: "words after the delete" }, { refs: [deleted.id] }),
-    signed(hub, "alice", "bob", "job.result", { repo: "uploader", branch: "main", text: "an agent's answer", reviewed: false }, { refs: [asked.id] }),
-    signed(hub, "alice", "bob", "message.edit", { text: "an answer rewritten" }, { refs: [] }),
+    answered,
+    signed(hub, "alice", "bob", "message.edit", { text: "an answer rewritten" }, { refs: [answered.id] }), // By its author, in its chat, but an answer is not a message.
+    signed(hub, "alice", "bob", "message.delete", {}, { refs: [answered.id] }),
     signed(hub, "alice", "bob", "message", "not JSON"),
-    signed(hub, "alice", "bob", "message", { text: "" }) // Not what a message holds.
+    signed(hub, "alice", "bob", "message", { text: "" }), // Not what a message holds.
+    signed(hub, "alice", "bob", "message.edit", { text: "words naming nothing" }, { refs: [] }),
+    message("alice", "bob", "\u0002marks\u0003 of its own")
   ]) {
     assert.equal((await post(hub, event.author, event))[0], 201);
   }
@@ -700,10 +702,12 @@ await test("the search index holds each message and answer as its author last ed
     { rowid: 1, text: "the words after" },
     { rowid: 2, text: "words nobody could change" },
     { rowid: 4, text: "@alice/uploader a question" },
-    { rowid: 10, text: "an agent's answer" }
+    { rowid: 10, text: "an agent's answer" },
+    { rowid: 16, text: " marks  of its own" } // The characters that mark what a search found are spaces here, so every mark in a snippet is the hub's.
   ];
 
   assert.deepEqual(words(), indexed);
+  assert.deepEqual(await found(bob, "own"), [[16, " marks  of its [own]"]]);
 
   const older = new DatabaseSync(file); // What 0.5 left: the same events, and no index.
   older.exec("DROP TABLE search; PRAGMA user_version = 5;");

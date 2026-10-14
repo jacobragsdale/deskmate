@@ -455,6 +455,21 @@ await test(
   }
 );
 
+await test("the window's search leaves out a note whose signature fails, as the window never shows its text", { timeout: 30_000 }, async (t) => {
+  const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+  const [alice, bob, carol] = [await hub.join("alice"), await hub.join("bob"), await hub.join("carol")];
+  const vouched = await alice.publish("bob", "message", { text: "deploy notes from alice", via: "cli" });
+  await carol.publish("bob", "message", { text: "deploy notes from carol", via: "cli" });
+  writeFileSync(join(hub.dir, "bob", "known.json"), JSON.stringify({ carol: "0".repeat(64) })); // Bob first saw carol under another key.
+  const { session } = deskOf(t, bob, join(hub.dir, "dev"));
+
+  assert.equal((await bob.search({ q: "deploy notes" })).length, 2); // The hub finds both.
+  assert.deepEqual(
+    (await session.search("deploy notes")).map((hit) => [hit.sender, hit.id]),
+    [["alice", vouched.event.id]]
+  );
+});
+
 await test("opening a link to a note opens its chat with the page around it loaded and no hole after it, and points at it; one the reader cannot see opens nothing", { timeout: 30_000 }, async (t) => {
   const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
   const [alice, bob, carol] = [await hub.join("alice"), await hub.join("bob"), await hub.join("carol")];
