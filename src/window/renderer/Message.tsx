@@ -237,7 +237,7 @@ function Edited({ message }: { readonly message: ReplyView }): JSX.Element | nul
 }
 
 /**
- * A link to a note, drawn as a chip of text: who wrote the note and its first words once the desk has looked it up, or that the reader cannot see it.
+ * A link to a note, drawn as a chip of text: who wrote the note and its first words once the desk has looked it up, who wrote it and where when its chat is not loaded, or that the reader cannot see it.
  * Clicking it has the desk open the note; nothing in it is followed as an address or run.
  */
 function NoteChip({ id, notes, act }: { readonly id: string; readonly notes: ReplyView["notes"]; readonly act: Act }): JSX.Element {
@@ -245,6 +245,8 @@ function NoteChip({ id, notes, act }: { readonly id: string; readonly notes: Rep
   let label = "a note…"; // Still being looked up.
   if (note?.state === "seen") {
     label = `${note.author}: ${note.words}`;
+  } else if (note?.state === "elsewhere") {
+    label = `${note.author} in ${note.chat}`;
   } else if (note?.state === "hidden") {
     label = "a note you cannot see";
   }

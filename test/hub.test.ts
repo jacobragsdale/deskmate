@@ -413,32 +413,47 @@ await test("a message stored while one chat's page is asked for again arrives, t
   await until(session, "alice's second message", (view) => messages(view).some((message) => message.body === "while carol's page is asked for again"));
 });
 
-await test("a link to a note shows who wrote it and its first words, from what is loaded or from the hub, or that the reader cannot see it", { timeout: 30_000 }, async (t) => {
-  const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
-  const [alice, bob, carol] = [await hub.join("alice"), await hub.join("bob"), await hub.join("carol")];
-  const loaded = await alice.publish("bob", "message", { text: "the first words of a note", via: "cli" });
-  await alice.publish("bob", "message.edit", { text: "the words it has now" }, [loaded.event.id]);
-  await carol.publish("#private", "channel.join", {});
-  const hidden = await carol.publish("#private", "message", { text: "only for carol", via: "cli" });
-  await bob.publish("#left", "channel.join", {});
-  const asked = await bob.publish("#left", "message", { text: "bob said this, then left", via: "cli" }); // Not loaded, as bob is not in the channel now; but his own, so the hub shows it to him.
-  await bob.publish("#left", "channel.leave", {});
-  const links = [loaded, hidden, asked, loaded].map(({ event }) => noteLink(event.id)).join(", ");
-  const { event } = await alice.publish("bob", "message", { text: `see ${links} and player-two://note/${"0".repeat(65)}`, via: "cli" });
-  const session = new Session(bob, join(hub.dir, "dev"), { changed: () => undefined, notice: () => undefined, arrived: () => undefined, confirmClone: () => Promise.resolve(false) }, { presence: 1 });
-  session.start();
-  t.after(() => session.stop());
+await test(
+  "a link to a note shows who wrote it and its first words when it is loaded, who wrote it and where when it is not, and that the reader cannot see it when the hub will not show it or its signature fails",
+  { timeout: 30_000 },
+  async (t) => {
+    const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+    const [alice, bob, carol] = [await hub.join("alice"), await hub.join("bob"), await hub.join("carol")];
+    const secret = await alice.publish("bob", "message", { text: "the staging password is hunter2", via: "cli" });
+    await alice.publish("bob", "message.delete", {}, [secret.event.id]);
+    for (let n = 0; n < 60; n += 1) {
+      await alice.publish("bob", "message", { text: `filler ${String(n)}`, via: "cli" }); // Past the newest page, so the deleted one is not loaded at start.
+    }
+    const unvouched = await carol.publish("bob", "message", { text: "carol's words", via: "cli" });
+    writeFileSync(join(hub.dir, "bob", "known.json"), JSON.stringify({ carol: "0".repeat(64) })); // Bob first saw carol under another key, so her message fails his check.
+    const loaded = await alice.publish("bob", "message", { text: "the first words of a note", via: "cli" });
+    await alice.publish("bob", "message.edit", { text: "the words it has now" }, [loaded.event.id]);
+    await carol.publish("#private", "channel.join", {});
+    const hidden = await carol.publish("#private", "message", { text: "only for carol", via: "cli" });
+    await bob.publish("#left", "channel.join", {});
+    const asked = await bob.publish("#left", "message", { text: "bob said this, then left", via: "cli" }); // Not loaded, as bob is not in the channel now; but his own, so the hub shows it to him.
+    await bob.publish("#left", "channel.leave", {});
+    const links = [loaded, hidden, asked, secret, unvouched, loaded].map(({ event }) => noteLink(event.id)).join(", ");
+    const { event } = await alice.publish("bob", "message", { text: `see ${links} and player-two://note/${"0".repeat(65)}`, via: "cli" });
+    const { session } = deskOf(t, bob, join(hub.dir, "dev"));
+    const lookedUp = (): Promise<MessageView["notes"]> =>
+      until(session, "every note looked up", () => {
+        const shown = shownTo(session, event.id)?.notes ?? [];
+        return shown.length === 5 && shown;
+      });
 
-  const notes = await until(session, "every note looked up", () => {
-    const shown = shownTo(session, event.id)?.notes ?? [];
-    return shown.length === 3 && shown;
-  });
-  assert.deepEqual(notes, [
-    { state: "seen", id: loaded.event.id, author: "alice", words: "the words it has now" },
-    { state: "hidden", id: hidden.event.id },
-    { state: "seen", id: asked.event.id, author: "bob", words: "bob said this, then left" }
-  ]);
-});
+    // Words only from the fold, edits and deletes applied: one not loaded is who wrote it and where, since the hub's copy of it is as it was first sent.
+    assert.deepEqual(await lookedUp(), [
+      { state: "seen", id: loaded.event.id, author: "alice", words: "the words it has now" },
+      { state: "hidden", id: hidden.event.id },
+      { state: "elsewhere", id: asked.event.id, author: "bob", chat: "#left" },
+      { state: "elsewhere", id: secret.event.id, author: "alice", chat: "alice" },
+      { state: "hidden", id: unvouched.event.id }
+    ]);
+    await session.handle({ do: "openNote", id: secret.event.id }); // Which loads the page around it, in the chat the link is in.
+    assert.deepEqual((await lookedUp())[3], { state: "seen", id: secret.event.id, author: "alice", words: "message deleted" });
+  }
+);
 
 await test("opening a link to a note opens its chat with the page around it loaded and no hole after it, and points at it; one the reader cannot see opens nothing", { timeout: 30_000 }, async (t) => {
   const hub = await hubOfItsOwn(t, () => Date.now() / 1000);

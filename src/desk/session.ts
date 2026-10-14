@@ -446,7 +446,7 @@ export class Session {
   }
 
   /**
-   * What each note a text links to is, as far as the desk knows: one loaded here as the fold has it, edits and all, and any other as the hub answered for it.
+   * What each note a text links to is, as far as the desk knows: one loaded here as the fold has it, edits and all, and any other by who wrote it and where, as the hub answered for it.
    * One that is neither is asked of the hub, once, and left out until the answer comes and the window is told again.
    */
   private notesOf(text: string): NoteView[] {
@@ -466,14 +466,14 @@ export class Session {
 
   /**
    * Ask the hub for a note linked to that is not loaded here. One it will not show this user, or whose signature fails, is a note they cannot see.
+   * Any other is shown by who wrote it and where, never by its words: one event says nothing of a later edit or delete, so its words may be ones its author took back.
    * When the hub cannot be reached it is asked again the next time the link is drawn.
    */
   private async lookUp(id: string): Promise<void> {
     try {
       const found = await this.client.event(id);
       const trusted = found !== null && (await this.client.isTrusted(found.event));
-      const text = found === null ? "" : textOf({ ...found, trusted });
-      this.linked.set(id, found !== null && trusted ? { state: "seen", id, author: found.event.author, words: oneLine(text === "" ? found.event.kind : text) } : { state: "hidden", id });
+      this.linked.set(id, found !== null && trusted ? { state: "elsewhere", id, author: found.event.author, chat: chatOf(found.event, this.me) } : { state: "hidden", id });
       this.hooks.changed();
     } catch {
       this.linked.delete(id);

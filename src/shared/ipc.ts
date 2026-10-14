@@ -29,9 +29,10 @@ const requestSchema = z
   })
   .readonly();
 
-/** A note a message links to, once the desk has looked it up: who wrote it and its first words, or that the reader cannot see it. */
+/** A note a message links to, once the desk has looked it up: who wrote it and its first words, who wrote it and where, or that the reader cannot see it. */
 const noteSchema = z.discriminatedUnion("state", [
-  z.strictObject({ state: z.literal("seen"), id: z.string(), author: z.string(), words: z.string() }).readonly(),
+  z.strictObject({ state: z.literal("seen"), id: z.string(), author: z.string(), words: z.string() }).readonly(), // Loaded here: its words as they read now, edits and deletes applied.
+  z.strictObject({ state: z.literal("elsewhere"), id: z.string(), author: z.string(), chat: z.string() }).readonly(), // Not loaded, so its words, which may since have been edited or deleted, are not known.
   z.strictObject({ state: z.literal("hidden"), id: z.string() }).readonly() // Not one the reader can see, or one whose signature failed.
 ]);
 
