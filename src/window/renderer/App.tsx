@@ -1,5 +1,6 @@
 /** The window: a join form until this machine has joined a hub, then chats on the left and the open chat on the right; the setup page when something is not right. */
 
+import { cn } from "cn";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { JSX, SyntheticEvent } from "react";
 import { useDefaultLayout } from "react-resizable-panels";
@@ -179,7 +180,9 @@ function Chat({ view, act, tell, onSetup }: { readonly view: ChatView; readonly 
       <ResizablePanel id="chat">
         <main className="flex h-full min-w-0 flex-col">
           {current === null ? (
-            <p className="empty">{view.loaded ? "Nobody else has joined this hub yet. Share the install line with a teammate, or start a channel." : "Loading…"}</p>
+            <p className="m-auto p-8 text-center text-muted-foreground">
+              {view.loaded ? "Nobody else has joined this hub yet. Share the install line with a teammate, or start a channel." : "Loading…"}
+            </p>
           ) : (
             <>
               <Thread
@@ -193,11 +196,11 @@ function Chat({ view, act, tell, onSetup }: { readonly view: ChatView; readonly 
               <Composer view={view} current={current} act={act} submit={submit} tell={tell} />
             </>
           )}
-          <footer className={view.link.state === "down" ? "down" : ""}>
-            <span>
+          <footer className="flex justify-between gap-4 border-t px-3 py-1 text-xs whitespace-nowrap text-muted-foreground">
+            <span className="truncate">
               {view.me} on {view.hub} · {view.agent} · {view.myRepos.length} {view.myRepos.length === 1 ? "repo" : "repos"} in {view.dev}
             </span>
-            <span>
+            <span className={cn("max-w-1/2 flex-none truncate", view.link.state === "down" && "text-destructive")}>
               {link} ·{" "}
               <Button type="button" variant="link" size="xs" className="h-auto p-0" onClick={onSetup}>
                 Setup
@@ -281,7 +284,7 @@ export function App(): JSX.Element {
     }
   }, [up]);
 
-  let page = <p className="empty">Loading…</p>;
+  let page = <p className="m-auto p-8 text-center text-muted-foreground">Loading…</p>;
   if (view?.kind === "stopped") {
     page = <SetupPage problem={view.problem} initial={null} onClose={null} tell={tell} />;
   } else if (setup !== null) {

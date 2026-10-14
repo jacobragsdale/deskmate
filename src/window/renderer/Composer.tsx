@@ -49,8 +49,8 @@ function Review({ current, submit, tell, act }: Omit<Props, "view">): JSX.Elemen
       .catch(console.error);
   };
   return (
-    <section className="review">
-      <p>
+    <section className="mb-2 rounded-lg border border-warn px-2.5 py-2">
+      <p className="mb-1.5 text-warn">
         ✎ Your {draft.repo} agent&rsquo;s answer for {draft.asker}. Nothing is sent until you send it.
         {current.drafts.length > 1 && ` ${String(current.drafts.length - 1)} more waiting.`}
       </p>
@@ -63,7 +63,7 @@ function Review({ current, submit, tell, act }: Omit<Props, "view">): JSX.Elemen
           setText(event.target.value);
         }}
       />
-      <div className="actions">
+      <div className="mt-1.5 flex gap-1.5">
         <Button type="button" size="sm" disabled={sending || text.trim() === ""} onClick={send}>
           Send answer
         </Button>
@@ -179,7 +179,7 @@ export function Composer({ view, current, act, submit, tell }: Props): JSX.Eleme
   };
 
   return (
-    <div className="composer">
+    <div className="border-t px-4 pt-2 pb-2.5">
       <Review key={`${chat} ${String(current.drafts[0]?.noteId ?? 0)} ${current.drafts[0]?.repo ?? ""}`} current={current} act={act} submit={submit} tell={tell} />
       <Popover open={picks.rows.length > 0}>
         <PopoverAnchor asChild>

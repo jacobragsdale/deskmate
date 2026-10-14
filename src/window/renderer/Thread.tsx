@@ -1,5 +1,7 @@
 /** The open chat: who is in it, its notes, and under each note that tags an agent, where that agent stands. */
 
+import { cn } from "cn";
+import { Loader2Icon } from "lucide-react";
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { JSX } from "react";
 import Markdown from "react-markdown";
@@ -13,6 +15,14 @@ import type { ChatView, CurrentView, MessageView, RequestView } from "../../shar
 import type { Act } from "./App.tsx";
 
 const NEAR_BOTTOM = 80; // Pixels from the end within which new notes keep the view pinned to the end.
+const LINE = "my-1 text-muted-foreground"; // Where a tagged agent stands, under the note.
+const MINE = "my-1 text-warn"; // The same, when it waits on the user.
+const RULE = "mt-3.5 mb-1.5 flex items-center gap-2.5 text-xs text-muted-foreground before:flex-1 before:border-t after:flex-1 after:border-t"; // A line across the thread with a word in it.
+
+/** An agent at work. */
+function Spinner(): JSX.Element {
+  return <Loader2Icon aria-hidden className="inline size-3.5 align-[-2px] motion-safe:animate-spin" />;
+}
 
 function dayLabel(ts: number): string {
   const day = new Date(ts * 1000);
@@ -43,11 +53,11 @@ function RequestLine({ request, act }: { readonly request: RequestView; readonly
   const on = (branch: string): string => (branch === "" ? "" : ` on ${branch}`);
   switch (status.kind) {
     case "drafted":
-      return <p className="request mine">✎ {who} has drafted an answer · it is below for you to review</p>;
+      return <p className={MINE}>✎ {who} has drafted an answer · it is below for you to review</p>;
     case "running":
       return (
-        <p className="request">
-          <span className="spinner" /> {who} is working{on(status.branch)} · <Elapsed since={status.startedAt} /> ·{" "}
+        <p className={LINE}>
+          <Spinner /> {who} is working{on(status.branch)} · <Elapsed since={status.startedAt} /> ·{" "}
           <Button
             size="xs"
             variant="outline"
@@ -63,7 +73,7 @@ function RequestLine({ request, act }: { readonly request: RequestView; readonly
       );
     case "noCheckout":
       return (
-        <p className="request mine">
+        <p className={MINE}>
           ? you have no checkout of {repo} ·{" "}
           <Button
             size="xs"
@@ -80,7 +90,7 @@ function RequestLine({ request, act }: { readonly request: RequestView; readonly
       );
     case "ready":
       return (
-        <p className="request mine">
+        <p className={MINE}>
           ◆ {{ "": "", declined: "you declined · ", failed: "it failed · ", stopped: "stopped · ", interrupted: "interrupted · " }[status.before]}
           {who} ·{" "}
           <Button
@@ -125,30 +135,30 @@ function RequestLine({ request, act }: { readonly request: RequestView; readonly
       );
     case "working":
       return (
-        <p className="request">
-          <span className="spinner" /> {who} is working{on(status.branch)}
+        <p className={LINE}>
+          <Spinner /> {who} is working{on(status.branch)}
         </p>
       );
     case "waiting":
       return (
-        <p className="request">
+        <p className={LINE}>
           ◌ waiting for {owner} to approve{status.away ? " · they are away" : ""}
         </p>
       );
     case "nobody":
-      return <p className="request">? nobody named {owner} has joined</p>;
+      return <p className={LINE}>? nobody named {owner} has joined</p>;
     case "lacksRepo":
       return (
-        <p className="request">
+        <p className={LINE}>
           ? {owner} has no checkout of {repo}
         </p>
       );
     case "declined":
-      return <p className="request">× {owner} declined</p>;
+      return <p className={LINE}>× {owner} declined</p>;
     case "failed":
-      return <p className="request">✗ {who} failed</p>;
+      return <p className={LINE}>✗ {who} failed</p>;
     case "stopped":
-      return <p className="request">■ {who} was stopped</p>;
+      return <p className={LINE}>■ {who} was stopped</p>;
   }
 }
 
@@ -165,7 +175,7 @@ function Body({ message }: { readonly message: MessageView }): JSX.Element {
               </a>
             ),
             img: ({ alt, src }) => (
-              <span className="quiet">
+              <span className="text-muted-foreground">
                 [image{alt === undefined || alt === "" ? "" : `: ${alt}`}] {typeof src === "string" ? src : ""}
               </span>
             )
@@ -177,10 +187,10 @@ function Body({ message }: { readonly message: MessageView }): JSX.Element {
     );
   }
   return (
-    <p className="text">
+    <p className="wrap-anywhere whitespace-pre-wrap">
       {spans(message.body).map((span, index) => (
         // The pieces of one note never reorder, so their position is a stable key.
-        <span key={index} className={span.tag ? "tag" : undefined}>
+        <span key={index} className={span.tag ? "font-semibold text-tag" : undefined}>
           {span.text}
         </span>
       ))}
@@ -191,27 +201,29 @@ function Body({ message }: { readonly message: MessageView }): JSX.Element {
 function Message({ message, me, act }: { readonly message: MessageView; readonly me: string; readonly act: Act }): JSX.Element {
   const when = new Date(message.ts * 1000);
   if (!message.trusted) {
-    return <p className="untrusted">✗ a note claiming to be from {message.sender} failed its signature check and is hidden</p>;
+    return <p className="my-2 text-destructive">✗ a note claiming to be from {message.sender} failed its signature check and is hidden</p>;
   }
   return (
-    <article className={message.agent === null ? "message" : "message agent"}>
+    <article className={cn(message.agent !== null && "mt-1 border-l-3 border-agent pl-2.5")}>
       {message.header && (
-        <header>
-          <strong>{message.sender === me ? "you" : message.sender}</strong>
+        <header className="mt-2.5 flex items-baseline gap-1.5">
+          <strong className={cn(message.agent !== null && "text-agent")}>{message.sender === me ? "you" : message.sender}</strong>
           {message.agent !== null && (
-            <span>
+            <span className="text-xs text-muted-foreground">
               /{message.agent} agent{message.branch === "" ? "" : ` on ${message.branch}`}
             </span>
           )}
           <Tooltip>
             <TooltipTrigger asChild>
-              <time dateTime={when.toISOString()}>{when.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}</time>
+              <time className="text-xs text-muted-foreground" dateTime={when.toISOString()}>
+                {when.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}
+              </time>
             </TooltipTrigger>
             <TooltipContent>{when.toLocaleString(undefined, { dateStyle: "full", timeStyle: "medium" })}</TooltipContent>
           </Tooltip>
         </header>
       )}
-      {message.quote !== "" && <p className="quote">{message.quote}</p>}
+      {message.quote !== "" && <p className="my-0.5 truncate border-l-3 pl-2 text-muted-foreground">{message.quote}</p>}
       <Body message={message} />
       {message.requests.map((request) => (
         <RequestLine key={`${request.owner}/${request.repo}`} request={request} act={act} />
@@ -240,14 +252,14 @@ export function Thread({ view, current, act, onPin }: { readonly view: ChatView;
   const firstNew = current.newAfter === null ? undefined : current.messages.find((message) => message.id > (current.newAfter ?? 0) && message.sender !== view.me);
   return (
     <>
-      <header className="title">
-        <h1>{current.chat}</h1>
-        <span className="quiet">
+      <header className="flex items-baseline gap-3 border-b px-4 py-2.5">
+        <h1 className="text-base font-bold">{current.chat}</h1>
+        <span className="flex-1 truncate text-muted-foreground">
           {pinned !== null && `${pinned.name} (${String(pinned.have)} of ${String(members?.length ?? 0)} have it) · `}
           {members?.join(", ")}
         </span>
         {current.joined && (
-          <span className="actions">
+          <span className="flex flex-none gap-1.5">
             {pinned === null ? (
               <Button size="xs" variant="outline" className="text-foreground" type="button" onClick={onPin}>
                 ◆ Pin a repo
@@ -280,7 +292,7 @@ export function Thread({ view, current, act, onPin }: { readonly view: ChatView;
         )}
       </header>
       {pinned !== null && !pinned.mine && view.loaded && (
-        <p className="banner">
+        <p className="border-b px-4 py-1.5 text-warn">
           ◆ This channel is about {pinned.name}, which you have no checkout of ·{" "}
           <Button
             size="xs"
@@ -304,14 +316,14 @@ export function Thread({ view, current, act, onPin }: { readonly view: ChatView;
         }}
       >
         <div className="px-4 pt-2 pb-3">
-          {current.messages.length === 0 && <p className="quiet">No notes here yet. Type @ to tag an agent.</p>}
+          {current.messages.length === 0 && <p className="text-muted-foreground">No notes here yet. Type @ to tag an agent.</p>}
           {current.messages.map((message, index) => {
             const before = current.messages[index - 1];
             const newDay = before === undefined || new Date(before.ts * 1000).toDateString() !== new Date(message.ts * 1000).toDateString();
             return (
               <Fragment key={message.id}>
-                {newDay && <p className="rule">{dayLabel(message.ts)}</p>}
-                {message === firstNew && <p className="rule new">new</p>}
+                {newDay && <p className={RULE}>{dayLabel(message.ts)}</p>}
+                {message === firstNew && <p className={cn(RULE, "text-destructive before:border-destructive after:border-destructive")}>new</p>}
                 <Message message={message} me={view.me} act={act} />
               </Fragment>
             );

@@ -1,10 +1,8 @@
-/* The window's one theme: shadcn's variables, light or dark as the system is set, and the app's own few for agents, tags and warnings. */
+/* The window's one stylesheet: Tailwind, shadcn's variables, light or dark as the system is set, and the app's own few for agents, tags and warnings. */
 
-@layer theme, base, legacy, components, utilities; /* What is left of the old stylesheet sits under the components and the utilities, so they win over it. */
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "sonner/dist/styles.css"; /* Sonner's own, which it would otherwise write into a <style> element; see vite.config.ts. */
-@import "./styles.css" layer(legacy);
 
 /* Radix's scroll area hides its viewport's native scroll bars with a <style> element of its own, which vite.config.ts takes out; this is the same rule. */
 [data-radix-scroll-area-viewport] {
@@ -202,8 +200,86 @@
   html {
     @apply font-sans;
   }
+  html,
+  body,
+  #root {
+    @apply h-full;
+  }
   /* The two native lists to pick from, the agent on the join form and the distribution on the setup page, drawn like shadcn's Input. They keep the system's own menu; shadcn's Select is not among the components the window uses. */
   select {
     @apply h-9 rounded-md border border-input bg-transparent px-2 text-sm font-normal shadow-xs outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50 dark:bg-input/30;
+  }
+}
+
+/* An agent's Markdown, drawn by react-markdown as plain elements, which carry no class names, so its rules are written on them here. */
+@layer components {
+  .markdown {
+    overflow-wrap: anywhere;
+  }
+
+  .markdown > :first-child {
+    margin-top: 2px;
+  }
+
+  .markdown > :last-child {
+    margin-bottom: 2px;
+  }
+
+  .markdown p,
+  .markdown ul,
+  .markdown ol,
+  .markdown pre {
+    margin: 6px 0;
+  }
+
+  .markdown ul,
+  .markdown ol {
+    padding-left: 1.5em;
+  }
+
+  .markdown ul {
+    list-style: disc;
+  }
+
+  .markdown ol {
+    list-style: decimal;
+  }
+
+  .markdown :is(h1, h2, h3, h4, h5, h6) {
+    margin: 10px 0 4px;
+    font-weight: 600;
+  }
+
+  .markdown blockquote {
+    padding-left: 8px;
+    border-left: 3px solid var(--border);
+    color: var(--muted-foreground);
+  }
+
+  .markdown code {
+    padding: 1px 4px;
+    border-radius: 4px;
+    background: var(--muted);
+    font:
+      13px/1.4 ui-monospace,
+      "JetBrains Mono",
+      Menlo,
+      monospace;
+  }
+
+  .markdown pre {
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: var(--muted);
+    overflow-x: auto;
+  }
+
+  .markdown pre code {
+    padding: 0;
+    background: none;
+  }
+
+  .markdown a {
+    color: var(--tag);
   }
 }

@@ -1,5 +1,6 @@
 /** The setup check as a page: each item with how it stands and what was found, its fix with a button to copy it, "Check again", and on Windows the distribution the desk runs in. */
 
+import { cn } from "cn";
 import { useCallback, useEffect, useState } from "react";
 import type { JSX } from "react";
 
@@ -14,6 +15,8 @@ import type { Check, DistroChoice, Notice } from "../../shared/ipc.ts";
 const checksSchema = z.array(checkSchema).readonly();
 
 const MARKS = { ok: "✓", warn: "!", fail: "✗", skip: "–" } as const;
+const MARK_COLOURS = { ok: "text-tag", warn: "text-warn", fail: "text-destructive", skip: "" } as const;
+const DETAIL = "mt-0.5 wrap-anywhere whitespace-pre-wrap text-muted-foreground"; // What a check found, in the lines it came in.
 
 /** Ask for the setup check. With `again`, a desk that is not up is started afresh first, so what the user fixed is tried. */
 export async function runSetupCheck(again: boolean): Promise<readonly Check[]> {
@@ -93,9 +96,9 @@ export function SetupPage({ problem, initial, onClose, tell }: Props): JSX.Eleme
   };
 
   return (
-    <div className="setup-page">
-      <h1>Setup</h1>
-      {problem !== "" && <p className="stopped">Player Two cannot start its desk: {problem}</p>}
+    <div className="flex h-full flex-col gap-3 overflow-y-auto px-[max(16px,calc((100%_-_720px)/2))] py-[6vh]">
+      <h1 className="text-2xl font-bold">Setup</h1>
+      {problem !== "" && <p className="whitespace-pre-wrap">Player Two cannot start its desk: {problem}</p>}
       {distros !== null && (
         <Label className="flex-col items-start gap-1.5">
           Linux distribution
@@ -116,20 +119,20 @@ export function SetupPage({ problem, initial, onClose, tell }: Props): JSX.Eleme
         </Label>
       )}
       {checks === null ? (
-        <p className="empty">Checking…</p>
+        <p className="m-auto p-8 text-center text-muted-foreground">Checking…</p>
       ) : (
-        <ul className="checks">
+        <ul className="flex flex-col gap-2.5">
           {checks.map((item) => (
-            <li key={item.id} className={item.status}>
-              <span className="mark" title={item.status}>
+            <li key={item.id} className={cn("flex gap-2.5", item.status === "skip" && "opacity-70")}>
+              <span className={cn("w-[1.2em] flex-none text-center font-bold", MARK_COLOURS[item.status])} title={item.status}>
                 {MARKS[item.status]}
               </span>
               <div>
                 <strong>{item.title}</strong>
-                <p>{item.detail}</p>
+                <p className={DETAIL}>{item.detail}</p>
                 {item.fix !== "" && (
-                  <p className="fix">
-                    <code>{item.fix}</code>
+                  <p className={cn(DETAIL, "flex items-center gap-2")}>
+                    <code className="rounded bg-muted px-1.5 py-0.5 text-foreground">{item.fix}</code>
                     <Button
                       type="button"
                       size="xs"
@@ -147,7 +150,7 @@ export function SetupPage({ problem, initial, onClose, tell }: Props): JSX.Eleme
           ))}
         </ul>
       )}
-      <p className="actions">
+      <p className="flex gap-2">
         <Button
           type="button"
           disabled={busy}

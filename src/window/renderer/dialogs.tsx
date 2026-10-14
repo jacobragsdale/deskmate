@@ -57,7 +57,7 @@ export function JoinChannel({ others, onDone }: { readonly others: readonly { re
         <Button type="submit">Join</Button>
       </form>
       {others.length > 0 && (
-        <ul className="choices">
+        <ul className="mt-2 max-h-60 overflow-y-auto">
           {others.map((channel) => (
             <li key={channel.name}>
               <Button
@@ -86,8 +86,8 @@ export function PickRepo({ title, repos, onDone }: { readonly title: string; rea
         onDone("");
       }}
     >
-      {repos.length === 0 && <p className="quiet">You have no team repos checked out to pin.</p>}
-      <ul className="choices">
+      {repos.length === 0 && <p className="text-muted-foreground">You have no team repos checked out to pin.</p>}
+      <ul className="mt-2 max-h-60 overflow-y-auto">
         {repos.map((repo) => (
           <li key={repo}>
             <Button
