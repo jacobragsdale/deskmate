@@ -361,3 +361,28 @@ await test("read prints one note as it reads now, where each agent it tags stand
     assert.equal((await playerTwo(hub, "alice", argv)).status, 2, argv.join(" "));
   }
 });
+
+/** The request an `ask` sent to bob, once it has landed. */
+async function requestTo(bob: Client, chat: string): Promise<Delivered> {
+  for (let tries = 0; tries < 500; tries += 1) {
+    const [newest] = await bob.events({ chat, limit: 1 });
+    if (newest?.event.kind === "message") {
+      return newest;
+    }
+    await pause(20);
+  }
+  throw new Error(`no request in ${chat}`);
+}
+
+await test("ask tags the agent in the direct chat with its owner, waits for that one request to end, and prints the answer", async (t) => {
+  const hub = await startHub(t);
+  const [, bob] = [await hub.join("alice"), await hub.join("bob")];
+
+  const asking = playerTwo(hub, "alice", ["ask", "@bob/uploader", "where", "do", "we", "retry?", "--wait", "20"]);
+  const request = await requestTo(bob, "alice");
+  assert.deepEqual([request.event.to, readContent(request.event)], ["bob", { kind: "message", content: { text: "@bob/uploader where do we retry?", via: "cli" } }]);
+  await bob.publish("alice", "message", { text: "looking", via: "cli" }); // Not the answer.
+  await answer(bob, "alice", request.event.id, "in queue.py");
+
+  assert.deepEqual(await asking, { status: 0, out: "in queue.py", err: "" });
+});

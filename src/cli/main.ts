@@ -16,7 +16,8 @@ import { DEFAULT_AGENT, defaultDev, defaultHome, http, join, loadClient, PlayerT
 import type { Client, Transport } from "../desk/client.ts";
 import { runChecks } from "../desk/doctor.ts";
 import { runDesk } from "../desk/main.ts";
-import { readNote, trust } from "../desk/notes.ts";
+import { agentOf, ask, readNote, trust } from "../desk/notes.ts";
+import type { Agent, Asked } from "../desk/notes.ts";
 import { runHub, verifyHub } from "../hub/main.ts";
 import type { Check } from "../shared/ipc.ts";
 
@@ -31,17 +32,30 @@ const USAGE = `usage: player-two COMMAND
   repos                                 list every agent as @person/repo with the branch it is on
   search WORDS... [--in CHAT]           find the messages and answers that hold every word, in every chat or in one, each with its link
   read NOTE [--thread]                  print one note, given as its link or id, as it reads now, where each agent it tags stands, their answers, and with --thread its replies
+  ask @PERSON/REPO TEXT... [--in CHANNEL] [--wait SECONDS]
+                                        ask an agent, in the direct chat with its owner or in a channel, and print its answer once its owner has let it run; --wait defaults to 900
   channel [join NAME | leave NAME]      list the channels, or join or leave one
   hub [--host HOST] [--port PORT]       run the hub; it reads PLAYER_TWO_JOIN_TOKEN, PLAYER_TWO_DB, PLAYER_TWO_REPOS and, if set, PLAYER_TWO_DOWNLOADS
   hub verify                            check that no event in the log in PLAYER_TWO_DB was changed or taken out since it was stored
   desk                                  run your side with no window, for the window to start: it speaks JSON lines on standard input and output
   doctor                                check what Player Two needs on this machine, and say how to fix what is missing
 
-send, inbox, who, repos, channel, search, read and doctor take --json, and then print one JSON value and nothing else.
-A command exits with 0 on success, 1 after printing a failure, and 2 when it was not given what it takes.`;
+send, inbox, who, repos, channel, search, read, ask and doctor take --json, and then print one JSON value and nothing else.
+A command exits with 0 on success, 1 after printing a failure, and 2 when it was not given what it takes.
+ask also exits with 3 when the owner declined, 4 when the run failed, was stopped or was withdrawn, and 5 when nothing final came in time.`;
 
 /** The command was not given what it takes. The usage is printed, and the exit status says so. */
 class UsageError extends Error {}
+
+/** A command did what it was asked, and what came of it was not what was hoped for: `status` is the exit status that says which outcome it was. */
+class Ended extends Error {
+  public readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
 
 /** Whether a failure is the command line's fault: one of ours, or one parseArgs raises for an option it does not know or a word it did not expect. */
 function isUsage(error: unknown): error is Error {
@@ -252,15 +266,67 @@ async function read(joined: () => Client, args: string[], out: (line: string) =>
   show(out, values.json, found, words.join("\n"));
 }
 
+/** A channel, given with or without its "#"; null when that is no channel's name. */
+function channelNamed(name: string): string | null {
+  const channel = channelSchema.safeParse(name.startsWith("#") ? name : `#${name}`);
+  return channel.success ? channel.data : null;
+}
+
+/** What came of an ask that was not answered, as the exit status that says so and words that say what to do; null when it was answered. */
+function unanswered(asked: Asked, agent: Agent, seconds: number): Ended | null {
+  const tagged = `@${agent.owner}/${agent.repo}`;
+  const link = noteLink(asked.sent.event.id);
+  switch (asked.state) {
+    case "answered":
+      return null;
+    case "declined":
+      return new Ended(3, `${agent.owner} declined to run ${tagged}: ${link}`);
+    case "failed":
+    case "stopped":
+    case "withdrawn":
+      return new Ended(4, `${tagged} ${asked.state === "failed" ? "failed" : `was ${asked.state}`}: ${link}`);
+    case "working":
+    case "waiting": {
+      const now = asked.state === "working" ? `${tagged} is working on it` : `it is waiting for ${agent.owner} to let ${tagged} run`;
+      return new Ended(5, `nothing final within ${String(seconds)} seconds: ${now}. Check later with:\nplayer-two read ${link}`);
+    }
+  }
+}
+
+/** Ask an agent and wait for that one request to end: print the answer, or end with the exit status that says what happened instead. */
+async function askAgent(joined: () => Client, args: string[], out: (line: string) => void): Promise<void> {
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { in: { type: "string" }, wait: { type: "string", default: "900" }, json: { type: "boolean", default: false } } });
+  const [given = "", ...words] = positionals;
+  const agent = agentOf(given);
+  const seconds = numberOf(secondsSchema, values.wait, "wait");
+  const channel = values.in === undefined ? agent?.owner : channelNamed(values.in);
+  if (agent === null || words.length === 0) {
+    throw new UsageError("ask takes an agent, as @person/repo, and what to ask it");
+  }
+  if (channel === null || channel === undefined) {
+    throw new UsageError(`--in takes a channel, such as '#backend', not ${values.in ?? ""}`);
+  }
+  const asked = await ask(joined(), agent, channel, words.join(" "), "cli", seconds);
+  if (values.json) {
+    out(JSON.stringify(asked.answer)); // The answer as the hub delivered it, with whether it is trusted; null when there is none.
+  } else if (asked.answer !== null) {
+    out(saying(asked.answer.event)?.text ?? "");
+  }
+  const ended = unanswered(asked, agent, seconds);
+  if (ended !== null) {
+    throw ended;
+  }
+}
+
 /** Join or leave a channel, given with or without its "#", unless the user is already in it or already out of it, and return it as the hub then reports it. */
 async function joinOrLeave(client: Client, action: "join" | "leave", name: string): Promise<ChannelInfo> {
-  const channel = channelSchema.safeParse(name.startsWith("#") ? name : `#${name}`);
-  if (!channel.success) {
+  const channel = channelNamed(name);
+  if (channel === null) {
     throw new PlayerTwoError("a channel's name is lowercase letters, digits, - and _, at most 32 characters");
   }
-  const found = async (): Promise<ChannelInfo> => (await client.channels()).find((each) => each.name === channel.data) ?? { name: channel.data, members: [], repo: null, branch: null }; // A channel everyone has left is not listed.
+  const found = async (): Promise<ChannelInfo> => (await client.channels()).find((each) => each.name === channel) ?? { name: channel, members: [], repo: null, branch: null }; // A channel everyone has left is not listed.
   if ((await found()).members.includes(client.config.name) !== (action === "join")) {
-    await client.publish(channel.data, action === "join" ? "channel.join" : "channel.leave", {});
+    await client.publish(channel, action === "join" ? "channel.join" : "channel.leave", {});
   }
   return found();
 }
@@ -337,7 +403,8 @@ const AS_USER = new Map<string, (joined: () => Client, args: string[], out: (lin
   ["who", who],
   ["repos", repos],
   ["search", search],
-  ["read", read]
+  ["read", read],
+  ["ask", askAgent]
 ]);
 
 async function run(argv: readonly string[], options: Options, out: (line: string) => void): Promise<void> {
@@ -386,6 +453,10 @@ export async function main(argv: readonly string[], options: Options = {}): Prom
     await run(argv, options, out);
     return 0;
   } catch (error) {
+    if (error instanceof Ended) {
+      err(`player-two: ${error.message}`);
+      return error.status;
+    }
     if (isUsage(error)) {
       err(`player-two: ${error.message}\n\n${USAGE}`);
       return 2;
