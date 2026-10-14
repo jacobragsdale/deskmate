@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import { authHeader, loadKey } from "../src/core/sign.ts";
+import { oneshotAgent } from "../src/desk/agents/presets.ts";
 import { http, join as joinHub } from "../src/desk/client.ts";
 
 const COMMAND = join(import.meta.dirname, "..", "src", "cli", "main.ts");
@@ -46,7 +47,7 @@ await test("the hub stops at once when told to, even with a reader waiting", { t
       reject(new Error(`the hub exited before it was listening:\n${logged}`));
     });
   });
-  await joinHub(join(dir, "alice"), url, "alice", TOKEN, "fake-agent", http);
+  await joinHub(join(dir, "alice"), url, "alice", TOKEN, oneshotAgent("fake-agent"), http);
   const path = "/stream?after=0";
   const key = loadKey(readFileSync(join(dir, "alice", "key"), "utf8").trim());
   const stream = await fetch(url + path, { headers: { Authorization: authHeader(key, "alice", Math.floor(Date.now() / 1000), "GET", path) } }); // Answered at once with its headers, then held open.

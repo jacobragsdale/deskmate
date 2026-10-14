@@ -1,11 +1,11 @@
 /**
  * The setup check as a page: each item with how it stands and what was found, its fix with a button to copy it, "Check again", and on Windows the distribution the desk runs in.
- * Below it, what to add to an editor's agent so it can use Player Two's MCP server, to copy; the page never writes those files.
+ * Below it, once someone has joined, their agents (Agents.tsx); then what to add to an editor's agent so it can use Player Two's MCP server, to copy; the page never writes those files.
  */
 
 import { cn } from "cn";
 import { useCallback, useEffect, useState } from "react";
-import type { JSX } from "react";
+import type { JSX, ReactNode } from "react";
 
 import { z } from "zod";
 
@@ -33,13 +33,14 @@ export async function runSetupCheck(again: boolean): Promise<readonly Check[]> {
 }
 
 interface Props {
+  readonly children?: ReactNode; // What else the page shows about this machine, between the check and the editor agents: the user's own agents, once they have joined.
   readonly problem: string; // Why the desk will not start; "" when it is up.
   readonly initial: readonly Check[] | null; // A list already in hand, from the check at launch; null to ask for one.
   readonly onClose: (() => void) | null; // Null when there is nothing else to show, because the desk is not up.
   readonly tell: (notice: Notice) => void;
 }
 
-export function SetupPage({ problem, initial, onClose, tell }: Props): JSX.Element {
+export function SetupPage({ children, problem, initial, onClose, tell }: Props): JSX.Element {
   const [checks, setChecks] = useState<readonly Check[] | null>(initial);
   const [busy, setBusy] = useState(false);
   const [distros, setDistros] = useState<DistroChoice | null>(null);
@@ -175,6 +176,7 @@ export function SetupPage({ problem, initial, onClose, tell }: Props): JSX.Eleme
           </Button>
         )}
       </p>
+      {children}
       <h2 className="mt-4 text-lg font-bold">Editor agents</h2>
       <p className="text-muted-foreground">
         An agent in your editor can read and search this chat through Player Two&rsquo;s MCP server, <code>player-two mcp</code>, which runs as you. Add it to the file named below in your home folder

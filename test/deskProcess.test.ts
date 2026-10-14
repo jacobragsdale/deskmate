@@ -12,6 +12,7 @@ import type { TestContext } from "node:test";
 import { build } from "esbuild";
 
 import { byCodeUnit } from "../src/core/text.ts";
+import { DEFAULT_PRESET, PRESETS } from "../src/desk/agents/presets.ts";
 import { DeskProcess, windowChecks, wslLaunch } from "../src/window/main/deskProcess.ts";
 import type { Launch } from "../src/window/main/deskProcess.ts";
 import type { Result } from "../src/window/main/wsl.ts";
@@ -89,12 +90,12 @@ await test("the real desk is started, each command gets its own reply, and stopp
   assert.equal(desk.saidHello, true);
   desk.attend(false);
   const [first, second] = await Promise.all([
-    desk.send({ do: "join", hub: "nowhere", name: "alice", token: "", agent: "" }),
+    desk.send({ do: "join", hub: "nowhere", name: "alice", token: "", agent: DEFAULT_PRESET }),
     desk.send({ do: "open", chat: "bob" }) // Answered first, since nothing has to be looked up to refuse it: the replies are matched by id, not by order.
   ]);
   await desk.stop();
 
-  assert.deepEqual(views, [{ kind: "setup", defaultAgent: "agent -p --output-format text" }]);
+  assert.deepEqual(views, [{ kind: "setup", presets: PRESETS }]);
   assert.deepEqual([first.ok, second], [false, { ok: false, problem: "join a hub first" }]);
   assert.match(first.ok ? "" : first.problem, /^invalid hub: /);
   assert.deepEqual(await desk.send({ do: "open", chat: "bob" }), { ok: false, problem: "the desk is not running" });
@@ -123,7 +124,7 @@ await test("a desk that goes with a command unanswered has it answered for it, a
     standIn(
       [
         { t: "hello", version: "0.5.0", protocol: 2 },
-        { t: "view", view: { kind: "setup", defaultAgent: "an-agent" } }
+        { t: "view", view: { kind: "setup", presets: [] } }
       ],
       "yes"
     ),
@@ -144,7 +145,7 @@ await test("a desk that falls over moments after showing something is given up o
     t,
     standIn([
       { t: "hello", version: "0.5.0", protocol: 2 },
-      { t: "view", view: { kind: "setup", defaultAgent: "an-agent" } }
+      { t: "view", view: { kind: "setup", presets: [] } }
     ])
   );
 
@@ -156,7 +157,7 @@ await test("a desk started afresh while it was still being made ready is started
   const says = standIn(
     [
       { t: "hello", version: "0.5.0", protocol: 2 },
-      { t: "view", view: { kind: "setup", defaultAgent: "an-agent" } }
+      { t: "view", view: { kind: "setup", presets: [] } }
     ],
     "yes"
   );
@@ -184,7 +185,7 @@ await test("a desk that speaks another protocol is refused and not started again
     standIn(
       [
         { t: "hello", version: "9.0.0", protocol: 99, more: "than this window knows" },
-        { t: "view", view: { kind: "setup", defaultAgent: "an-agent" } }
+        { t: "view", view: { kind: "setup", presets: [] } }
       ],
       "yes"
     )
@@ -236,7 +237,7 @@ await test("on Windows the runtime the app carries is installed into the distrib
   assert.deepEqual(await wslLaunch(null, resources), { ok: true, value: { command: join(wsl.windir, "System32", "wsl.exe"), args: ["--exec", launcher], env: { ...process.env, WSL_UTF8: "1" } } });
   const { desk, views } = hold(t, () => wslLaunch("Ubuntu", resources));
   await until("the join form", () => views.length > 0);
-  assert.deepEqual(views, [{ kind: "setup", defaultAgent: "agent -p --output-format text" }]);
+  assert.deepEqual(views, [{ kind: "setup", presets: PRESETS }]);
   assert.deepEqual(await desk.send({ do: "open", chat: "bob" }), { ok: false, problem: "join a hub first" });
   assert.ok(existsSync(launcher));
 });

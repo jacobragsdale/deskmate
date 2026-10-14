@@ -2,13 +2,7 @@
 
 import { z } from "zod";
 
-import { teamRepoSchema } from "../core/wire.ts";
-
-/** The agents the join form offers, as the one-shot commands the prompt is added to as the last argument. The first is the default; any other is typed in as "Other". */
-export const AGENT_CHOICES = [
-  { label: "Cursor", command: "agent -p --output-format text" },
-  { label: "Copilot", command: "copilot -s --allow-all-tools --no-ask-user -p" }
-] as const;
+import { agentSchema, teamRepoSchema } from "../core/wire.ts";
 
 /** Where one tagged agent stands, already worked out for the reader: `mine` says whether it is their own agent. `id` is the request's. */
 const requestSchema = z
@@ -103,14 +97,16 @@ const currentSchema = z
   .readonly();
 
 export const viewSchema = z.discriminatedUnion("kind", [
-  z.strictObject({ kind: z.literal("setup"), defaultAgent: z.string() }).readonly(), // Nobody has joined a hub from this machine yet.
+  z.strictObject({ kind: z.literal("setup"), presets: z.array(agentSchema).readonly() }).readonly(), // Nobody has joined a hub from this machine yet. The join form offers the presets, the first at first.
   z.strictObject({ kind: z.literal("stopped"), problem: z.string() }).readonly(), // The desk has gone and will not start again. The window makes this one itself: there is no desk to send it.
   z
     .strictObject({
       kind: z.literal("chat"),
       me: z.string(),
       hub: z.string(),
-      agent: z.string(),
+      agents: z.array(agentSchema).readonly(), // The user's agents, as config.json has them.
+      defaultAgent: z.string(), // The id of the one that answers.
+      presets: z.array(agentSchema).readonly(), // The agents Player Two knows how to start, for the setup page to offer.
       dev: z.string(),
       link: z.discriminatedUnion("state", [
         z.strictObject({ state: z.literal("connecting") }),
@@ -136,7 +132,8 @@ const id = z.string().regex(/^[0-9a-f]{64}$/); // An event's id: for a job, its 
 
 /** Everything the window may ask the desk to do. Parsed on both sides of the line before anything acts on it. */
 export const commandSchema = z.discriminatedUnion("do", [
-  z.strictObject({ do: z.literal("join"), hub: z.string().max(500), name: z.string().max(40), token: z.string().max(500), agent: z.string().max(500) }),
+  z.strictObject({ do: z.literal("join"), hub: z.string().max(500), name: z.string().max(40), token: z.string().max(500), agent: agentSchema }),
+  z.strictObject({ do: z.literal("agents"), agents: z.array(agentSchema).min(1).max(20).readonly(), defaultAgent: z.string() }), // Replace the user's agents and say which of them answers.
   z.strictObject({ do: z.literal("open"), chat }),
   z.strictObject({ do: z.literal("send"), chat, text: z.string().min(1) }),
   z.strictObject({ do: z.literal("reply"), root: id, text: z.string().min(1) }), // A message in the thread of the message `root` names. Tags in it work as in any message.

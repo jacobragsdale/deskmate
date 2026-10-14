@@ -13,8 +13,10 @@ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/componen
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
-import { AGENT_CHOICES, noticeSchema, outcomeSchema, viewSchema } from "../../shared/ipc.ts";
+import type { Agent } from "../../core/wire.ts";
+import { noticeSchema, outcomeSchema, viewSchema } from "../../shared/ipc.ts";
 import type { ChatView, Check, Command, Notice, View } from "../../shared/ipc.ts";
+import { AgentPicker, AgentsPart, FIELD, ownAgent } from "./Agents.tsx";
 import { Composer } from "./Composer.tsx";
 import { JoinChannel, PickRepo, Search } from "./dialogs.tsx";
 import { runSetupCheck, SetupPage } from "./SetupPage.tsx";
@@ -22,7 +24,6 @@ import { Sidebar } from "./Sidebar.tsx";
 import { Thread } from "./Thread.tsx";
 
 const NOTICE_SECONDS = 7;
-const FIELD = "flex-col items-stretch gap-1.5"; // A label above its field.
 
 /** Sends a command and resolves with "" when it worked, or with the problem in words for the user. */
 export type Submit = (command: Command) => Promise<string>;
@@ -48,10 +49,9 @@ const submit: Submit = async (command) => {
   }
 };
 
-function Setup({ defaultAgent, tell }: { readonly defaultAgent: string; readonly tell: (notice: Notice) => void }): JSX.Element {
+function Setup({ presets, tell }: { readonly presets: readonly Agent[]; readonly tell: (notice: Notice) => void }): JSX.Element {
   const [busy, setBusy] = useState(false);
-  // The command of the agent picked from those offered, or "" for one typed in under "Other".
-  const [agent, setAgent] = useState<string>(AGENT_CHOICES.find((choice) => choice.command === defaultAgent)?.command ?? "");
+  const [agent, setAgent] = useState<Agent>(presets[0] ?? ownAgent([]));
   const join = (event: SyntheticEvent<HTMLFormElement>): void => {
     event.preventDefault();
     const field = (name: string): string => {
@@ -59,7 +59,7 @@ function Setup({ defaultAgent, tell }: { readonly defaultAgent: string; readonly
       return typeof value === "string" ? value : "";
     };
     setBusy(true);
-    submit({ do: "join", hub: field("hub"), name: field("name"), token: field("token"), agent: agent === "" ? field("agent") : agent })
+    submit({ do: "join", hub: field("hub"), name: field("name"), token: field("token"), agent })
       .then((problem) => {
         setBusy(false);
         if (problem !== "") {
@@ -94,28 +94,7 @@ function Setup({ defaultAgent, tell }: { readonly defaultAgent: string; readonly
         Join token
         <Input className="font-normal" name="token" type="password" required />
       </Label>
-      <Label className={FIELD}>
-        Your agent
-        <select
-          value={agent}
-          onChange={(event) => {
-            setAgent(event.currentTarget.value);
-          }}
-        >
-          {AGENT_CHOICES.map((choice) => (
-            <option key={choice.label} value={choice.command}>
-              {choice.label}
-            </option>
-          ))}
-          <option value="">Other</option>
-        </select>
-      </Label>
-      {agent === "" && (
-        <Label className={FIELD}>
-          Agent command
-          <Input className="font-normal" name="agent" placeholder="run in the repo's folder, with the prompt added as its last argument" required autoFocus />
-        </Label>
-      )}
+      <AgentPicker title="Your agent" presets={presets} taken={[]} value={agent} onChange={setAgent} />
       <Button type="submit" className="self-start" disabled={busy}>
         {busy ? "Joining…" : "Join"}
       </Button>
@@ -209,7 +188,7 @@ function Chat({ view, act, tell, onSetup }: { readonly view: ChatView; readonly 
           )}
           <footer className="flex justify-between gap-4 border-t px-3 py-1 text-xs whitespace-nowrap text-muted-foreground">
             <span className="truncate">
-              {view.me} on {view.hub} · {view.agent} · {view.myRepos.length} {view.myRepos.length === 1 ? "repo" : "repos"} in {view.dev}
+              {view.me} on {view.hub} · {view.agents.find((agent) => agent.id === view.defaultAgent)?.label} · {view.myRepos.length} {view.myRepos.length === 1 ? "repo" : "repos"} in {view.dev}
             </span>
             <span className={cn("max-w-1/2 flex-none truncate", view.link.state === "down" && "text-destructive")}>
               {link} ·{" "}
@@ -319,10 +298,12 @@ export function App(): JSX.Element {
           setSetup(null);
         }}
         tell={tell}
-      />
+      >
+        {view?.kind === "chat" && <AgentsPart view={view} act={act} />}
+      </SetupPage>
     );
   } else if (view?.kind === "setup") {
-    page = <Setup defaultAgent={view.defaultAgent} tell={tell} />;
+    page = <Setup presets={view.presets} tell={tell} />;
   } else if (view?.kind === "chat") {
     page = (
       <Chat

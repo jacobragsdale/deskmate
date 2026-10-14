@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -148,7 +148,7 @@ class Page {
 }
 
 await test(
-  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, and shows editor agents' snippets on the Setup page",
+  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, and shows editor agents' snippets and the user's own agents on the Setup page",
   { skip: NO_DISPLAY ? "no display: run it under xvfb-run" : false, timeout: 120_000 },
   async (t) => {
     assert.ok(existsSync(join(ROOT, "dist", "main.js")), "dist/ is not built: run `npm run build` first");
@@ -430,6 +430,15 @@ await test(
     await page.click("button", "Setup");
     const snippets = `[...document.querySelectorAll("pre")].map((each) => JSON.stringify(JSON.parse(each.textContent).mcpServers["player-two"].args)).join(" ")`;
     await page.until("the editor agents' snippets", `document.body.innerText.includes("Editor agents") && ${snippets} === '["mcp"] ["mcp"]'`);
+
+    // Above them, the agent chosen when joining answers. Cursor over ACP, the next preset offered, is added and chosen, and config.json says so.
+    await page.until("the agent chosen when joining", `document.querySelector('input[aria-label="Cursor one-shot answers"]')?.checked === true`);
+    await page.click("button", "Add");
+    await page.until("Cursor added", `document.querySelector('input[aria-label="Cursor answers"]') !== null`);
+    await page.click('input[aria-label="Cursor answers"]');
+    await page.until("Cursor chosen", `document.querySelector('input[aria-label="Cursor answers"]').checked === true`);
+    const config = z.object({ defaultAgent: z.string(), agents: z.array(z.object({ id: z.string() })) }).parse(JSON.parse(readFileSync(join(home, ".config", "player-two", "config.json"), "utf8")));
+    assert.deepEqual([config.defaultAgent, config.agents.map((agent) => agent.id)], ["cursor", ["cursor-oneshot", "cursor"]]);
 
     assert.deepEqual(page.problems, []);
   }

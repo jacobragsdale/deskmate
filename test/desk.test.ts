@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -11,7 +11,8 @@ import { text } from "node:stream/consumers";
 import { test } from "node:test";
 
 import { VERSION } from "../src/core/version.ts";
-import { PROTOCOL } from "../src/core/wire.ts";
+import { configSchema, PROTOCOL } from "../src/core/wire.ts";
+import { DEFAULT_PRESET, PRESETS } from "../src/desk/agents/presets.ts";
 import { runDesk } from "../src/desk/main.ts";
 import { deskLineSchema } from "../src/shared/ipc.ts";
 import type { ChatView, DeskLine, Outcome, WindowLine } from "../src/shared/ipc.ts";
@@ -69,7 +70,7 @@ await test("the desk by lines: the join form, joining, the chats, a message sent
 
   // It says which version and protocol it is before anything else, then shows the join form, and until someone has joined it does nothing but join.
   assert.deepEqual(await next("hello", (line) => line), { t: "hello", version: VERSION, protocol: PROTOCOL });
-  assert.deepEqual(await next("the join form", (line) => line), { t: "view", view: { kind: "setup", defaultAgent: "agent -p --output-format text" } });
+  assert.deepEqual(await next("the join form", (line) => line), { t: "view", view: { kind: "setup", presets: PRESETS } });
   assert.equal(process.env["PATH"]?.split(":")[0], join(hub.dir, "tools")); // By then it has the PATH of the user's own shell, which is what its agents and git are found on.
   say({ t: "command", id: 1, command: { do: "open", chat: "bob" } });
   assert.deepEqual(await reply(1), { ok: false, problem: "join a hub first" });
@@ -83,10 +84,20 @@ await test("the desk by lines: the join form, joining, the chats, a message sent
   assert.deepEqual(await checked(10), ["node", "dev", "git"]);
 
   // Joining starts the session: the chats arrive as a view, with bob's open.
-  say({ t: "command", id: 2, command: { do: "join", hub: hub.url, name: "alice", token: TOKEN, agent: "" } });
+  say({ t: "command", id: 2, command: { do: "join", hub: hub.url, name: "alice", token: TOKEN, agent: DEFAULT_PRESET } });
   assert.deepEqual(await reply(2), { ok: true });
   const joined = await chat("the chat with bob", (view) => view.current?.chat === "bob" && view.team.length === 1);
-  assert.deepEqual([joined.me, joined.agent, joined.link, joined.busy], ["alice", "agent -p --output-format text", { state: "connected" }, { working: 0, unsent: 0 }]);
+  assert.deepEqual([joined.me, joined.agents, joined.defaultAgent, joined.link, joined.busy], ["alice", [DEFAULT_PRESET], DEFAULT_PRESET.id, { state: "connected" }, { working: 0, unsent: 0 }]);
+
+  // The setup page's agents: one added, of its own, and made the one that answers, kept in config.json; a list whose default is not among them is refused.
+  const own = { id: "custom", label: "mine", protocol: "acp", command: "my-agent", args: ["--acp", "two words"] } as const;
+  say({ t: "command", id: 7, command: { do: "agents", agents: [DEFAULT_PRESET, own], defaultAgent: "custom" } });
+  assert.deepEqual(await reply(7), { ok: true });
+  await chat("the agents as changed", (view) => view.defaultAgent === "custom" && view.agents.length === 2 && view.presets.length === PRESETS.length);
+  const saved = configSchema.parse(JSON.parse(readFileSync(join(hub.dir, "desk", "config.json"), "utf8")));
+  assert.deepEqual([saved.agents, saved.defaultAgent], [[DEFAULT_PRESET, own], "custom"]);
+  say({ t: "command", id: 8, command: { do: "agents", agents: [own], defaultAgent: DEFAULT_PRESET.id } });
+  assert.deepEqual(await reply(8), { ok: false, problem: "invalid defaultAgent: the default agent is not one of the agents" });
 
   // A message sent by a command comes back in a later view, and one from bob is announced.
   say({ t: "command", id: 3, command: { do: "send", chat: "bob", text: "lunch at noon?" } });
@@ -150,6 +161,6 @@ await test("the built command run as `player-two desk` says hello, shows the joi
   assert.ok(Date.now() - told < 3000, `took ${String(Date.now() - told)} ms to exit`);
   assert.deepEqual(lines.map(parse), [
     { t: "hello", version: VERSION, protocol: PROTOCOL },
-    { t: "view", view: { kind: "setup", defaultAgent: "agent -p --output-format text" } }
+    { t: "view", view: { kind: "setup", presets: PRESETS } }
   ]);
 });

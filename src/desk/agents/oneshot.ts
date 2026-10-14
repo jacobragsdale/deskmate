@@ -3,7 +3,6 @@
 import { spawn } from "node:child_process";
 import { join as joinPath } from "node:path";
 
-import type { Agent } from "../../core/wire.ts";
 import { AgentCancelledError, defaultHome, PlayerTwoError } from "../client.ts";
 import type { Runner } from "../client.ts";
 
@@ -28,12 +27,6 @@ export function splitCommand(command: string): string[] {
     }
   }
   return word === null ? words : [...words, word];
-}
-
-/** A one-shot agent from a command typed as one line, as config.json held it before agents were configured one by one. */
-export function agentOf(commandLine: string): Agent {
-  const [command = "", ...args] = splitCommand(commandLine);
-  return { id: "custom", label: commandLine.trim(), protocol: "oneshot", command, args };
 }
 
 /** Run the agent command and resolve with what it printed. Aborting `cancel` stops it and everything it started. */

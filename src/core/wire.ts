@@ -125,6 +125,11 @@ export function isChannel(address: string): boolean {
   return address.startsWith("#");
 }
 
+/** An agent's program and arguments as one line to read, each word that a shell would split or change in single quotes. Nothing runs it: an agent is started from the words themselves. */
+export function commandLineOf(agent: Pick<Agent, "command" | "args">): string {
+  return [agent.command, ...agent.args].map((word) => (/^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replaceAll("'", `'\\''`)}'`)).join(" ");
+}
+
 /** The agent that answers. A config that has been parsed always has it. */
 export function defaultAgentOf(config: Config): Agent {
   const agent = config.agents.find((each) => each.id === config.defaultAgent);

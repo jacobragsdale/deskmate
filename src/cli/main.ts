@@ -11,9 +11,10 @@ import type { Entry, Message } from "../core/chat.ts";
 import { readContent } from "../core/kinds.ts";
 import { noteLink, noteOf } from "../core/links.ts";
 import { problemOf } from "../core/text.ts";
-import { channelSchema, defaultAgentOf, fitText, isChannel } from "../core/wire.ts";
+import { channelSchema, commandLineOf, defaultAgentOf, fitText, isChannel } from "../core/wire.ts";
 import type { ChannelInfo, Delivered, Event } from "../core/wire.ts";
-import { DEFAULT_AGENT, defaultDev, defaultHome, http, join, loadClient, PlayerTwoError } from "../desk/client.ts";
+import { DEFAULT_PRESET, oneshotAgent, PRESETS } from "../desk/agents/presets.ts";
+import { defaultDev, defaultHome, http, join, loadClient, PlayerTwoError } from "../desk/client.ts";
 import type { Client, Transport } from "../desk/client.ts";
 import { runChecks } from "../desk/doctor.ts";
 import { runDesk } from "../desk/main.ts";
@@ -375,13 +376,15 @@ async function channel(joined: () => Client, args: string[], out: (line: string)
 }
 
 async function register(home: string, transport: Transport, args: string[], out: (line: string) => void): Promise<void> {
-  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { agent: { type: "string", default: DEFAULT_AGENT } } });
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { agent: { type: "string", default: DEFAULT_PRESET.id } } });
   const [hub, name, token] = positionals;
   if (hub === undefined || name === undefined || token === undefined || positionals.length > 3) {
     throw new UsageError("join takes the hub's address, your name and the join token");
   }
-  const config = await join(home, hub, name, token, values.agent, transport);
-  out(`joined ${config.hub} as ${config.name}; your agent command is \`${defaultAgentOf(config).label}\``);
+  // A preset by its id, or else a one-shot command typed as one line.
+  const config = await join(home, hub, name, token, PRESETS.find((preset) => preset.id === values.agent) ?? oneshotAgent(values.agent), transport);
+  const agent = defaultAgentOf(config);
+  out(`joined ${config.hub} as ${config.name}; your agent is ${agent.label}, \`${commandLineOf(agent)}\``);
 }
 
 /** Print the setup check, and fail when any of it failed: what is printed is the list, and the exit status says whether it is all right. */

@@ -12,6 +12,7 @@ import { z } from "zod";
 import { candidates, ChatLog, continues, rings, STALE } from "../src/core/chat.ts";
 import type { Entry, Message } from "../src/core/chat.ts";
 import { runAgent, splitCommand } from "../src/desk/agents/oneshot.ts";
+import { DEFAULT_PRESET, oneshotAgent } from "../src/desk/agents/presets.ts";
 import { AgentCancelledError, Client, PlayerTwoError, readConfig } from "../src/desk/client.ts";
 import type { Transport } from "../src/desk/client.ts";
 import { readContent } from "../src/core/kinds.ts";
@@ -19,7 +20,7 @@ import { noteIn, noteLink, noteOf, notesIn } from "../src/core/links.ts";
 import { loadKey, publicHex, signEvent } from "../src/core/sign.ts";
 import * as repos from "../src/desk/repos.ts";
 import { Session } from "../src/desk/session.ts";
-import { eventSchema, fitText, MAX_CONTENT, MAX_PATCH, PROTOCOL } from "../src/core/wire.ts";
+import { commandLineOf, eventSchema, fitText, MAX_CONTENT, MAX_PATCH, PROTOCOL } from "../src/core/wire.ts";
 import type { Delivered, TeamRepo } from "../src/core/wire.ts";
 import { startHub } from "./startHub.ts";
 
@@ -496,6 +497,12 @@ await test("an agent command is split the way a shell would split it", () => {
   assert.deepEqual(splitCommand(`  sh -c 'echo "a b"' "x \\" y" z\\ w '' --flag="two words"  `), ["sh", "-c", 'echo "a b"', 'x " y', "z w", "", "--flag=two words"]);
   assert.throws(() => splitCommand("claude 'oops"), PlayerTwoError);
   assert.throws(() => splitCommand('claude "oops\\"'), PlayerTwoError);
+  // An agent's words written as one line to show are split back into the same words, and a line that is a preset's one-shot command is that preset.
+  const args = ["-p", "two words", "it's", "", "--home=$HOME", 'a"b', "--plain=1,2"];
+  assert.equal(commandLineOf({ command: "my agent", args }), `'my agent' -p 'two words' 'it'\\''s' '' '--home=$HOME' 'a"b' --plain=1,2`);
+  assert.deepEqual(splitCommand(commandLineOf({ command: "my agent", args })), ["my agent", ...args]);
+  assert.equal(oneshotAgent(" agent  -p --output-format 'text' "), DEFAULT_PRESET);
+  assert.equal(oneshotAgent("agent -p").id, "custom");
 });
 
 await test("a config.json that still names one agent command loads as one one-shot agent and is written back in the new shape; one whose default is not among its agents is refused", (t) => {

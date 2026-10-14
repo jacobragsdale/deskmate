@@ -78,10 +78,14 @@ await test("main joins sends and lists messages", async (t) => {
   const hub = await startHub(t);
   assert.deepEqual(await playerTwo(hub, "alice", ["join", hub.url, "alice", TOKEN]), {
     status: 0,
-    out: `joined ${hub.url} as alice; your agent command is \`agent -p --output-format text\``,
+    out: `joined ${hub.url} as alice; your agent is Cursor one-shot, \`agent -p --output-format text\``,
     err: ""
   });
-  assert.equal((await playerTwo(hub, "bob", ["join", `${hub.url}/`, "bob", TOKEN, "--agent", "agent -p"])).out, `joined ${hub.url} as bob; your agent command is \`agent -p\``);
+  assert.equal(
+    (await playerTwo(hub, "bob", ["join", `${hub.url}/`, "bob", TOKEN, "--agent", "agent -p 'two words'"])).out,
+    `joined ${hub.url} as bob; your agent is agent -p 'two words', \`agent -p 'two words'\``
+  );
+  assert.equal((await playerTwo(hub, "bob", ["join", hub.url, "bob", TOKEN, "--agent", "copilot"])).out, `joined ${hub.url} as bob; your agent is Copilot, \`copilot --acp --stdio\``); // A preset, by its id.
   assert.deepEqual(await playerTwo(hub, "alice", ["send", "bob", "lunch", "at", "noon?"]), { status: 0, out: "→ sent 1 to bob", err: "" });
 
   const inbox = await playerTwo(hub, "bob", ["inbox"]);

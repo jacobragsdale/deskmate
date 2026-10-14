@@ -7,7 +7,8 @@ import { VERSION } from "../core/version.ts";
 import { PROTOCOL } from "../core/wire.ts";
 import { readLine, windowLineSchema } from "../shared/ipc.ts";
 import type { Command, DeskLine, Outcome, Question, View } from "../shared/ipc.ts";
-import { DEFAULT_AGENT, defaultDev, defaultHome, http, join, loadClient, PlayerTwoError } from "./client.ts";
+import { PRESETS } from "./agents/presets.ts";
+import { defaultDev, defaultHome, http, join, loadClient, PlayerTwoError } from "./client.ts";
 import { runChecks, WITHOUT_IDENTITY } from "./doctor.ts";
 import { Session } from "./session.ts";
 import type { Hooks } from "./session.ts";
@@ -65,7 +66,7 @@ class Desk {
   }
 
   private view(): View {
-    return this.session === null ? { kind: "setup", defaultAgent: DEFAULT_AGENT } : this.session.view();
+    return this.session === null ? { kind: "setup", presets: PRESETS } : this.session.view();
   }
 
   /** Several changes in one turn of the event loop are drawn once. */
@@ -106,7 +107,7 @@ class Desk {
     }
     if (command.do === "join") {
       if (this.session === null) {
-        await join(this.home, command.hub.trim(), command.name.trim(), command.token.trim(), command.agent.trim() === "" ? DEFAULT_AGENT : command.agent.trim(), http);
+        await join(this.home, command.hub.trim(), command.name.trim(), command.token.trim(), command.agent, http);
         this.start();
         this.changed();
       }

@@ -25,11 +25,9 @@ import {
   teamRepoSchema,
   userSchema
 } from "../core/wire.ts";
-import type { ChannelInfo, Config, Delivered, Event, HubInfo, Person, Repo, TeamRepo } from "../core/wire.ts";
-import { AGENT_CHOICES } from "../shared/ipc.ts";
-import { agentOf } from "./agents/oneshot.ts";
+import type { Agent, ChannelInfo, Config, Delivered, Event, HubInfo, Person, Repo, TeamRepo } from "../core/wire.ts";
+import { oneshotAgent } from "./agents/presets.ts";
 
-export const DEFAULT_AGENT: string = AGENT_CHOICES[0].command; // Cursor, as the join form offers it first.
 const CALL_TIMEOUT = 10; // Seconds any one request but the stream may take.
 const CATCH_UP_PAGE = 200; // Events one catching-up request asks for: the most the hub gives at once.
 const STREAM_RETRY = 30; // Most seconds between two tries at opening the stream again.
@@ -111,17 +109,28 @@ export const http: Transport = async (method, url, headers, body) => {
 
 export class Client {
   public readonly home: string;
-  public readonly config: Config;
   public readonly now: () => number; // Unix seconds.
   private readonly key: KeyObject;
   private readonly transport: Transport;
+  private settings: Config;
 
   constructor(home: string, config: Config, key: KeyObject, transport: Transport, now: () => number) {
     this.home = home;
-    this.config = config;
+    this.settings = config;
     this.key = key;
     this.transport = transport;
     this.now = now;
+  }
+
+  public get config(): Config {
+    return this.settings;
+  }
+
+  /** Replace the agents and which of them answers: in config.json first, then here. */
+  public saveAgents(agents: readonly Agent[], defaultAgent: string): void {
+    const config = configSchema.parse({ ...this.settings, agents, defaultAgent });
+    writeFileSync(joinPath(this.home, "config.json"), JSON.stringify(config, null, 1));
+    this.settings = config;
   }
 
   public async info(): Promise<HubInfo> {
@@ -290,10 +299,9 @@ export function defaultDev(): string {
   return override === "" ? joinPath(homedir(), "dev") : override;
 }
 
-/** Register a name with a hub, creating a key first if this machine has none. `agent` is a one-shot command typed as one line. */
-export async function join(home: string, hub: string, name: string, token: string, agent: string, transport: Transport): Promise<Config> {
-  const chosen = agentOf(agent);
-  const config = configSchema.parse({ hub: hub.replace(/\/+$/, ""), name, agents: [chosen], defaultAgent: chosen.id, ownMode: "auto-edits" });
+/** Register a name with a hub, creating a key first if this machine has none. `agent` is the one agent it starts with. */
+export async function join(home: string, hub: string, name: string, token: string, agent: Agent, transport: Transport): Promise<Config> {
+  const config = configSchema.parse({ hub: hub.replace(/\/+$/, ""), name, agents: [agent], defaultAgent: agent.id, ownMode: "auto-edits" });
   mkdirSync(home, { mode: 0o700, recursive: true });
   const keyFile = joinPath(home, "key");
   if (!existsSync(keyFile)) {
@@ -326,7 +334,7 @@ export function readConfig(home: string): Config {
   if (!before.success) {
     return configSchema.parse(raw);
   }
-  const agent = agentOf(before.data.agent);
+  const agent = oneshotAgent(before.data.agent);
   const config = configSchema.parse({ hub: before.data.hub, name: before.data.name, agents: [agent], defaultAgent: agent.id, ownMode: "auto-edits" });
   writeFileSync(file, JSON.stringify(config, null, 1));
   return config;

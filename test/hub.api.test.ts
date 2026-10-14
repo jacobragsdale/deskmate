@@ -17,6 +17,7 @@ import { authHeader, loadKey, signEvent } from "../src/core/sign.ts";
 import { VERSION } from "../src/core/version.ts";
 import { deliveredSchema, MAX_SKEW, receiptSchema } from "../src/core/wire.ts";
 import type { Delivered, Event, Repo } from "../src/core/wire.ts";
+import { oneshotAgent } from "../src/desk/agents/presets.ts";
 import { http, join as joinHub } from "../src/desk/client.ts";
 import type { Client } from "../src/desk/client.ts";
 import { createHub } from "../src/hub/app.ts";
@@ -145,13 +146,13 @@ await test("a taken name cannot be joined with another key", async (t) => {
   const hub = await startHub(t);
   await hub.join("alice");
 
-  await assert.rejects(joinHub(join(hub.dir, "impostor"), hub.url, "alice", TOKEN, "fake-agent", http), /taken/);
+  await assert.rejects(joinHub(join(hub.dir, "impostor"), hub.url, "alice", TOKEN, oneshotAgent("fake-agent"), http), /taken/);
 });
 
 await test("joining needs the join token", async (t) => {
   const hub = await startHub(t);
 
-  await assert.rejects(joinHub(join(hub.dir, "alice"), hub.url, "alice", "not-the-token", "fake-agent", http), /join token/);
+  await assert.rejects(joinHub(join(hub.dir, "alice"), hub.url, "alice", "not-the-token", oneshotAgent("fake-agent"), http), /join token/);
 });
 
 await test("reading events needs the reader's own fresh signature", async (t) => {

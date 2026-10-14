@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
 
+import { oneshotAgent } from "../src/desk/agents/presets.ts";
 import { http, join as joinHub, loadClient } from "../src/desk/client.ts";
 import type { Client } from "../src/desk/client.ts";
 import { createHub } from "../src/hub/app.ts";
@@ -42,7 +43,7 @@ export async function startHub(t: TestContext, now: () => number = () => NOW, do
     url,
     dir,
     join: async (name) => {
-      await joinHub(join(dir, name), url, name, TOKEN, "fake-agent", http);
+      await joinHub(join(dir, name), url, name, TOKEN, oneshotAgent("fake-agent"), http);
       const client = loadClient(join(dir, name), http, now);
       assert.ok(client !== null);
       return client;

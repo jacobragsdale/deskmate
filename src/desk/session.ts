@@ -13,6 +13,7 @@ import { readContent } from "../core/kinds.ts";
 import { notesIn } from "../core/links.ts";
 import type { Content, ContentOf } from "../core/kinds.ts";
 import { runAgent } from "./agents/oneshot.ts";
+import { PRESETS } from "./agents/presets.ts";
 import { AgentCancelledError, PlayerTwoError, Refused } from "./client.ts";
 import type { Client, Found, Runner } from "./client.ts";
 import * as repos from "./repos.ts";
@@ -227,6 +228,10 @@ export class Session {
         case "clone":
           await this.clone(command.repo);
           break;
+        case "agents":
+          this.client.saveAgents(command.agents, command.defaultAgent);
+          this.hooks.changed();
+          break;
       }
     }
   }
@@ -317,7 +322,9 @@ export class Session {
       kind: "chat",
       me: this.me,
       hub: new URL(this.client.config.hub).host,
-      agent: defaultAgentOf(this.client.config).label,
+      agents: this.client.config.agents,
+      defaultAgent: this.client.config.defaultAgent,
+      presets: PRESETS,
       dev: this.dev.startsWith(home) ? `~${this.dev.slice(home.length)}` : this.dev,
       link,
       loaded: this.loaded,

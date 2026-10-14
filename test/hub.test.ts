@@ -9,6 +9,7 @@ import type { TestContext } from "node:test";
 
 import { noteLink } from "../src/core/links.ts";
 import { authHeader, loadKey, signEvent } from "../src/core/sign.ts";
+import { oneshotAgent } from "../src/desk/agents/presets.ts";
 import { AgentCancelledError, http, join as joinHub, loadClient, PlayerTwoError } from "../src/desk/client.ts";
 import type { Client, Runner, Transport } from "../src/desk/client.ts";
 import { Session } from "../src/desk/session.ts";
@@ -60,7 +61,7 @@ async function person(hub: string, name: string): Promise<Person> {
   const home = join(root, `home-${name}`);
   const dev = join(root, `dev-${name}`);
   checkout(dev, "uploader");
-  await joinHub(home, hub, name, TOKEN, "fake-agent --flag", http);
+  await joinHub(home, hub, name, TOKEN, oneshotAgent("fake-agent --flag"), http);
   const client = loadClient(home, http, () => Date.now() / 1000);
   assert.ok(client !== null);
   const arrivals: Arrival[] = [];
