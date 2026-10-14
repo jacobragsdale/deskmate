@@ -1,14 +1,10 @@
-// Bundles the four things that are built into dist/: the command, the app's main process, its preload script, and its window.
-import { chmod, cp, rm } from "node:fs/promises";
+// Bundles the four things that are built into dist/: the command, the app's main process and its preload script with esbuild, then the window with Vite (vite.config.ts).
+import { chmod, rm } from "node:fs/promises";
 
 import { build } from "esbuild";
+import { build as buildWindow } from "vite";
 
 const shared = { bundle: true, sourcemap: true, logLevel: "info" };
-// A team's own build can carry its hub's address, so the join form asks only for a name and the token.
-const hub = process.env.PLAYER_TWO_HUB_URL ?? "";
-if (hub !== "" && !/^https?:\/\/\S*[^/\s]$/.test(hub)) {
-  throw new Error(`PLAYER_TWO_HUB_URL must be the hub's http or https address with no slash at the end, not ${JSON.stringify(hub)}`);
-}
 
 await rm("dist", { recursive: true, force: true });
 await Promise.all([
@@ -17,15 +13,6 @@ await Promise.all([
   build({ ...shared, entryPoints: ["src/window/main/main.ts"], outfile: "dist/main.js", platform: "node", format: "esm", external: ["electron"] }),
   // A sandboxed preload script cannot be an ES module.
   build({ ...shared, entryPoints: ["src/window/main/preload.ts"], outfile: "dist/preload.cjs", platform: "node", format: "cjs", external: ["electron"] }),
-  build({
-    ...shared,
-    entryPoints: ["src/window/renderer/main.tsx"],
-    outfile: "dist/renderer/main.js",
-    platform: "browser",
-    format: "iife",
-    jsx: "automatic",
-    minify: true,
-    define: { "process.env.NODE_ENV": '"production"', PLAYER_TWO_HUB_URL: JSON.stringify(hub) }
-  })
+  buildWindow({ configFile: "vite.config.ts" })
 ]);
-await Promise.all([cp("src/window/renderer/index.html", "dist/renderer/index.html"), cp("src/window/renderer/styles.css", "dist/renderer/main.css"), chmod("dist/player-two.js", 0o755)]);
+await chmod("dist/player-two.js", 0o755);

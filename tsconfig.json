@@ -9,6 +9,7 @@
     "noEmit": true, // esbuild writes the JavaScript; the compiler only checks.
     "allowImportingTsExtensions": true, // Imports name the .ts file, so Node can run the tests without a build.
     "erasableSyntaxOnly": true, // For the same reason: nothing that needs more than stripping the types.
+    "paths": { "@/*": ["./src/window/renderer/*"] }, // The window's own folder, as vite.config.ts names it.
 
     "strict": true, // Enable TypeScript's complete strict family, including future strict checks.
     "allowUnreachableCode": false, // Reject unreachable statements.
@@ -28,5 +29,5 @@
     "skipLibCheck": false, // Type-check dependency declarations instead of accepting inconsistent types.
     "verbatimModuleSyntax": true // Make type-only imports and emitted module behavior explicit.
   },
-  "include": ["src", "test", "scripts"]
+  "include": ["src", "test", "scripts", "vite.config.ts"]
 }
