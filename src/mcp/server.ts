@@ -1,6 +1,6 @@
 /**
  * The MCP server, `player-two mcp`: the chat as tools for an agent in its owner's editor, which starts it and talks to it over standard input and output.
- * It runs as the person who joined from this machine, with their key, and talks to the hub as the command does. Reading only.
+ * It runs as the person who joined from this machine, with their key, and talks to the hub as the command does. Reading only, unless started with --allow-send.
  */
 
 import { readFileSync } from "node:fs";
@@ -15,12 +15,13 @@ import type { Entry, Message } from "../core/chat.ts";
 import { readContent } from "../core/kinds.ts";
 import { noteLink, noteOf } from "../core/links.ts";
 import { VERSION } from "../core/version.ts";
-import { addressSchema } from "../core/wire.ts";
+import { addressSchema, channelSchema, fitText } from "../core/wire.ts";
 import { PlayerTwoError } from "../desk/client.ts";
 import type { Client } from "../desk/client.ts";
-import { agentOf, chatFrom, glance, readNote, trust } from "../desk/notes.ts";
+import { agentOf, ask, chatFrom, glance, readNote, trust } from "../desk/notes.ts";
 
 const PAGE = 20; // Events `read_chat` and `search` give when not told how many.
+const WAIT = 900; // Most seconds `ask_agent` waits for an answer, and how long when not told: as `player-two ask`.
 const marksSchema = z.object({ read: z.record(z.string(), z.int()) }); // The read marks in the desk's app-state.json, which holds more than this reads.
 
 /** A string argument that `read` makes something of, refused with `what` when it makes nothing of it. */
@@ -96,8 +97,59 @@ async function readChat(client: Client, chat: string, before: number | undefined
   return { notes, before: page.length === limit ? oldest : null };
 }
 
-/** The server for one person. */
-export function createServer(client: Client): McpServer {
+/** The tools that speak for the person: send a message, ask an agent and wait for its answer, and withdraw a request they made. */
+function sendingTools(server: McpServer, client: Client): void {
+  const me = client.config.name;
+
+  server.registerTool(
+    "send_message",
+    {
+      description: "Send a message, as you, to a person or a channel. A tag of an agent in it waits for that agent's owner to let it run, even when the agent is yours.",
+      inputSchema: z.strictObject({ to: chatArg, text: z.string() })
+    },
+    async ({ to, text }) => {
+      const body = fitText(text.trim());
+      if (body === "") {
+        throw new PlayerTwoError("there is nothing to send");
+      }
+      const sent = await client.publish(to, "message", { text: body, via: "mcp" });
+      return data({ link: noteLink(sent.event.id), seq: sent.seq });
+    }
+  );
+
+  server.registerTool(
+    "ask_agent",
+    {
+      description: `Ask an agent, person/repo, as you: send a message that tags it, in the direct chat with its owner or in \`chat\`, a channel, and wait up to \`wait_seconds\` (${String(WAIT)} when not given) for its owner to let it run and for its answer. Returns the answer, or which of declined, failed, stopped, withdrawn or timed out happened, with the request's link; job_status checks a request later.`,
+      inputSchema: z.strictObject({ agent: agentArg, text: z.string().min(1), chat: channelSchema.describe("A channel, with its #").optional(), wait_seconds: z.number().min(0).max(WAIT).optional() })
+    },
+    async ({ agent, text, chat, wait_seconds: seconds = WAIT }) => {
+      const asked = await ask(client, agent, chat ?? agent.owner, text, "mcp", seconds);
+      const request = noteLink(asked.sent.event.id);
+      if (asked.answer !== null) {
+        return data({ outcome: "answered", request, answer: noted(asked.answer.entry, me, asked.answer) });
+      }
+      return data({ outcome: asked.state === "waiting" || asked.state === "working" ? "timed out" : asked.state, request });
+    }
+  );
+
+  server.registerTool(
+    "withdraw",
+    { description: "Take back a request you made of an agent, while its owner has not acted on it yet.", inputSchema: z.strictObject({ request: noteArg, agent: agentArg }) },
+    async ({ request, agent }) => {
+      const found = await readNote(client, request);
+      const job = found?.jobs.find((each) => each.owner === agent.owner && each.repo === agent.repo);
+      if (found?.entry.event.author !== me || job?.state !== "waiting") {
+        throw new PlayerTwoError("only a request of yours that is still waiting can be taken back");
+      }
+      await client.publish(found.chat, "job.withdrawn", { agent: `${agent.owner}/${agent.repo}` }, [request]);
+      return data({ agent: `${agent.owner}/${agent.repo}`, state: "withdrawn" });
+    }
+  );
+}
+
+/** The server for one person: the reading tools, and with `allowSend` the ones that speak for them. */
+export function createServer(client: Client, allowSend: boolean): McpServer {
   const me = client.config.name;
   const server = new McpServer({ name: "player-two", version: VERSION });
 
@@ -192,5 +244,8 @@ export function createServer(client: Client): McpServer {
     }
   );
 
+  if (allowSend) {
+    sendingTools(server, client);
+  }
   return server;
 }

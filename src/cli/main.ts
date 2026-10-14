@@ -41,7 +41,7 @@ const USAGE = `usage: player-two COMMAND
   hub [--host HOST] [--port PORT]       run the hub; it reads PLAYER_TWO_JOIN_TOKEN, PLAYER_TWO_DB, PLAYER_TWO_REPOS and, if set, PLAYER_TWO_DOWNLOADS
   hub verify                            check that no event in the log in PLAYER_TWO_DB was changed or taken out since it was stored
   desk                                  run your side with no window, for the window to start: it speaks JSON lines on standard input and output
-  mcp                                   run the MCP server, for an agent's editor to start: the chat as tools, over standard input and output
+  mcp [--allow-send]                    run the MCP server, for an agent's editor to start: the chat as tools, over standard input and output; --allow-send adds sending, asking and withdrawing
   doctor                                check what Player Two needs on this machine, and say how to fix what is missing
 
 send, inbox, who, repos, channel, search, read, ask, status and doctor take --json, and then print one JSON value and nothing else.
@@ -331,9 +331,9 @@ async function askAgent(joined: () => Client, args: string[], out: (line: string
   }
   const asked = await ask(joined(), agent, channel, words.join(" "), "cli", seconds);
   if (values.json) {
-    out(JSON.stringify(asked.answer)); // The answer as the hub delivered it, with whether it is trusted; null when there is none.
+    out(JSON.stringify(asked.answer?.entry ?? null)); // The answer as the hub delivered it, with whether it is trusted; null when there is none.
   } else if (asked.answer !== null) {
-    out(saying(asked.answer.event)?.text ?? "");
+    out(asked.answer.text);
   }
   const ended = unanswered(asked, agent, seconds);
   if (ended !== null) {
@@ -418,12 +418,12 @@ async function repos(joined: () => Client, args: string[], out: (line: string) =
   show(out, json, team, lines.length === 0 ? "nobody has shared a repo yet; repos under ~/dev are shared once the window has run" : lines.join("\n"));
 }
 
-/** Serve the chat to an agent's editor over MCP until it closes standard input. */
+/** Serve the chat to an agent's editor over MCP until it closes standard input: to read, and with --allow-send to send and ask as well. */
 async function mcp(joined: () => Client, args: string[]): Promise<void> {
-  parseArgs({ args, options: {} });
+  const allowSend = parseArgs({ args, options: { "allow-send": { type: "boolean", default: false } } }).values["allow-send"];
   const client = joined();
   globalThis.console = new console.Console(process.stderr); // Standard output carries the protocol's messages and nothing else, as for the desk.
-  await createServer(client).connect(new StdioServerTransport());
+  await createServer(client, allowSend).connect(new StdioServerTransport());
 }
 
 /** The commands that act as the person who joined from here, by name. */

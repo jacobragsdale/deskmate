@@ -3,11 +3,13 @@
 import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
 import { test } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
 
+import { readContent } from "../src/core/kinds.ts";
 import { noteLink } from "../src/core/links.ts";
 import type { Delivered } from "../src/core/wire.ts";
 import type { Client } from "../src/desk/client.ts";
@@ -22,10 +24,10 @@ function parseJson(text: string): unknown {
   return JSON.parse(text);
 }
 
-/** An MCP client connected to the server running as `as`. */
-async function connect(t: TestContext, as: Client): Promise<McpClient> {
+/** An MCP client connected to the server running as `as`, started with --allow-send or without. */
+async function connect(t: TestContext, as: Client, allowSend = false): Promise<McpClient> {
   const [near, far] = InMemoryTransport.createLinkedPair();
-  const server = createServer(as);
+  const server = createServer(as, allowSend);
   await server.connect(far);
   const client = new McpClient({ name: "test", version: "1" });
   await client.connect(near);
@@ -96,4 +98,46 @@ await test("the reading tools hand over what the hub holds, folded as the window
   const refused = resultSchema.parse(await mcp.callTool({ name: "read_note", arguments: { note: "player-two://note/nothing" } }));
   assert.equal(refused.isError, true);
   assert.match(refused.content[0]?.text ?? "", /a note is its player-two:\/\/note\/ link or its 64-hex id/);
+});
+
+await test("with --allow-send it sends a message, asks an agent and says how that ended, and takes back a request still waiting", { timeout: 30_000 }, async (t) => {
+  const hub = await startHub(t);
+  const [alice, bob] = [await hub.join("alice"), await hub.join("bob")];
+  const mcp = await connect(t, alice, true);
+  const newest = async (): Promise<Delivered | undefined> => (await bob.events({ chat: "alice", limit: 1 }))[0];
+  const asked = async (after: number): Promise<Delivered> => {
+    for (let tries = 0; tries < 500; tries += 1) {
+      const found = await newest();
+      if (found !== undefined && found.seq > after && found.event.kind === "message") {
+        return found;
+      }
+      await delay(20);
+    }
+    throw new Error("the request never landed");
+  };
+
+  assert.deepEqual((await mcp.listTools()).tools.map((tool) => tool.name).slice(-3), ["send_message", "ask_agent", "withdraw"]);
+  const sent = z.strictObject({ link: z.string(), seq: z.int() }).parse(await call(mcp, "send_message", { to: "bob", text: " hello from the editor " }));
+  const message = await newest();
+  assert.deepEqual(
+    [sent, message === undefined ? null : readContent(message.event)],
+    [
+      { link: noteLink(message?.event.id ?? ""), seq: message?.seq },
+      { kind: "message", content: { text: "hello from the editor", via: "mcp" } }
+    ]
+  );
+
+  const declining = call(mcp, "ask_agent", { agent: "@bob/uploader", text: "where do we retry?", wait_seconds: 20 });
+  const first = await asked(sent.seq);
+  assert.deepEqual(readContent(first.event), { kind: "message", content: { text: "@bob/uploader where do we retry?", via: "mcp" } });
+  await bob.publish("alice", "job.declined", { repo: "uploader", reason: "" }, [first.event.id]);
+  assert.deepEqual(await declining, { outcome: "declined", request: noteLink(first.event.id) });
+
+  const timedOut = await call(mcp, "ask_agent", { agent: "bob/uploader", text: "anyone?", wait_seconds: 0.2 });
+  const second = await asked(first.seq);
+  assert.deepEqual(timedOut, { outcome: "timed out", request: noteLink(second.event.id) });
+  assert.deepEqual(await call(mcp, "withdraw", { request: noteLink(second.event.id), agent: "bob/uploader" }), { agent: "bob/uploader", state: "withdrawn" });
+  assert.deepEqual(await call(mcp, "job_status", { request: second.event.id, agent: "bob/uploader" }), { agent: "bob/uploader", state: "withdrawn", answer: null });
+  const again = resultSchema.parse(await mcp.callTool({ name: "withdraw", arguments: { request: second.event.id, agent: "bob/uploader" } }));
+  assert.deepEqual([again.isError, again.content[0]?.text], [true, "only a request of yours that is still waiting can be taken back"]);
 });

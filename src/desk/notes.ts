@@ -99,7 +99,7 @@ export async function glance(client: Client, read: Readonly<Record<string, numbe
 export interface Asked {
   readonly sent: Delivered; // The request.
   readonly state: State;
-  readonly answer: Entry | null; // The agent's answer, when it is answered.
+  readonly answer: Message | null; // The agent's answer, when it is answered.
 }
 
 /**
@@ -139,5 +139,5 @@ export async function ask(client: Client, agent: Agent, chat: string, text: stri
   const state = where();
   // The answer that settled it: once a job is answered nothing moves it again, so it is the newest from the owner's agent to this request.
   const answer = state === "answered" ? messagesIn(log, chat).findLast((each) => each.answers === sent.event.id && each.agent === repo && each.entry.event.author === owner) : undefined;
-  return { sent, state, answer: answer?.entry ?? null };
+  return { sent, state, answer: answer ?? null };
 }

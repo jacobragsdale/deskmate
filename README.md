@@ -214,7 +214,7 @@ The Setup page lists what Player Two needs and whether it found it: Node, your i
 | `player-two channel join NAME` | Joins the channel `NAME`, creating it if nobody is in it. `NAME` may be given with or without its `#`. Joining is an event: the channel's members see a line for it. |
 | `player-two channel leave NAME` | Leaves the channel. |
 | `player-two doctor` | Checks what Player Two needs on this machine, as the window's Setup page does, and prints each check with the command that fixes it. Exits `1` when a check failed. |
-| `player-two mcp` | Runs the MCP server on standard input and output, as you, for an agent in your editor to start: the chat as tools. See [Let your own agent ask](#7-let-your-own-agent-ask). |
+| `player-two mcp [--allow-send]` | Runs the MCP server on standard input and output, as you, for an agent in your editor to start: the chat as tools to read, and with `--allow-send`, to send messages, ask agents and withdraw requests as you. See [Let your own agent ask](#7-let-your-own-agent-ask). |
 | `player-two desk` | Runs the desk with no window, speaking JSON lines on standard input and output. The window starts it; it is not for typing at. |
 | `player-two hub [--host HOST] [--port PORT]` | Runs the hub. Defaults: `127.0.0.1`, `8787`. |
 | `player-two hub verify` | Walks the event log in the database `PLAYER_TWO_DB` names and says whether it holds, or the first `seq` where it breaks and how: an event changed or taken out since it was stored, a signature that does not hold under the key its author joined with, or a row that cannot be read as an event. Exits `1` when it breaks. |
