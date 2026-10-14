@@ -1,4 +1,14 @@
-/** WSL as the window sees it: reading what wsl.exe prints. The window is a Windows program and the desk runs in the user's Linux distribution, so this is how one finds the other. */
+/** WSL as the window sees it: calling wsl.exe and reading what it prints. The window is a Windows program and the desk runs in the user's Linux distribution, so this is how one reaches the other. */
+
+import { execFile } from "node:child_process";
+import { join as joinPath } from "node:path";
+
+const LIST_TIMEOUT = 15; // Seconds. Listing starts nothing.
+const START_TIMEOUT = 60; // Seconds for a call that may have to start the distribution first, which after a reboot is slow.
+const SCRIPT_TIMEOUT = 300; // Seconds a script gets unless its caller says otherwise.
+
+/** How a call into WSL ended: with what was asked for, or with why not, in words for the user. */
+export type Result<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly problem: string };
 
 /** One installed distribution, as `wsl.exe --list --verbose` shows it. */
 export interface Distro {
@@ -52,4 +62,59 @@ export function explainFailure(code: number | null, said: string): string {
   }
   const last = text.trim().split(/\r?\n/).at(-1) ?? "";
   return `wsl.exe failed${code === null ? "" : ` with status ${String(code)}`}${last === "" ? "" : `: ${last}`}`;
+}
+
+/** wsl.exe by its full path. A PATH may hold another program of that name, or none. */
+export function wslExe(): string {
+  return joinPath(process.env["WINDIR"] ?? "C:\\Windows", "System32", "wsl.exe");
+}
+
+/** Run wsl.exe with plain arguments and `input` on its standard input, and resolve with what it printed. Never rejects. */
+function wsl(args: readonly string[], input: string, timeoutSeconds: number): Promise<Result<string>> {
+  return new Promise((resolve) => {
+    // WSL_UTF8 asks for UTF-8 where wsl.exe would write UTF-16, and windowsHide keeps a console window from flashing up.
+    const options = { timeout: timeoutSeconds * 1000, env: { ...process.env, WSL_UTF8: "1" }, windowsHide: true, maxBuffer: 4 * 1024 * 1024 };
+    const child = execFile(wslExe(), args, options, (error, stdout, stderr) => {
+      if (error === null) {
+        resolve({ ok: true, value: clean(stdout) });
+      } else if (error.killed === true) {
+        resolve({ ok: false, problem: `WSL did not answer within ${String(timeoutSeconds)} seconds` });
+      } else if (typeof error.code === "number") {
+        resolve({ ok: false, problem: explainFailure(error.code, `${stdout}\n${stderr}`) });
+      } else {
+        resolve({ ok: false, problem: explainFailure(null, error.message) }); // wsl.exe itself could not be run, and the error says why.
+      }
+    });
+    child.stdin?.on("error", () => undefined); // A wsl.exe that went without reading its input has already failed, and that is reported above.
+    child.stdin?.end(input);
+  });
+}
+
+/** The arguments that name a distribution. With no name wsl.exe uses the default one. */
+function named(distro: string | null): string[] {
+  return distro === null ? [] : ["-d", distro];
+}
+
+function trimmed(result: Result<string>): Result<string> {
+  return result.ok ? { ok: true, value: result.value.trim() } : result;
+}
+
+export async function listDistros(): Promise<Result<Distro[]>> {
+  const listed = await wsl(["--list", "--verbose"], "", LIST_TIMEOUT);
+  return listed.ok ? { ok: true, value: parseDistros(listed.value) } : listed;
+}
+
+/** The user's home folder inside a distribution, such as "/home/jacob". */
+export async function home(distro: string | null): Promise<Result<string>> {
+  return trimmed(await wsl([...named(distro), "--exec", "printenv", "HOME"], "", START_TIMEOUT));
+}
+
+/** A Windows path as a distribution sees it: "C:\Users\jacob\a.txt" becomes "/mnt/c/Users/jacob/a.txt". It is passed with forward slashes, because wsl.exe eats backslashes. */
+export async function toLinuxPath(distro: string | null, windowsPath: string): Promise<Result<string>> {
+  return trimmed(await wsl([...named(distro), "--exec", "wslpath", "-u", windowsPath.replaceAll("\\", "/")], "", START_TIMEOUT));
+}
+
+/** Run a script in a distribution with `sh`, and resolve with what it printed. The script goes in on standard input: as an argument, wsl.exe would requote it and break it. */
+export function runScript(distro: string | null, script: string, timeoutSeconds = SCRIPT_TIMEOUT): Promise<Result<string>> {
+  return wsl([...named(distro), "--exec", "sh", "-s"], script, timeoutSeconds);
 }
