@@ -48,7 +48,7 @@ function detailOf(raw: string): string {
 }
 
 export const http: Transport = async (method, url, headers, body, timeoutSeconds, signal) => {
-  const timeout = AbortSignal.timeout(timeoutSeconds * 1000);
+  const timeout = AbortSignal.timeout(Math.ceil(timeoutSeconds * 1000)); // A whole number of milliseconds: what is left of a wait rarely is one, and a fraction is refused.
   let response: Response;
   let text: string;
   try {

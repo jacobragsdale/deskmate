@@ -7,7 +7,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import type { TestContext } from "node:test";
 
 import { z } from "zod";
 
@@ -15,54 +14,17 @@ import { authHeader, loadKey, signNote } from "../src/core/sign.ts";
 import { VERSION } from "../src/core/version.ts";
 import { MAX_SKEW } from "../src/core/wire.ts";
 import type { Note, Repo } from "../src/core/wire.ts";
-import { http, join as joinHub, loadClient } from "../src/desk/client.ts";
+import { http, join as joinHub } from "../src/desk/client.ts";
 import type { Client } from "../src/desk/client.ts";
 import { createHub } from "../src/hub/app.ts";
-
-const NOW = 1_800_000_000;
-const TOKEN = "a-join-token-for-tests";
-const TEAM_REPOS = "https://dev.azure.com/acme/"; // Only repos under this address may be shared on the test hub.
+import { NOW, startHub, TEAM_REPOS, TOKEN } from "./startHub.ts";
+import type { Hub } from "./startHub.ts";
 
 const UPLOADER: Repo = { name: "uploader", key: "dev.azure.com/acme/platform/uploader", url: "https://dev.azure.com/acme/Platform/_git/uploader", branch: "main" };
 const BILLING: Repo = { name: "billing", key: "dev.azure.com/acme/billing/billing", url: "https://dev.azure.com/acme/Billing/_git/billing", branch: "feature/invoices" };
 const ELSEWHERE: Repo = { name: "side-project", key: "github.com/jacob/side-project", url: "https://github.com/jacob/side-project", branch: "main" };
 
 const refusalSchema = z.object({ detail: z.string() });
-
-interface Hub {
-  readonly url: string;
-  readonly dir: string; // Holds the hub's database and a home folder for each person who joins.
-  readonly join: (name: string) => Promise<Client>; // Join under a name and return a client for that identity.
-}
-
-/** A hub of its own for one test, listening on a port the system picked. */
-async function startHub(t: TestContext): Promise<Hub> {
-  const dir = mkdtempSync(join(tmpdir(), "deskmate-hub-"));
-  const server = createHub({ joinToken: TOKEN, db: join(dir, "hub.db"), repos: TEAM_REPOS }, () => NOW);
-  await new Promise<void>((resolve) => {
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  t.after(async () => {
-    await new Promise((resolve) => {
-      server.close(resolve);
-      server.closeAllConnections();
-    });
-    rmSync(dir, { recursive: true, force: true });
-  });
-  const address = server.address();
-  assert.ok(address !== null && typeof address === "object");
-  const url = `http://127.0.0.1:${String(address.port)}`;
-  return {
-    url,
-    dir,
-    join: async (name) => {
-      await joinHub(join(dir, name), url, name, TOKEN, "fake-agent", http);
-      const client = loadClient(join(dir, name), http, () => NOW);
-      assert.ok(client !== null);
-      return client;
-    }
-  };
-}
 
 /** The key someone joined with, read from their home folder as their client reads it. */
 function keyOf(hub: Hub, name: string): KeyObject {
