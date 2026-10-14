@@ -1,15 +1,16 @@
 /** Two people's sessions against the real hub, started in this process: the check that the client and the hub still speak the same protocol, and that each sees what the other does. */
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import type { TestContext } from "node:test";
 
-import { noteLink } from "../src/core/links.ts";
+import { noteLink, notesIn } from "../src/core/links.ts";
 import { authHeader, loadKey, signEvent } from "../src/core/sign.ts";
 import { oneshotAgent } from "../src/desk/agents/presets.ts";
+import { runAgent } from "../src/desk/agents/oneshot.ts";
 import { AgentCancelledError, http, join as joinHub, loadClient, PlayerTwoError } from "../src/desk/client.ts";
 import type { Client, Runner, Transport } from "../src/desk/client.ts";
 import { Session } from "../src/desk/session.ts";
@@ -777,3 +778,76 @@ await test("your own tag, sent from your window on one machine, waits for your c
   await until(second.session, "the answer from the first machine", (view) => messages(view).some((message) => message.agent === "uploader"));
   assert.deepEqual([first.ran.length, second.ran.length], [1, 0]);
 });
+
+/** A one-shot agent that looks for the last word of its request with the built player-two command, `command`, as its prompt says it may, and answers with the link of the earliest trusted note it finds. */
+function searchingAgent(command: string): string {
+  return `
+    import { execFileSync } from "node:child_process";
+    const word = process.argv.at(-1).trim().split(/\\s+/).at(-1);
+    const found = JSON.parse(execFileSync(process.execPath, [${JSON.stringify(command)}, "search", "--json", word], { encoding: "utf8" }));
+    const [note] = found.filter((match) => match.trusted).sort((a, b) => a.seq - b.seq); // The request itself is found too: the earliest is the one seen before.
+    console.log(note === undefined ? "Not that I can find." : "Yes, first seen here: " + note.link);
+  `;
+}
+
+await test(
+  "an agent asked whether something was seen before finds the earlier note with player-two search, and the link in its answer opens that note for whoever asked",
+  { timeout: 60_000 },
+  async (t) => {
+    const command = join(import.meta.dirname, "..", "dist", "player-two.js");
+    assert.ok(existsSync(command), "dist/ is not built: run `npm run build` first");
+    const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+    const [alice, carol] = [await hub.join("alice"), await hub.join("carol")];
+    const agent = join(hub.dir, "agent.mjs");
+    writeFileSync(agent, searchingAgent(command));
+    const home = join(hub.dir, "bob");
+    await joinHub(home, hub.url, "bob", TOKEN, oneshotAgent(`"${process.execPath}" "${agent}"`), http);
+    const bob = loadClient(home, http, () => Date.now() / 1000);
+    assert.ok(bob !== null);
+    // The agent runs with the desk's own environment, as every agent does, and a desk for bob's identity has PLAYER_TWO_HOME naming his home, as a second identity on one machine does.
+    // In this process the desk's environment is the test's.
+    const was = process.env["PLAYER_TWO_HOME"];
+    process.env["PLAYER_TWO_HOME"] = home;
+    t.after(() => {
+      if (was === undefined) {
+        delete process.env["PLAYER_TWO_HOME"];
+      } else {
+        process.env["PLAYER_TWO_HOME"] = was;
+      }
+    });
+    for (const who of [alice, bob, carol]) {
+      await who.publish("#backend", "channel.join", {});
+    }
+    const earlier = await carol.publish("#backend", "message", { text: "the uploader died with ECONNRESET when the proxy closed the connection", via: "cli" });
+    for (let n = 0; n < 60; n += 1) {
+      await carol.publish("#backend", "message", { text: `later ${String(n)}`, via: "cli" }); // Long enough ago that it is not on the page the window loads.
+    }
+    const dev = join(hub.dir, "dev-bob");
+    checkout(dev, "uploader");
+    const owner = deskOf(t, bob, dev, { describe: () => Promise.resolve({ branch: "main", commit: COMMIT, dirty: false }), runner: runAgent });
+    const asker = deskOf(t, alice, join(hub.dir, "dev-alice"));
+    await until(owner.session, "bob's checkout shared", (view) => view.loaded && view.myRepos.includes("uploader"));
+    await until(asker.session, "alice's chats loaded", (view) => view.loaded);
+
+    await asker.session.handle({ do: "send", chat: "#backend", text: "@bob/uploader have we seen this before? ECONNRESET" });
+    await owner.session.handle({ do: "open", chat: "#backend" });
+    const { id } = await until(owner.session, "the request", (view) => messages(view).find((message) => message.body.endsWith("ECONNRESET") && message.requests[0]?.status.kind === "ready"));
+    await run(owner.session, id, true);
+    await asker.session.handle({ do: "open", chat: "#backend" });
+    const answer = await until(asker.session, "the agent's answer", (view) => messages(view).find((message) => message.agent === "uploader"));
+    assert.equal(answer.body, `Yes, first seen here: ${noteLink(earlier.event.id)}`);
+    assert.match(owner.ran[0]?.at(-1) ?? "", /you may run `player-two search --json WORDS`/); // What its prompt told it.
+    assert.equal(
+      messages(asker.session.view()).some((message) => message.id === earlier.event.id),
+      false
+    ); // Not loaded in alice's window yet.
+
+    // The link in the answer opens the earlier note in alice's window: its chat, with the page around it loaded, pointed at it.
+    const [cited] = notesIn(answer.body).flatMap((piece) => piece.note ?? []);
+    assert.ok(cited !== undefined);
+    await asker.session.handle({ do: "openNote", id: cited });
+    const opened = asker.session.view().current;
+    assert.deepEqual([opened?.chat, opened?.focus], ["#backend", { id: earlier.event.id, nth: 1 }]);
+    assert.equal(opened?.messages.find((message) => message.id === earlier.event.id)?.body, "the uploader died with ECONNRESET when the proxy closed the connection");
+  }
+);
