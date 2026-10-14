@@ -103,17 +103,60 @@ function ReadyLine({
   );
 }
 
-function RequestLine({ request, act }: { readonly request: RequestView; readonly act: Act }): JSX.Element {
+/** The short form of a commit, with the whole of it on hover. */
+function Commit({ commit }: { readonly commit: string }): JSX.Element {
+  return <code title={commit}>{commit.slice(0, 7)}</code>;
+}
+
+/** Where its owner let a run go ahead: " on" the branch, ± when the checkout had changes nobody had committed, and " at" the commit. Nothing when they never did. */
+function Ran({ accepted }: { readonly accepted: RequestView["accepted"] }): JSX.Element | null {
+  return accepted === null ? null : (
+    <>
+      {` on ${accepted.branch}${accepted.dirty ? " ±" : ""} at `}
+      <Commit commit={accepted.commit} />
+    </>
+  );
+}
+
+/** A teammate's agent whose owner has not acted yet. Whoever asked can take the request back until they do. */
+function WaitingLine({ request, away, asker, act }: { readonly request: RequestView; readonly away: boolean; readonly asker: boolean; readonly act: Act }): JSX.Element {
+  const { id, owner, repo } = request;
+  return (
+    <p className={LINE}>
+      ◌ waiting for {owner} to approve{away ? " · they are away" : ""}
+      {asker && (
+        <>
+          {" "}
+          ·{" "}
+          <Button
+            size="xs"
+            variant="outline"
+            className="text-foreground"
+            type="button"
+            onClick={() => {
+              act({ do: "withdraw", id, owner, repo });
+            }}
+          >
+            ↩ Withdraw
+          </Button>
+        </>
+      )}
+    </p>
+  );
+}
+
+/** Where one agent a message tags stands, and what the reader can do about it. `asker` is whether the reader wrote the message. */
+function RequestLine({ request, asker, act }: { readonly request: RequestView; readonly asker: boolean; readonly act: Act }): JSX.Element {
   const { id, owner, repo, status } = request;
   const who = request.mine ? `your ${repo} agent` : `${owner}'s ${repo} agent`;
-  const on = (branch: string): string => (branch === "" ? "" : ` on ${branch}`);
   switch (status.kind) {
     case "drafted":
       return <p className={MINE}>✎ {who} has drafted an answer · it is below for you to review</p>;
     case "running":
       return (
         <p className={LINE}>
-          <Spinner /> {who} is working{on(status.branch)} · <Elapsed since={status.startedAt} /> ·{" "}
+          <Spinner /> {who} is working
+          <Ran accepted={request.accepted} /> · <Elapsed since={status.startedAt} /> ·{" "}
           <Button
             size="xs"
             variant="outline"
@@ -149,15 +192,12 @@ function RequestLine({ request, act }: { readonly request: RequestView; readonly
     case "working":
       return (
         <p className={LINE}>
-          <Spinner /> {who} is working{on(status.branch)}
+          <Spinner /> {who} is working
+          <Ran accepted={request.accepted} />
         </p>
       );
     case "waiting":
-      return (
-        <p className={LINE}>
-          ◌ waiting for {owner} to approve{status.away ? " · they are away" : ""}
-        </p>
-      );
+      return <WaitingLine request={request} away={status.away} asker={asker} act={act} />;
     case "nobody":
       return <p className={LINE}>? nobody named {owner} has joined</p>;
     case "lacksRepo":
@@ -169,9 +209,19 @@ function RequestLine({ request, act }: { readonly request: RequestView; readonly
     case "declined":
       return <p className={LINE}>× {owner} declined</p>;
     case "failed":
-      return <p className={LINE}>✗ {who} failed</p>;
+      return (
+        <p className={LINE}>
+          ✗ {who} failed
+          <Ran accepted={request.accepted} />
+        </p>
+      );
     case "stopped":
-      return <p className={LINE}>■ {who} was stopped</p>;
+      return (
+        <p className={LINE}>
+          ■ {who} was stopped
+          <Ran accepted={request.accepted} />
+        </p>
+      );
     case "withdrawn":
       return <p className={LINE}>↩ the request was taken back</p>;
   }
@@ -394,10 +444,38 @@ function Reactions({ message, me, react }: { readonly message: ReplyView; readon
   );
 }
 
+/** Who wrote a message, and when; for an agent's answer, which agent, and the branch and commit its owner let it run on. */
+function Header({ message, me }: { readonly message: ReplyView; readonly me: string }): JSX.Element {
+  const when = new Date(message.ts * 1000);
+  return (
+    <header className="mt-2.5 flex items-baseline gap-1.5">
+      <strong className={cn(message.agent !== null && "text-agent")}>{message.sender === me ? "you" : message.sender}</strong>
+      {message.agent !== null && (
+        <span className="text-xs text-muted-foreground">
+          /{message.agent} agent{message.branch === "" ? "" : ` on ${message.branch}`}
+          {message.commit !== "" && (
+            <>
+              {" at "}
+              <Commit commit={message.commit} />
+            </>
+          )}
+        </span>
+      )}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <time className="text-xs text-muted-foreground" dateTime={when.toISOString()}>
+            {when.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}
+          </time>
+        </TooltipTrigger>
+        <TooltipContent>{when.toLocaleString(undefined, { dateStyle: "full", timeStyle: "medium" })}</TooltipContent>
+      </Tooltip>
+    </header>
+  );
+}
+
 /** One message or answer. `onReply` opens its thread; null for a reply, which is in its thread already. */
 function Said({ message, me, act, onReply }: { readonly message: ReplyView; readonly me: string; readonly act: Act; readonly onReply: (() => void) | null }): JSX.Element {
   const [editing, setEditing] = useState(false);
-  const when = new Date(message.ts * 1000);
   // Only the author's own word counts for an edit or a delete, and never on an agent's answer, so nobody else is offered either.
   const own: Own | null =
     message.sender === me && message.agent === null && !message.deleted
@@ -419,24 +497,7 @@ function Said({ message, me, act, onReply }: { readonly message: ReplyView; read
   }
   return (
     <article className={cn("group relative", message.agent !== null && "mt-1 border-l-3 border-agent pl-2.5")}>
-      {message.header && (
-        <header className="mt-2.5 flex items-baseline gap-1.5">
-          <strong className={cn(message.agent !== null && "text-agent")}>{message.sender === me ? "you" : message.sender}</strong>
-          {message.agent !== null && (
-            <span className="text-xs text-muted-foreground">
-              /{message.agent} agent{message.branch === "" ? "" : ` on ${message.branch}`}
-            </span>
-          )}
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <time className="text-xs text-muted-foreground" dateTime={when.toISOString()}>
-                {when.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}
-              </time>
-            </TooltipTrigger>
-            <TooltipContent>{when.toLocaleString(undefined, { dateStyle: "full", timeStyle: "medium" })}</TooltipContent>
-          </Tooltip>
-        </header>
-      )}
+      {message.header && <Header message={message} me={me} />}
       {message.quote !== "" && <p className="my-0.5 truncate border-l-3 pl-2 text-muted-foreground">{message.quote}</p>}
       {editing ? (
         <EditBox
@@ -451,7 +512,7 @@ function Said({ message, me, act, onReply }: { readonly message: ReplyView; read
       )}
       <Reactions message={message} me={me} react={react} />
       {message.requests.map((request) => (
-        <RequestLine key={`${request.owner}/${request.repo}`} request={request} act={act} />
+        <RequestLine key={`${request.owner}/${request.repo}`} request={request} asker={message.sender === me} act={act} />
       ))}
       {!message.deleted && !editing && <Actions react={react} onReply={onReply} own={own} />}
     </article>

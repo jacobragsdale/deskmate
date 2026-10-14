@@ -340,6 +340,25 @@ await test(
     );
     assert.ok(!order.includes(-1), history);
 
+    // Alice asks bob's agent twice from the window. The first she takes back while it waits. The second bob runs: under it she sees the branch and short commit it ran at, and its answer says them too.
+    await page.click("nav button", "bob");
+    await page.until("the chat with bob", `document.querySelector("main h1")?.textContent === "bob"`);
+    await page.type('textarea[aria-label="Message bob"]', "@bob/uploader never mind");
+    await page.press("Enter");
+    await page.until("Withdraw under the request", `[...document.querySelectorAll("main button")].some((each) => each.textContent.includes("Withdraw"))`);
+    await page.click("main button", "Withdraw");
+    await page.until("the request taken back", `document.querySelector("main").innerText.includes("the request was taken back")`);
+    await page.type('textarea[aria-label="Message bob"]', "@bob/uploader where do we retry?");
+    await page.press("Enter");
+    await page.until("the second request waiting", `document.querySelector("main").innerText.includes("◌ waiting for bob to approve")`);
+    const asked = (await bob.events({ chat: "alice" })).find((each) => each.event.content.includes("where do we retry?"));
+    assert.ok(asked !== undefined);
+    const commit = "c0ffee".padEnd(40, "0");
+    await bob.publish("alice", "job.accepted", { repo: "uploader", branch: "main", commit, dirty: true, delivery: "post", mode: "full", by: "owner" }, [asked.event.id]);
+    await page.until("where it runs", `document.querySelector("main").innerText.includes("bob's uploader agent is working on main ± at c0ffee0")`);
+    await bob.publish("alice", "job.result", { repo: "uploader", branch: "main", text: "in queue.py", reviewed: false }, [asked.event.id]);
+    await page.until("the answer, with where it ran", `document.querySelector("main").innerText.includes("/uploader agent on main ± at c0ffee0")`);
+
     assert.deepEqual(page.problems, []);
   }
 );
