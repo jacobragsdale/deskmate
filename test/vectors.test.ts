@@ -7,11 +7,10 @@ import { test } from "node:test";
 
 import { z } from "zod";
 
-import { mentions } from "../src/core/chat.ts";
-import { agentPrompt } from "../src/core/notes.ts";
-import type { Entry } from "../src/core/notes.ts";
+import { agentPrompt, mentions } from "../src/core/chat.ts";
+import type { Message } from "../src/core/chat.ts";
 import { parseRemote, prefixKey } from "../src/core/remotes.ts";
-import { authClaim, authHeader, authIsValid, eventIsAuthentic, loadKey, privateHex, publicHex, signEvent, signNote } from "../src/core/sign.ts";
+import { authClaim, authHeader, authIsValid, eventIsAuthentic, loadKey, privateHex, publicHex, signEvent } from "../src/core/sign.ts";
 import { eventSchema } from "../src/core/wire.ts";
 import type { Event } from "../src/core/wire.ts";
 
@@ -32,8 +31,10 @@ const vectors = z
 
 const key = loadKey(vectors.private_key);
 
-function entry(id: number, sender: string, to: string, body: string, agent: string | null = null): Entry {
-  return { id, note: signNote(key, { sender, to, kind: "note", body, ts: vectors.ts, agent, re: null }), trusted: true };
+/** A message as the fold would leave it, or with `agent` an agent's answer: all an agent's prompt reads of one. */
+function shown(seq: number, author: string, to: string, text: string, agent: string | null = null): Message {
+  const event = signEvent(key, { author, to, kind: agent === null ? "message" : "job.result", content: "{}", ts: vectors.ts, refs: [] });
+  return { entry: { seq, event, trusted: true }, agent, answers: agent === null ? null : event.id, branch: "", root: null, text, edited: false, deleted: false, reactions: new Map(), replies: [] };
 }
 
 await test("a key loads from its hex and gives the same public key", () => {
@@ -89,19 +90,19 @@ await test("every remote names the repo on record", () => {
   }
 });
 
-await test("the same tags are found in a note's text", () => {
+await test("the same tags are found in a message's text", () => {
   for (const [body, expected] of vectors.mentions) {
     assert.deepEqual(mentions(body), expected, body);
   }
 });
 
 await test("an agent is told what is on record", () => {
-  const earlier = [entry(1, "bob", "#backend", "it was the connection pool"), entry(2, "carol", "#backend", "Retries live in queue.py", "uploader")];
+  const earlier = [shown(1, "bob", "#backend", "it was the connection pool"), shown(2, "carol", "#backend", "Retries live in queue.py", "uploader")];
   const ask = "@jacob/uploader where do we retry?";
   const prompts = [
-    agentPrompt(entry(3, "bob", "#backend", ask), "jacob", "uploader", earlier, true),
-    agentPrompt(entry(3, "bob", "jacob", ask), "jacob", "uploader", [], false),
-    agentPrompt(entry(3, "jacob", "bob", ask), "jacob", "uploader", [], false)
+    agentPrompt(shown(3, "bob", "#backend", ask), "jacob", "uploader", earlier, true),
+    agentPrompt(shown(3, "bob", "jacob", ask), "jacob", "uploader", [], false),
+    agentPrompt(shown(3, "jacob", "bob", ask), "jacob", "uploader", [], false)
   ];
   assert.deepEqual(
     prompts,

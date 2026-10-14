@@ -6,11 +6,10 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { mentions } from "../src/core/chat.ts";
-import { agentPrompt } from "../src/core/notes.ts";
-import type { Entry } from "../src/core/notes.ts";
+import { agentPrompt, mentions } from "../src/core/chat.ts";
+import type { Message } from "../src/core/chat.ts";
 import { parseRemote, prefixKey } from "../src/core/remotes.ts";
-import { authHeader, loadKey, publicHex, signEvent, signNote } from "../src/core/sign.ts";
+import { authHeader, loadKey, publicHex, signEvent } from "../src/core/sign.ts";
 
 const PRIVATE_KEY = "11".repeat(32);
 const TS = 1_800_000_000;
@@ -82,11 +81,13 @@ const MENTIONS: readonly string[] = [
 
 const key = loadKey(PRIVATE_KEY);
 
-function entry(id: number, sender: string, to: string, body: string, agent: string | null = null): Entry {
-  return { id, note: signNote(key, { sender, to, kind: "note", body, ts: TS, agent, re: null }), trusted: true };
+/** A message as the fold would leave it, or with `agent` an agent's answer: all an agent's prompt reads of one. */
+function shown(seq: number, author: string, to: string, text: string, agent: string | null = null): Message {
+  const event = signEvent(key, { author, to, kind: agent === null ? "message" : "job.result", content: "{}", ts: TS, refs: [] });
+  return { entry: { seq, event, trusted: true }, agent, answers: agent === null ? null : event.id, branch: "", root: null, text, edited: false, deleted: false, reactions: new Map(), replies: [] };
 }
 
-const earlier = [entry(1, "bob", "#backend", "it was the connection pool"), entry(2, "carol", "#backend", "Retries live in queue.py", "uploader")];
+const earlier = [shown(1, "bob", "#backend", "it was the connection pool"), shown(2, "carol", "#backend", "Retries live in queue.py", "uploader")];
 const ask = "@jacob/uploader where do we retry?";
 
 // Each event's nonce is fixed, its place in the list, so the record can be signed again to the same bytes.
@@ -100,9 +101,9 @@ const vectors = {
   prefixes: PREFIXES.map((url) => [url, prefixKey(url)]),
   mentions: MENTIONS.map((body) => [body, mentions(body)]),
   prompts: [
-    { review: true, prompt: agentPrompt(entry(3, "bob", "#backend", ask), "jacob", "uploader", earlier, true) },
-    { review: false, prompt: agentPrompt(entry(3, "bob", "jacob", ask), "jacob", "uploader", [], false) },
-    { review: false, prompt: agentPrompt(entry(3, "jacob", "bob", ask), "jacob", "uploader", [], false) }
+    { review: true, prompt: agentPrompt(shown(3, "bob", "#backend", ask), "jacob", "uploader", earlier, true) },
+    { review: false, prompt: agentPrompt(shown(3, "bob", "jacob", ask), "jacob", "uploader", [], false) },
+    { review: false, prompt: agentPrompt(shown(3, "jacob", "bob", ask), "jacob", "uploader", [], false) }
   ]
 };
 
