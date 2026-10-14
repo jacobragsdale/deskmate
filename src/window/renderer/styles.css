@@ -1,40 +1,4 @@
-/* One stylesheet for the window. Colours follow the system's light or dark setting. */
-
-:root {
-  color-scheme: light dark;
-  --bg: #ffffff;
-  --side: #f4f4f6;
-  --text: #1c1c21;
-  --muted: #6c6c78;
-  --border: #dcdce2;
-  --hover: #e8e8ee;
-  --accent: #2a5bd7;
-  --accent-text: #ffffff;
-  --agent: #7a3fc4;
-  --warn: #9a5b00;
-  --bad: #b3261e;
-  --code: #f0f0f4;
-  font:
-    14px/1.45 system-ui,
-    sans-serif;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #1b1b1f;
-    --side: #232329;
-    --text: #e6e6ea;
-    --muted: #9a9aa6;
-    --border: #36363f;
-    --hover: #2e2e36;
-    --accent: #7aa2ff;
-    --accent-text: #10131c;
-    --agent: #c29bff;
-    --warn: #e0b060;
-    --bad: #ff8a80;
-    --code: #2a2a31;
-  }
-}
+/* What is left of the window's first stylesheet, drawn in the theme's colours from globals.css, until shadcn/ui's components take its place. */
 
 * {
   box-sizing: border-box;
@@ -45,11 +9,6 @@ body,
 #root {
   height: 100%;
   margin: 0;
-}
-
-body {
-  background: var(--bg);
-  color: var(--text);
 }
 
 button,
@@ -69,7 +28,7 @@ button {
 }
 
 button:hover:not(:disabled) {
-  background: var(--hover);
+  background: var(--accent);
 }
 
 button:disabled {
@@ -78,37 +37,38 @@ button:disabled {
 }
 
 button.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--accent-text);
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--primary-foreground);
 }
 
 button.primary:hover:not(:disabled) {
-  background: var(--accent);
+  background: var(--primary);
   filter: brightness(1.1);
 }
 
 input,
+select,
 textarea {
-  background: var(--bg);
+  background: var(--background);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 6px 8px;
 }
 
 :focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--ring);
   outline-offset: 1px;
 }
 
 .quiet {
-  color: var(--muted);
+  color: var(--muted-foreground);
 }
 
 .empty {
   margin: auto;
   padding: 32px;
-  color: var(--muted);
+  color: var(--muted-foreground);
   text-align: center;
 }
 
@@ -136,7 +96,7 @@ footer {
   gap: 16px;
   padding: 4px 12px;
   border-top: 1px solid var(--border);
-  color: var(--muted);
+  color: var(--muted-foreground);
   font-size: 12px;
   white-space: nowrap;
 }
@@ -152,7 +112,7 @@ footer span:last-child {
 }
 
 footer.down span:last-child {
-  color: var(--bad);
+  color: var(--destructive);
 }
 
 /* ── chat list ── */
@@ -162,7 +122,7 @@ footer.down span:last-child {
   flex: none;
   overflow-y: auto;
   padding: 8px;
-  background: var(--side);
+  background: var(--sidebar);
   border-right: 1px solid var(--border);
 }
 
@@ -172,7 +132,7 @@ footer.down span:last-child {
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--muted);
+  color: var(--muted-foreground);
 }
 
 .sidebar ul,
@@ -198,7 +158,7 @@ footer.down span:last-child {
 }
 
 .row.open {
-  background: var(--hover);
+  background: var(--accent);
   font-weight: 600;
 }
 
@@ -217,8 +177,8 @@ footer.down span:last-child {
   min-width: 18px;
   padding: 0 5px;
   border-radius: 9px;
-  background: var(--accent);
-  color: var(--accent-text);
+  background: var(--primary);
+  color: var(--primary-foreground);
   font-size: 11px;
   font-weight: 600;
   text-align: center;
@@ -228,7 +188,7 @@ footer.down span:last-child {
   width: 8px;
   height: 8px;
   flex: none;
-  border: 1px solid var(--muted);
+  border: 1px solid var(--muted-foreground);
   border-radius: 50%;
 }
 
@@ -242,7 +202,7 @@ footer.down span:last-child {
   width: 10px;
   height: 10px;
   border: 2px solid var(--border);
-  border-top-color: var(--accent);
+  border-top-color: var(--foreground);
   border-radius: 50%;
   vertical-align: -1px;
   animation: spin 0.8s linear infinite;
@@ -306,7 +266,7 @@ footer.down span:last-child {
   align-items: center;
   gap: 10px;
   margin: 14px 0 6px;
-  color: var(--muted);
+  color: var(--muted-foreground);
   font-size: 12px;
 }
 
@@ -318,12 +278,12 @@ footer.down span:last-child {
 }
 
 .rule.new {
-  color: var(--bad);
+  color: var(--destructive);
 }
 
 .rule.new::before,
 .rule.new::after {
-  border-color: var(--bad);
+  border-color: var(--destructive);
 }
 
 .message header {
@@ -335,7 +295,7 @@ footer.down span:last-child {
 
 .message header span,
 .message time {
-  color: var(--muted);
+  color: var(--muted-foreground);
   font-size: 12px;
 }
 
@@ -356,7 +316,7 @@ footer.down span:last-child {
 }
 
 .tag {
-  color: var(--accent);
+  color: var(--tag);
   font-weight: 600;
 }
 
@@ -364,7 +324,7 @@ footer.down span:last-child {
   margin: 2px 0;
   padding-left: 8px;
   border-left: 3px solid var(--border);
-  color: var(--muted);
+  color: var(--muted-foreground);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -372,12 +332,12 @@ footer.down span:last-child {
 
 .untrusted {
   margin: 8px 0;
-  color: var(--bad);
+  color: var(--destructive);
 }
 
 .request {
   margin: 4px 0;
-  color: var(--muted);
+  color: var(--muted-foreground);
 }
 
 .request.mine {
@@ -385,7 +345,7 @@ footer.down span:last-child {
 }
 
 .request button {
-  color: var(--text);
+  color: var(--foreground);
 }
 
 .markdown {
@@ -407,10 +367,34 @@ footer.down span:last-child {
   margin: 6px 0;
 }
 
+.markdown ul,
+.markdown ol {
+  padding-left: 1.5em;
+}
+
+.markdown ul {
+  list-style: disc;
+}
+
+.markdown ol {
+  list-style: decimal;
+}
+
+.markdown :is(h1, h2, h3, h4, h5, h6) {
+  margin: 10px 0 4px;
+  font-weight: 600;
+}
+
+.markdown blockquote {
+  padding-left: 8px;
+  border-left: 3px solid var(--border);
+  color: var(--muted-foreground);
+}
+
 .markdown code {
   padding: 1px 4px;
   border-radius: 4px;
-  background: var(--code);
+  background: var(--muted);
   font:
     13px/1.4 ui-monospace,
     "JetBrains Mono",
@@ -421,7 +405,7 @@ footer.down span:last-child {
 .markdown pre {
   padding: 8px 10px;
   border-radius: 6px;
-  background: var(--code);
+  background: var(--muted);
   overflow-x: auto;
 }
 
@@ -431,7 +415,7 @@ footer.down span:last-child {
 }
 
 .markdown a {
-  color: var(--accent);
+  color: var(--tag);
 }
 
 /* ── writing ── */
@@ -473,7 +457,7 @@ footer.down span:last-child {
   padding: 4px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--bg);
+  background: var(--background);
   box-shadow: 0 4px 16px rgb(0 0 0 / 20%);
 }
 
@@ -487,18 +471,19 @@ footer.down span:last-child {
 }
 
 .picker li.picked {
-  background: var(--hover);
+  background: var(--accent);
 }
 
 /* ── dialogs, the join form, notices ── */
 
 dialog {
   width: 360px;
+  margin: auto; /* How the browser centres a modal dialog, which Tailwind's reset takes away. */
   padding: 16px;
   border: 1px solid var(--border);
   border-radius: 10px;
-  background: var(--bg);
-  color: var(--text);
+  background: var(--background);
+  color: var(--foreground);
 }
 
 dialog::backdrop {
@@ -540,13 +525,19 @@ dialog form input {
   margin: 10vh auto 0;
 }
 
+.setup h1,
+.setup-page h1 {
+  font-size: 1.5em;
+  font-weight: 700;
+}
+
 .setup h1 {
   margin: 0;
 }
 
 .setup p {
   margin: 0;
-  color: var(--muted);
+  color: var(--muted-foreground);
 }
 
 .setup label {
@@ -564,9 +555,9 @@ dialog form input {
 .setup button {
   align-self: flex-start;
   padding: 6px 16px;
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--accent-text);
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--primary-foreground);
 }
 
 .toasts {
@@ -584,13 +575,13 @@ dialog form input {
   padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--side);
+  background: var(--sidebar);
   box-shadow: 0 4px 16px rgb(0 0 0 / 20%);
   overflow-wrap: anywhere;
 }
 
 .toast.error {
-  border-color: var(--bad);
+  border-color: var(--destructive);
 }
 
 .toast strong {
@@ -602,7 +593,7 @@ dialog form input {
 button.link {
   border: none;
   padding: 0;
-  color: var(--accent);
+  color: var(--tag);
   text-decoration: underline;
 }
 
@@ -657,7 +648,7 @@ button.link {
 
 .checks p {
   margin: 2px 0 0;
-  color: var(--muted);
+  color: var(--muted-foreground);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -670,7 +661,7 @@ button.link {
 }
 
 .checks li.ok .mark {
-  color: var(--accent);
+  color: var(--tag);
 }
 
 .checks li.warn .mark {
@@ -678,7 +669,7 @@ button.link {
 }
 
 .checks li.fail .mark {
-  color: var(--bad);
+  color: var(--destructive);
 }
 
 .checks li.skip {
@@ -694,6 +685,6 @@ button.link {
 .checks .fix code {
   padding: 2px 6px;
   border-radius: 4px;
-  background: var(--code);
-  color: var(--text);
+  background: var(--muted);
+  color: var(--foreground);
 }
