@@ -7,6 +7,9 @@ export const MAX_CONTENT = 64_000; // Most characters an event's content may hol
 export const MAX_PATCH = 512_000; // The same for a patch, which carries a diff.
 const MAX_TEXT = MAX_CONTENT - 1_000; // Most of an event's content one text may take once written as JSON, leaving room for the rest of the content.
 export const MAX_SKEW = 300; // Seconds a signed timestamp may differ from the verifier's clock.
+// What the hub puts before and after each word a search found, in a result's snippet. The hub keeps both out of the text it indexes, so neither ever stands for something someone wrote.
+export const HIT_OPEN = "\u0002";
+export const HIT_CLOSE = "\u0003";
 export const REPO_NAME = "[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?";
 export const NAME = "[a-z0-9][a-z0-9_-]{0,31}";
 

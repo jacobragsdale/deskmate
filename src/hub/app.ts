@@ -20,6 +20,9 @@ import { Database } from "./db.ts";
 
 const PAGE = 100; // Events one read gets when it does not say how many.
 const MAX_PAGE = 200; // Most events one read may ask for.
+const HITS = 20; // Search results one search gets when it does not say how many.
+const MAX_HITS = 50; // Most search results one search may ask for.
+const MAX_WORDS = 8; // Most words one search may hold: each is matched against every message that holds it, and the hub does nothing else meanwhile.
 const PING = 20; // Seconds between the comment lines that keep an open stream from looking idle to a proxy.
 const MAX_REPOS = 500; // Most checkouts one person may advertise.
 const MAX_REQUEST = 4_000_000; // Most characters one request's body may hold: several times the longest list of repos or the longest event.
@@ -52,6 +55,15 @@ const eventsQuerySchema = z.object({
   limit: numeric.pipe(z.int().min(1).max(MAX_PAGE)).default(PAGE)
 });
 const streamQuerySchema = z.object({ after: numeric.pipe(z.int()).default(0) });
+const searchQuerySchema = z.object({
+  // Words are what lies between spaces and control characters: a NUL would end FTS5's reading of the query.
+  q: z
+    .string()
+    .transform((q) => q.split(/[\s\p{Cc}]+/u).filter((word) => word !== ""))
+    .pipe(z.array(z.string()).min(1).max(MAX_WORDS)),
+  chat: addressSchema.optional(),
+  limit: numeric.pipe(z.int().min(1).max(MAX_HITS)).default(HITS)
+});
 
 /** One request as a route sees it. */
 interface Ask {
@@ -314,6 +326,12 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     return [200, chat === undefined ? db.eventsAfter(ask.me, after ?? 0, limit) : db.chatEvents(ask.me, chat, before ?? Number.MAX_SAFE_INTEGER, limit)];
   }
 
+  /** The messages and answers the caller can see that hold every word they asked for, best match first, each with a marked stretch of its text. */
+  function search(ask: Ask): Answer {
+    const { q, chat, limit } = parsed(searchQuerySchema, Object.fromEntries(ask.query), "query");
+    return [200, db.search(ask.me, q, chat ?? null, limit)];
+  }
+
   /**
    * Hold the response open and send the caller every event they can see after `after`, then each new one as it is stored, and a comment line every PING seconds.
    * Each batch is read through the same rule as every other read, at the moment it is sent, so a channel left since the stream opened sends nothing more.
@@ -361,6 +379,7 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     { method: "GET", path: "/repos", answer: () => [200, db.repos()] },
     { method: "POST", path: "/events", answer: postEvent },
     { method: "GET", path: "/events", answer: getEvents },
+    { method: "GET", path: "/search", answer: search },
     { method: "GET", path: "/stream", answer: stream },
     { method: "GET", path: "/audit/head", answer: () => [200, db.head()] }, // For comparing with what someone saw before: a log changed since cannot end in the same chain value.
     { method: "GET", path: "/channels", answer: () => [200, db.channels().map(channelInfo)] }

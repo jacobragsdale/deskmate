@@ -7,7 +7,7 @@ import { z } from "zod";
 
 import { readContent } from "../core/kinds.ts";
 import { eventId } from "../core/sign.ts";
-import { deliveredSchema, isChannel, personSchema, teamRepoSchema } from "../core/wire.ts";
+import { deliveredSchema, HIT_CLOSE, HIT_OPEN, isChannel, personSchema, teamRepoSchema } from "../core/wire.ts";
 import type { Delivered, Event, Person, Repo, RepoRef, TeamRepo } from "../core/wire.ts";
 
 const SCHEMA_VERSION = 6; // 3 was the notes alone, from the Python hub to 0.4.
@@ -67,7 +67,18 @@ const linkSchema = z.object({ seq: z.int(), chain: z.string() });
 function parseJson(text: string): unknown {
   return JSON.parse(text);
 }
+const hitRowSchema = z.object({ snippet: z.string() }); // Read beside the event's own columns, which eventRowSchema reads strictly.
 const headSchema = z.strictObject({ seq: z.int(), chain: z.string() }).optional();
+
+/** Which events are in one chat: a channel's, or those between `:me` and one other person, either way. */
+function inChat(chat: string): string {
+  return isChannel(chat) ? "recipient = :chat" : "((author = :me AND recipient = :chat) OR (author = :chat AND recipient = :me))";
+}
+
+/** The text of a message or an answer as the index keeps it: without the characters that mark what a search found, so that every one in a snippet is a mark. */
+function searchable(text: string): string {
+  return text.replaceAll(HIT_OPEN, " ").replaceAll(HIT_CLOSE, " ");
+}
 
 /** The chain value of an event: the sha256 of the one before it and the event's id, written one after the other in hex. Each depends on every event before it, so none can be changed or taken out without changing every value after it. */
 function chainAfter(previous: string, id: string): string {
@@ -241,12 +252,12 @@ export class Database {
   private index(seq: number, event: Event): void {
     const said = readContent(event);
     if (said.kind === "message" || said.kind === "job.result") {
-      this.db.prepare("INSERT INTO search (rowid, text) VALUES (?, ?)").run(seq, said.content.text);
+      this.db.prepare("INSERT INTO search (rowid, text) VALUES (?, ?)").run(seq, searchable(said.content.text));
     } else if (said.kind === "message.edit" || said.kind === "message.delete") {
       // The same author writing to the same recipient is the same chat: a channel, or the two people in a direct one.
       const target = seqSchema.parse(this.db.prepare("SELECT seq FROM events WHERE id = ? AND author = ? AND recipient = ? AND kind = 'message'").get(event.refs[0] ?? "", event.author, event.to));
       if (target !== undefined && said.kind === "message.edit") {
-        this.db.prepare("UPDATE search SET text = ? WHERE rowid = ?").run(said.content.text, target.seq);
+        this.db.prepare("UPDATE search SET text = ? WHERE rowid = ?").run(searchable(said.content.text), target.seq);
       } else if (target !== undefined) {
         this.db.prepare("DELETE FROM search WHERE rowid = ?").run(target.seq);
       }
@@ -260,9 +271,24 @@ export class Database {
 
   /** One chat's events before `before`, newest first, at most `limit` of them: a channel's, or those between `me` and one other person, either way. */
   public chatEvents(me: string, chat: string, before: number, limit: number): readonly Delivered[] {
-    const inChat = isChannel(chat) ? "recipient = :chat" : "((author = :me AND recipient = :chat) OR (author = :chat AND recipient = :me))";
     return eventRowsSchema.parse(
-      this.db.prepare(`SELECT ${EVENT_COLUMNS} FROM events WHERE seq < :before AND ${inChat} AND ${VISIBLE} ORDER BY seq DESC LIMIT :limit`).all({ me, chat, before, limit })
+      this.db.prepare(`SELECT ${EVENT_COLUMNS} FROM events WHERE seq < :before AND ${inChat(chat)} AND ${VISIBLE} ORDER BY seq DESC LIMIT :limit`).all({ me, chat, before, limit })
     );
+  }
+
+  /**
+   * The messages and answers `me` can see that hold every one of `words`, in one chat or in any, best match first, at most `limit` of them; each with a stretch of its text, as last edited, the words found marked with HIT_OPEN and HIT_CLOSE.
+   * Each word is quoted, so nothing typed is read as FTS5's own syntax: a word is matched as the tokens it holds, and one that holds none matches nothing.
+   * ponytail: FTS5 does the work of every word against every row that holds it, synchronously; GET /search allows a few words. Move searching off the hub's one thread if the log grows past what that takes.
+   */
+  public search(me: string, words: readonly string[], chat: string | null, limit: number): readonly (Delivered & { readonly snippet: string })[] {
+    const terms = words.map((word) => `"${word.replaceAll('"', '""')}"`).join(" ");
+    const where = chat === null ? "" : ` AND ${inChat(chat)}`;
+    const rows = this.db
+      .prepare(
+        `SELECT ${EVENT_COLUMNS}, snippet(search, 0, :open, :close, '…', 16) AS snippet FROM search JOIN events ON events.seq = search.rowid WHERE search MATCH :terms AND ${VISIBLE}${where} ORDER BY search.rank LIMIT :limit`
+      )
+      .all({ me, terms, limit, open: HIT_OPEN, close: HIT_CLOSE, ...(chat === null ? {} : { chat }) });
+    return rows.map(({ snippet, ...event }) => ({ ...eventRowSchema.parse(event), ...hitRowSchema.parse({ snippet }) }));
   }
 }

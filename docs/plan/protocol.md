@@ -167,7 +167,7 @@ The `/notes` routes and the four channel-changing routes go. In their place:
 | `GET /events/{id}` | Phase 2. One event the caller can see, with its `seq`. |
 | `GET /stream?after=S` | A `text/event-stream` that never ends: one `data:` line per event as `{ seq, event }`, and a comment line every 20 seconds so proxies keep it open. An event is sent when the caller can see it as the stream reaches it; one passed over is not sent later, when they can. |
 | `GET /audit/head` | `{ seq, chain }` for the newest event; `{ seq: 0, chain }` with 64 zeros before the first. |
-| `GET /search?q=Q&chat=A&limit=N` | Phase 2. Full-text search over messages and results in chats the caller can see. |
+| `GET /search?q=Q&chat=A&limit=N` | Phase 2. Full-text search over messages and results in chats the caller can see, as last edited, in chat `A` when it is given: `[{ seq, event, snippet }]`, best match first, `limit` up to 50 and 20 when it is not given. A result holds every word of `Q`, at most 8 words, each matched as a word and never as query syntax. `snippet` is a stretch of the text with each word found between the characters U+0002 and U+0003, which the hub keeps out of what it indexes; the client replaces them. |
 | `POST /hooks/{id}` | Phase 7. A workflow's webhook. |
 
 What a caller can see: events to them, events they wrote, events in channels they are in, and events to `*`.
