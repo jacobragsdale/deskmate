@@ -7,17 +7,18 @@ import { join as joinPath } from "node:path";
 import { z } from "zod";
 
 import { runOf } from "../shared/ipc.ts";
-import type { Arrival, AskView, ChatView, Command, CurrentView, Hit, LineView, MessageView, NoteView, Notice, ReplyView, RequestView, RowView } from "../shared/ipc.ts";
+import type { ActivityItem, Arrival, AskView, ChatView, Command, CurrentView, Hit, LineView, MessageView, NoteView, Notice, ReplyView, RequestView, RowView } from "../shared/ipc.ts";
 import { agentPrompt, ChatLog, chatOf, continues, mentions, ONLINE, refOf, rings } from "../core/chat.ts";
 import type { Accepted, Entry, Message, Request } from "../core/chat.ts";
 import { readContent } from "../core/kinds.ts";
 import { notesIn } from "../core/links.ts";
 import type { Content, ContentOf, Summary } from "../core/kinds.ts";
 import { acpRunner } from "./agents/acp.ts";
+import { endedItem, startedItem } from "./agents/activity.ts";
 import { oneshotRunner, runAgent } from "./agents/oneshot.ts";
 import { PRESETS } from "./agents/presets.ts";
 import type { AgentRunner, FollowUp, PermissionAsk, RunHandlers } from "./agents/runner.ts";
-import { AgentCancelledError, PlayerTwoError, Refused } from "./client.ts";
+import { AgentCancelledError, AgentTimedOutError, PlayerTwoError, Refused } from "./client.ts";
 import type { Client, Found, Runner } from "./client.ts";
 import { atMost } from "./permissions.ts";
 import * as repos from "./repos.ts";
@@ -75,6 +76,7 @@ interface AgentRun {
   readonly repo: string;
   readonly post: boolean; // Post the answer as soon as it is ready, rather than drafting it for review.
   readonly mode: PermissionMode; // What the agent may do without asking, as job.accepted says.
+  readonly agent: string; // The label of the agent that runs it.
   readonly cancel: AbortController;
   readonly startedAt: number; // Unix milliseconds.
   done: Promise<void>; // Settles once the agent's process is gone and the chat has been told how it ended.
@@ -123,6 +125,14 @@ function dayOf(ts: number): string {
 /** The branch a run was let go ahead on, marked ± when the checkout had changes nobody had committed; "" when it never was. */
 function ranOn(accepted: Accepted | null): string {
   return accepted === null ? "" : `${accepted.branch}${accepted.dirty ? " ±" : ""}`;
+}
+
+/** How a run that threw ended, as its owner's feed says it: stopped, out of time, or failed and why. */
+function endedBy(error: unknown): ActivityItem {
+  if (error instanceof AgentCancelledError) {
+    return endedItem("stopped");
+  }
+  return endedItem(error instanceof AgentTimedOutError ? "timed out" : "failed", problemOf(error));
 }
 
 /** What a message or an answer says; "" for anything else. */
@@ -1070,16 +1080,25 @@ export class Session {
     const prompt = agentPrompt(message, this.me, repo, this.chats.earlier(message), !post, agent.protocol === "acp");
     // A reply in a thread from the same asker to the same agent goes on in the session the thread's last such request left open, if one is.
     const followUp = { key: [message.root ?? message.entry.event.id, message.entry.event.author, repo].join(" "), text: message.text };
-    const run: AgentRun = { entry: message.entry, repo, post, mode, cancel: new AbortController(), startedAt: Date.now(), done: Promise.resolve(), doing: "", told: "", toldAt: 0, telling: undefined };
+    const run: AgentRun = {
+      entry: message.entry,
+      repo,
+      post,
+      mode,
+      agent: agent.label,
+      cancel: new AbortController(),
+      startedAt: Date.now(),
+      done: Promise.resolve(),
+      doing: "",
+      told: "",
+      toldAt: 0,
+      telling: undefined
+    };
     this.runs.set(key, run);
     run.done = this.work(key, run, checkout, this.runnerFor(agent), prompt, followUp);
     this.hooks.changed();
   }
 
-  /**
-   * Tell the chat the user let the agent run, on which branch and commit, then run it and see its answer to where it belongs. Never rejects: every way a run can end is told to the user.
-   * Nothing runs until the chat has been told: when that cannot be published, the agent does not start. Once it has, the chat hears one ending: the answer (now, or when the draft is sent, or a decline when it is thrown away), a failure, or a stop.
-   */
   /** The runner for the agent that answers: the one already made while that agent is unchanged, whose sessions kept for follow-ups are then still good. */
   private runnerFor(agent: Agent): AgentRunner {
     const which = JSON.stringify(agent);
@@ -1123,6 +1142,13 @@ export class Session {
     );
   }
 
+  /** One step of a run, from its runner or how it started and ended, and with it what the agent is doing in the coarse words the chat is told, when it says. */
+  private noted(key: string, _item: ActivityItem, doing?: Summary): void {
+    if (doing !== undefined) {
+      this.progress(key, doing);
+    }
+  }
+
   /**
    * Put an agent's ask to its owner, in the view and, for when they are not looking, as an arrival, and wait for their answer. A run that ends first takes its asks with it: see `work`.
    */
@@ -1135,12 +1161,16 @@ export class Session {
     });
   }
 
+  /**
+   * Tell the chat the user let the agent run, on which branch and commit, then run it and see its answer to where it belongs. Never rejects: every way a run can end is told to the user.
+   * Nothing runs until the chat has been told: when that cannot be published, the agent does not start. Once it has, the chat hears one ending: the answer (now, or when the draft is sent, or a decline when it is thrown away), a failure, or a stop.
+   */
   private async work(key: string, run: AgentRun, checkout: Checkout, runner: AgentRunner, prompt: string, followUp: FollowUp): Promise<void> {
     const { entry, repo } = run;
     const chat = chatOf(entry.event, this.me);
     const handlers: RunHandlers = {
-      activity: (_item, doing) => {
-        this.progress(key, doing);
+      activity: (item, doing) => {
+        this.noted(key, item, doing);
       },
       permission: (ask) => this.askOwner(key, chat, repo, ask)
     };
@@ -1153,6 +1183,7 @@ export class Session {
         throw new AgentCancelledError(`Stopped your ${repo} agent before it started.`); // While git was asked where the checkout stands: nothing ran, so the chat hears nothing.
       }
       await this.client.publish(chat, "job.accepted", { repo, ...head, delivery: run.post ? "post" : "review", mode: run.mode, by: "owner" }, request);
+      this.noted(key, startedItem(run.agent, run.mode));
     } catch (error) {
       this.hooks.notice(
         error instanceof AgentCancelledError ? { title: "", body: error.message, severity: "info" } : { title: `your ${repo} agent did not start`, body: problemOf(error), severity: "error" }
@@ -1162,6 +1193,7 @@ export class Session {
       return;
     }
     let ending = "";
+    let ended = endedItem("answered");
     try {
       if (stopped()) {
         throw new AgentCancelledError("stopped"); // While the chat was being told: it ends as stopped, without the agent being started only to be killed.
@@ -1169,6 +1201,7 @@ export class Session {
       const text = fitText(await runner.run(prompt, checkout.path, run.mode, handlers, run.cancel.signal, followUp));
       if (text === "") {
         ending = "the agent returned nothing";
+        ended = endedItem("failed", ending);
       } else if (run.post) {
         await this.postAnswer(chat, { text, entry, repo, branch: head.branch });
       } else {
@@ -1176,7 +1209,9 @@ export class Session {
       }
     } catch (error) {
       ending = error instanceof AgentCancelledError ? "stopped" : problemOf(error);
+      ended = endedBy(error);
     }
+    this.noted(key, ended);
     if (ending === "stopped") {
       await this.client.publish(chat, "job.cancelled", { repo }, request).catch(() => undefined);
       this.hooks.notice({ title: "", body: `Stopped your ${repo} agent.`, severity: "info" });

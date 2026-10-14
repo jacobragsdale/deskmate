@@ -79,6 +79,9 @@ export class Refused extends PlayerTwoError {
 /** The user stopped an agent run. */
 export class AgentCancelledError extends PlayerTwoError {}
 
+/** An agent run took longer than it may. */
+export class AgentTimedOutError extends PlayerTwoError {}
+
 function parseJson(text: string): unknown {
   return JSON.parse(text);
 }

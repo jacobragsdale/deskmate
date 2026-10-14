@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { join as joinPath } from "node:path";
 
 import type { Agent, PermissionMode } from "../../core/wire.ts";
-import { AgentCancelledError, defaultHome, PlayerTwoError } from "../client.ts";
+import { AgentCancelledError, AgentTimedOutError, defaultHome, PlayerTwoError } from "../client.ts";
 import type { Runner } from "../client.ts";
 import { CURSOR_ONESHOT } from "./presets.ts";
 import type { AgentRunner } from "./runner.ts";
@@ -86,7 +86,7 @@ export const runAgent: Runner = (argv, cwd, cancel) =>
     child.on("close", (code) => {
       settle(() => {
         if (ended === "timed out") {
-          reject(new PlayerTwoError(`the agent did not finish within ${String(AGENT_TIMEOUT)} seconds`));
+          reject(new AgentTimedOutError(`the agent did not finish within ${String(AGENT_TIMEOUT)} seconds`));
         } else if (ended === "cancelled") {
           reject(new AgentCancelledError("the agent was stopped"));
         } else if (code !== 0) {

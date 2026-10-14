@@ -12,15 +12,15 @@ import type { Readable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 import { z } from "zod";
 
-import type { Summary } from "../../core/kinds.ts";
-import { head } from "../../core/text.ts";
 import { VERSION } from "../../core/version.ts";
 import { commandLineOf } from "../../core/wire.ts";
 import type { Agent } from "../../core/wire.ts";
+import type { Summary } from "../../core/kinds.ts";
 import type { ActivityItem } from "../../shared/ipc.ts";
-import { AgentCancelledError, PlayerTwoError } from "../client.ts";
+import { AgentCancelledError, AgentTimedOutError, PlayerTwoError } from "../client.ts";
 import { decide } from "../permissions.ts";
 import type { Action, PermissionMode } from "../permissions.ts";
+import { actionOf, Feed, summaryOf } from "./activity.ts";
 import { AGENT_TIMEOUT } from "./oneshot.ts";
 import { signInFor } from "./presets.ts";
 import type { AgentRunner, FollowUp, RunHandlers } from "./runner.ts";
@@ -30,7 +30,6 @@ const SAID = 500; // Characters of what the agent last wrote on standard error t
 const GOING = 1; // Seconds to wait, once the connection has closed, for the agent's process to say how it ended.
 const STOP_GRACE = 2; // Seconds a stopped agent has to end its turn before it is killed.
 const IDLE = 30 * 60; // Seconds a finished session is kept for a follow-up.
-const DETAIL = 8_000; // Characters of a tool call's input an ask shows.
 const CANCELLED: acp.RequestPermissionResponse = { outcome: { outcome: "cancelled" } };
 // Player Two's own MCP server, attached to every session: found on the PATH by name, as the `player-two` an agent is told about in its prompt is,
 // and without --allow-send, so the agent can read and search the chat as the user and send nothing.
@@ -43,64 +42,15 @@ const promptedSchema = z.object({ stopReason: z.string() });
 
 type Initialized = z.infer<typeof initializedSchema>;
 
-/** What one prompt turn is doing: the mode and handlers it runs with, what the agent has said so far, and its tool calls as items. */
+/** What one prompt turn is doing: the mode and handlers it runs with, what the agent has said so far, and its feed. */
 interface Turn {
   readonly mode: PermissionMode;
   readonly handlers: RunHandlers;
   readonly cancel: AbortSignal; // The run's: a stop ends any wait for the owner's answer.
   readonly clock: Clock; // The run's time limit, which waiting for the owner does not count against.
-  readonly tools: Map<string, ActivityItem>;
-  readonly kinds: Map<string, Action>; // Each tool call's kind, as the agent first said it, for a permission request that leaves it out.
+  readonly feed: Feed;
   readonly allowed: Set<Action>; // Kinds of action the owner allowed for this run. Never kept past it.
   text: string;
-}
-
-/** The kind of action a tool call is, as `decide` reads it. A kind ACP adds later, switching the agent's own mode among them, is `other`. */
-function actionOf(kind: acp.ToolKind | null | undefined): Action | null {
-  switch (kind) {
-    case "read":
-    case "edit":
-    case "delete":
-    case "move":
-    case "search":
-    case "execute":
-    case "think":
-    case "fetch":
-    case "other":
-      return kind;
-    case "switch_mode":
-      return "other";
-    case null:
-    case undefined:
-      return null;
-  }
-}
-
-/** What the agent is doing while it does an action, in the coarse words the chat is told. */
-function summaryOf(action: Action | null): Summary {
-  switch (action) {
-    case "read":
-    case "search":
-    case "fetch":
-      return "reading";
-    case "edit":
-    case "delete":
-    case "move":
-      return "editing files";
-    case "execute":
-      return "running a command";
-    case "think":
-    case "other":
-    case null:
-      return "thinking";
-  }
-}
-
-/** What an ask shows the owner beyond its title: the change to each file, or else what the agent passed the tool, at most DETAIL characters. */
-function detailOf(call: acp.ToolCallUpdate): string {
-  const diffs = (call.content ?? []).flatMap((each) => (each.type === "diff" ? [`${each.path}\n${each.newText}`] : []));
-  const detail = diffs.length > 0 ? diffs.join("\n\n") : call.rawInput === undefined ? "" : JSON.stringify(call.rawInput, null, 1);
-  return head(detail, DETAIL);
 }
 
 /**
@@ -130,22 +80,6 @@ function aborted(signal: AbortSignal): Promise<"aborted"> {
       { once: true }
     );
   });
-}
-
-/** A tool call as the owner's feed shows it, until P3-D2 names things as a person would: the agent's own title, and whether it is going, done or failed. */
-function toolItem(update: acp.ToolCallUpdate, before: ActivityItem | undefined): ActivityItem {
-  const status = update.status === "completed" ? "done" : update.status === "failed" ? "failed" : (before?.status ?? "running");
-  const kind = update.kind ?? null;
-  return {
-    id: update.toolCallId,
-    run: "",
-    kind: "tool",
-    title: update.title ?? before?.title ?? "",
-    outcome: status === "running" ? "" : status,
-    status,
-    quiet: kind === null ? (before?.quiet ?? false) : kind === "read" || kind === "search" || kind === "think",
-    detail: ""
-  };
 }
 
 /** The agent's standard output as the web stream the SDK reads. Node's own `Readable.toWeb` gives a stream whose type is Node's, not the one the SDK names. */
@@ -365,8 +299,8 @@ class Conversation {
       return CANCELLED;
     }
     const call = request.toolCall;
-    const action = actionOf(call.kind) ?? turn.kinds.get(call.toolCallId) ?? "other";
-    const ask = { action, title: call.title ?? turn.tools.get(call.toolCallId)?.title ?? action, detail: detailOf(call) };
+    const action = actionOf(call.kind) ?? turn.feed.actionOf(call.toolCallId) ?? "other";
+    const ask = { action, title: call.title ?? turn.feed.titleOf(call.toolCallId) ?? action, detail: turn.feed.detailOf(call) };
     const item = (outcome: string, status: ActivityItem["status"], doing: Summary): void => {
       turn.handlers.activity({ id: `permission ${call.toolCallId}`, run: "", kind: "permission", title: ask.title, outcome, status, quiet: false, detail: ask.detail }, doing);
     };
@@ -390,7 +324,7 @@ class Conversation {
     return optionFor(request.options, decision);
   }
 
-  /** What the agent streams while it works: its message, which is the answer, and its tool calls, for the owner's feed. */
+  /** What the agent streams while it works: its message, which is the answer, and every step, for the owner's feed. */
   private update({ sessionId, update }: acp.SessionNotification): void {
     const turn = this.turn;
     if (turn === null || sessionId !== this.sessionId) {
@@ -398,15 +332,8 @@ class Conversation {
     }
     if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text") {
       turn.text += update.content.text;
-    } else if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
-      const action = actionOf(update.kind);
-      if (action !== null && !turn.kinds.has(update.toolCallId)) {
-        turn.kinds.set(update.toolCallId, action);
-      }
-      const item = toolItem(update, turn.tools.get(update.toolCallId));
-      turn.tools.set(item.id, item);
-      turn.handlers.activity(item, summaryOf(turn.kinds.get(update.toolCallId) ?? null));
     }
+    turn.feed.update(update);
   }
 }
 
@@ -483,7 +410,10 @@ export function acpRunner(agent: Agent, seconds: { readonly limit: number; reado
         if (reused === null) {
           await conversation.open(cwd);
         }
-        const turn: Turn = { mode, handlers, cancel, clock, tools: new Map(), kinds: new Map(), allowed: new Set(), text: "" };
+        const feed = new Feed(cwd, (item, doing) => {
+          handlers.activity(item, doing);
+        });
+        const turn: Turn = { mode, handlers, cancel, clock, feed, allowed: new Set(), text: "" };
         const answer = await conversation.prompt(reused === null || followUp === undefined ? prompt : followUp.text, turn);
         answered = true;
         return answer;
@@ -492,7 +422,7 @@ export function acpRunner(agent: Agent, seconds: { readonly limit: number; reado
           throw new AgentCancelledError("the agent was stopped");
         }
         if (late.signal.aborted) {
-          throw new PlayerTwoError(`the agent did not finish within ${String(seconds.limit)} seconds`);
+          throw new AgentTimedOutError(`the agent did not finish within ${String(seconds.limit)} seconds`);
         }
         throw error;
       } finally {

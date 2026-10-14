@@ -12,11 +12,14 @@ import { test } from "node:test";
 import type { TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
+import type * as acp from "@agentclientprotocol/sdk";
 import { z } from "zod";
 
 import { readContent, SUMMARIES } from "../src/core/kinds.ts";
+import type { Summary } from "../src/core/kinds.ts";
 import type { Agent, PermissionMode } from "../src/core/wire.ts";
 import { acpRunner } from "../src/desk/agents/acp.ts";
+import { Feed } from "../src/desk/agents/activity.ts";
 import type { FollowUp, PermissionAsk, RunHandlers } from "../src/desk/agents/runner.ts";
 import { AgentCancelledError } from "../src/desk/client.ts";
 import type { Client } from "../src/desk/client.ts";
@@ -31,6 +34,65 @@ const never = new AbortController().signal;
 function fake(...more: string[]): Agent {
   return { id: "fake", label: "Fake", protocol: "acp", command: process.execPath, args: [FAKE, ...more] };
 }
+
+await test("the feed names each step as a person would: one item for a message as it grows, a tool call that changes in place, a file by its path in the checkout, a command by its first line, and the agent's own title for what it cannot name", () => {
+  const reported: (readonly [ActivityItem, Summary])[] = [];
+  const checkout = "/home/bob/dev/uploader";
+  const feed = new Feed(checkout, (item, doing) => {
+    reported.push([item, doing]);
+  });
+  const updates: acp.SessionUpdate[] = [
+    { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "Let me look" } },
+    { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: " at the queue." } },
+    { sessionUpdate: "tool_call", toolCallId: "t1", title: "Read file", kind: "read", status: "in_progress", locations: [{ path: `${checkout}/src/queue.py` }] },
+    { sessionUpdate: "tool_call_update", toolCallId: "t1", status: "completed" },
+    {
+      sessionUpdate: "tool_call",
+      toolCallId: "t2",
+      title: "Edit file",
+      kind: "edit",
+      status: "pending",
+      content: [{ type: "diff", path: `${checkout}/src/queue.py`, oldText: "a\nb\nc\n", newText: "a\nB\nB2\nc\n" }]
+    },
+    { sessionUpdate: "tool_call_update", toolCallId: "t2", status: "completed" },
+    { sessionUpdate: "tool_call", toolCallId: "t3", title: "Terminal", kind: "execute", status: "in_progress", rawInput: { command: "npm test\n  -- --watch" } },
+    { sessionUpdate: "tool_call_update", toolCallId: "t3", status: "completed", rawOutput: { exitCode: 1 } },
+    { sessionUpdate: "tool_call", toolCallId: "t4", title: "Edit /etc/hosts", kind: "edit", status: "failed" },
+    { sessionUpdate: "tool_call", toolCallId: "t5", title: "Something new", kind: "switch_mode", status: "completed" },
+    { sessionUpdate: "current_mode_update", currentModeId: "code" },
+    {
+      sessionUpdate: "plan",
+      entries: [
+        { content: "Fix the retry", priority: "high", status: "completed" },
+        { content: "Run the tests", priority: "low", status: "pending" }
+      ]
+    },
+    { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Done: " } },
+    { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "it retries." } }
+  ];
+  for (const update of updates) {
+    feed.update(update);
+  }
+  const newest = new Map(reported.map(([item, doing]) => [item.id, [item.title, item.outcome, item.status, item.quiet, doing]])); // Each item in the place it first took.
+  assert.deepEqual(
+    [...newest],
+    [
+      ["thought 1", ["Let me look at the queue.", "", "done", true, "thinking"]],
+      ["t1", ["Read src/queue.py", "done", "done", true, "reading"]],
+      ["t2", ["Edited src/queue.py", "+2 −1", "done", false, "editing files"]],
+      ["t3", ["Ran npm test", "exit 1", "done", false, "running a command"]],
+      ["t4", ["Edit /etc/hosts", "failed", "failed", false, "editing files"]], // No path given: the agent's own title, not a guess.
+      ["t5", ["Something new", "done", "done", false, "thinking"]],
+      ["plan", ["Planned 2 steps", "1 of 2 done", "running", false, "thinking"]],
+      ["message 2", ["Done: it retries.", "", "done", false, "thinking"]]
+    ]
+  );
+  const detail = (id: string): string => reported.findLast(([item]) => item.id === id)?.[0].detail ?? "";
+  assert.equal(detail("t2"), "--- src/queue.py\n+++ src/queue.py\n@@ line 2 @@\n-b\n+B\n+B2");
+  assert.equal(detail("t3"), `${JSON.stringify({ command: "npm test\n  -- --watch" }, null, 1)}\n\n${JSON.stringify({ exitCode: 1 }, null, 1)}`);
+  assert.equal(detail("plan"), "[x] Fix the retry\n[ ] Run the tests");
+  assert.equal(feed.detailOf({ toolCallId: "t9", content: [{ type: "diff", path: "/elsewhere/notes.txt", newText: "one\n" }] }), "+++ /elsewhere/notes.txt (new)\n+one");
+});
 
 /** A checkout of its own for one test, removed when the test ends. */
 function folder(t: TestContext): string {
@@ -90,7 +152,7 @@ await test(
     const answer = await acpRunner(fake()).run("mcp, and read", dir, "full", handlers, never);
     assert.equal(answer, `turn 1: read; servers ${JSON.stringify([{ name: "player-two", command: "player-two", args: ["mcp"], env: [] }])}`);
     assert.deepEqual(
-      items.map((item) => [item.id, item.kind, item.title, item.status, item.quiet]),
+      items.filter((item) => item.kind === "tool").map((item) => [item.id, item.kind, item.title, item.status, item.quiet]),
       [
         ["read", "tool", "Read README.md", "running", true],
         ["read", "tool", "Read README.md", "done", true]
