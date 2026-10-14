@@ -1,10 +1,11 @@
 /** One message in the open chat and what hangs off it: its author's edit and delete, its reactions, where each agent it tags stands, and its thread, with a box to reply in. Everything in it that someone else wrote is drawn as text. */
 
 import { cn } from "cn";
-import { EllipsisIcon, Loader2Icon, PencilIcon, ReplyIcon, SmilePlusIcon, Trash2Icon } from "lucide-react";
+import { EllipsisIcon, LinkIcon, Loader2Icon, PencilIcon, ReplyIcon, SmilePlusIcon, Trash2Icon } from "lucide-react";
 import { Fragment, useEffect, useState } from "react";
 import type { JSX, SyntheticEvent } from "react";
 import Markdown, { defaultUrlTransform } from "react-markdown";
+import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -430,8 +431,20 @@ interface Own {
   readonly remove: () => void;
 }
 
-/** The menu of what only the author can do. It gives the focus back to nobody when it closes, so that the edit box keeps it. */
-function OwnMenu({ own }: { readonly own: Own }): JSX.Element {
+/** Put a message's link on the clipboard, for pasting into another message or an agent's prompt. */
+function copyLink(id: string): void {
+  navigator.clipboard.writeText(noteLink(id)).then(
+    () => {
+      toast("Link copied.");
+    },
+    (error: unknown) => {
+      toast.error("could not copy the link", { description: error instanceof Error ? error.message : String(error) });
+    }
+  );
+}
+
+/** The menu of what anyone can do with a message, copy its link, and of what only its author can do. It gives the focus back to nobody when it closes, so that the edit box keeps it. */
+function MessageMenu({ id, own }: { readonly id: string; readonly own: Own | null }): JSX.Element {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -446,19 +459,30 @@ function OwnMenu({ own }: { readonly own: Own }): JSX.Element {
           event.preventDefault();
         }}
       >
-        <DropdownMenuItem onSelect={own.edit}>
-          <PencilIcon /> Edit
+        <DropdownMenuItem
+          onSelect={() => {
+            copyLink(id);
+          }}
+        >
+          <LinkIcon /> Copy link
         </DropdownMenuItem>
-        <DropdownMenuItem variant="destructive" onSelect={own.remove}>
-          <Trash2Icon /> Delete
-        </DropdownMenuItem>
+        {own !== null && (
+          <>
+            <DropdownMenuItem onSelect={own.edit}>
+              <PencilIcon /> Edit
+            </DropdownMenuItem>
+            <DropdownMenuItem variant="destructive" onSelect={own.remove}>
+              <Trash2Icon /> Delete
+            </DropdownMenuItem>
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );
 }
 
-/** What the user can do to a message, shown while the pointer is over it or the keyboard is in it: react, reply to one at the top of the chat, and edit or delete their own. */
-function Actions({ react, onReply, own }: { readonly react: (emoji: string) => void; readonly onReply: (() => void) | null; readonly own: Own | null }): JSX.Element {
+/** What the user can do to a message, shown while the pointer is over it or the keyboard is in it: react, reply to one at the top of the chat, copy its link, and edit or delete their own. */
+function Actions({ id, react, onReply, own }: { readonly id: string; readonly react: (emoji: string) => void; readonly onReply: (() => void) | null; readonly own: Own | null }): JSX.Element {
   return (
     <div className="absolute top-0 right-0 flex gap-0.5 rounded-md border bg-background p-0.5 opacity-0 shadow-xs group-hover:opacity-100 focus-within:opacity-100 has-[[aria-expanded=true]]:opacity-100">
       {COMMON.map((emoji) => (
@@ -481,7 +505,7 @@ function Actions({ react, onReply, own }: { readonly react: (emoji: string) => v
           <ReplyIcon />
         </Button>
       )}
-      {own !== null && <OwnMenu own={own} />}
+      <MessageMenu id={id} own={own} />
     </div>
   );
 }
@@ -605,7 +629,7 @@ function Said({
       {message.requests.map((request) => (
         <RequestLine key={`${request.owner}/${request.repo}`} request={request} text={message.body} asker={message.sender === me} act={act} />
       ))}
-      {!message.deleted && !editing && <Actions react={react} onReply={onReply} own={own} />}
+      {!message.deleted && !editing && <Actions id={message.id} react={react} onReply={onReply} own={own} />}
     </article>
   );
 }

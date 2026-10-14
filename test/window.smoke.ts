@@ -297,6 +297,13 @@ await test(
     await page.type('textarea[aria-label="Edit message"]', "hello from the window, and again");
     await page.press("Enter");
     await page.until("her edit", `${hello}?.innerText.includes("hello from the window, and again (edited)") === true`); // While she edits, its text is in the box, where innerText does not look.
+    // The same menu copies the message's link, as every message's does.
+    await page.eval(`${hello}.querySelector('button[aria-label="More"]').focus()`);
+    await page.press("Enter");
+    await page.until("the menu again", `document.querySelector('[role="menuitem"]') !== null`);
+    await page.click('[role="menuitem"]', "Copy link");
+    await page.until("the link copied", `[...document.querySelectorAll("[data-sonner-toast]")].some((each) => each.textContent.includes("Link copied."))`);
+    assert.equal(await page.eval("navigator.clipboard.readText()"), noteLink(root.event.id));
     const sent = await bob.events({ chat: "alice" });
     const plain = sent.find((each) => each.event.content.includes(" plain"));
     const fenced = sent.find((each) => each.event.content.includes("fenced"));
