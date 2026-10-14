@@ -10,7 +10,7 @@ export const GROUP_WINDOW = 300; // Seconds within which one person's consecutiv
 const CONTEXT_MESSAGES = 6; // Earlier messages shown to the agent so a follow-up question makes sense.
 const CONTEXT_CHARS = 1_500; // Most of each earlier message the agent sees.
 export const STALE = 960; // Seconds after which an agent reported as working, with no answer, is no longer believed: a run's time limit plus a minute.
-export const ONLINE = 75; // Seconds since someone's last request within which they count as here: three missed polls.
+export const ONLINE = 75; // Seconds since someone's last request within which they count as here: three missed presence checks.
 
 // "@bob/uploader": a person's agent in one repo. A repo name ends in a letter or digit, so a sentence's full stop is not swallowed.
 const MENTION = `(?<![\\p{L}\\p{N}_@/.-])@(${NAME})/(${REPO_NAME})`;

@@ -6,6 +6,7 @@ export const PROTOCOL = 1; // Goes up when the hub and its clients must be updat
 export const MAX_BODY = 64_000;
 export const MAX_CONTENT = 64_000; // Most characters an event's content may hold, counted as a note's body is.
 export const MAX_PATCH = 512_000; // The same for a patch, which carries a diff.
+const MAX_TEXT = MAX_CONTENT - 1_000; // Most of an event's content one text may take once written as JSON, leaving room for the rest of the content.
 export const MAX_SKEW = 300; // Seconds a signed timestamp may differ from the verifier's clock.
 export const REPO_NAME = "[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?";
 export const NAME = "[a-z0-9][a-z0-9_-]{0,31}";
@@ -127,8 +128,11 @@ export function isChannel(address: string): boolean {
   return address.startsWith("#");
 }
 
-/** Cut text to what one note may hold, without leaving half a character at the end. */
-export function fitBody(text: string): string {
-  const whole = text.toWellFormed();
-  return whole.length <= MAX_BODY ? whole : Array.from(whole).slice(0, MAX_BODY).join("");
+/** Cut text so that, written as JSON in an event's content, it leaves room for the rest of the content, without leaving half a character at the end. Escaping can make text several times longer, so it is measured as written. */
+export function fitText(text: string): string {
+  let fitted = text.toWellFormed();
+  for (let room = MAX_TEXT; JSON.stringify(fitted).length > MAX_TEXT; room = Math.floor(room * 0.9)) {
+    fitted = Array.from(fitted).slice(0, room).join("");
+  }
+  return fitted;
 }

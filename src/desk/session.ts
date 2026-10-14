@@ -7,20 +7,20 @@ import { join as joinPath } from "node:path";
 import { z } from "zod";
 
 import type { Arrival, ChatView, Command, CurrentView, MessageView, Notice, RequestView, RowView } from "../shared/ipc.ts";
-import { mentions, ONLINE, refOf } from "../core/chat.ts";
-import { agentPrompt, ChatLog, chatOf, continues, rings } from "../core/notes.ts";
-import type { Entry, Request } from "../core/notes.ts";
+import { agentPrompt, ChatLog, chatOf, continues, mentions, ONLINE, refOf, rings } from "../core/chat.ts";
+import type { Accepted, Entry, Message, Request } from "../core/chat.ts";
+import { readContent } from "../core/kinds.ts";
 import { runAgent, splitCommand } from "./agents/oneshot.ts";
-import { AgentCancelledError, PlayerTwoError, POLL_WAIT } from "./client.ts";
+import { AgentCancelledError, PlayerTwoError } from "./client.ts";
 import type { Client, Runner } from "./client.ts";
 import * as repos from "./repos.ts";
-import type { Checkout } from "./repos.ts";
+import type { Checkout, Head } from "./repos.ts";
 import { cloneFolder } from "../core/remotes.ts";
 import { oneLine, problemOf } from "../core/text.ts";
-import { fitBody, isChannel, nameSchema, PROTOCOL } from "../core/wire.ts";
-import type { ChannelInfo, Person, RepoRef, TeamRepo } from "../core/wire.ts";
+import { fitText, isChannel, nameSchema, PROTOCOL } from "../core/wire.ts";
+import type { ChannelInfo, Delivered, Person, RepoRef, TeamRepo } from "../core/wire.ts";
 
-const HISTORY = 300; // Notes loaded when the session starts or a channel is joined.
+const PRESENCE = 25; // Seconds between asking the hub who is here, which channels there are and who has which repo. Each is a signed request, which is what says the user is here; the repo scan runs on the same beat.
 const RETRY_DELAY = 5; // Seconds to wait before asking a hub that did not answer again.
 const UPDATE_DELAY = 60; // Seconds to wait before asking a hub on another protocol again: its answer changes only when someone updates one side.
 const STOP_WAIT = 3; // Seconds to give stopped agents to go before the session is done.
@@ -38,19 +38,20 @@ export interface Hooks {
 export interface Options {
   readonly runner?: Runner;
   readonly cloner?: (url: string, destination: string) => Promise<void>;
-  readonly describe?: (checkout: Checkout) => Promise<string>;
-  readonly pollWait?: number;
+  readonly describe?: (checkout: Checkout) => Promise<Head>;
+  readonly presence?: number; // Seconds between presence checks; a test shortens it.
 }
 
 /** An agent's answer waiting for its owner to review, edit and send. */
 interface Draft {
   readonly text: string;
-  readonly entry: Entry; // The note it answers.
+  readonly entry: Entry; // The request it answers.
   readonly repo: string; // The repo the agent worked in.
+  readonly branch: string; // The branch it worked on.
 }
 
 interface AgentRun {
-  readonly entry: Entry;
+  readonly entry: Entry; // The request.
   readonly repo: string;
   readonly post: boolean; // Post the answer as soon as it is ready, rather than drafting it for review.
   readonly cancel: AbortController;
@@ -58,14 +59,10 @@ interface AgentRun {
   done: Promise<void>; // Settles once the agent's process is gone and the chat has been told how it ended.
 }
 
-interface Snapshot {
-  readonly people: readonly Person[];
-  readonly channels: readonly ChannelInfo[];
-  readonly team: readonly TeamRepo[];
-  readonly entries: readonly Entry[];
-}
-
 type ChatCommand = Exclude<Command, { do: "join" | "doctor" }>;
+
+/** The hub speaks another protocol: asked again only after UPDATE_DELAY. */
+class ProtocolError extends PlayerTwoError {}
 
 function sleep(seconds: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -81,12 +78,23 @@ function sleep(seconds: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-function runKey(noteId: number, repo: string): string {
-  return `${String(noteId)} ${repo}`;
+function runKey(request: string, repo: string): string {
+  return `${request} ${repo}`;
 }
 
 function dayOf(ts: number): string {
   return new Date(ts * 1000).toDateString();
+}
+
+/** The branch a run was let go ahead on, marked ± when the checkout had changes nobody had committed; "" when it never was. */
+function ranOn(accepted: Accepted | null): string {
+  return accepted === null ? "" : `${accepted.branch}${accepted.dirty ? " ±" : ""}`;
+}
+
+/** What a message or an answer says; "" for anything else. */
+function textOf(entry: Entry): string {
+  const said = readContent(entry.event);
+  return said.kind === "message" || said.kind === "job.result" ? said.content.text : "";
 }
 
 export class Session {
@@ -95,15 +103,15 @@ export class Session {
   private readonly hooks: Hooks;
   private readonly runner: Runner;
   private readonly cloner: (url: string, destination: string) => Promise<void>;
-  private readonly describe: (checkout: Checkout) => Promise<string>;
-  private readonly pollWait: number;
+  private readonly describe: (checkout: Checkout) => Promise<Head>;
+  private readonly presence: number;
   private readonly me: string;
   private readonly chats: ChatLog;
   private readonly stopping = new AbortController();
   private readonly drafts = new Map<string, Draft[]>(); // Per chat, answers waiting for review, oldest first.
-  private readonly runs = new Map<string, AgentRun>(); // By tagging note and repo.
-  private readonly autorun = new Set<number>(); // Notes just sent from here: their tags of the user's own agents run without asking.
-  private readonly read: Record<string, number>; // Per chat, the id of the newest note the user has seen.
+  private readonly runs = new Map<string, AgentRun>(); // By request and repo.
+  private readonly autorun = new Set<string>(); // Messages just sent from here: their tags of the user's own agents run without asking.
+  private readonly read: Record<string, number>; // Per chat, the seq of the newest event the user has seen.
   private lastChat: string | null; // The chat that was open when the session last ran.
   private people: readonly Person[] = [];
   private channels: readonly ChannelInfo[] = [];
@@ -116,8 +124,9 @@ export class Session {
   private connected = false;
   private problem = "";
   private loaded = false;
-  private attentive = true; // Whether the user is looking at the window. Notes that arrive while they are not stay unread.
-  private polling: Promise<void> = Promise.resolve();
+  private attentive = true; // Whether the user is looking at the window. Messages that arrive while they are not stay unread.
+  private following: Promise<void> = Promise.resolve();
+  private streaming: Promise<void> | null = null; // The hub's stream, followed once what was there before it has been loaded.
 
   constructor(client: Client, dev: string, hooks: Hooks, options: Options = {}) {
     this.client = client;
@@ -126,7 +135,7 @@ export class Session {
     this.runner = options.runner ?? runAgent;
     this.cloner = options.cloner ?? repos.clone;
     this.describe = options.describe ?? repos.describe;
-    this.pollWait = options.pollWait ?? POLL_WAIT;
+    this.presence = options.presence ?? PRESENCE;
     this.me = client.config.name;
     this.chats = new ChatLog(this.me);
     const saved = this.loadSaved();
@@ -135,7 +144,7 @@ export class Session {
   }
 
   public start(): void {
-    this.polling = this.poll();
+    this.following = this.follow();
   }
 
   /** Stop following the hub and stop every agent still working, waiting briefly so each is gone and the chat has been told. */
@@ -146,7 +155,7 @@ export class Session {
       run.cancel.abort();
     }
     const settled = new AbortController();
-    await Promise.race([Promise.all([this.polling, ...runs.map((run) => run.done)]), sleep(STOP_WAIT, settled.signal)]);
+    await Promise.race([Promise.all([this.following, this.streaming, ...runs.map((run) => run.done)]), sleep(STOP_WAIT, settled.signal)]);
     settled.abort(); // Take the timer down with it, so a desk that has stopped is free to exit at once.
   }
 
@@ -170,19 +179,19 @@ export class Session {
         await this.send(command.chat, command.text);
         break;
       case "sendDraft":
-        await this.sendDraft(command.chat, command.noteId, command.repo, command.text);
+        await this.sendDraft(command.chat, command.id, command.repo, command.text);
         break;
       case "discardDraft":
-        await this.discardDraft(command.chat, command.noteId, command.repo);
+        await this.discardDraft(command.chat, command.id, command.repo);
         break;
       case "run":
-        this.runRequest(command.noteId, command.repo, command.post);
+        this.runRequest(command.id, command.repo, command.post);
         break;
       case "stop":
-        this.runs.get(runKey(command.noteId, command.repo))?.cancel.abort();
+        this.runs.get(runKey(command.id, command.repo))?.cancel.abort();
         break;
       case "decline":
-        await this.decline(command.noteId, command.repo);
+        await this.decline(command.id, command.repo);
         break;
       case "joinChannel":
         await this.joinChannel(command.name);
@@ -207,7 +216,7 @@ export class Session {
   public view(): ChatView {
     const now = this.client.now();
     const rows = this.rows();
-    const working = new Set([...this.runs.values()].map((run) => chatOf(run.entry.note, this.me)));
+    const working = new Set([...this.runs.values()].map((run) => chatOf(run.entry.event, this.me)));
     const asked = new Map(rows.map((row) => [row.chat, this.chats.waitingForMe(row.chat, now).length]));
     const rowViews: RowView[] = rows.map((row) => {
       let mark: RowView["mark"] = "";
@@ -261,71 +270,95 @@ export class Session {
           : { name: pinned.name, have: members.filter((member) => this.team.some((repo) => repo.user === member && repo.key === pinned.key)).length, mine: this.checkouts.has(pinned.name) },
       newAfter: this.newAfter,
       messages: this.messages(chat, now),
-      drafts: (this.drafts.get(chat) ?? []).map((draft) => ({ noteId: draft.entry.id, repo: draft.repo, asker: draft.entry.note.sender, text: draft.text })),
-      running: [...this.runs.values()].some((run) => chatOf(run.entry.note, this.me) === chat)
+      drafts: (this.drafts.get(chat) ?? []).map((draft) => ({ id: draft.entry.event.id, repo: draft.repo, asker: draft.entry.event.author, text: draft.text })),
+      running: [...this.runs.values()].some((run) => chatOf(run.entry.event, this.me) === chat)
     };
   }
 
   private messages(chat: string, now: number): MessageView[] {
     const messages: MessageView[] = [];
-    let previous: Entry | null = null;
+    let previous: Message | null = null;
     let marked = false;
-    // ponytail: every note of the open chat is sent to the window on each change. Send only what is new if long chats make it slow.
-    for (const entry of this.chats.entries(chat)) {
-      const note = entry.note;
-      const firstNew: boolean = !marked && this.newAfter !== null && entry.id > this.newAfter && note.sender !== this.me;
-      marked ||= firstNew;
-      if (firstNew || (previous !== null && dayOf(previous.note.ts) !== dayOf(note.ts))) {
-        previous = null; // The first note of a day, and the first after the "new" line, says who wrote it.
+    // ponytail: every message of the open chat is sent to the window on each change. Send only what is new if long chats make it slow.
+    for (const item of this.chats.items(chat)) {
+      if (item.kind === "line") {
+        continue;
       }
-      const answered = note.re === null ? null : this.chats.find(note.re);
-      messages.push({
-        id: entry.id,
-        sender: note.sender,
-        agent: note.agent,
-        branch: this.chats.ranOn(entry),
-        ts: note.ts,
-        trusted: entry.trusted,
-        body: entry.trusted ? note.body : "",
-        quote: answered?.trusted === true ? `${answered.note.sender}: ${oneLine(answered.note.body)}` : "",
-        header: !continues(previous, entry),
-        requests: this.chats.requests(entry, now).flatMap((request) => this.requestView(request))
-      });
-      previous = entry;
+      const { seq, event } = item.kind === "message" ? item.message.entry : item.entry;
+      const firstNew: boolean = !marked && this.newAfter !== null && seq > this.newAfter && event.author !== this.me;
+      marked ||= firstNew;
+      if (firstNew || (previous !== null && dayOf(previous.entry.event.ts) !== dayOf(event.ts))) {
+        previous = null; // The first message of a day, and the first after the "new" line, says who wrote it.
+      }
+      messages.push(item.kind === "message" ? this.messageView(item.message, previous, now) : this.warningView(item.entry));
+      previous = item.kind === "message" ? item.message : null;
     }
     return messages;
+  }
+
+  private messageView(message: Message, previous: Message | null, now: number): MessageView {
+    const { seq, event } = message.entry;
+    const answered = message.answers === null ? null : this.chats.message(message.answers);
+    return {
+      id: event.id,
+      seq,
+      sender: event.author,
+      agent: message.agent,
+      branch: this.branchOf(message, now),
+      ts: event.ts,
+      trusted: true,
+      body: message.text,
+      quote: answered === null ? "" : `${answered.entry.event.author}: ${oneLine(answered.text)}`,
+      header: !continues(previous, message),
+      requests: this.chats.requests(message, now).flatMap((request) => this.requestView(request))
+    };
+  }
+
+  /** An event whose signature failed: who it claims to be from and when, and never what it says. */
+  private warningView({ seq, event }: Entry): MessageView {
+    return { id: event.id, seq, sender: event.author, agent: null, branch: "", ts: event.ts, trusted: false, body: "", quote: "", header: true, requests: [] };
+  }
+
+  /** The branch an answer was written on: as its owner accepted the run when the request is here, and as the answer says when it is not. */
+  private branchOf(message: Message, now: number): string {
+    const request = message.answers === null ? null : this.chats.message(message.answers);
+    const job = request === null ? undefined : this.chats.requests(request, now).find((each) => each.owner === message.entry.event.author && each.repo === message.agent);
+    return job === undefined || job.accepted === null ? message.branch : ranOn(job.accepted);
   }
 
   /** Where one tagged agent stands: for the user's own, what they can do; for a teammate's, how far it has got. Nothing once it is answered. */
   private requestView(request: Request): RequestView[] {
     const { owner, repo } = request;
     const mine = owner === this.me;
-    return request.state === "answered" ? [] : [{ noteId: request.entry.id, owner, repo, mine, status: mine ? this.myStatus(request) : this.theirStatus(request) }];
+    return request.state === "answered" ? [] : [{ id: request.message.entry.event.id, owner, repo, mine, status: mine ? this.myStatus(request) : this.theirStatus(request) }];
   }
 
   private myStatus(request: Request): RequestView["status"] {
     const { repo, state } = request;
-    const noteId = request.entry.id;
-    const run = this.runs.get(runKey(noteId, repo));
-    if ((this.drafts.get(chatOf(request.entry.note, this.me)) ?? []).some((draft) => draft.entry.id === noteId && draft.repo === repo)) {
+    const { event } = request.message.entry;
+    const run = this.runs.get(runKey(event.id, repo));
+    if ((this.drafts.get(chatOf(event, this.me)) ?? []).some((draft) => draft.entry.event.id === event.id && draft.repo === repo)) {
       return { kind: "drafted" };
     }
     if (run !== undefined) {
-      return { kind: "running", startedAt: run.startedAt, branch: request.detail };
+      return { kind: "running", startedAt: run.startedAt, branch: ranOn(request.accepted) };
+    }
+    if (state === "withdrawn") {
+      return { kind: "withdrawn" };
     }
     if (!this.checkouts.has(repo)) {
       return { kind: "noCheckout" };
     }
     const before = state === "working" ? "interrupted" : state === "waiting" || state === "answered" ? "" : state;
-    return { kind: "ready", before, canDecline: request.entry.note.sender !== this.me && state !== "declined" };
+    return { kind: "ready", before, canDecline: event.author !== this.me && state !== "declined" };
   }
 
   private theirStatus(request: Request): RequestView["status"] {
     const { owner, repo, state } = request;
     if (state === "working") {
-      return { kind: "working", branch: request.detail };
+      return { kind: "working", branch: ranOn(request.accepted) };
     }
-    if (state === "declined" || state === "failed" || state === "stopped") {
+    if (state === "declined" || state === "failed" || state === "stopped" || state === "withdrawn") {
       return { kind: state };
     }
     if (this.people.every((person) => person.name !== owner)) {
@@ -351,40 +384,46 @@ export class Session {
 
   // ── following the hub ─────────────────────────────────────────────────────
 
-  private async poll(): Promise<void> {
+  /**
+   * Make sure the hub speaks this protocol, load what is there, then follow the hub's stream, which opens itself again whenever it drops.
+   * Meanwhile, every PRESENCE seconds, share the user's repos and ask who is here, which channels there are and who has which repo.
+   */
+  private async follow(): Promise<void> {
     const stopped = (): boolean => this.stopping.signal.aborted; // Asked afresh each time: it changes while this waits.
-    let after: number | null = null;
     let greeted = false; // Whether the hub has said it speaks this protocol since it last failed to answer.
     while (!stopped()) {
-      let retry = RETRY_DELAY;
+      let wait = this.presence;
       try {
         if (!greeted) {
-          const info = await this.client.info();
-          if (info.protocol !== PROTOCOL) {
-            retry = UPDATE_DELAY;
-            throw new PlayerTwoError(`the hub speaks protocol ${String(info.protocol)} and this app speaks protocol ${String(PROTOCOL)}: update the ${info.protocol > PROTOCOL ? "app" : "hub"}`);
-          }
-          this.prefix = info.repos;
+          await this.greet();
           greeted = true;
         }
         await this.share();
-        const snapshot = await this.snapshot(after);
-        if (stopped()) {
-          return;
+        await this.refresh();
+        if (this.streaming === null) {
+          const after = await this.load();
+          this.streaming = this.client.stream(after, (batch) => this.arrive(batch), this.stopping.signal);
         }
-        this.sync(snapshot, after === null);
-        after = Math.max(after ?? 0, ...snapshot.entries.map((entry) => entry.id));
       } catch (error) {
         if (stopped()) {
           return;
         }
+        wait = error instanceof ProtocolError ? UPDATE_DELAY : RETRY_DELAY;
         greeted = false;
         this.connected = false;
         this.problem = problemOf(error);
         this.hooks.changed();
-        await sleep(retry, this.stopping.signal);
       }
+      await sleep(wait, this.stopping.signal);
     }
+  }
+
+  private async greet(): Promise<void> {
+    const info = await this.client.info();
+    if (info.protocol !== PROTOCOL) {
+      throw new ProtocolError(`the hub speaks protocol ${String(info.protocol)} and this app speaks protocol ${String(PROTOCOL)}: update the ${info.protocol > PROTOCOL ? "app" : "hub"}`);
+    }
+    this.prefix = info.repos;
   }
 
   /** Look under ~/dev for the team's repos and tell the hub when the list or a branch has changed. */
@@ -399,53 +438,77 @@ export class Session {
     this.hooks.changed();
   }
 
-  private async snapshot(after: number | null): Promise<Snapshot> {
+  /** Ask who is here, which channels there are and who has which repo. */
+  private async refresh(): Promise<void> {
     const [people, channels, team] = await Promise.all([this.client.users(), this.client.channels(), this.client.repos()]);
-    const batch = after === null ? await this.client.notes({ tail: HISTORY }) : await this.client.notes({ after, wait: this.pollWait, signal: this.stopping.signal });
-    const entries: Entry[] = [];
-    for (const delivered of batch) {
-      entries.push({ id: delivered.id, note: delivered.note, trusted: await this.client.isTrusted(delivered.note) });
-    }
-    return { people, channels, team, entries };
-  }
-
-  private sync(snapshot: Snapshot, first: boolean): void {
-    this.people = snapshot.people;
-    this.channels = snapshot.channels;
-    this.team = snapshot.team;
+    this.people = people;
+    this.channels = channels;
+    this.team = team;
     this.connected = true;
     this.problem = "";
+    this.openFirst();
+    this.hooks.changed();
+  }
+
+  /** Load everything there is to see, and return the seq the stream is to follow on from. */
+  private async load(): Promise<number> {
+    const found = await this.client.catchUp(0);
+    this.take(await this.trust(found), false);
     this.loaded = true;
-    const fresh = this.chats.add(snapshot.entries);
+    this.hooks.changed();
+    return found.at(-1)?.seq ?? 0;
+  }
+
+  /** What the stream has just delivered. Should this fail, the stream delivers it again. */
+  private async arrive(batch: readonly Delivered[]): Promise<void> {
+    this.take(await this.trust(batch), true);
+  }
+
+  private async trust(found: readonly Delivered[]): Promise<Entry[]> {
+    const entries: Entry[] = [];
+    for (const delivered of found) {
+      entries.push({ ...delivered, trusted: await this.client.isTrusted(delivered.event) });
+    }
+    return entries;
+  }
+
+  private take(entries: readonly Entry[], announce: boolean): void {
+    const fresh = this.chats.add(entries);
     for (const entry of fresh) {
-      if (this.autorun.has(entry.id)) {
+      if (this.autorun.has(entry.event.id)) {
         this.runOwnTags(entry);
       }
     }
-    if (this.current === "") {
-      const rows = this.rows();
-      const start = rows.find((row) => row.unread > 0) ?? rows.find((row) => row.chat === this.lastChat) ?? rows[0]; // Start where something is waiting; failing that, where the user left off.
-      if (start !== undefined) {
-        this.open(start.chat);
-      }
-    }
-    if (!first) {
-      this.announce(fresh.filter((entry) => entry.note.kind === "note" && entry.note.sender !== this.me));
+    this.openFirst();
+    if (announce) {
+      this.announce(fresh.filter((entry) => (entry.event.kind === "message" || entry.event.kind === "job.result") && entry.event.author !== this.me));
     }
     this.markRead();
     this.hooks.changed();
   }
 
+  /** Open a chat when none is open: where something is waiting, failing that where the user left off, failing that the first. */
+  private openFirst(): void {
+    if (this.current === "") {
+      const rows = this.rows();
+      const start = rows.find((row) => row.unread > 0) ?? rows.find((row) => row.chat === this.lastChat) ?? rows[0];
+      if (start !== undefined) {
+        this.open(start.chat);
+      }
+    }
+  }
+
   private announce(incoming: readonly Entry[]): void {
     for (const entry of incoming.slice(-3)) {
-      const note = entry.note;
-      const tagged = entry.trusted && note.agent === null ? mentions(note.body).filter(([owner]) => owner === this.me) : [];
-      const where = isChannel(note.to) ? ` in ${note.to}` : "";
-      const title = tagged[0] === undefined ? `${note.sender}${where}` : `${note.sender} tagged your ${tagged[0][1]} agent${where}`;
+      const { event } = entry;
+      const text = textOf(entry);
+      const tagged = entry.trusted && event.kind === "message" ? mentions(text).filter(([owner]) => owner === this.me) : [];
+      const where = isChannel(event.to) ? ` in ${event.to}` : "";
+      const title = tagged[0] === undefined ? `${event.author}${where}` : `${event.author} tagged your ${tagged[0][1]} agent${where}`;
       this.hooks.arrived({
-        chat: chatOf(note, this.me),
+        chat: chatOf(event, this.me),
         title,
-        body: entry.trusted ? oneLine(note.body, 120) : "a note failed its signature check",
+        body: entry.trusted ? oneLine(text, 120) : "a message failed its signature check",
         forMe: tagged.length > 0,
         rings: rings(entry, this.me)
       });
@@ -456,7 +519,7 @@ export class Session {
     if (this.current === "" || !this.attentive) {
       return;
     }
-    const newest = this.chats.entries(this.current).at(-1)?.id ?? 0;
+    const newest = this.chats.bounds(this.current)?.newest ?? 0;
     if ((this.read[this.current] ?? 0) < newest || this.lastChat !== this.current) {
       this.read[this.current] = Math.max(newest, this.read[this.current] ?? 0);
       this.lastChat = this.current;
@@ -493,34 +556,35 @@ export class Session {
   }
 
   private async send(chat: string, text: string): Promise<void> {
-    const body = fitBody(text.trim());
+    const body = fitText(text.trim());
     if (body === "") {
       return;
     }
-    // A note typed here runs its tags of the user's own agents without asking, whichever arrives first: the hub's receipt or the note itself.
-    const noteId = await this.client.send(chat, body);
-    this.autorun.add(noteId);
-    const entry = this.chats.find(noteId);
-    if (entry !== null) {
-      this.runOwnTags(entry);
+    // A message typed here runs its tags of the user's own agents without asking, once it has come back from the hub.
+    const sent = await this.client.publish(chat, "message", { text: body, via: "window" });
+    this.autorun.add(sent.event.id);
+    const found = this.chats.message(sent.event.id);
+    if (found !== null) {
+      this.runOwnTags(found.entry);
     }
   }
 
   private runOwnTags(entry: Entry): void {
-    this.autorun.delete(entry.id);
-    if (entry.note.sender !== this.me) {
+    this.autorun.delete(entry.event.id);
+    const message = this.chats.message(entry.event.id);
+    if (entry.event.author !== this.me || message === null) {
       return;
     }
-    for (const request of this.chats.requests(entry, this.client.now())) {
+    for (const request of this.chats.requests(message, this.client.now())) {
       if (request.owner === this.me && request.state === "waiting" && this.checkouts.has(request.repo)) {
-        this.startRun(entry, request.repo, true);
+        this.startRun(message, request.repo, true);
       }
     }
   }
 
-  private takeDraft(chat: string, noteId: number, repo: string): Draft {
+  private takeDraft(chat: string, request: string, repo: string): Draft {
     const drafts = this.drafts.get(chat) ?? [];
-    const draft = drafts.find((candidate) => candidate.entry.id === noteId && candidate.repo === repo);
+    const draft = drafts.find((candidate) => candidate.entry.event.id === request && candidate.repo === repo);
     if (draft === undefined) {
       throw new PlayerTwoError("that draft is no longer waiting");
     }
@@ -532,11 +596,11 @@ export class Session {
     return draft;
   }
 
-  private async sendDraft(chat: string, noteId: number, repo: string, text: string): Promise<void> {
-    const draft = this.takeDraft(chat, noteId, repo);
-    const edited = fitBody(text.trim());
+  private async sendDraft(chat: string, request: string, repo: string, text: string): Promise<void> {
+    const draft = this.takeDraft(chat, request, repo);
+    const edited = fitText(text.trim());
     try {
-      await this.client.send(chat, edited, { agent: repo, re: noteId });
+      await this.client.publish(chat, "job.result", { repo, branch: draft.branch, text: edited, reviewed: true }, [request]);
     } catch (error) {
       this.drafts.set(chat, [{ ...draft, text: edited }, ...(this.drafts.get(chat) ?? [])]); // Put it back as edited, so nothing the user or their agent wrote is lost.
       this.hooks.changed();
@@ -544,22 +608,23 @@ export class Session {
     }
   }
 
-  private async discardDraft(chat: string, noteId: number, repo: string): Promise<void> {
-    const draft = this.takeDraft(chat, noteId, repo);
-    await this.report(chat, draft.entry, repo, "declined");
+  private async discardDraft(chat: string, request: string, repo: string): Promise<void> {
+    this.takeDraft(chat, request, repo);
+    await this.decline(request, repo);
   }
 
-  private runRequest(noteId: number, repo: string, post: boolean): void {
-    const entry = this.chats.find(noteId);
-    if (entry !== null && this.chats.requests(entry, this.client.now()).some((request) => request.owner === this.me && request.repo === repo)) {
-      this.startRun(entry, repo, post);
+  private runRequest(request: string, repo: string, post: boolean): void {
+    const message = this.chats.message(request);
+    if (message !== null && this.chats.requests(message, this.client.now()).some((each) => each.owner === this.me && each.repo === repo && each.state !== "withdrawn")) {
+      this.startRun(message, repo, post);
     }
   }
 
-  private async decline(noteId: number, repo: string): Promise<void> {
-    const entry = this.chats.find(noteId);
-    if (entry !== null) {
-      await this.report(chatOf(entry.note, this.me), entry, repo, "declined");
+  /** Say no to a request for one of the user's agents. Best effort: the chat misses one line. */
+  private async decline(request: string, repo: string): Promise<void> {
+    const message = this.chats.message(request);
+    if (message !== null) {
+      await this.client.publish(chatOf(message.entry.event, this.me), "job.declined", { repo, reason: "" }, [request]).catch(() => undefined);
     }
   }
 
@@ -569,7 +634,8 @@ export class Session {
       throw new PlayerTwoError("a channel's name is lowercase letters, digits, - and _, at most 32 characters");
     }
     const channel = (await this.client.joinChannel(bare.data)).name;
-    this.sync(await this.snapshot(null), true); // A channel's earlier notes are older than the poll's cursor, so load them now.
+    this.channels = await this.client.channels();
+    this.take(await this.trust(await this.client.events({ chat: channel })), false); // A channel's earlier events are behind the stream's place in the log, so they are loaded here.
     this.open(channel);
   }
 
@@ -632,45 +698,58 @@ export class Session {
 
   // ── running an agent ──────────────────────────────────────────────────────
 
-  private startRun(entry: Entry, repo: string, post: boolean): void {
+  private startRun(message: Message, repo: string, post: boolean): void {
     const checkout = this.checkouts.get(repo);
-    const key = runKey(entry.id, repo);
+    const key = runKey(message.entry.event.id, repo);
     if (this.runs.has(key)) {
       return;
     }
     if (checkout === undefined) {
       throw new PlayerTwoError(`there is no checkout of ${repo} under ${this.dev}`);
     }
-    const argv = [...splitCommand(this.client.config.agent), agentPrompt(entry, this.me, repo, this.chats.earlier(entry), !post)];
-    const run: AgentRun = { entry, repo, post, cancel: new AbortController(), startedAt: Date.now(), done: Promise.resolve() };
+    const argv = [...splitCommand(this.client.config.agent), agentPrompt(message, this.me, repo, this.chats.earlier(message), !post)];
+    const run: AgentRun = { entry: message.entry, repo, post, cancel: new AbortController(), startedAt: Date.now(), done: Promise.resolve() };
     this.runs.set(key, run);
     run.done = this.work(key, run, checkout, argv);
     this.hooks.changed();
   }
 
-  /** Run the agent and see its answer to where it belongs. Never rejects: every way a run can end is told to the chat and to the user. */
+  /**
+   * Tell the chat the user let the agent run, on which branch and commit, then run it and see its answer to where it belongs. Never rejects: every way a run can end is told to the user.
+   * Nothing runs until the chat has been told: when that cannot be published, the agent does not start. Once it has, the chat hears one ending: the answer (now, or when the draft is sent, or a decline when it is thrown away), a failure, or a stop.
+   */
   private async work(key: string, run: AgentRun, checkout: Checkout, argv: readonly string[]): Promise<void> {
     const { entry, repo } = run;
-    const chat = chatOf(entry.note, this.me);
+    const chat = chatOf(entry.event, this.me);
+    const request = [entry.event.id];
+    let head: Head;
+    try {
+      head = await this.describe(checkout);
+      await this.client.publish(chat, "job.accepted", { repo, ...head, delivery: run.post ? "post" : "review", mode: "full", by: "owner" }, request);
+    } catch (error) {
+      this.hooks.notice({ title: `your ${repo} agent did not start`, body: problemOf(error), severity: "error" });
+      this.runs.delete(key);
+      this.hooks.changed();
+      return;
+    }
     let ending = "";
     try {
-      await this.report(chat, entry, repo, `working\n${await this.describe(checkout)}`);
-      const text = fitBody(await this.runner(argv, checkout.path, run.cancel.signal));
+      const text = fitText(await this.runner(argv, checkout.path, run.cancel.signal));
       if (text === "") {
         ending = "the agent returned nothing";
       } else if (run.post) {
-        await this.postAnswer(chat, { text, entry, repo });
+        await this.postAnswer(chat, { text, entry, repo, branch: head.branch });
       } else {
-        this.queueDraft(chat, { text, entry, repo });
+        this.queueDraft(chat, { text, entry, repo, branch: head.branch });
       }
     } catch (error) {
       ending = error instanceof AgentCancelledError ? "stopped" : problemOf(error);
     }
     if (ending === "stopped") {
-      await this.report(chat, entry, repo, "stopped");
+      await this.client.publish(chat, "job.cancelled", { repo }, request).catch(() => undefined);
       this.hooks.notice({ title: "", body: `Stopped your ${repo} agent.`, severity: "info" });
     } else if (ending !== "") {
-      await this.report(chat, entry, repo, "failed"); // Only the fact: what the agent printed on the way down may not be fit to share.
+      await this.client.publish(chat, "job.error", { repo }, request).catch(() => undefined); // Only the fact: what the agent printed on the way down may not be fit to share.
       this.hooks.notice({ title: `your ${repo} agent`, body: ending, severity: "error" });
     }
     this.runs.delete(key);
@@ -679,7 +758,7 @@ export class Session {
 
   private async postAnswer(chat: string, draft: Draft): Promise<void> {
     try {
-      await this.client.send(chat, draft.text, { agent: draft.repo, re: draft.entry.id });
+      await this.client.publish(chat, "job.result", { repo: draft.repo, branch: draft.branch, text: draft.text, reviewed: false }, [draft.entry.event.id]);
     } catch (error) {
       // An answer that could not be posted is kept as a draft, so the agent's work is not lost.
       this.hooks.notice({ title: `your ${draft.repo} agent's answer was not posted; it is kept as a draft`, body: problemOf(error), severity: "error" });
@@ -690,14 +769,5 @@ export class Session {
   private queueDraft(chat: string, draft: Draft): void {
     this.drafts.set(chat, [...(this.drafts.get(chat) ?? []), draft]);
     this.hooks.arrived({ chat, title: `Your ${draft.repo} agent's draft is ready to review`, body: oneLine(draft.text, 120), forMe: true, rings: true });
-  }
-
-  /** Tell everyone in the chat what an agent is doing with a note. Best effort: the note itself is what matters. */
-  private async report(chat: string, entry: Entry, repo: string, state: string): Promise<void> {
-    try {
-      await this.client.send(chat, state, { kind: "status", agent: repo, re: entry.id });
-    } catch {
-      // The chat misses one status line.
-    }
   }
 }

@@ -10,10 +10,10 @@ export const AGENT_CHOICES = [
   { label: "Copilot", command: "copilot -s --allow-all-tools --no-ask-user -p" }
 ] as const;
 
-/** Where one tagged agent stands, already worked out for the reader: `mine` says whether it is their own agent. */
+/** Where one tagged agent stands, already worked out for the reader: `mine` says whether it is their own agent. `id` is the request's. */
 const requestSchema = z
   .strictObject({
-    noteId: z.int(),
+    id: z.string(),
     owner: z.string(),
     repo: z.string(),
     mine: z.boolean(),
@@ -28,22 +28,24 @@ const requestSchema = z
       z.strictObject({ kind: z.literal("lacksRepo") }), // Its owner has no copy of the repo.
       z.strictObject({ kind: z.literal("declined") }),
       z.strictObject({ kind: z.literal("failed") }),
-      z.strictObject({ kind: z.literal("stopped") })
+      z.strictObject({ kind: z.literal("stopped") }),
+      z.strictObject({ kind: z.literal("withdrawn") }) // Whoever asked took it back before it ran.
     ])
   })
   .readonly();
 
 const messageSchema = z
   .strictObject({
-    id: z.int(),
+    id: z.string(), // The event's id: what a command about it names.
+    seq: z.int(), // Its place in the hub's log, which is the order a chat is in.
     sender: z.string(),
     agent: z.string().nullable(), // The repo the sender's agent worked in; null when the sender typed it.
     branch: z.string(), // The branch that agent was on; "" when unknown.
     ts: z.int(),
     trusted: z.boolean(),
-    body: z.string(), // "" when the note failed its signature check: its text never reaches the window.
-    quote: z.string(), // The note this one answers, on one line; "" when it answers nothing.
-    header: z.boolean(), // Whether to say who wrote it, or let it sit under the previous note's header.
+    body: z.string(), // "" when the message failed its signature check: its text never reaches the window.
+    quote: z.string(), // The request an answer is to, on one line; "" when it answers nothing.
+    header: z.boolean(), // Whether to say who wrote it, or let it sit under the previous message's header.
     requests: z.array(requestSchema).readonly()
   })
   .readonly();
@@ -63,9 +65,9 @@ const currentSchema = z
     members: z.array(z.string()).readonly().nullable(), // Null for a direct chat.
     joined: z.boolean(),
     pinned: z.strictObject({ name: z.string(), have: z.int(), mine: z.boolean() }).nullable(), // The repo the channel is about, how many members have it, and whether I do.
-    newAfter: z.int().nullable(), // Notes after this id arrived while the user was elsewhere.
+    newAfter: z.int().nullable(), // Messages after this seq arrived while the user was elsewhere.
     messages: z.array(messageSchema).readonly(),
-    drafts: z.array(z.strictObject({ noteId: z.int(), repo: z.string(), asker: z.string(), text: z.string() }).readonly()).readonly(), // Answers waiting for review, oldest first.
+    drafts: z.array(z.strictObject({ id: z.string(), repo: z.string(), asker: z.string(), text: z.string() }).readonly()).readonly(), // Answers waiting for review, oldest first, each with its request's id.
     running: z.boolean() // Whether one of the user's agents is at work here.
   })
   .readonly();
@@ -100,17 +102,18 @@ export const viewSchema = z.discriminatedUnion("kind", [
 
 const chat = z.string().min(1).max(40);
 const repo = z.string().min(1).max(64);
+const id = z.string().regex(/^[0-9a-f]{64}$/); // An event's id: for a job, its request's.
 
 /** Everything the window may ask the desk to do. Parsed on both sides of the line before anything acts on it. */
 export const commandSchema = z.discriminatedUnion("do", [
   z.strictObject({ do: z.literal("join"), hub: z.string().max(500), name: z.string().max(40), token: z.string().max(500), agent: z.string().max(500) }),
   z.strictObject({ do: z.literal("open"), chat }),
   z.strictObject({ do: z.literal("send"), chat, text: z.string().min(1) }),
-  z.strictObject({ do: z.literal("sendDraft"), chat, noteId: z.int(), repo, text: z.string().min(1) }),
-  z.strictObject({ do: z.literal("discardDraft"), chat, noteId: z.int(), repo }),
-  z.strictObject({ do: z.literal("run"), noteId: z.int(), repo, post: z.boolean() }),
-  z.strictObject({ do: z.literal("stop"), noteId: z.int(), repo }),
-  z.strictObject({ do: z.literal("decline"), noteId: z.int(), repo }),
+  z.strictObject({ do: z.literal("sendDraft"), chat, id, repo, text: z.string().min(1) }),
+  z.strictObject({ do: z.literal("discardDraft"), chat, id, repo }),
+  z.strictObject({ do: z.literal("run"), id, repo, post: z.boolean() }),
+  z.strictObject({ do: z.literal("stop"), id, repo }),
+  z.strictObject({ do: z.literal("decline"), id, repo }),
   z.strictObject({ do: z.literal("joinChannel"), name: z.string().max(40) }),
   z.strictObject({ do: z.literal("leaveChannel"), chat }),
   z.strictObject({ do: z.literal("pin"), chat, repo }),
@@ -131,7 +134,7 @@ export const outcomeSchema = z.discriminatedUnion("ok", [
 /** Something to tell the user that is not part of the picture: a failure, or that a long job has started or finished. */
 export const noticeSchema = z.strictObject({ title: z.string(), body: z.string(), severity: z.enum(["info", "error"]) }).readonly();
 
-/** A note from someone else, or a draft ready for review: something the user may want to be told about while they are looking elsewhere. */
+/** A message or an answer from someone else, or a draft ready for review: something the user may want to be told about while they are looking elsewhere. */
 export const arrivalSchema = z
   .strictObject({
     chat: z.string(),

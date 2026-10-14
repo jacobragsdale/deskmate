@@ -17,6 +17,13 @@ export interface Checkout {
   readonly branch: string;
 }
 
+/** Where a checkout stands: its branch, the commit it is at, and whether it has changes nobody has committed. */
+export interface Head {
+  readonly branch: string;
+  readonly commit: string;
+  readonly dirty: boolean;
+}
+
 function readOrNull(path: string): string | null {
   try {
     return readFileSync(path, "utf8");
@@ -89,10 +96,14 @@ export function git(args: readonly string[], timeoutSeconds: number): Promise<Gi
   });
 }
 
-/** The branch a checkout is on right now, marked ± when it has uncommitted changes. */
-export async function describe(checkout: Checkout): Promise<string> {
-  const status = await git(["-C", checkout.path, "status", "--porcelain"], STATUS_TIMEOUT);
-  return `${branchOf(checkout.path)}${status.stdout.trim() === "" ? "" : " ±"}`;
+/** Where a checkout stands right now. Rejects when git cannot say which commit it is at, as in a repository with no commits yet. */
+export async function describe(checkout: Checkout): Promise<Head> {
+  const [head, status] = await Promise.all([git(["-C", checkout.path, "rev-parse", "HEAD"], STATUS_TIMEOUT), git(["-C", checkout.path, "status", "--porcelain"], STATUS_TIMEOUT)]);
+  const commit = head.stdout.trim();
+  if (!head.ok || !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(commit)) {
+    throw new Error(`git cannot say which commit ${checkout.path} is at: ${head.stderr.trim().split("\n").at(-1) ?? ""}`);
+  }
+  return { branch: branchOf(checkout.path), commit, dirty: status.stdout.trim() !== "" };
 }
 
 /** Clone a repo with the user's own git credentials. Rejects with git's last words when it fails. */

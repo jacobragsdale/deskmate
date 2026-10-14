@@ -93,7 +93,7 @@ await test("the desk by lines: the join form, joining, the chats, a note sent an
   assert.deepEqual(await reply(3), { ok: true });
   await chat("the note alice sent", (view) => view.current?.messages.at(-1)?.body === "lunch at noon?");
   say({ t: "attend", attentive: false });
-  await bob.send("alice", "yes");
+  await bob.publish("alice", "message", { text: "yes", via: "cli" });
   assert.deepEqual(await next("bob's note announced", (line) => line.t === "arrival" && line.arrival), { chat: "bob", title: "bob", body: "yes", forMe: false, rings: true });
   await chat("bob's note unread while alice looks away", (view) => view.unread === 1);
   say({ t: "attend", attentive: true });

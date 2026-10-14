@@ -17,6 +17,7 @@ import type { Act } from "./App.tsx";
 const NEAR_BOTTOM = 80; // Pixels from the end within which new notes keep the view pinned to the end.
 const LINE = "my-1 text-muted-foreground"; // Where a tagged agent stands, under the note.
 const MINE = "my-1 text-warn"; // The same, when it waits on the user.
+const BEFORE = { "": "", declined: "you declined · ", failed: "it failed · ", stopped: "stopped · ", interrupted: "interrupted · " } as const; // What happened to a request the user can run again.
 const RULE = "mt-3.5 mb-1.5 flex items-center gap-2.5 text-xs text-muted-foreground before:flex-1 before:border-t after:flex-1 after:border-t"; // A line across the thread with a word in it.
 
 /** An agent at work. */
@@ -47,8 +48,69 @@ function Elapsed({ since }: { readonly since: number }): JSX.Element {
   return <>{Math.max(0, Math.round((now - since) / 1000))}s</>;
 }
 
+/** One of the user's own agents, ready to run: the buttons that run it, and one that declines it. */
+function ReadyLine({
+  request,
+  who,
+  before,
+  canDecline,
+  act
+}: {
+  readonly request: RequestView;
+  readonly who: string;
+  readonly before: keyof typeof BEFORE;
+  readonly canDecline: boolean;
+  readonly act: Act;
+}): JSX.Element {
+  const { id, repo } = request;
+  return (
+    <p className={MINE}>
+      ◆ {BEFORE[before]}
+      {who} ·{" "}
+      <Button
+        size="xs"
+        variant="outline"
+        className="text-foreground"
+        type="button"
+        onClick={() => {
+          act({ do: "run", id, repo, post: false });
+        }}
+      >
+        ▶ Run and review
+      </Button>{" "}
+      <Button
+        size="xs"
+        variant="outline"
+        className="text-foreground"
+        type="button"
+        onClick={() => {
+          act({ do: "run", id, repo, post: true });
+        }}
+      >
+        ▶▶ Run and post
+      </Button>
+      {canDecline && (
+        <>
+          {" "}
+          <Button
+            size="xs"
+            variant="outline"
+            className="text-foreground"
+            type="button"
+            onClick={() => {
+              act({ do: "decline", id, repo });
+            }}
+          >
+            × Decline
+          </Button>
+        </>
+      )}
+    </p>
+  );
+}
+
 function RequestLine({ request, act }: { readonly request: RequestView; readonly act: Act }): JSX.Element {
-  const { noteId, owner, repo, status } = request;
+  const { id, owner, repo, status } = request;
   const who = request.mine ? `your ${repo} agent` : `${owner}'s ${repo} agent`;
   const on = (branch: string): string => (branch === "" ? "" : ` on ${branch}`);
   switch (status.kind) {
@@ -64,7 +126,7 @@ function RequestLine({ request, act }: { readonly request: RequestView; readonly
             className="text-foreground"
             type="button"
             onClick={() => {
-              act({ do: "stop", noteId, repo });
+              act({ do: "stop", id, repo });
             }}
           >
             ■ Stop
@@ -89,50 +151,7 @@ function RequestLine({ request, act }: { readonly request: RequestView; readonly
         </p>
       );
     case "ready":
-      return (
-        <p className={MINE}>
-          ◆ {{ "": "", declined: "you declined · ", failed: "it failed · ", stopped: "stopped · ", interrupted: "interrupted · " }[status.before]}
-          {who} ·{" "}
-          <Button
-            size="xs"
-            variant="outline"
-            className="text-foreground"
-            type="button"
-            onClick={() => {
-              act({ do: "run", noteId, repo, post: false });
-            }}
-          >
-            ▶ Run and review
-          </Button>{" "}
-          <Button
-            size="xs"
-            variant="outline"
-            className="text-foreground"
-            type="button"
-            onClick={() => {
-              act({ do: "run", noteId, repo, post: true });
-            }}
-          >
-            ▶▶ Run and post
-          </Button>
-          {status.canDecline && (
-            <>
-              {" "}
-              <Button
-                size="xs"
-                variant="outline"
-                className="text-foreground"
-                type="button"
-                onClick={() => {
-                  act({ do: "decline", noteId, repo });
-                }}
-              >
-                × Decline
-              </Button>
-            </>
-          )}
-        </p>
-      );
+      return <ReadyLine request={request} who={who} before={status.before} canDecline={status.canDecline} act={act} />;
     case "working":
       return (
         <p className={LINE}>
@@ -159,6 +178,8 @@ function RequestLine({ request, act }: { readonly request: RequestView; readonly
       return <p className={LINE}>✗ {who} failed</p>;
     case "stopped":
       return <p className={LINE}>■ {who} was stopped</p>;
+    case "withdrawn":
+      return <p className={LINE}>↩ the request was taken back</p>;
   }
 }
 
@@ -236,7 +257,7 @@ export function Thread({ view, current, act, onPin }: { readonly view: ChatView;
   const scroller = useRef<HTMLDivElement>(null);
   const atEnd = useRef(true);
   const shown = useRef("");
-  const newest = current.messages.at(-1)?.id ?? 0;
+  const newest = current.messages.at(-1)?.seq ?? 0;
 
   // Keep the newest note in view when the chat is opened, and when one arrives while the reader is already at the end.
   useLayoutEffect(() => {
@@ -249,7 +270,7 @@ export function Thread({ view, current, act, onPin }: { readonly view: ChatView;
   }, [current.chat, newest]);
 
   const { pinned, members } = current;
-  const firstNew = current.newAfter === null ? undefined : current.messages.find((message) => message.id > (current.newAfter ?? 0) && message.sender !== view.me);
+  const firstNew = current.newAfter === null ? undefined : current.messages.find((message) => message.seq > (current.newAfter ?? 0) && message.sender !== view.me);
   return (
     <>
       <header className="flex items-baseline gap-3 border-b px-4 py-2.5">

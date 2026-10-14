@@ -72,8 +72,8 @@ async function person(hub: string, name: string): Promise<Person> {
       confirmClone: () => Promise.resolve(false)
     },
     {
-      pollWait: 2,
-      describe: () => Promise.resolve("main ±"),
+      presence: 1,
+      describe: () => Promise.resolve({ branch: "main", commit: "c0ffee".padEnd(40, "0"), dirty: true }),
       runner: (argv, cwd, cancel) => {
         prompts.push([...argv]);
         if (argv.at(-1)?.endsWith("take your time") === true) {
@@ -139,7 +139,7 @@ await test("two people, their agents and a channel, through the real hub", { tim
   const waiting = await until(bob.session, "bob sees his request waiting", (view) => messages(view).find((message) => message.requests[0]?.status.kind === "waiting"));
   assert.deepEqual(waiting.requests[0]?.status, { kind: "waiting", away: false });
   const asked = await until(jacob.session, "jacob can run it", (view) => messages(view).find((message) => message.requests[0]?.status.kind === "ready"));
-  assert.deepEqual(asked.requests, [{ noteId: asked.id, owner: "jacob", repo: "uploader", mine: true, status: { kind: "ready", before: "", canDecline: true } }]);
+  assert.deepEqual(asked.requests, [{ id: asked.id, owner: "jacob", repo: "uploader", mine: true, status: { kind: "ready", before: "", canDecline: true } }]);
   assert.equal(jacob.prompts.length, 0);
   await until(jacob.session, "the note counts as unread and waiting while jacob looks away", (view) => view.unread === 1 && view.waiting === 1);
   assert.deepEqual(
@@ -150,7 +150,7 @@ await test("two people, their agents and a channel, through the real hub", { tim
   assert.equal(jacob.session.view().unread, 0);
 
   // Jacob runs it for review: the agent gets the command's own words plus the prompt, in his checkout, and its answer waits as a draft.
-  await jacob.session.handle({ do: "run", noteId: asked.id, repo: "uploader", post: false });
+  await jacob.session.handle({ do: "run", id: asked.id, repo: "uploader", post: false });
   const draft = await until(jacob.session, "the draft is ready", (view) => view.current?.drafts[0]);
   assert.equal(draft.text, "Retries live in /dev-jacob/uploader/queue.py");
   assert.deepEqual(jacob.prompts[0]?.slice(0, 2), ["fake-agent", "--flag"]);
@@ -158,12 +158,13 @@ await test("two people, their agents and a channel, through the real hub", { tim
   await until(bob.session, "bob still sees nothing posted", (view) => messages(view).length === 1);
 
   // He edits it and sends it: Bob sees the answer, marked as the agent's, with the branch it ran on, and the request is settled.
-  await jacob.session.handle({ do: "sendDraft", chat: "bob", noteId: asked.id, repo: "uploader", text: `${draft.text} (edited)` });
+  await jacob.session.handle({ do: "sendDraft", chat: "bob", id: asked.id, repo: "uploader", text: `${draft.text} (edited)` });
   const answer = await until(bob.session, "bob sees the answer", (view) => messages(view).find((message) => message.agent === "uploader"));
   assert.deepEqual(
-    { ...answer, id: 0, ts: 0 },
+    { ...answer, id: "", seq: 0, ts: 0 },
     {
-      id: 0,
+      id: "",
+      seq: 0,
       ts: 0,
       sender: "jacob",
       agent: "uploader",
@@ -189,7 +190,7 @@ await test("two people, their agents and a channel, through the real hub", { tim
   const second = await until(jacob.session, "the second request arrives", (view) =>
     messages(view).find((message) => message.body.endsWith("one more") && message.requests[0]?.status.kind === "ready")
   );
-  await jacob.session.handle({ do: "decline", noteId: second.id, repo: "uploader" });
+  await jacob.session.handle({ do: "decline", id: second.id, repo: "uploader" });
   await until(bob.session, "bob sees it declined", (view) => messages(view).some((message) => message.requests[0]?.status.kind === "declined"));
 
   // A run its owner stops is reported as stopped, and leaves no draft.
@@ -197,12 +198,12 @@ await test("two people, their agents and a channel, through the real hub", { tim
   const slow = await until(jacob.session, "the slow request arrives", (view) =>
     messages(view).find((message) => message.body.endsWith("take your time") && message.requests[0]?.status.kind === "ready")
   );
-  await jacob.session.handle({ do: "run", noteId: slow.id, repo: "uploader", post: false });
+  await jacob.session.handle({ do: "run", id: slow.id, repo: "uploader", post: false });
   await until(bob.session, "bob sees it working, on the branch it reported", (view) =>
     messages(view).some((message) => message.requests[0]?.status.kind === "working" && message.requests[0].status.branch === "main ±")
   );
   assert.equal(jacob.session.view().busy.working, 1);
-  await jacob.session.handle({ do: "stop", noteId: slow.id, repo: "uploader" });
+  await jacob.session.handle({ do: "stop", id: slow.id, repo: "uploader" });
   await until(bob.session, "bob sees it stopped", (view) => messages(view).some((message) => message.requests[0]?.status.kind === "stopped"));
   await until(jacob.session, "jacob can run it again", (view) => messages(view).some((message) => message.requests[0]?.status.kind === "ready" && message.requests[0].status.before === "stopped"));
   assert.deepEqual(jacob.session.view().busy, { working: 0, unsent: 0 });

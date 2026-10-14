@@ -1,7 +1,8 @@
 /** The parts of the client that have logic of their own: the fold of a chat's events and the rules that keep it honest, the tag list, an event's envelope and what each kind says, reading what the hub answers, a hub on another protocol, splitting the agent command, and running it. */
 
 import assert from "node:assert/strict";
-import { writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
@@ -15,8 +16,9 @@ import { AgentCancelledError, Client, PlayerTwoError } from "../src/desk/client.
 import type { Transport } from "../src/desk/client.ts";
 import { readContent } from "../src/core/kinds.ts";
 import { loadKey, publicHex, signEvent, signNote } from "../src/core/sign.ts";
+import * as repos from "../src/desk/repos.ts";
 import { Session } from "../src/desk/session.ts";
-import { eventSchema, fitBody, MAX_BODY, MAX_CONTENT, MAX_PATCH, PROTOCOL } from "../src/core/wire.ts";
+import { eventSchema, fitText, MAX_CONTENT, MAX_PATCH, PROTOCOL } from "../src/core/wire.ts";
 import type { Delivered, TeamRepo } from "../src/core/wire.ts";
 import { startHub } from "./startHub.ts";
 
@@ -452,9 +454,30 @@ await test("each kind's content is read by its kind, and anything else is unknow
   assert.equal(read("job.withdrawn", { agent: "uploader" }), "unknown");
 });
 
-await test("a note is cut to what the hub accepts without splitting a character", () => {
-  assert.equal(Array.from(fitBody("🎉".repeat(MAX_BODY + 5))).length, MAX_BODY);
-  assert.equal(fitBody("plain"), "plain");
+await test("a text is cut so the event carrying it fits what the hub accepts, however much writing it as JSON adds, without splitting a character", () => {
+  for (const text of ["🎉".repeat(MAX_CONTENT), "\n".repeat(MAX_CONTENT), "\x01".repeat(MAX_CONTENT), `${"x".repeat(MAX_CONTENT - 1)}🎉`]) {
+    const fitted = fitText(text);
+    const content = JSON.stringify({ repo: "a".repeat(64), branch: '"'.repeat(200), text: fitted, reviewed: false });
+    assert.ok(text.startsWith(fitted) && fitted.isWellFormed() && fitted.length > MAX_CONTENT / 7, JSON.stringify(text.slice(0, 2)));
+    assert.ok(eventSchema.safeParse(signEvent(key, { author: "jacob", to: "bob", kind: "job.result", content, ts: NOW, refs: [] })).success);
+  }
+  assert.equal(fitText("plain"), "plain");
+});
+
+await test("a checkout's head is its branch, the commit it is at and whether anything is uncommitted, and one with no commit cannot be described", async (t) => {
+  const path = mkdtempSync(join(tmpdir(), "player-two-head-"));
+  t.after(() => {
+    rmSync(path, { recursive: true, force: true });
+  });
+  const checkout = { remote: { name: "uploader", key: "dev.azure.com/acme/platform/uploader", url: "https://dev.azure.com/acme/Platform/_git/uploader" }, path, branch: "main" };
+  const git = (...args: string[]): Promise<unknown> => repos.git(["-C", path, "-c", "user.name=t", "-c", "user.email=t@example.com", ...args], 20);
+  await git("init", "-q", "-b", "main");
+  await assert.rejects(repos.describe(checkout), /git cannot say which commit/);
+  await git("commit", "-q", "--allow-empty", "-m", "first");
+  const head = await repos.describe(checkout);
+  assert.deepEqual([head.branch, /^[0-9a-f]{40}$/.test(head.commit), head.dirty], ["main", true, false]);
+  writeFileSync(join(path, "new.txt"), "changed");
+  assert.deepEqual(await repos.describe(checkout), { ...head, dirty: true });
 });
 
 await test("running an agent returns what it printed, reports a failure, and stops when cancelled", async () => {

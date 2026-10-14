@@ -36,7 +36,7 @@ function Review({ current, submit, tell, act }: Omit<Props, "view">): JSX.Elemen
   if (draft === undefined) {
     return null;
   }
-  const target = { chat: current.chat, noteId: draft.noteId, repo: draft.repo };
+  const target = { chat: current.chat, id: draft.id, repo: draft.repo };
   const send = (): void => {
     setSending(true);
     submit({ do: "sendDraft", ...target, text })
@@ -142,7 +142,7 @@ export function Composer({ view, current, act, submit, tell }: Props): JSX.Eleme
     for (const message of current.messages) {
       for (const request of message.requests) {
         if (request.status.kind === "running") {
-          act({ do: "stop", noteId: request.noteId, repo: request.repo });
+          act({ do: "stop", id: request.id, repo: request.repo });
         }
       }
     }
@@ -180,7 +180,7 @@ export function Composer({ view, current, act, submit, tell }: Props): JSX.Eleme
 
   return (
     <div className="border-t px-4 pt-2 pb-2.5">
-      <Review key={`${chat} ${String(current.drafts[0]?.noteId ?? 0)} ${current.drafts[0]?.repo ?? ""}`} current={current} act={act} submit={submit} tell={tell} />
+      <Review key={`${chat} ${current.drafts[0]?.id ?? ""} ${current.drafts[0]?.repo ?? ""}`} current={current} act={act} submit={submit} tell={tell} />
       <Popover open={picks.rows.length > 0}>
         <PopoverAnchor asChild>
           <Textarea

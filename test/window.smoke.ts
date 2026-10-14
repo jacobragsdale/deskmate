@@ -252,8 +252,11 @@ await test(
     await page.until("the dialog to close", `document.querySelector('[role="dialog"]') === null`);
 
     // What a teammate writes is drawn as text, in plain notes and in Markdown alike: nothing in it runs or loads.
-    await bob.send("alice", `<script>window.pwned = 1</script><img src="x" onerror="window.pwned = 2"> plain`);
-    await bob.send("alice", '```\nfenced\n```\n\n<script>window.pwned = 3</script>\n\n<img src=x onerror="window.pwned = 4">\n\n![remote](https://example.com/a.png)');
+    await bob.publish("alice", "message", { text: `<script>window.pwned = 1</script><img src="x" onerror="window.pwned = 2"> plain`, via: "cli" });
+    await bob.publish("alice", "message", {
+      text: '```\nfenced\n```\n\n<script>window.pwned = 3</script>\n\n<img src=x onerror="window.pwned = 4">\n\n![remote](https://example.com/a.png)',
+      via: "cli"
+    });
     await page.until("both notes in the thread", `document.querySelector("main").innerText.includes("plain") && document.querySelector("main").innerText.includes("fenced")`);
     assert.equal(await page.eval(`document.querySelectorAll("main script, main img").length`), 0);
     assert.equal(await page.eval("window.pwned"), undefined);
