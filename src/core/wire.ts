@@ -31,6 +31,9 @@ export const kindSchema = z.enum(["note", "status"]); // A status reports what a
 
 export const userSchema = z.strictObject({ name: nameSchema, pubkey: pubKeySchema }).readonly();
 
+/** What someone sends to register a name: the name, their key, and the token the hub's owner gave the team. */
+export const joinSchema = z.strictObject({ name: nameSchema, pubkey: pubKeySchema, token: z.string() }).readonly();
+
 /** Someone who has joined, and the Unix seconds of their last signed request; 0 if they have never made one. */
 export const personSchema = z.strictObject({ name: nameSchema, pubkey: pubKeySchema, seen: z.int() }).readonly();
 

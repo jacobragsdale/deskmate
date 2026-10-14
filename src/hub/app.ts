@@ -1,0 +1,166 @@
+/** The hub: keeps everyone's public key, and answers who has joined. Ported from src/deskmate/hub.py route for route: the same paths, the same statuses, the same words. */
+
+import { createHash, timingSafeEqual } from "node:crypto";
+import { createServer } from "node:http";
+import type { IncomingMessage, Server, ServerResponse } from "node:http";
+
+import type { z } from "zod";
+
+import { authClaim, authIsValid } from "../core/sign.ts";
+import { joinSchema } from "../core/wire.ts";
+import { prefixKey } from "../desk/repos.ts";
+import { Database } from "./db.ts";
+
+const MAX_REQUEST = 4_000_000; // Most characters one request's body may hold: several times the longest list of repos or the longest note.
+
+export interface HubSettings {
+  readonly joinToken: string; // The shared secret that lets a teammate register a name.
+  readonly db: string; // The file the hub keeps everything in.
+  readonly repos: string; // The URL the team's repos live under; only those may be shared.
+}
+
+/** Something worth a line in the hub's log: what happened, and the facts of it. */
+export type Log = (event: string, facts: Readonly<Record<string, string | number>>) => void;
+
+/** One request as a route sees it. */
+interface Ask {
+  readonly me: string; // Who is asking, proved by their signature; "" on the routes open to anyone.
+  readonly body: string; // What the request carried, not yet parsed.
+}
+
+type Answer = readonly [status: number, body: unknown];
+
+interface Route {
+  readonly method: string;
+  readonly path: string;
+  readonly open?: true; // Answered without asking who is calling.
+  readonly answer: (ask: Ask) => Answer;
+}
+
+/** A request the hub will not serve. The words are for whoever sent it. */
+class Refusal extends Error {
+  public readonly status: number;
+
+  constructor(status: number, detail: string) {
+    super(detail);
+    this.status = status;
+  }
+}
+
+/** Parse one part of a request. A failure answers 422 and names the field that was wrong. */
+function parsed<T>(schema: z.ZodType<T>, value: unknown, part: string): T {
+  const result = schema.safeParse(value);
+  if (result.success) {
+    return result.data;
+  }
+  const issue = result.error.issues[0];
+  throw new Refusal(422, `invalid ${issue === undefined || issue.path.length === 0 ? part : issue.path.join(".")}: ${issue?.message ?? "not what the hub expects"}`);
+}
+
+/** The JSON a request carried, as `schema` describes it. */
+function jsonBody<T>(schema: z.ZodType<T>, text: string): T {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw new Refusal(422, "invalid body: not JSON");
+  }
+  return parsed(schema, value, "body");
+}
+
+/** Read a request's body. One too long to be anything the hub accepts is cut off rather than held in memory. */
+function bodyText(request: IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let text = "";
+    request.setEncoding("utf8").on("data", (chunk: string) => {
+      text += chunk;
+      if (text.length > MAX_REQUEST) {
+        request.destroy(); // No client of the hub sends this much, so there is nobody to explain it to.
+        reject(new Refusal(413, "the request is too large"));
+      }
+    });
+    request.on("end", () => {
+      resolve(text);
+    });
+    request.on("error", reject);
+  });
+}
+
+function sameSecret(given: string, expected: string): boolean {
+  // Compared as hashes, so the time it takes says nothing about where they differ or how long the secret is.
+  const digest = (text: string): Buffer => createHash("sha256").update(text).digest();
+  return timingSafeEqual(digest(given), digest(expected));
+}
+
+function send(response: ServerResponse, [status, body]: Answer): void {
+  const text = JSON.stringify(body);
+  response.writeHead(status, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(text) }).end(text);
+}
+
+/** Open the hub's database and return its server, not yet listening. `now` is the hub's clock in Unix seconds. Closing the server closes the database. */
+export function createHub(settings: HubSettings, now: () => number = () => Date.now() / 1000, log: Log = () => undefined): Server {
+  const prefix = prefixKey(settings.repos);
+  const db = new Database(settings.db);
+
+  function caller(header: string): string {
+    const claim = authClaim(header);
+    const pubkey = claim === null ? null : db.pubkeyOf(claim.name);
+    if (claim === null || pubkey === null || !authIsValid(claim, pubkey, now())) {
+      throw new Refusal(401, "not signed by a known user, or your clock is more than 5 minutes off");
+    }
+    db.sawUser(claim.name, Math.floor(now())); // Every signed request doubles as "I am here".
+    return claim.name;
+  }
+
+  function join(ask: Ask): Answer {
+    const { name, pubkey, token } = jsonBody(joinSchema, ask.body);
+    if (!sameSecret(token, settings.joinToken)) {
+      throw new Refusal(403, "wrong join token");
+    }
+    db.addUser(name, pubkey);
+    if (db.pubkeyOf(name) !== pubkey) {
+      throw new Refusal(409, `the name '${name}' is taken by another key`);
+    }
+    log("user joined", { user: name });
+    return [201, { name, pubkey }];
+  }
+
+  const routes: readonly Route[] = [
+    { method: "GET", path: "/healthz", open: true, answer: () => [200, { ok: true }] },
+    { method: "POST", path: "/join", open: true, answer: join },
+    { method: "GET", path: "/info", answer: () => [200, { repos: prefix }] },
+    { method: "GET", path: "/users", answer: () => [200, db.users()] }
+  ];
+
+  async function answer(request: IncomingMessage): Promise<Answer> {
+    const path = (request.url ?? "").split("?")[0];
+    const there = routes.filter((route) => route.path === path);
+    const route = there.find((candidate) => candidate.method === request.method);
+    if (route === undefined) {
+      throw there.length === 0 ? new Refusal(404, "Not Found") : new Refusal(405, "Method Not Allowed");
+    }
+    const me = route.open === true ? "" : caller(request.headers.authorization ?? "");
+    return route.answer({ me, body: await bodyText(request) });
+  }
+
+  const server = createServer((request, response) => {
+    answer(request).then(
+      (found) => {
+        send(response, found);
+      },
+      (error: unknown) => {
+        if (error instanceof Refusal) {
+          send(response, [error.status, { detail: error.message }]);
+        } else {
+          log("request failed", { path: request.url ?? "", error: error instanceof Error ? error.message : String(error) });
+          send(response, [500, { detail: "Internal Server Error" }]);
+        }
+      }
+    );
+  });
+  server.on("close", () => {
+    db.close();
+  });
+  log("hub ready", { db: settings.db, repos: prefix });
+  return server;
+}

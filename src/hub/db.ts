@@ -4,6 +4,9 @@ import { DatabaseSync } from "node:sqlite";
 
 import { z } from "zod";
 
+import { personSchema } from "../core/wire.ts";
+import type { Person } from "../core/wire.ts";
+
 const SCHEMA_VERSION = 3;
 const BUSY_WAIT = 5; // Seconds to wait for another program that holds the file, such as a backup, before giving up.
 
@@ -31,6 +34,8 @@ CREATE INDEX IF NOT EXISTS notes_by_sender ON notes (sender, id);
 // A row is whatever the file holds, so each is parsed like anything else that comes from outside.
 const versionSchema = z.strictObject({ user_version: z.int() });
 const tablesSchema = z.strictObject({ tables: z.int() });
+const pubkeySchema = z.strictObject({ pubkey: z.string() }).optional();
+const peopleSchema = z.array(personSchema);
 
 export class Database {
   private readonly db: DatabaseSync;
@@ -49,5 +54,24 @@ export class Database {
 
   public close(): void {
     this.db.close();
+  }
+
+  /** The key a name was registered with, or null when nobody has joined under it. */
+  public pubkeyOf(name: string): string | null {
+    return pubkeySchema.parse(this.db.prepare("SELECT pubkey FROM users WHERE name = ?").get(name))?.pubkey ?? null;
+  }
+
+  /** Register a name with its key. A name already taken keeps the key it has. */
+  public addUser(name: string, pubkey: string): void {
+    this.db.prepare("INSERT OR IGNORE INTO users (name, pubkey) VALUES (?, ?)").run(name, pubkey);
+  }
+
+  /** Record that someone was here at `ts`, Unix seconds. */
+  public sawUser(name: string, ts: number): void {
+    this.db.prepare("UPDATE users SET seen = ? WHERE name = ?").run(ts, name);
+  }
+
+  public users(): readonly Person[] {
+    return peopleSchema.parse(this.db.prepare("SELECT name, pubkey, seen FROM users ORDER BY name").all());
   }
 }

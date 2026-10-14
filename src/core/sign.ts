@@ -70,7 +70,32 @@ export function noteIsAuthentic(note: Note, pubkey: string): boolean {
   return verifySignature(pubkey, notePayload(note), note.sig);
 }
 
+function authPayload(name: string, ts: number): Buffer {
+  return Buffer.from(`deskmate-auth-v1:${name}:${String(ts)}`, "utf8");
+}
+
 /** Prove who is asking. It gates reads and channel membership: every note carries its own signature. */
 export function authHeader(key: KeyObject, name: string, ts: number): string {
-  return `${AUTH_SCHEME} ${name}:${String(ts)}:${sign(null, Buffer.from(`deskmate-auth-v1:${name}:${String(ts)}`, "utf8"), key).toString("hex")}`;
+  return `${AUTH_SCHEME} ${name}:${String(ts)}:${sign(null, authPayload(name, ts), key).toString("hex")}`;
+}
+
+/** Who an auth header says it is from, and when and how it was signed. */
+export interface AuthClaim {
+  readonly name: string;
+  readonly ts: number;
+  readonly sig: string;
+}
+
+/** Split an auth header into its claim without trusting it yet. Null when it is not one. */
+export function authClaim(header: string): AuthClaim | null {
+  const space = header.indexOf(" ");
+  const [name = "", ts = "", sig = ""] = (space === -1 ? "" : header.slice(space + 1)).split(":");
+  if (space === -1 || header.slice(0, space) !== AUTH_SCHEME || !/^\d{1,12}$/.test(ts)) {
+    return null;
+  }
+  return { name, ts: Number(ts), sig };
+}
+
+export function authIsValid(claim: AuthClaim, pubkey: string, now: number): boolean {
+  return isFresh(claim.ts, now) && verifySignature(pubkey, authPayload(claim.name, claim.ts), claim.sig);
 }
