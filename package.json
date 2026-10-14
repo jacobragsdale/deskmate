@@ -20,7 +20,9 @@
     "format": "prettier . --write",
     "format:check": "prettier . --check",
     "pretest": "node build.mjs",
-    "test": "node --test \"test/*.test.ts\""
+    "test": "node --test \"test/*.test.ts\"",
+    "package:win": "electron-builder --win --publish never",
+    "package:linux": "electron-builder --linux --publish never"
   },
   "dependencies": {
     "react": "^19.3.0",
@@ -34,11 +36,42 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "electron": "^44.7.1",
+    "electron-builder": "^26.15.3",
     "esbuild": "^0.28.2",
     "eslint": "^10.12.0",
     "eslint-config-prettier": "^10.1.8",
     "prettier": "^3.9.10",
     "typescript": "~6.0",
     "typescript-eslint": "^8.71.2"
+  },
+  "build": {
+    "appId": "io.github.jacobragsdale.player-two",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "!dist/**/*.map",
+      "!dist/wsl-runtime.tar.gz*",
+      "!node_modules/**/*"
+    ],
+    "win": {
+      "target": "nsis",
+      "extraResources": [
+        {
+          "from": "dist/wsl-runtime.tar.gz",
+          "to": "wsl-runtime.tar.gz"
+        },
+        {
+          "from": "dist/wsl-runtime.tar.gz.sha256",
+          "to": "wsl-runtime.tar.gz.sha256"
+        }
+      ]
+    },
+    "linux": {
+      "target": "AppImage",
+      "category": "Development"
+    },
+    "publish": null
   }
 }

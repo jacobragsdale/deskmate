@@ -12,3 +12,5 @@ dist/
 
 # Downloads kept between builds: Node for the Linux runtime
 .cache/
+# What electron-builder makes
+release/
