@@ -471,42 +471,64 @@ await test("a request its asker deletes leaves its owner a run they can still se
   ); // Each run told the chat how it ended.
 });
 
-await test("an agent whose run cannot be told to the chat does not start", { timeout: 30_000 }, async (t) => {
-  const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
-  const alice = await hub.join("alice");
-  const bob = await hub.join("bob");
-  const dev = join(hub.dir, "dev-bob");
-  checkout(dev, "uploader");
-  const notices: Notice[] = [];
-  let ran = 0;
-  const hooks = {
-    changed: () => undefined,
-    notice: (notice: Notice) => {
-      notices.push(notice);
-    },
-    arrived: () => undefined,
-    confirmClone: () => Promise.resolve(false)
-  };
-  const options = {
-    presence: 1,
-    describe: () => Promise.reject(new Error("git cannot say which commit it is at")),
-    runner: () => {
-      ran += 1;
-      return Promise.resolve("done");
+await test(
+  "an agent whose run cannot be told to the chat does not start: not when git cannot say where its checkout stands, nor when the hub cannot be reached to record it",
+  { timeout: 30_000 },
+  async (t) => {
+    const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+    const alice = await hub.join("alice");
+    await hub.join("bob");
+    const dev = join(hub.dir, "dev-bob");
+    checkout(dev, "uploader");
+    const unreachable = "cannot reach the hub: the network is down";
+    const acceptanceLost: Transport = (method, url, headers, body) =>
+      body?.includes('"kind":"job.accepted"') === true ? Promise.reject(new PlayerTwoError(unreachable)) : http(method, url, headers, body);
+    const cases = [
+      { describe: () => Promise.reject(new Error("git cannot say which commit it is at")), transport: http, why: "git cannot say which commit it is at" },
+      { describe: () => Promise.resolve({ branch: "main", commit: COMMIT, dirty: false }), transport: acceptanceLost, why: unreachable }
+    ];
+    for (const { describe, transport, why } of cases) {
+      const bob = loadClient(join(hub.dir, "bob"), transport, () => Date.now() / 1000);
+      assert.ok(bob !== null);
+      const desk = deskOf(t, bob, dev, { describe });
+      const { event } = await alice.publish("bob", "message", { text: "@bob/uploader go", via: "cli" });
+      await until(desk.session, "the request", () => shownTo(desk.session, event.id)?.requests[0]?.status.kind === "ready");
+      await desk.session.handle({ do: "run", id: event.id, repo: "uploader", post: true });
+      await until(desk.session, "told it did not start", () => desk.notices.length > 0);
+      assert.deepEqual(desk.notices, [{ title: "your uploader agent did not start", body: why, severity: "error" }]);
+      assert.deepEqual(desk.ran, []);
+      await desk.session.stop();
     }
-  };
-  const session = new Session(bob, dev, hooks, options);
-  session.start();
-  t.after(() => session.stop());
+    assert.deepEqual(
+      (await alice.events({ chat: "bob" })).map((delivered) => delivered.event.kind),
+      ["message", "message"]
+    ); // Nothing was said in the chat: as far as anyone can tell, neither was ever accepted.
+  }
+);
 
-  const { event } = await alice.publish("bob", "message", { text: "@bob/uploader go", via: "cli" });
-  await until(session, "the request", (view) => messages(view).find((message) => message.id === event.id)?.requests[0]?.status.kind === "ready");
-  await session.handle({ do: "run", id: event.id, repo: "uploader", post: true });
-  await until(session, "told it did not start", () => notices.length > 0);
-  assert.deepEqual(notices, [{ title: "your uploader agent did not start", body: "git cannot say which commit it is at", severity: "error" }]);
-  assert.equal(ran, 0);
-  assert.deepEqual(
-    (await alice.events({ chat: "bob" })).map((delivered) => delivered.event.kind),
-    ["message"]
-  ); // Nothing was said in the chat: as far as anyone can tell, it was never accepted.
+await test("your own tag, sent from your window on one machine, waits for your click on another", { timeout: 30_000 }, async (t) => {
+  const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+  const jacob = await hub.join("jacob");
+  await hub.join("bob");
+  const elsewhere = loadClient(join(hub.dir, "jacob"), http, () => Date.now() / 1000); // The same identity, as on a second machine.
+  assert.ok(elsewhere !== null);
+  const [here, there] = [join(hub.dir, "dev-here"), join(hub.dir, "dev-there")];
+  checkout(here, "uploader");
+  checkout(there, "uploader");
+  const held = Promise.withResolvers<undefined>(); // Holds the first machine's run before its acceptance, so the second sees the message while it still waits.
+  const head = { branch: "main", commit: COMMIT, dirty: false };
+  const first = deskOf(t, jacob, here, { describe: () => held.promise.then(() => head) });
+  const second = deskOf(t, elsewhere, there, { describe: () => Promise.resolve(head) });
+  for (const desk of [first, second]) {
+    await until(desk.session, "the checkout shared", (view) => view.loaded && view.myRepos.includes("uploader"));
+  }
+
+  await first.session.handle({ do: "send", chat: "bob", text: "@jacob/uploader from my other machine" });
+  await second.session.handle({ do: "open", chat: "bob" });
+  await until(second.session, "the message on the second machine", (view) => messages(view).some((message) => message.body === "@jacob/uploader from my other machine"));
+  await pause(300);
+  assert.deepEqual([first.ran.length, second.ran.length], [0, 0]); // The first is still being described.
+  held.resolve(undefined);
+  await until(second.session, "the answer from the first machine", (view) => messages(view).some((message) => message.agent === "uploader"));
+  assert.deepEqual([first.ran.length, second.ran.length], [1, 0]);
 });
