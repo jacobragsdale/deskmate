@@ -18,7 +18,7 @@ const requestSchema = z
       z.strictObject({ kind: z.literal("running"), startedAt: z.number(), branch: z.string() }), // Mine: at work since `startedAt`, Unix milliseconds.
       z.strictObject({ kind: z.literal("noCheckout") }), // Mine: I have no copy of the repo.
       z.strictObject({ kind: z.literal("ready"), before: z.enum(["", "declined", "failed", "stopped", "interrupted"]), canDecline: z.boolean() }), // Mine: I can run it.
-      z.strictObject({ kind: z.literal("working"), branch: z.string() }),
+      z.strictObject({ kind: z.literal("working"), branch: z.string(), summary: z.string() }), // A teammate's at work, and what their desk last said it is doing: one of job.progress's few words, "" before it has said.
       z.strictObject({ kind: z.literal("waiting"), away: z.boolean() }),
       z.strictObject({ kind: z.literal("nobody") }), // Nobody of that name has joined.
       z.strictObject({ kind: z.literal("lacksRepo") }), // Its owner has no copy of the repo.

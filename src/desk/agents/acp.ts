@@ -12,6 +12,7 @@ import type { Readable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 import { z } from "zod";
 
+import type { Summary } from "../../core/kinds.ts";
 import { head } from "../../core/text.ts";
 import { VERSION } from "../../core/version.ts";
 import { commandLineOf } from "../../core/wire.ts";
@@ -72,6 +73,26 @@ function actionOf(kind: acp.ToolKind | null | undefined): Action | null {
     case null:
     case undefined:
       return null;
+  }
+}
+
+/** What the agent is doing while it does an action, in the coarse words the chat is told. */
+function summaryOf(action: Action | null): Summary {
+  switch (action) {
+    case "read":
+    case "search":
+    case "fetch":
+      return "reading";
+    case "edit":
+    case "delete":
+    case "move":
+      return "editing files";
+    case "execute":
+      return "running a command";
+    case "think":
+    case "other":
+    case null:
+      return "thinking";
   }
 }
 
@@ -346,18 +367,18 @@ class Conversation {
     const call = request.toolCall;
     const action = actionOf(call.kind) ?? turn.kinds.get(call.toolCallId) ?? "other";
     const ask = { action, title: call.title ?? turn.tools.get(call.toolCallId)?.title ?? action, detail: detailOf(call) };
-    const item = (outcome: string, status: ActivityItem["status"]): void => {
-      turn.handlers.activity({ id: `permission ${call.toolCallId}`, run: "", kind: "permission", title: ask.title, outcome, status, quiet: false, detail: ask.detail });
+    const item = (outcome: string, status: ActivityItem["status"], doing: Summary): void => {
+      turn.handlers.activity({ id: `permission ${call.toolCallId}`, run: "", kind: "permission", title: ask.title, outcome, status, quiet: false, detail: ask.detail }, doing);
     };
     let decision = turn.allowed.has(action) ? "allow" : decide(turn.mode, action);
     if (decision === "ask") {
-      item("", "running");
+      item("", "running", "waiting for approval");
       turn.clock.pause();
       const answer = await Promise.race([turn.handlers.permission(ask), aborted(turn.cancel), aborted(signal)]).finally(() => {
         turn.clock.resume();
       });
       if (answer === "aborted") {
-        item("cancelled", "done");
+        item("cancelled", "done", "thinking");
         return CANCELLED;
       }
       if (answer === "allow-run") {
@@ -365,7 +386,7 @@ class Conversation {
       }
       decision = answer === "refuse" ? "refuse" : "allow";
     }
-    item(decision === "allow" ? "allowed" : "refused", "done");
+    item(decision === "allow" ? "allowed" : "refused", "done", decision === "allow" ? summaryOf(action) : "thinking");
     return optionFor(request.options, decision);
   }
 
@@ -384,7 +405,7 @@ class Conversation {
       }
       const item = toolItem(update, turn.tools.get(update.toolCallId));
       turn.tools.set(item.id, item);
-      turn.handlers.activity(item);
+      turn.handlers.activity(item, summaryOf(turn.kinds.get(update.toolCallId) ?? null));
     }
   }
 }

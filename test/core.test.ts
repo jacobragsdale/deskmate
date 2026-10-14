@@ -107,6 +107,19 @@ await test("a tagged agent's state follows its owner's job events, and one worki
   const message = log.message(ask.event.id);
   assert.ok(message !== null);
   assert.deepEqual(log.requests(message, NOW)[0]?.accepted, { repo: "uploader", ...ACCEPTED });
+
+  // What its owner's desk says it is doing counts while it works, from its owner, and a run accepted again starts with nothing said.
+  const doing = (summary: string, author = "jacob"): Entry => entry(author, author === "jacob" ? "bob" : "jacob", "job.progress", { repo: "uploader", summary }, { refs: [ask.event.id] });
+  const summaryAfter = (...later: Entry[]): string[] => {
+    const folded = logOf("jacob", [ask, ...later]);
+    return folded.requests(folded.message(ask.event.id) ?? assert.fail("no request"), NOW).map((request) => request.summary);
+  };
+  assert.deepEqual(summaryAfter(job("job.accepted", ACCEPTED), doing("reading"), doing("editing files")), ["editing files"]);
+  assert.deepEqual(summaryAfter(doing("reading")), [""]); // Not working yet.
+  assert.deepEqual(summaryAfter(job("job.accepted", ACCEPTED), doing("reading", "bob")), [""]); // Only its owner speaks for it.
+  assert.deepEqual(summaryAfter(job("job.accepted", ACCEPTED), doing("reading"), job("job.accepted", ACCEPTED)), [""]);
+  assert.deepEqual(summaryAfter(job("job.accepted", ACCEPTED), doing("reading"), doing("editing src/queue.py")), ["reading"]); // Only the fixed words are read.
+  assert.deepEqual(summaryAfter(job("job.accepted", ACCEPTED), job("job.result", answer), doing("reading")), [""]);
   assert.deepEqual(
     log.waitingForMe("bob", NOW - STALE).map((request) => request.repo),
     []
@@ -601,6 +614,7 @@ await test("each kind's content is read by its kind, and anything else is unknow
     ["channel.pin", { repo: null, branch: null }],
     ["job.accepted", accepted],
     ["job.declined", { repo: "uploader", reason: "" }],
+    ["job.progress", { repo: "uploader", summary: "running a command" }],
     ["job.result", { repo: "uploader", branch: "main", text: "in queue.py", reviewed: true }],
     ["job.error", { repo: "uploader" }],
     ["job.cancelled", { repo: "uploader" }],
@@ -621,6 +635,7 @@ await test("each kind's content is read by its kind, and anything else is unknow
   assert.equal(read("job.accepted", { ...accepted, mode: "everything" }), "unknown");
   assert.equal(read("channel.pin", { repo: null, branch: "main" }), "unknown"); // Not until phase 6.
   assert.equal(read("job.withdrawn", { agent: "uploader" }), "unknown");
+  assert.equal(read("job.progress", { repo: "uploader", summary: "running npm test" }), "unknown"); // Never a command, a path or output.
 });
 
 await test("a text is cut so the event carrying it fits what the hub accepts, however much writing it as JSON adds, without splitting a character", () => {

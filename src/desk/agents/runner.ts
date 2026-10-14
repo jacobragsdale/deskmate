@@ -1,5 +1,6 @@
 /** The one shape every kind of agent presents to the session: a run in a checkout at a permission mode, telling the session what it does as it does it, and asking it what the mode leaves to the owner. */
 
+import type { Summary } from "../../core/kinds.ts";
 import type { ActivityItem } from "../../shared/ipc.ts";
 import type { Action, PermissionMode } from "../permissions.ts";
 
@@ -11,7 +12,8 @@ export interface PermissionAsk {
 }
 
 export interface RunHandlers {
-  activity(item: ActivityItem): void; // New, or a newer version of one with the same id. The runner leaves `run` as "": the session, which knows the run, fills it in.
+  // New, or a newer version of one with the same id, and what the agent is doing as of it in the coarse words the chat is told. The runner leaves `run` as "": the session, which knows the run, fills it in.
+  activity(item: ActivityItem, doing: Summary): void;
   permission(ask: PermissionAsk): Promise<"allow-once" | "allow-run" | "refuse">;
 }
 

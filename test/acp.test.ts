@@ -1,17 +1,20 @@
 /**
  * The ACP runner against a scripted agent, test/fixtures/fake-acp-agent.ts, run with node: its answer, signing in, what each mode allows, asks and refuses, stopping,
- * follow-ups, also through a session against a real hub, and that nothing the agent started is left behind.
+ * follow-ups, also through a session against a real hub, and that nothing the agent started is left behind. Then the phase's two-session scenario, with what the hub stores after it.
  */
 
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import type { TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { readContent } from "../src/core/kinds.ts";
+import { z } from "zod";
+
+import { readContent, SUMMARIES } from "../src/core/kinds.ts";
 import type { Agent, PermissionMode } from "../src/core/wire.ts";
 import { acpRunner } from "../src/desk/agents/acp.ts";
 import type { FollowUp, PermissionAsk, RunHandlers } from "../src/desk/agents/runner.ts";
@@ -306,7 +309,7 @@ await test(
         arrivals.push(arrival);
       }
     };
-    const owner = new Session(bob, dev, told, { presence: 1, describe: () => Promise.resolve({ branch: "main", commit: "c0ffee".padEnd(40, "0"), dirty: false }) });
+    const owner = new Session(bob, dev, told, { presence: 1, progress: 0.2, describe: () => Promise.resolve({ branch: "main", commit: "c0ffee".padEnd(40, "0"), dirty: false }) });
     const asker = new Session(alice, join(hub.dir, "dev-alice"), hooks, { presence: 1 });
     for (const session of [owner, asker]) {
       session.start();
@@ -363,7 +366,14 @@ await test(
     assert.deepEqual(arrivals.at(-1), { chat: "#supervised", title: "Your uploader agent is waiting for your answer", body: "Edit edited.txt", forMe: true, rings: true });
     await delay(300);
     assert.equal(existsSync(edited), false);
-    assert.deepEqual(shown(asker, "#supervised", supervised)?.status.kind === "working" && asker.view().current?.asks, []);
+    // Alice sees only the coarse summary: no ask, and nothing of what the agent is doing beyond that.
+    const coarse = await until("alice sees what it is doing", () => {
+      const status = shown(asker, "#supervised", supervised)?.status;
+      return status?.kind === "working" && status.summary === "waiting for approval" && status;
+    });
+    assert.deepEqual(coarse, { kind: "working", branch: "main", summary: "waiting for approval" });
+    assert.deepEqual(asker.view().current?.asks, []);
+    assert.ok(!JSON.stringify(asker.view()).includes("edited.txt"));
     await owner.handle({ do: "permit", ask: ask.id, answer: "allow-once" });
     await until("the answer, posted", () => asker.view().current?.messages.some((message) => message.agent === "uploader" && message.body === "turn 1: read; edit allowed"));
     assert.equal(existsSync(edited), true);
@@ -389,5 +399,24 @@ await test(
     assert.ok(Date.now() - stoppedAt < 3000, `took ${String(Date.now() - stoppedAt)} ms to stop`);
     await owner.stop(); // And the sessions the answered runs kept for a follow-up with it.
     assert.deepEqual(await left(checkout), []);
+
+    // Nothing the agent did reached the hub beyond those few words: no item, path or command is in any event it stores.
+    const stored = new DatabaseSync(join(hub.dir, "hub.db"), { readOnly: true });
+    const rows = z.array(z.object({ kind: z.string(), content: z.string(), refs: z.string() })).parse(stored.prepare("SELECT kind, content, refs FROM events ORDER BY seq").all());
+    stored.close();
+    const progress = rows.filter((row) => row.kind === "job.progress").map((row) => ({ request: row.refs, summary: z.object({ summary: z.string() }).parse(JSON.parse(row.content)).summary }));
+    const said = progress.map((each) => each.summary);
+    assert.ok(said.includes("waiting for approval") && said.every((summary) => SUMMARIES.some((each) => each === summary)), said.join(", "));
+    assert.ok(
+      progress.every((each, index) => index === 0 || progress[index - 1]?.request !== each.request || progress[index - 1]?.summary !== each.summary),
+      said.join(", ")
+    ); // Only when it changed.
+    for (const leak of ["README.md", "edited.txt", "npm test", checkout]) {
+      assert.deepEqual(
+        rows.filter((row) => JSON.stringify(row).includes(leak)),
+        [],
+        leak
+      );
+    }
   }
 );

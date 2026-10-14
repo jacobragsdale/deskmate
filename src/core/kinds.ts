@@ -11,6 +11,9 @@ const nothing = z.object({}).readonly();
 const text = z.string().min(1);
 const repo = repoNameSchema; // The repo of the agent a job is for. The agent's owner is the event's author.
 
+/** What an agent at work is doing, in the only words job.progress may carry: never a path, a command or anything the agent wrote. */
+export const SUMMARIES = ["thinking", "reading", "editing files", "running a command", "waiting for approval"] as const;
+
 /** The content of each kind this version knows, tagged with the kind. */
 export const contentSchema = z
   .discriminatedUnion("kind", [
@@ -36,6 +39,7 @@ export const contentSchema = z
         .readonly()
     }),
     z.object({ kind: z.literal("job.declined"), content: z.object({ repo, reason: z.string() }).readonly() }),
+    z.object({ kind: z.literal("job.progress"), content: z.object({ repo, summary: z.enum(SUMMARIES) }).readonly() }), // Coarse, for everyone in the chat.
     z.object({ kind: z.literal("job.result"), content: z.object({ repo, branch: branchSchema, text, reviewed: z.boolean() }).readonly() }),
     z.object({ kind: z.literal("job.error"), content: z.object({ repo }).readonly() }), // Only the fact: why stays with the owner.
     z.object({ kind: z.literal("job.cancelled"), content: z.object({ repo }).readonly() }),
@@ -44,6 +48,7 @@ export const contentSchema = z
   .readonly();
 
 export type Content = z.infer<typeof contentSchema>;
+export type Summary = (typeof SUMMARIES)[number];
 
 /** What an event of kind K holds. */
 export type ContentOf<K extends Content["kind"]> = Extract<Content, { readonly kind: K }>["content"];

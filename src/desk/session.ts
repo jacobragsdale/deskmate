@@ -12,7 +12,7 @@ import { agentPrompt, ChatLog, chatOf, continues, mentions, ONLINE, refOf, rings
 import type { Accepted, Entry, Message, Request } from "../core/chat.ts";
 import { readContent } from "../core/kinds.ts";
 import { notesIn } from "../core/links.ts";
-import type { Content, ContentOf } from "../core/kinds.ts";
+import type { Content, ContentOf, Summary } from "../core/kinds.ts";
 import { acpRunner } from "./agents/acp.ts";
 import { oneshotRunner, runAgent } from "./agents/oneshot.ts";
 import { PRESETS } from "./agents/presets.ts";
@@ -32,6 +32,7 @@ const RETRY_DELAY = 5; // Seconds to wait before asking a hub that did not answe
 const UPDATE_DELAY = 60; // Seconds to wait before asking a hub on another protocol again: its answer changes only when someone updates one side.
 const STOP_WAIT = 3; // Seconds to give stopped agents to go before the session is done.
 const PAGE = 50; // Events of one chat loaded at a time: its newest when it is first listed, and as many again each time the user scrolls back.
+const PROGRESS = 10; // Least seconds between two job.progress events of one run.
 
 /** What the session remembers between runs, in app-state.json. */
 const savedSchema = z.strictObject({ read: z.record(z.string(), z.int()), chat: z.string().nullable() });
@@ -48,6 +49,7 @@ export interface Options {
   readonly cloner?: (url: string, destination: string) => Promise<void>;
   readonly describe?: (checkout: Checkout) => Promise<Head>;
   readonly presence?: number; // Seconds between presence checks; a test shortens it.
+  readonly progress?: number; // Least seconds between two job.progress events of one run; a test shortens it.
 }
 
 /** An agent's answer waiting for its owner to review, edit and send. */
@@ -76,6 +78,10 @@ interface AgentRun {
   readonly cancel: AbortController;
   readonly startedAt: number; // Unix milliseconds.
   done: Promise<void>; // Settles once the agent's process is gone and the chat has been told how it ended.
+  doing: Summary | ""; // What the agent is doing now, in job.progress's words; "" until it has said.
+  told: Summary | ""; // What the chat was last told it is doing.
+  toldAt: number; // When, Unix milliseconds; 0 before it ever was.
+  telling: NodeJS.Timeout | undefined; // Set while the chat is to be told, once PROGRESS seconds have passed since it last was.
 }
 
 type ChatCommand = Exclude<Command, { do: "join" | "doctor" | "search" }>;
@@ -133,6 +139,7 @@ export class Session {
   private readonly cloner: (url: string, destination: string) => Promise<void>;
   private readonly describe: (checkout: Checkout) => Promise<Head>;
   private readonly presence: number;
+  private readonly progressEvery: number;
   private readonly me: string;
   private readonly chats: ChatLog;
   private readonly stopping = new AbortController();
@@ -170,6 +177,7 @@ export class Session {
     this.cloner = options.cloner ?? repos.clone;
     this.describe = options.describe ?? repos.describe;
     this.presence = options.presence ?? PRESENCE;
+    this.progressEvery = options.progress ?? PROGRESS;
     this.me = client.config.name;
     this.chats = new ChatLog(this.me);
     const saved = this.loadSaved();
@@ -545,7 +553,7 @@ export class Session {
   private theirStatus(request: Request): RequestView["status"] {
     const { owner, repo, state } = request;
     if (state === "working") {
-      return { kind: "working", branch: ranOn(request.accepted) };
+      return { kind: "working", branch: ranOn(request.accepted), summary: request.summary };
     }
     if (state === "declined" || state === "failed" || state === "stopped" || state === "withdrawn") {
       return { kind: state };
@@ -1062,7 +1070,7 @@ export class Session {
     const prompt = agentPrompt(message, this.me, repo, this.chats.earlier(message), !post, agent.protocol === "acp");
     // A reply in a thread from the same asker to the same agent goes on in the session the thread's last such request left open, if one is.
     const followUp = { key: [message.root ?? message.entry.event.id, message.entry.event.author, repo].join(" "), text: message.text };
-    const run: AgentRun = { entry: message.entry, repo, post, mode, cancel: new AbortController(), startedAt: Date.now(), done: Promise.resolve() };
+    const run: AgentRun = { entry: message.entry, repo, post, mode, cancel: new AbortController(), startedAt: Date.now(), done: Promise.resolve(), doing: "", told: "", toldAt: 0, telling: undefined };
     this.runs.set(key, run);
     run.done = this.work(key, run, checkout, this.runnerFor(agent), prompt, followUp);
     this.hooks.changed();
@@ -1090,6 +1098,32 @@ export class Session {
   }
 
   /**
+   * Tell the chat what the agent is doing, in job.progress's few coarse words and never more: at most once every PROGRESS seconds, and only when it has changed since the chat was last told.
+   * Best effort: a teammate misses one line.
+   */
+  private progress(key: string, doing: Summary): void {
+    const run = this.runs.get(key);
+    if (run === undefined) {
+      return;
+    }
+    run.doing = doing;
+    if (run.telling !== undefined) {
+      return; // It is told what it is doing by then.
+    }
+    run.telling = setTimeout(
+      () => {
+        run.telling = undefined;
+        if (this.runs.get(key) === run && run.doing !== "" && run.doing !== run.told) {
+          run.told = run.doing;
+          run.toldAt = Date.now();
+          this.client.publish(chatOf(run.entry.event, this.me), "job.progress", { repo: run.repo, summary: run.doing }, [run.entry.event.id]).catch(() => undefined);
+        }
+      },
+      Math.max(0, run.toldAt + this.progressEvery * 1000 - Date.now())
+    );
+  }
+
+  /**
    * Put an agent's ask to its owner, in the view and, for when they are not looking, as an arrival, and wait for their answer. A run that ends first takes its asks with it: see `work`.
    */
   private askOwner(key: string, chat: string, repo: string, ask: PermissionAsk): Promise<Answer> {
@@ -1104,7 +1138,12 @@ export class Session {
   private async work(key: string, run: AgentRun, checkout: Checkout, runner: AgentRunner, prompt: string, followUp: FollowUp): Promise<void> {
     const { entry, repo } = run;
     const chat = chatOf(entry.event, this.me);
-    const handlers: RunHandlers = { activity: () => undefined, permission: (ask) => this.askOwner(key, chat, repo, ask) };
+    const handlers: RunHandlers = {
+      activity: (_item, doing) => {
+        this.progress(key, doing);
+      },
+      permission: (ask) => this.askOwner(key, chat, repo, ask)
+    };
     const request = [entry.event.id];
     const stopped = (): boolean => run.cancel.signal.aborted; // Asked afresh each time: the user may stop it while this waits.
     let head: Head;
@@ -1145,6 +1184,7 @@ export class Session {
       await this.client.publish(chat, "job.error", { repo }, request).catch(() => undefined); // Only the fact: what the agent printed on the way down may not be fit to share.
       this.hooks.notice({ title: `your ${repo} agent`, body: ending, severity: "error" });
     }
+    clearTimeout(run.telling);
     for (const [id, waiting] of this.waiting) {
       if (waiting.run === key) {
         this.waiting.delete(id); // Nobody is asking any more: the runner stopped waiting for it when the run ended.

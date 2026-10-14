@@ -1,7 +1,7 @@
 /** Chat state behind the interface: each chat's events folded into what it shows, where each tagged agent stands, what is unread, and the tag list. No IO. */
 
 import { readContent } from "./kinds.ts";
-import type { Content } from "./kinds.ts";
+import type { Content, Summary } from "./kinds.ts";
 import { byCodeUnit, head } from "./text.ts";
 import { isChannel, NAME, REPO_NAME } from "./wire.ts";
 import type { ChannelInfo, Event, RepoRef, TeamRepo } from "./wire.ts";
@@ -58,6 +58,7 @@ export interface Request {
   readonly repo: string;
   readonly state: State;
   readonly accepted: Accepted | null; // What the owner last let it run with; null when they never have.
+  readonly summary: Summary | ""; // What its owner's desk last said it is doing, while it is working; "" before it has said.
 }
 
 /** One line of the chat list. */
@@ -200,6 +201,7 @@ interface Job {
   state: State;
   since: number; // When it last moved, Unix seconds by its owner's clock: how long it has been working.
   accepted: Accepted | null;
+  summary: Summary | "";
 }
 
 /** One chat after its events have been applied in order. */
@@ -269,7 +271,7 @@ function applyToMessage(folded: Folded, entry: Entry, said: Extract<Content, { r
     const message = newMessage(entry, said.content.text, target, null);
     place(folded, message);
     for (const [owner, repo] of mentions(said.content.text)) {
-      const job: Job = { request: message, owner, repo, state: "waiting", since: event.ts, accepted: null }; // A tag counts only here, in a message as it was sent: not in an answer, and not in an edit.
+      const job: Job = { request: message, owner, repo, state: "waiting", since: event.ts, accepted: null, summary: "" }; // A tag counts only here, in a message as it was sent: not in an answer, and not in an edit.
       message.jobs.push(job);
       folded.jobs.set(jobKey(event.id, `${owner}/${repo}`), job);
     }
@@ -302,6 +304,7 @@ function applyToJob(folded: Folded, entry: Entry, said: Extract<Content, { reado
     job.state = MOVES[said.kind][0];
     job.since = event.ts;
     job.accepted = said.kind === "job.accepted" ? said.content : job.accepted;
+    job.summary = "";
   }
   if (said.kind === "job.result") {
     const asked = folded.messages.get(request);
@@ -324,6 +327,12 @@ function apply(folded: Folded, entry: Entry): void {
     applyToMessage(folded, entry, said);
   } else if (aboutJob(said)) {
     applyToJob(folded, entry, said);
+  } else if (said.kind === "job.progress") {
+    // What the agent is doing, from its owner, while it works: looked up under the agent its author owns, as any job's event is.
+    const job = folded.jobs.get(jobKey(entry.event.refs[0] ?? "", `${entry.event.author}/${said.content.repo}`));
+    if (job?.state === "working") {
+      job.summary = said.content.summary;
+    }
   } else if (said.kind === "channel.join" || said.kind === "channel.leave") {
     folded.items.push({ kind: "line", entry, did: said.kind === "channel.join" ? "joined" : "left", repo: "" });
   } else if (said.kind === "channel.pin") {
@@ -432,7 +441,8 @@ export class ChatLog {
       owner: job.owner,
       repo: job.repo,
       state: job.state === "working" && seconds - job.since > STALE ? "waiting" : job.state,
-      accepted: job.accepted
+      accepted: job.accepted,
+      summary: job.summary
     }));
   }
 
