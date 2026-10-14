@@ -132,6 +132,8 @@ waiting ──accepted──► working ──result──► answered
    └──withdrawn──► withdrawn
 ```
 
+Two moves the diagram leaves out, which the window offered before events: the owner may accept a request again after declining it or after a run that failed or was stopped, and may decline one that is working, as when a draft is thrown away. `answered` and `withdrawn` are final.
+
 `working` with no result for 960 seconds is shown as `waiting` again, as today. A tag counts only in a `message` a person authored, or from phase 7 one the hub authored for a workflow; a `job.result` that contains a tag starts nothing.
 
 ## The hub's API

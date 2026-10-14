@@ -1,11 +1,12 @@
-/** Two people's sessions against the real hub, started in this process: the check that the client and the hub still speak the same protocol. */
+/** Two people's sessions against the real hub, started in this process: the check that the client and the hub still speak the same protocol, and that each sees what the other does. */
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 
+import { authHeader, loadKey, signEvent } from "../src/core/sign.ts";
 import { AgentCancelledError, http, join as joinHub, loadClient } from "../src/desk/client.ts";
 import type { Client } from "../src/desk/client.ts";
 import { Session } from "../src/desk/session.ts";
@@ -98,6 +99,64 @@ async function person(hub: string, name: string): Promise<Person> {
 
 function messages(view: ChatView): readonly MessageView[] {
   return view.current?.messages ?? [];
+}
+
+/** What one session shows of a message. */
+function shownTo(session: Session, id: string): MessageView | undefined {
+  return messages(session.view()).find((message) => message.id === id);
+}
+
+/** Bob takes a request back before jacob has acted on it: jacob's buttons go, and asking to run it now runs nothing. Returns the request's id. */
+async function takingBack(jacob: Person, bob: Person): Promise<string> {
+  const ran = jacob.prompts.length;
+  await bob.session.handle({ do: "send", chat: "jacob", text: "@jacob/uploader never mind this one" });
+  const { id } = await until(jacob.session, "the request bob will take back", (view) =>
+    messages(view).find((message) => message.body.endsWith("never mind this one") && message.requests[0]?.status.kind === "ready")
+  );
+  await bob.session.handle({ do: "withdraw", id, owner: "jacob", repo: "uploader" });
+  await until(jacob.session, "jacob's buttons gone", () => shownTo(jacob.session, id)?.requests[0]?.status.kind === "withdrawn");
+  await jacob.session.handle({ do: "run", id, repo: "uploader", post: true });
+  await pause(200);
+  assert.deepEqual([jacob.prompts.length, shownTo(bob.session, id)?.requests[0]?.status], [ran, { kind: "withdrawn" }]);
+  await assert.rejects(bob.session.handle({ do: "withdraw", id, owner: "jacob", repo: "uploader" }), /still waiting/);
+  return id;
+}
+
+/** A reaction and an edit from one appear for the other, nobody can edit what someone else wrote, and a reply sits under its message for both, and says so once deleted. */
+async function reactingEditingAndReplying(jacob: Person, bob: Person, id: string): Promise<void> {
+  await jacob.session.handle({ do: "react", id, emoji: "👍", on: true });
+  await until(bob.session, "bob sees jacob's reaction", () => shownTo(bob.session, id)?.reactions.length === 1);
+  assert.deepEqual(shownTo(bob.session, id)?.reactions, [{ emoji: "👍", people: ["jacob"] }]);
+  await bob.session.handle({ do: "edit", id, text: "never mind this one, sorry" });
+  await until(jacob.session, "jacob sees bob's edit", () => shownTo(jacob.session, id)?.edited === true);
+  assert.equal(shownTo(jacob.session, id)?.body, "never mind this one, sorry");
+  await assert.rejects(jacob.session.handle({ do: "edit", id, text: "forged" }), /only your own messages/);
+  await jacob.session.handle({ do: "react", id, emoji: "👍", on: false });
+  await until(bob.session, "the reaction taken back", () => shownTo(bob.session, id)?.reactions.length === 0);
+
+  await jacob.session.handle({ do: "reply", root: id, text: "no problem" });
+  const thread = await until(bob.session, "bob sees the reply in its thread", () => shownTo(bob.session, id)?.replyCount === 1 && shownTo(bob.session, id));
+  assert.deepEqual(
+    thread.replies.map((reply) => [reply.sender, reply.body]),
+    [["jacob", "no problem"]]
+  );
+  await jacob.session.handle({ do: "delete", id: thread.replies[0]?.id ?? "" });
+  await until(bob.session, "bob sees the reply deleted", () => shownTo(bob.session, id)?.replies[0]?.deleted === true);
+  assert.equal(shownTo(bob.session, id)?.replies[0]?.body, "");
+}
+
+/** Bob's identity posts a kind neither has heard of: it changes nothing jacob sees, and what comes after it still arrives. */
+async function aKindNeitherKnows(jacob: Person, bob: Person, hub: string, about: string): Promise<void> {
+  const shown = messages(jacob.session.view());
+  const path = "/events";
+  const now = Math.floor(Date.now() / 1000);
+  const key = loadKey(readFileSync(join(root, "home-bob", "key"), "utf8").trim());
+  const unknown = signEvent(key, { author: "bob", to: "jacob", kind: "some.later.kind", content: '{"text":"@jacob/uploader run this"}', ts: now, refs: [about] });
+  const posted = await fetch(hub + path, { method: "POST", headers: { Authorization: authHeader(key, "bob", now, "POST", path), "Content-Type": "application/json" }, body: JSON.stringify(unknown) });
+  assert.equal(posted.status, 201);
+  await bob.session.handle({ do: "send", chat: "jacob", text: "still here" });
+  await until(jacob.session, "the message after the unknown kind", (view) => messages(view).at(-1)?.body === "still here");
+  assert.deepEqual(messages(jacob.session.view()).slice(0, -1), shown);
 }
 
 /** The hub in this process, or the one PLAYER_TWO_TEST_HUB names: a container from the image, say, started with TOKEN as its join token and PLAYER_TWO_REPOS=https://dev.azure.com/acme/. */
@@ -232,6 +291,10 @@ await test("two people, their agents and a channel, through the real hub", { tim
   await until(jacob.session, "jacob can run it again", (view) => messages(view).some((message) => message.requests[0]?.status.kind === "ready" && message.requests[0].status.before === "stopped"));
   assert.deepEqual(jacob.session.view().busy, { working: 0, unsent: 0 });
 
+  const later = await takingBack(jacob, bob);
+  await reactingEditingAndReplying(jacob, bob, later);
+  await aKindNeitherKnows(jacob, bob, hub, later);
+
   // A channel, pinned to a repo: both are members and both have it.
   await jacob.session.handle({ do: "joinChannel", name: "backend" });
   await jacob.session.handle({ do: "pin", chat: "#backend", repo: "uploader" });
@@ -274,4 +337,44 @@ await test("a session loads each chat's newest page when it starts, and the page
   assert.deepEqual(shown(session.view()), [60, "message 1", false]);
   await session.handle({ do: "older" }); // Nothing before the first: nothing is asked for.
   assert.deepEqual(shown(session.view()), [60, "message 1", false]);
+});
+
+await test("an agent whose run cannot be told to the chat does not start", { timeout: 30_000 }, async (t) => {
+  const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+  const alice = await hub.join("alice");
+  const bob = await hub.join("bob");
+  const dev = join(hub.dir, "dev-bob");
+  checkout(dev, "uploader");
+  const notices: Notice[] = [];
+  let ran = 0;
+  const hooks = {
+    changed: () => undefined,
+    notice: (notice: Notice) => {
+      notices.push(notice);
+    },
+    arrived: () => undefined,
+    confirmClone: () => Promise.resolve(false)
+  };
+  const options = {
+    presence: 1,
+    describe: () => Promise.reject(new Error("git cannot say which commit it is at")),
+    runner: () => {
+      ran += 1;
+      return Promise.resolve("done");
+    }
+  };
+  const session = new Session(bob, dev, hooks, options);
+  session.start();
+  t.after(() => session.stop());
+
+  const { event } = await alice.publish("bob", "message", { text: "@bob/uploader go", via: "cli" });
+  await until(session, "the request", (view) => messages(view).find((message) => message.id === event.id)?.requests[0]?.status.kind === "ready");
+  await session.handle({ do: "run", id: event.id, repo: "uploader", post: true });
+  await until(session, "told it did not start", () => notices.length > 0);
+  assert.deepEqual(notices, [{ title: "your uploader agent did not start", body: "git cannot say which commit it is at", severity: "error" }]);
+  assert.equal(ran, 0);
+  assert.deepEqual(
+    (await alice.events({ chat: "bob" })).map((delivered) => delivered.event.kind),
+    ["message"]
+  ); // Nothing was said in the chat: as far as anyone can tell, it was never accepted.
 });
