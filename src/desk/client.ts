@@ -8,8 +8,8 @@ import { join as joinPath } from "node:path";
 import { z } from "zod";
 
 import { authHeader, loadKey, newKey, noteIsAuthentic, privateHex, publicHex, signNote } from "../core/sign.ts";
-import { channelInfoSchema, configSchema, deliveredSchema, hubInfoSchema, nameSchema, personSchema, receiptSchema, repoRefSchema, repoSchema, teamRepoSchema, userSchema } from "../core/wire.ts";
-import type { ChannelInfo, Config, Delivered, HubInfo, Kind, Note, Person, Repo, RepoRef, TeamRepo } from "../core/wire.ts";
+import { channelInfoSchema, configSchema, deliveredNoteSchema, hubInfoSchema, nameSchema, personSchema, receiptSchema, repoRefSchema, repoSchema, teamRepoSchema, userSchema } from "../core/wire.ts";
+import type { ChannelInfo, Config, DeliveredNote, HubInfo, Kind, Note, Person, Repo, RepoRef, TeamRepo } from "../core/wire.ts";
 import { AGENT_CHOICES } from "../shared/ipc.ts";
 
 export const DEFAULT_AGENT: string = AGENT_CHOICES[0].command; // Cursor, as the join form offers it first.
@@ -26,7 +26,7 @@ const peopleSchema = z.array(personSchema);
 const reposSchema = z.array(repoSchema);
 const teamReposSchema = z.array(teamRepoSchema);
 const channelsSchema = z.array(channelInfoSchema);
-const deliveredListSchema = z.array(deliveredSchema);
+const deliveredListSchema = z.array(deliveredNoteSchema);
 const pinsSchema = z.record(z.string(), z.string());
 const hubErrorSchema = z.object({ detail: z.string() });
 
@@ -135,7 +135,7 @@ export class Client {
   /** Notes this user can see: sent to them, to their channels, and (unless `mine` is false) by them. `status` false leaves out agent status reports. */
   public async notes(
     options: { readonly after?: number; readonly wait?: number; readonly tail?: number; readonly mine?: boolean; readonly status?: boolean; readonly signal?: AbortSignal } = {}
-  ): Promise<Delivered[]> {
+  ): Promise<DeliveredNote[]> {
     const wait = options.wait ?? 0;
     const query = `/notes?after=${String(options.after ?? 0)}&wait=${wait.toFixed(1)}&mine=${String(options.mine ?? true)}&status=${String(options.status ?? true)}${options.tail === undefined ? "" : `&tail=${String(options.tail)}`}`;
     return deliveredListSchema.parse(parseJson(await this.call("GET", query, null, wait + CALL_TIMEOUT, options.signal)));

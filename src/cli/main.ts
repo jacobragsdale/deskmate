@@ -8,7 +8,7 @@ import { z } from "zod";
 import { chatOf } from "../core/chat.ts";
 import { problemOf } from "../core/text.ts";
 import { isChannel } from "../core/wire.ts";
-import type { Delivered } from "../core/wire.ts";
+import type { DeliveredNote } from "../core/wire.ts";
 import { DEFAULT_AGENT, defaultDev, defaultHome, http, join, loadClient, PlayerTwoError, POLL_WAIT } from "../desk/client.ts";
 import type { Client, Transport } from "../desk/client.ts";
 import { runChecks } from "../desk/doctor.ts";
@@ -72,7 +72,7 @@ function show(out: (line: string) => void, json: boolean, found: unknown, words:
 }
 
 /** One note as the terminal shows it. One that failed its signature check is never shown with its text. */
-export function render(delivered: Delivered, trusted: boolean): string {
+export function render(delivered: DeliveredNote, trusted: boolean): string {
   const { id, note } = delivered;
   if (!trusted) {
     return `!! note ${String(id)} claims to be from ${note.sender}, but its signature does not match the key first seen for them. Ignored.`;
@@ -89,7 +89,7 @@ function layout(checks: readonly Check[]): string {
 }
 
 /** The next trusted note from someone else in this chat, if one arrives in time. */
-async function awaitReply(client: Client, chat: string, sent: number, seconds: number): Promise<Delivered | null> {
+async function awaitReply(client: Client, chat: string, sent: number, seconds: number): Promise<DeliveredNote | null> {
   const deadline = performance.now() + seconds * 1000;
   let after = sent;
   for (let remaining = seconds; remaining > 0; remaining = (deadline - performance.now()) / 1000) {
@@ -131,7 +131,7 @@ async function inbox(joined: () => Client, args: string[], out: (line: string) =
   const after = values.after === undefined ? null : numberOf(idSchema, values.after, "after");
   const client = joined();
   const notes = after === null ? await client.notes({ tail: INBOX, mine: false, status: false }) : await client.notes({ after, wait, mine: false, status: false });
-  const found: (Delivered & { readonly trusted: boolean })[] = [];
+  const found: (DeliveredNote & { readonly trusted: boolean })[] = [];
   for (const delivered of notes) {
     found.push({ ...delivered, trusted: await client.isTrusted(delivered.note) });
   }

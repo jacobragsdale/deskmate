@@ -11,7 +11,7 @@ import { z } from "zod";
 import { main, render } from "../src/cli/main.ts";
 import { loadKey, signNote } from "../src/core/sign.ts";
 import { noteSchema } from "../src/core/wire.ts";
-import type { Delivered } from "../src/core/wire.ts";
+import type { DeliveredNote } from "../src/core/wire.ts";
 import { http } from "../src/desk/client.ts";
 import { checkSchema } from "../src/shared/ipc.ts";
 import { NOW, startHub, TOKEN } from "./startHub.ts";
@@ -139,7 +139,7 @@ await test("send reads a note from standard input, and --wait prints the next no
   const [alice, bob, carol] = [await hub.join("alice"), await hub.join("bob"), await hub.join("carol")];
 
   const waiting = playerTwo(hub, "alice", ["send", "bob", "-", "--wait", "20", "--json"], "  are you there?\nstill there?\n");
-  let asked: readonly Delivered[] = [];
+  let asked: readonly DeliveredNote[] = [];
   while (asked.length === 0) {
     asked = await bob.notes({ wait: 5, mine: false }); // Held open until alice's note lands: only a note after it can be the reply.
   }

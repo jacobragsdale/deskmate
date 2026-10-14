@@ -1,9 +1,11 @@
-/** Wire format shared with the hub: the shapes of signed notes and of what the hub answers. */
+/** Wire format shared with the hub: the shapes of signed events, of the notes they replace, and of what the hub answers. */
 
 import { z } from "zod";
 
 export const PROTOCOL = 1; // Goes up when the hub and its clients must be updated together.
 export const MAX_BODY = 64_000;
+export const MAX_CONTENT = 64_000; // Most characters an event's content may hold, counted as a note's body is.
+export const MAX_PATCH = 512_000; // The same for a patch, which carries a diff.
 export const MAX_SKEW = 300; // Seconds a signed timestamp may differ from the verifier's clock.
 export const REPO_NAME = "[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?";
 export const NAME = "[a-z0-9][a-z0-9_-]{0,31}";
@@ -14,6 +16,11 @@ function sized(min: number, max: number): z.ZodString {
     const length = Array.from(text).length;
     return length >= min && length <= max;
   });
+}
+
+/** Whether text holds at most `max` characters, counted as `sized` counts them. A text no longer than that in UTF-16 units is never counted. */
+function within(text: string, max: number): boolean {
+  return text.length <= max || Array.from(text).length <= max;
 }
 
 export const nameSchema = z.string().regex(new RegExp(`^${NAME}$`));
@@ -28,6 +35,7 @@ const repoUrlSchema = sized(0, 400).regex(/^https:\/\/[^\x00-\x20]+$/);
 const branchSchema = sized(1, 200).regex(/^[^\x00-\x1f]+$/);
 const pubKeySchema = z.string().regex(/^[0-9a-f]{64}$/);
 const signatureSchema = z.string().regex(/^[0-9a-f]{128}$/);
+const hashSchema = z.string().regex(/^[0-9a-f]{64}$/); // An event's id, or a link in the hub's chain: a sha256 in hex.
 export const kindSchema = z.enum(["note", "status"]); // A status reports what an agent is doing with a note; it is never shown as a message.
 
 export const userSchema = z.strictObject({ name: nameSchema, pubkey: pubKeySchema }).readonly();
@@ -36,7 +44,7 @@ export const userSchema = z.strictObject({ name: nameSchema, pubkey: pubKeySchem
 export const joinSchema = z.strictObject({ name: nameSchema, pubkey: pubKeySchema, token: z.string() }).readonly();
 
 // What the hub answers with is read with z.object, which drops a key it does not know, so the hub can add a field without every older client refusing the answer.
-// That is Person, HubInfo, TeamRepo, ChannelInfo, Delivered and Receipt. A note is the exception, also inside Delivered: every field of it is signed, so one nobody expected is a reason to refuse it.
+// That is Person, HubInfo, TeamRepo, ChannelInfo, Delivered and Receipt. An event or a note is the exception, also inside Delivered: every field of it is signed, so one nobody expected is a reason to refuse it.
 
 /** Someone who has joined, and the Unix seconds of their last signed request; 0 if they have never made one. */
 export const personSchema = z.object({ name: nameSchema, pubkey: pubKeySchema, seen: z.int() }).readonly();
@@ -69,8 +77,30 @@ export const noteSchema = z
   })
   .readonly();
 
-export const deliveredSchema = z.object({ id: z.int(), note: noteSchema }).readonly();
+export const deliveredNoteSchema = z.object({ id: z.int(), note: noteSchema }).readonly();
 export const receiptSchema = z.object({ id: z.int() }).readonly();
+
+/** Anything that happens, signed by whoever did it. The hub stores and relays it unchanged, whatever its kind, so every reader can check it too. */
+export const eventSchema = z
+  .strictObject({
+    id: hashSchema, // The sha256 of the signed bytes, so the author knows it before sending.
+    author: nameSchema,
+    to: z.string().regex(new RegExp(`^(#?${NAME}|\\*)$`)), // A person, a channel, or "*" for everyone.
+    kind: z
+      .string()
+      .max(64)
+      .regex(/^[a-z][a-z0-9]*(\.[a-z][a-z0-9]*)*$/), // Dotted lowercase words, such as "job.accepted".
+    content: z.string(), // JSON text of an object whose shape depends on the kind (see kinds.ts). A string, so nobody has to agree on one way of writing an object.
+    ts: z.int(), // Unix seconds, UTC.
+    refs: z.array(hashSchema).max(8).readonly(), // The ids of the events this one is about, the main one first.
+    nonce: z.string().regex(/^[0-9a-f]{16}$/), // Random, so the same message twice in one second is two events.
+    sig: signatureSchema
+  })
+  .refine((event) => within(event.content, event.kind === "patch" ? MAX_PATCH : MAX_CONTENT), { message: "too long for its kind", path: ["content"] })
+  .readonly();
+
+/** An event as the hub hands it over, with the place it was given in the hub's log. */
+export const deliveredSchema = z.object({ seq: z.int(), event: eventSchema }).readonly();
 
 export const configSchema = z.strictObject({ hub: z.string().regex(/^https?:\/\/\S*[^/\s]$/), name: nameSchema, agent: z.string().min(1) }).readonly();
 
@@ -82,6 +112,8 @@ export type Repo = z.infer<typeof repoSchema>;
 export type TeamRepo = z.infer<typeof teamRepoSchema>;
 export type ChannelInfo = z.infer<typeof channelInfoSchema>;
 export type Note = z.infer<typeof noteSchema>;
+export type DeliveredNote = z.infer<typeof deliveredNoteSchema>;
+export type Event = z.infer<typeof eventSchema>;
 export type Delivered = z.infer<typeof deliveredSchema>;
 export type Config = z.infer<typeof configSchema>;
 

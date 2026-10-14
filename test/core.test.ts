@@ -10,7 +10,7 @@ import { AgentCancelledError, Client, PlayerTwoError } from "../src/desk/client.
 import type { Transport } from "../src/desk/client.ts";
 import { loadKey, publicHex, signNote } from "../src/core/sign.ts";
 import { Session } from "../src/desk/session.ts";
-import { fitBody, MAX_BODY, PROTOCOL } from "../src/core/wire.ts";
+import { eventSchema, fitBody, MAX_BODY, MAX_CONTENT, MAX_PATCH, PROTOCOL } from "../src/core/wire.ts";
 import type { Kind, TeamRepo } from "../src/core/wire.ts";
 
 const NOW = 1_800_000_000;
@@ -126,6 +126,26 @@ await test("an agent command is split the way a shell would split it", () => {
   assert.deepEqual(splitCommand(`  sh -c 'echo "a b"' "x \\" y" z\\ w '' --flag="two words"  `), ["sh", "-c", 'echo "a b"', 'x " y', "z w", "", "--flag=two words"]);
   assert.throws(() => splitCommand("claude 'oops"), PlayerTwoError);
   assert.throws(() => splitCommand('claude "oops\\"'), PlayerTwoError);
+});
+
+await test("an event's envelope holds exactly the signed fields, a kind of dotted lowercase words, and content up to its kind's limit", () => {
+  const event = { id: "ab".repeat(32), author: "bob", to: "#backend", kind: "message", content: "{}", ts: NOW, refs: ["cd".repeat(32)], nonce: "ef".repeat(8), sig: "01".repeat(64) };
+  const fits = (changed: Readonly<Record<string, unknown>>): boolean => eventSchema.safeParse({ ...event, ...changed }).success;
+
+  assert.ok(fits({}));
+  assert.ok(fits({ to: "*", kind: "job.accepted" }));
+  assert.ok(fits({ kind: "a1.b2.c", refs: Array.from({ length: 8 }, () => event.refs[0]) }));
+  assert.ok(fits({ content: "🎉".repeat(MAX_CONTENT) })); // Counted by character, not by UTF-16 unit.
+  assert.ok(fits({ kind: "patch", content: "x".repeat(MAX_PATCH) }));
+  assert.ok(!fits({ via: "window" })); // A field nobody signed.
+  assert.ok(!fits({ kind: "Message" }));
+  assert.ok(!fits({ kind: "job..accepted" }));
+  assert.ok(!fits({ kind: `a${"b".repeat(64)}` }));
+  assert.ok(!fits({ to: "#*" }));
+  assert.ok(!fits({ refs: Array.from({ length: 9 }, () => event.refs[0]) }));
+  assert.ok(!fits({ nonce: "ef" }));
+  assert.ok(!fits({ content: "x".repeat(MAX_CONTENT + 1) }));
+  assert.ok(!fits({ kind: "patch", content: "x".repeat(MAX_PATCH + 1) }));
 });
 
 await test("a note is cut to what the hub accepts without splitting a character", () => {

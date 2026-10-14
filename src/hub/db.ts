@@ -4,8 +4,8 @@ import { DatabaseSync } from "node:sqlite";
 
 import { z } from "zod";
 
-import { deliveredSchema, personSchema, repoRefSchema, teamRepoSchema } from "../core/wire.ts";
-import type { Delivered, Note, Person, Repo, RepoRef, TeamRepo } from "../core/wire.ts";
+import { deliveredNoteSchema, personSchema, repoRefSchema, teamRepoSchema } from "../core/wire.ts";
+import type { DeliveredNote, Note, Person, Repo, RepoRef, TeamRepo } from "../core/wire.ts";
 
 const SCHEMA_VERSION = 3;
 const PAGE = 100; // Most notes one request gets when it does not ask for the newest few.
@@ -42,7 +42,7 @@ const teamReposSchema = z.array(teamRepoSchema);
 const membersSchema = z.array(z.strictObject({ user: z.string() }));
 const channelsSchema = z.array(z.strictObject({ channel: z.string() }));
 const pinSchema = repoRefSchema.optional();
-const deliveredListSchema = z.array(deliveredSchema);
+const deliveredListSchema = z.array(deliveredNoteSchema);
 
 export class Database {
   private readonly db: DatabaseSync;
@@ -154,7 +154,7 @@ export class Database {
    * The notes `me` can see with an id above `after`, oldest first: sent to them, to a channel they are in, or (unless `mine` is false) by them.
    * With `tail` they are the newest that many; without, the first page. `status` false leaves out agent status reports.
    */
-  public notes(me: string, after: number, tail: number | null, mine: boolean, status: boolean): readonly Delivered[] {
+  public notes(me: string, after: number, tail: number | null, mine: boolean, status: boolean): readonly DeliveredNote[] {
     const visible = "(recipient = :me OR recipient IN (SELECT channel FROM members WHERE user = :me) OR sender = :me) AND (:mine OR sender != :me) AND (:status OR kind = 'note')";
     const columns = 'id, sender, recipient AS "to", kind, body, ts, agent, re, sig';
     const query =
