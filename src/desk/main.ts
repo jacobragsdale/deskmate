@@ -9,6 +9,7 @@ import { readLine, windowLineSchema } from "../shared/ipc.ts";
 import type { Command, DeskLine, Question, View } from "../shared/ipc.ts";
 import { DEFAULT_AGENT, defaultDev, defaultHome, http, join, loadClient, PlayerTwoError } from "./client.ts";
 import { Session } from "./session.ts";
+import { shellPath } from "./shellEnv.ts";
 import type { Hooks } from "./session.ts";
 
 class Desk {
@@ -45,6 +46,7 @@ class Desk {
 
   public async run(input: NodeJS.ReadableStream): Promise<void> {
     this.write({ t: "hello", version: VERSION, protocol: PROTOCOL });
+    process.env["PATH"] = await shellPath(); // Agents and git are started with this process's environment, so from here on they are looked for where the user's own shell would find them.
     this.start();
     this.changed();
     for await (const text of createInterface({ input })) {

@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -34,6 +34,8 @@ await test("the desk by lines: the join form, joining, the chats, a note sent an
   const dev = join(hub.dir, "dev");
   process.env["PLAYER_TWO_HOME"] = join(hub.dir, "desk");
   process.env["PLAYER_TWO_DEV"] = dev;
+  process.env["HOME"] = hub.dir; // Where the shell the desk asks for its PATH finds its start-up file.
+  writeFileSync(join(hub.dir, ".profile"), `export PATH="${join(hub.dir, "tools")}:$PATH"\n`);
   const bob = await hub.join("bob");
   await bob.advertise([{ name: "uploader", key: "dev.azure.com/acme/platform/uploader", url: "https://dev.azure.com/acme/Platform/_git/uploader", branch: "main" }]);
 
@@ -68,6 +70,7 @@ await test("the desk by lines: the join form, joining, the chats, a note sent an
   // It says which version and protocol it is before anything else, then shows the join form, and until someone has joined it does nothing but join.
   assert.deepEqual(await next("hello", (line) => line), { t: "hello", version: VERSION, protocol: PROTOCOL });
   assert.deepEqual(await next("the join form", (line) => line), { t: "view", view: { kind: "setup", defaultAgent: "claude -p" } });
+  assert.equal(process.env["PATH"]?.split(":")[0], join(hub.dir, "tools")); // By then it has the PATH of the user's own shell, which is what its agents and git are found on.
   say({ t: "command", id: 1, command: { do: "open", chat: "bob" } });
   assert.deepEqual(await reply(1), { ok: false, problem: "join a hub first" });
 
