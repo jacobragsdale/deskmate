@@ -142,10 +142,11 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     });
   }
 
-  function caller(header: string): string {
-    const claim = authClaim(header);
+  /** Who is asking, once their header is seen to be signed for this very request: its method, and its path and query as they arrived. */
+  function caller(request: IncomingMessage): string {
+    const claim = authClaim(request.headers.authorization ?? "");
     const pubkey = claim === null ? null : db.pubkeyOf(claim.name);
-    if (claim === null || pubkey === null || !authIsValid(claim, pubkey, now())) {
+    if (claim === null || pubkey === null || !authIsValid(claim, pubkey, now(), request.method ?? "", request.url ?? "")) {
       throw new Refusal(401, "not signed by a known user, or your clock is more than 5 minutes off");
     }
     db.sawUser(claim.name, Math.floor(now())); // Every signed request doubles as "I am here".
@@ -295,7 +296,7 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     if (hit === undefined) {
       throw there.length === 0 ? new Refusal(404, "Not Found") : new Refusal(405, "Method Not Allowed");
     }
-    const me = hit.route.open === true ? "" : caller(request.headers.authorization ?? "");
+    const me = hit.route.open === true ? "" : caller(request);
     const channel = hit.name === undefined ? "" : `#${parsed(nameSchema, unquote(hit.name), "name")}`;
     return hit.route.answer({ me, channel, query: new URLSearchParams(query.join("?")), body: await bodyText(request), response });
   }

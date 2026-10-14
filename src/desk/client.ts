@@ -154,7 +154,7 @@ export class Client {
   }
 
   private call(method: string, path: string, body: string | null = null, timeoutSeconds = CALL_TIMEOUT, signal?: AbortSignal): Promise<string> {
-    const headers = { Authorization: authHeader(this.key, this.config.name, Math.floor(this.now())), ...(body === null ? {} : JSON_BODY) };
+    const headers = { Authorization: authHeader(this.key, this.config.name, Math.floor(this.now()), method, path), ...(body === null ? {} : JSON_BODY) };
     return this.transport(method, this.config.hub + path, headers, body, timeoutSeconds, signal);
   }
 }

@@ -69,6 +69,11 @@ function keyOf(hub: Hub, name: string): KeyObject {
   return loadKey(readFileSync(join(hub.dir, name, "key"), "utf8").trim());
 }
 
+/** The header that proves one request comes from `name`, for asking the hub without the client. */
+function signedBy(hub: Hub, name: string, method: string, path: string): Readonly<Record<string, string>> {
+  return { Authorization: authHeader(keyOf(hub, name), name, NOW, method, path) };
+}
+
 /** Post an already-signed note straight to the hub, bypassing the client, and return the status it answered with. */
 async function postNote(hub: Hub, note: Note): Promise<number> {
   return (await fetch(`${hub.url}/notes`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(note) })).status;
@@ -175,9 +180,9 @@ await test("reading notes needs the reader's own fresh signature", async (t) => 
   await hub.join("mallory");
   const headers: Readonly<Record<string, Readonly<Record<string, string>>>> = {
     missing: {},
-    "signed by another key": { Authorization: authHeader(keyOf(hub, "mallory"), "alice", NOW) },
-    stale: { Authorization: authHeader(keyOf(hub, "alice"), "alice", NOW - MAX_SKEW - 1) },
-    valid: { Authorization: authHeader(keyOf(hub, "alice"), "alice", NOW) }
+    "signed by another key": { Authorization: authHeader(keyOf(hub, "mallory"), "alice", NOW, "GET", "/notes") },
+    stale: { Authorization: authHeader(keyOf(hub, "alice"), "alice", NOW - MAX_SKEW - 1, "GET", "/notes") },
+    valid: signedBy(hub, "alice", "GET", "/notes")
   };
 
   const statuses: Record<string, number> = {};
@@ -186,6 +191,18 @@ await test("reading notes needs the reader's own fresh signature", async (t) => 
   }
 
   assert.deepEqual(statuses, { missing: 401, "signed by another key": 401, stale: 401, valid: 200 });
+});
+
+await test("a header signed for one request is refused on any other", async (t) => {
+  const hub = await startHub(t);
+  await hub.join("alice");
+  const forUsers = signedBy(hub, "alice", "GET", "/users");
+  const unsigned = "not signed by a known user, or your clock is more than 5 minutes off";
+
+  assert.equal((await fetch(`${hub.url}/users`, { headers: forUsers })).status, 200);
+  assert.deepEqual(await refusal(hub, "POST", "/channels/x/join", { headers: forUsers }), [401, unsigned]);
+  assert.deepEqual(await refusal(hub, "GET", "/users?also=this", { headers: forUsers }), [401, unsigned]); // The query is signed with the path.
+  assert.deepEqual(await (await hub.join("alice")).channels(), []);
 });
 
 await test("after and tail select which notes come back", async (t) => {
@@ -302,11 +319,11 @@ await test("joining a channel reveals its earlier notes", async (t) => {
 await test("a channel name must be a plain name", async (t) => {
   const hub = await startHub(t);
   const alice = await hub.join("alice");
-  const asAlice = { Authorization: authHeader(keyOf(hub, "alice"), "alice", NOW) };
   for (const name of ["Backend", "back end", "a".repeat(33), "#"]) {
     await assert.rejects(alice.joinChannel(name), z.ZodError, name); // The client refuses it before anything is sent,
 
-    const [status, detail] = await refusal(hub, "POST", `/channels/${encodeURIComponent(name)}/join`, { headers: asAlice }); // and so does the hub when asked anyway.
+    const path = `/channels/${encodeURIComponent(name)}/join`;
+    const [status, detail] = await refusal(hub, "POST", path, { headers: signedBy(hub, "alice", "POST", path) }); // and so does the hub when asked anyway.
     assert.deepEqual([status, detail.slice(0, 13)], [422, "invalid name:"], name);
   }
   assert.deepEqual(await alice.channels(), []);
@@ -399,15 +416,14 @@ await test("the hub refuses to start on a database from another version", (t) =>
 await test("a request the hub cannot serve is told why", async (t) => {
   const hub = await startHub(t);
   await hub.join("alice");
-  const asAlice = { Authorization: authHeader(keyOf(hub, "alice"), "alice", NOW) };
   const badKey = JSON.stringify({ name: "bob", pubkey: "not-a-key", token: TOKEN });
 
   assert.deepEqual(await refusal(hub, "GET", "/nowhere"), [404, "Not Found"]);
   assert.deepEqual(await refusal(hub, "DELETE", "/healthz"), [405, "Method Not Allowed"]);
   assert.deepEqual(await refusal(hub, "POST", "/join", { body: "{" }), [422, "invalid body: not JSON"]);
   assert.deepEqual(await refusal(hub, "POST", "/join", { body: badKey }), [422, "invalid pubkey: Invalid string: must match pattern /^[0-9a-f]{64}$/"]);
-  assert.deepEqual(await refusal(hub, "GET", "/notes?tail=0", { headers: asAlice }), [422, "invalid tail: Too small: expected number to be >=1"]);
-  assert.deepEqual(await refusal(hub, "GET", "/notes?wait=31", { headers: asAlice }), [422, "invalid wait: Too big: expected number to be <=30"]);
+  assert.deepEqual(await refusal(hub, "GET", "/notes?tail=0", { headers: signedBy(hub, "alice", "GET", "/notes?tail=0") }), [422, "invalid tail: Too small: expected number to be >=1"]);
+  assert.deepEqual(await refusal(hub, "GET", "/notes?wait=31", { headers: signedBy(hub, "alice", "GET", "/notes?wait=31") }), [422, "invalid wait: Too big: expected number to be <=30"]);
 });
 
 await test("a request too long to be anything the hub accepts is cut off", async (t) => {

@@ -10,17 +10,18 @@ import { z } from "zod";
 import { agentPrompt, mentions } from "../src/core/chat.ts";
 import type { Entry } from "../src/core/chat.ts";
 import { parseRemote, prefixKey } from "../src/core/remotes.ts";
-import { authHeader, loadKey, noteIsAuthentic, privateHex, publicHex, signNote } from "../src/core/sign.ts";
+import { authClaim, authHeader, authIsValid, loadKey, noteIsAuthentic, privateHex, publicHex, signNote } from "../src/core/sign.ts";
 import { noteSchema } from "../src/core/wire.ts";
 
 // Written by tests/test_app_vectors.py, which fails on the Python side if that implementation stops producing them.
+// All but `auth`: Python stops at version 1 of the header, so that one was written from this implementation and checked once against Python's own signing library.
 const vectors = z
   .strictObject({
     private_key: z.string(),
     public_key: z.string(),
     ts: z.int(),
     notes: z.array(noteSchema),
-    auth: z.string(),
+    auth: z.strictObject({ method: z.string(), path: z.string(), header: z.string() }),
     remotes: z.array(z.tuple([z.string(), z.strictObject({ key: z.string(), name: z.string(), url: z.string() }).nullable()])),
     prefixes: z.array(z.tuple([z.string(), z.string()])),
     mentions: z.array(z.tuple([z.string(), z.array(z.tuple([z.string(), z.string()]))])),
@@ -54,8 +55,14 @@ await test("changing a signed field breaks the signature", () => {
   assert.ok(!noteIsAuthentic(note, publicHex(loadKey("22".repeat(32)))));
 });
 
-await test("the auth header is the one Python sends", () => {
-  assert.equal(authHeader(key, "jacob", vectors.ts), vectors.auth);
+await test("the auth header signs the request it is for, and no other", () => {
+  const { method, path, header } = vectors.auth;
+  const claim = authClaim(header);
+  assert.ok(claim !== null);
+  assert.equal(authHeader(key, "jacob", vectors.ts, method, path), header);
+  assert.ok(authIsValid(claim, vectors.public_key, vectors.ts, method, path));
+  assert.ok(!authIsValid(claim, vectors.public_key, vectors.ts, "POST", path));
+  assert.ok(!authIsValid(claim, vectors.public_key, vectors.ts, method, `${path}&tail=1`));
 });
 
 await test("every remote names the same repo as in Python", () => {

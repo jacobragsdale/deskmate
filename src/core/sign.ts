@@ -70,13 +70,14 @@ export function noteIsAuthentic(note: Note, pubkey: string): boolean {
   return verifySignature(pubkey, notePayload(note), note.sig);
 }
 
-function authPayload(name: string, ts: number): Buffer {
-  return Buffer.from(`deskmate-auth-v1:${name}:${String(ts)}`, "utf8");
+/** What an auth header signs: who is asking, when, and for what. `path` is the path and query exactly as sent, so a header taken off one request is no use on another. */
+function authPayload(name: string, ts: number, method: string, path: string): Buffer {
+  return Buffer.from(`deskmate-auth-v2:${name}:${String(ts)}:${method}:${path}`, "utf8");
 }
 
-/** Prove who is asking. It gates reads and channel membership: every note carries its own signature. */
-export function authHeader(key: KeyObject, name: string, ts: number): string {
-  return `${AUTH_SCHEME} ${name}:${String(ts)}:${sign(null, authPayload(name, ts), key).toString("hex")}`;
+/** Prove who is asking for this one request. It gates reads and channel membership: every note carries its own signature. */
+export function authHeader(key: KeyObject, name: string, ts: number, method: string, path: string): string {
+  return `${AUTH_SCHEME} ${name}:${String(ts)}:${sign(null, authPayload(name, ts, method, path), key).toString("hex")}`;
 }
 
 /** Who an auth header says it is from, and when and how it was signed. */
@@ -96,6 +97,7 @@ export function authClaim(header: string): AuthClaim | null {
   return { name, ts: Number(ts), sig };
 }
 
-export function authIsValid(claim: AuthClaim, pubkey: string, now: number): boolean {
-  return isFresh(claim.ts, now) && verifySignature(pubkey, authPayload(claim.name, claim.ts), claim.sig);
+/** Whether a claim was signed by `pubkey`, lately, for the request that carried it: `method` and `path` are what the hub actually received. */
+export function authIsValid(claim: AuthClaim, pubkey: string, now: number, method: string, path: string): boolean {
+  return isFresh(claim.ts, now) && verifySignature(pubkey, authPayload(claim.name, claim.ts, method, path), claim.sig);
 }

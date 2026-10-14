@@ -54,7 +54,11 @@
    "sig": "252afed8088ca425b5e5b3cc6b51b983ef17ef3dc64eca946e34f849afe0e51d723ce0ad5fe7e5b9a482b918326bb91b7a0e2c8957dc4eace357520c06bcf40f"
   }
  ],
- "auth": "Deskmate jacob:1800000000:4a42cc6dc2c666453354d778ae54ecad4e315f0371b9432600f2f65420a0ffa64aa7debed4ef175f1de0df53f047b35439d559f83f84b04e0f988fd10fc2010e",
+ "auth": {
+  "method": "GET",
+  "path": "/notes?after=41&wait=25.0&mine=false&status=true",
+  "header": "Deskmate jacob:1800000000:2884799dace31be2452d1691e31c07057e75ec103c005f9f531fbdcbcd0b6376c64c94c63de4b1de61dba43e57fd0e64a146bb54beb981892aed902359260605"
+ },
  "remotes": [
   [
    "https://dev.azure.com/acme/Platform/_git/uploader",
