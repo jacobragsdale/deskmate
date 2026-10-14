@@ -7,8 +7,9 @@ import { test } from "node:test";
 
 import { z } from "zod";
 
-import { agentPrompt, mentions } from "../src/core/chat.ts";
-import type { Entry } from "../src/core/chat.ts";
+import { mentions } from "../src/core/chat.ts";
+import { agentPrompt } from "../src/core/notes.ts";
+import type { Entry } from "../src/core/notes.ts";
 import { parseRemote, prefixKey } from "../src/core/remotes.ts";
 import { authClaim, authHeader, authIsValid, eventIsAuthentic, loadKey, privateHex, publicHex, signEvent, signNote } from "../src/core/sign.ts";
 import { eventSchema } from "../src/core/wire.ts";

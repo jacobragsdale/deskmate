@@ -8,8 +8,9 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import { z } from "zod";
 
-import { candidates, ChatLog, STALE } from "../src/core/chat.ts";
-import type { Entry } from "../src/core/chat.ts";
+import { candidates, STALE } from "../src/core/chat.ts";
+import { ChatLog } from "../src/core/notes.ts";
+import type { Entry } from "../src/core/notes.ts";
 import { runAgent, splitCommand } from "../src/desk/agents/oneshot.ts";
 import { AgentCancelledError, Client, PlayerTwoError } from "../src/desk/client.ts";
 import type { Transport } from "../src/desk/client.ts";

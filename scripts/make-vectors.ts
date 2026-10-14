@@ -6,8 +6,9 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { agentPrompt, mentions } from "../src/core/chat.ts";
-import type { Entry } from "../src/core/chat.ts";
+import { mentions } from "../src/core/chat.ts";
+import { agentPrompt } from "../src/core/notes.ts";
+import type { Entry } from "../src/core/notes.ts";
 import { parseRemote, prefixKey } from "../src/core/remotes.ts";
 import { authHeader, loadKey, publicHex, signEvent, signNote } from "../src/core/sign.ts";
 

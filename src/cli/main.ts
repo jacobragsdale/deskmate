@@ -5,7 +5,7 @@ import { parseArgs } from "node:util";
 
 import { z } from "zod";
 
-import { chatOf } from "../core/chat.ts";
+import { chatOf } from "../core/notes.ts";
 import { problemOf } from "../core/text.ts";
 import { isChannel } from "../core/wire.ts";
 import type { DeliveredNote } from "../core/wire.ts";

@@ -7,8 +7,9 @@ import { join as joinPath } from "node:path";
 import { z } from "zod";
 
 import type { Arrival, ChatView, Command, CurrentView, MessageView, Notice, RequestView, RowView } from "../shared/ipc.ts";
-import { agentPrompt, ChatLog, chatOf, continues, mentions, ONLINE, refOf, rings } from "../core/chat.ts";
-import type { Entry, Request } from "../core/chat.ts";
+import { mentions, ONLINE, refOf } from "../core/chat.ts";
+import { agentPrompt, ChatLog, chatOf, continues, rings } from "../core/notes.ts";
+import type { Entry, Request } from "../core/notes.ts";
 import { runAgent, splitCommand } from "./agents/oneshot.ts";
 import { AgentCancelledError, PlayerTwoError, POLL_WAIT } from "./client.ts";
 import type { Client, Runner } from "./client.ts";
