@@ -315,6 +315,8 @@ npm run typecheck && npm run lint && npm run format:check && npm test && npm run
 
 `npm test` builds first, since one test starts the built command. On Linux or macOS, `npm start` builds and opens the window, which starts its desk as a separate process. `PLAYER_TWO_HOME` and `PLAYER_TWO_DEV` move things as they do for the command.
 
+On Ubuntu 24.04 and later, Electron's sandbox may refuse to start from `node_modules`, because AppArmor keeps unprivileged user namespaces from programs it has no profile for. Either allow them until the next reboot with `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`, which is what CI does, or make the sandbox helper set-uid: `sudo chown root node_modules/electron/dist/chrome-sandbox && sudo chmod 4755 node_modules/electron/dist/chrome-sandbox`. Do not turn the sandbox off: the window draws text other people wrote.
+
 To run a hub from the working tree, copy `.env.example` to `.env`, set the join token and the repos address, and run:
 
 ```sh
