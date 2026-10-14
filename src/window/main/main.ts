@@ -5,7 +5,7 @@ import { join as joinPath } from "node:path";
 import { app, BrowserWindow, dialog, ipcMain, Notification, shell } from "electron";
 import type { IpcMainInvokeEvent } from "electron";
 
-import { DEFAULT_AGENT, defaultDev, defaultHome, DeskmateError, http, join, loadClient } from "../../desk/client.ts";
+import { DEFAULT_AGENT, defaultDev, defaultHome, http, join, loadClient, PlayerTwoError } from "../../desk/client.ts";
 import { problemOf, Session } from "../../desk/session.ts";
 import type { Arrival, Hooks } from "../../desk/session.ts";
 import { commandSchema } from "../../shared/ipc.ts";
@@ -34,7 +34,7 @@ function push(): void {
   }
   window.webContents.send("view", current);
   if (current.kind === "chat") {
-    window.setTitle(["deskmate", ...(current.waiting > 0 ? [`${String(current.waiting)} waiting`] : []), ...(current.unread > 0 ? [`${String(current.unread)} unread`] : [])].join(" · "));
+    window.setTitle(["Player Two", ...(current.waiting > 0 ? [`${String(current.waiting)} waiting`] : []), ...(current.unread > 0 ? [`${String(current.unread)} unread`] : [])].join(" · "));
     app.setBadgeCount(current.waiting + current.unread);
   }
 }
@@ -102,7 +102,7 @@ function startSession(): boolean {
 /** Refuse a call from anything but the window's own page. */
 function fromWindow(event: IpcMainInvokeEvent): void {
   if (event.senderFrame !== window?.webContents.mainFrame) {
-    throw new Error("refused: not the deskmate window");
+    throw new Error("refused: not the Player Two window");
   }
 }
 
@@ -110,7 +110,7 @@ async function handle(raw: unknown): Promise<void> {
   const command = commandSchema.parse(raw);
   if (command.do !== "join") {
     if (session === null) {
-      throw new DeskmateError("join a hub first");
+      throw new PlayerTwoError("join a hub first");
     }
     await session.handle(command);
   } else if (session === null) {
@@ -147,7 +147,7 @@ function createWindow(): void {
     height: 760,
     minWidth: 560,
     minHeight: 360,
-    title: "deskmate",
+    title: "Player Two",
     // The window shows text written by teammates and their agents, so it gets no Node, no Electron, and nothing but the preload's four calls.
     webPreferences: { preload: joinPath(import.meta.dirname, "preload.cjs"), contextIsolation: true, sandbox: true, nodeIntegration: false }
   });
@@ -217,6 +217,6 @@ app
     startSession();
   })
   .catch((error: unknown) => {
-    dialog.showErrorBox("deskmate could not start", problemOf(error));
+    dialog.showErrorBox("Player Two could not start", problemOf(error));
     app.quit();
   });

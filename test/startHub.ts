@@ -22,7 +22,7 @@ export interface Hub {
 
 /** A hub of its own for one test, listening on a port the system picked. */
 export async function startHub(t: TestContext): Promise<Hub> {
-  const dir = mkdtempSync(join(tmpdir(), "deskmate-hub-"));
+  const dir = mkdtempSync(join(tmpdir(), "player-two-hub-"));
   const server = createHub({ joinToken: TOKEN, db: join(dir, "hub.db"), repos: TEAM_REPOS }, () => NOW);
   await new Promise<void>((resolve) => {
     server.listen(0, "127.0.0.1", resolve);

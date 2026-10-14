@@ -47,14 +47,14 @@ const deliveredListSchema = z.array(deliveredSchema);
 export class Database {
   private readonly db: DatabaseSync;
 
-  /** Open the database at `path`, laying down the schema when the file is new. Throws when another version of deskmate made it. */
+  /** Open the database at `path`, laying down the schema when the file is new. Throws when another version of Player Two made it. */
   constructor(path: string) {
     this.db = new DatabaseSync(path, { timeout: BUSY_WAIT * 1000 });
     const version = versionSchema.parse(this.db.prepare("PRAGMA user_version").get()).user_version;
     const { tables } = tablesSchema.parse(this.db.prepare("SELECT count(*) AS tables FROM sqlite_master WHERE type = 'table'").get());
     if (tables > 0 && version !== SCHEMA_VERSION) {
       this.db.close();
-      throw new Error(`${path} was made by another version of deskmate (schema ${String(version)}, this one uses ${String(SCHEMA_VERSION)}); start with an empty database`);
+      throw new Error(`${path} was made by another version of Player Two (schema ${String(version)}, this one uses ${String(SCHEMA_VERSION)}); start with an empty database`);
     }
     this.db.exec(`${SCHEMA}PRAGMA user_version = ${String(SCHEMA_VERSION)};`);
   }

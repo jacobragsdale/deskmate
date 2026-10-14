@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { candidates, ChatLog, STALE } from "../src/core/chat.ts";
 import type { Entry } from "../src/core/chat.ts";
 import { runAgent, splitCommand } from "../src/desk/agents/oneshot.ts";
-import { AgentCancelledError, Client, DeskmateError } from "../src/desk/client.ts";
+import { AgentCancelledError, Client, PlayerTwoError } from "../src/desk/client.ts";
 import type { Transport } from "../src/desk/client.ts";
 import { loadKey, publicHex, signNote } from "../src/core/sign.ts";
 import { Session } from "../src/desk/session.ts";
@@ -124,8 +124,8 @@ await test("a hub on another protocol is not followed: the session says which si
 await test("an agent command is split the way a shell would split it", () => {
   assert.deepEqual(splitCommand("claude -p"), ["claude", "-p"]);
   assert.deepEqual(splitCommand(`  sh -c 'echo "a b"' "x \\" y" z\\ w '' --flag="two words"  `), ["sh", "-c", 'echo "a b"', 'x " y', "z w", "", "--flag=two words"]);
-  assert.throws(() => splitCommand("claude 'oops"), DeskmateError);
-  assert.throws(() => splitCommand('claude "oops\\"'), DeskmateError);
+  assert.throws(() => splitCommand("claude 'oops"), PlayerTwoError);
+  assert.throws(() => splitCommand('claude "oops\\"'), PlayerTwoError);
 });
 
 await test("a note is cut to what the hub accepts without splitting a character", () => {

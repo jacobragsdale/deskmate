@@ -10,11 +10,11 @@ import type { Log } from "./app.ts";
 
 const settingsSchema = z
   .object({
-    DESKMATE_JOIN_TOKEN: z.string("is not set").min(16, "must be at least 16 characters"),
-    DESKMATE_DB: z.string("is not set").min(1, "is empty"),
-    DESKMATE_REPOS: z.string("is not set").min(1, "is empty")
+    PLAYER_TWO_JOIN_TOKEN: z.string("is not set").min(16, "must be at least 16 characters"),
+    PLAYER_TWO_DB: z.string("is not set").min(1, "is empty"),
+    PLAYER_TWO_REPOS: z.string("is not set").min(1, "is empty")
   })
-  .transform((env) => ({ joinToken: env.DESKMATE_JOIN_TOKEN, db: env.DESKMATE_DB, repos: env.DESKMATE_REPOS }));
+  .transform((env) => ({ joinToken: env.PLAYER_TWO_JOIN_TOKEN, db: env.PLAYER_TWO_DB, repos: env.PLAYER_TWO_REPOS }));
 const portSchema = z.string().regex(/^\d+$/).transform(Number).pipe(z.int().max(65_535));
 
 const log: Log = (event, facts) => {

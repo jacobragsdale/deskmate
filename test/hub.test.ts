@@ -13,7 +13,7 @@ import { createHub } from "../src/hub/app.ts";
 import type { ChatView, MessageView, Notice } from "../src/shared/ipc.ts";
 
 const TOKEN = "a-join-token-for-tests";
-const root = mkdtempSync(join(tmpdir(), "deskmate-app-"));
+const root = mkdtempSync(join(tmpdir(), "player-two-app-"));
 
 function pause(ms: number): Promise<void> {
   return new Promise((resolve) => {

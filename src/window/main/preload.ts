@@ -18,4 +18,4 @@ function subscribe(channel: string): (listener: (payload: unknown) => void) => (
 
 const bridge: Bridge = { view: () => ipcRenderer.invoke("view"), command: (command) => ipcRenderer.invoke("command", command), onView: subscribe("view"), onNotice: subscribe("notice") };
 
-contextBridge.exposeInMainWorld("deskmate", bridge);
+contextBridge.exposeInMainWorld("playerTwo", bridge);

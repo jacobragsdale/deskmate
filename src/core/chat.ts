@@ -290,7 +290,7 @@ export function agentPrompt(entry: Entry, me: string, repo: string, earlier: rea
         ];
   return [
     `You are ${me}'s coding agent, working in ${me}'s checkout of the ${repo} repository.`,
-    `${asker} tagged you ${where} through deskmate with the request below. ${reply}`,
+    `${asker} tagged you ${where} through Player Two with the request below. ${reply}`,
     "Answer the request directly and concisely. Reply in Markdown.",
     "Never put secrets, tokens or credentials in the reply.",
     ...context,

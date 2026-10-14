@@ -3,7 +3,7 @@
 import { spawn } from "node:child_process";
 import { join as joinPath } from "node:path";
 
-import { AgentCancelledError, defaultHome, DeskmateError } from "../client.ts";
+import { AgentCancelledError, defaultHome, PlayerTwoError } from "../client.ts";
 import type { Runner } from "../client.ts";
 
 export const AGENT_TIMEOUT = 900; // Seconds an approved agent run may take.
@@ -17,7 +17,7 @@ export function splitCommand(command: string): string[] {
   let word: string | null = null;
   for (const [, space, single, double, escaped, unclosed, plain] of command.matchAll(PIECE)) {
     if (unclosed !== undefined) {
-      throw new DeskmateError("no closing quotation");
+      throw new PlayerTwoError("no closing quotation");
     }
     if (space === undefined) {
       word = (word ?? "") + (single ?? double?.replace(/\\(["\\])/g, "$1") ?? escaped ?? plain ?? "");
@@ -34,7 +34,7 @@ export const runAgent: Runner = (argv, cwd, cancel) =>
   new Promise((resolve, reject) => {
     const [command, ...args] = argv;
     if (command === undefined) {
-      reject(new DeskmateError('the agent command is empty. Set "agent" in config.json'));
+      reject(new PlayerTwoError('the agent command is empty. Set "agent" in config.json'));
       return;
     }
     // Its own process group, so stopping it takes the agent's child processes with it.
@@ -77,17 +77,17 @@ export const runAgent: Runner = (argv, cwd, cancel) =>
     };
     child.on("error", (error) => {
       settle(() => {
-        reject(new DeskmateError(`could not start the agent command ${JSON.stringify(command)}: ${error.message}. Set "agent" in ${joinPath(defaultHome(), "config.json")}`));
+        reject(new PlayerTwoError(`could not start the agent command ${JSON.stringify(command)}: ${error.message}. Set "agent" in ${joinPath(defaultHome(), "config.json")}`));
       });
     });
     child.on("close", (code) => {
       settle(() => {
         if (ended === "timed out") {
-          reject(new DeskmateError(`the agent did not finish within ${String(AGENT_TIMEOUT)} seconds`));
+          reject(new PlayerTwoError(`the agent did not finish within ${String(AGENT_TIMEOUT)} seconds`));
         } else if (ended === "cancelled") {
           reject(new AgentCancelledError("the agent was stopped"));
         } else if (code !== 0) {
-          reject(new DeskmateError(`the agent exited with status ${String(code)}: ${(err === "" ? out : err).trim().slice(-500)}`));
+          reject(new PlayerTwoError(`the agent exited with status ${String(code)}: ${(err === "" ? out : err).trim().slice(-500)}`));
         } else {
           resolve(out.trim());
         }

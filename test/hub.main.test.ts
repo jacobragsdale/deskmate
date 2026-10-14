@@ -1,4 +1,4 @@
-/** The hub as a program, started the way it is in use, as `deskmate hub`: it says what is missing rather than starting without it, and it stops when it is told to. */
+/** The hub as a program, started the way it is in use, as `player-two hub`: it says what is missing rather than starting without it, and it stops when it is told to. */
 
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
@@ -13,16 +13,16 @@ const COMMAND = join(import.meta.dirname, "..", "src", "cli", "main.ts");
 const TOKEN = "a-join-token-for-tests";
 
 await test("the hub refuses to start without its settings and names each one", () => {
-  const run = spawnSync(process.execPath, [COMMAND, "hub"], { env: { DESKMATE_JOIN_TOKEN: "too-short", DESKMATE_REPOS: "https://dev.azure.com/acme/" }, encoding: "utf8" });
+  const run = spawnSync(process.execPath, [COMMAND, "hub"], { env: { PLAYER_TWO_JOIN_TOKEN: "too-short", PLAYER_TWO_REPOS: "https://dev.azure.com/acme/" }, encoding: "utf8" });
 
   assert.equal(run.status, 1);
-  assert.equal(run.stderr, "deskmate: DESKMATE_JOIN_TOKEN must be at least 16 characters; DESKMATE_DB is not set\n");
+  assert.equal(run.stderr, "player-two: PLAYER_TWO_JOIN_TOKEN must be at least 16 characters; PLAYER_TWO_DB is not set\n");
 });
 
 await test("the hub stops at once when told to, even with a reader waiting", { timeout: 20_000 }, async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "deskmate-hub-main-"));
+  const dir = mkdtempSync(join(tmpdir(), "player-two-hub-main-"));
   const hub = spawn(process.execPath, [COMMAND, "hub", "--port", "0"], {
-    env: { DESKMATE_JOIN_TOKEN: TOKEN, DESKMATE_DB: join(dir, "hub.db"), DESKMATE_REPOS: "https://dev.azure.com/acme/" },
+    env: { PLAYER_TWO_JOIN_TOKEN: TOKEN, PLAYER_TWO_DB: join(dir, "hub.db"), PLAYER_TWO_REPOS: "https://dev.azure.com/acme/" },
     stdio: ["ignore", "ignore", "pipe"]
   });
   t.after(() => {

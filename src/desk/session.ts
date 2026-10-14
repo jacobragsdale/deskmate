@@ -1,4 +1,4 @@
-/** One person's deskmate session: follows the hub, shares their repos, runs their agents when they say so, and keeps what the window shows. No window code. */
+/** One person's Player Two session: follows the hub, shares their repos, runs their agents when they say so, and keeps what the window shows. No window code. */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -10,7 +10,7 @@ import type { ChatView, Command, CurrentView, MessageView, Notice, RequestView, 
 import { agentPrompt, ChatLog, chatOf, continues, mentions, ONLINE, refOf, rings } from "../core/chat.ts";
 import type { Entry, Request } from "../core/chat.ts";
 import { runAgent, splitCommand } from "./agents/oneshot.ts";
-import { AgentCancelledError, DeskmateError, POLL_WAIT } from "./client.ts";
+import { AgentCancelledError, PlayerTwoError, POLL_WAIT } from "./client.ts";
 import type { Client, Runner } from "./client.ts";
 import * as repos from "./repos.ts";
 import type { Checkout } from "./repos.ts";
@@ -384,7 +384,7 @@ export class Session {
           const info = await this.client.info();
           if (info.protocol !== PROTOCOL) {
             retry = UPDATE_DELAY;
-            throw new DeskmateError(`the hub speaks protocol ${String(info.protocol)} and this app speaks protocol ${String(PROTOCOL)}: update the ${info.protocol > PROTOCOL ? "app" : "hub"}`);
+            throw new PlayerTwoError(`the hub speaks protocol ${String(info.protocol)} and this app speaks protocol ${String(PROTOCOL)}: update the ${info.protocol > PROTOCOL ? "app" : "hub"}`);
           }
           this.prefix = info.repos;
           greeted = true;
@@ -544,7 +544,7 @@ export class Session {
     const drafts = this.drafts.get(chat) ?? [];
     const draft = drafts.find((candidate) => candidate.entry.id === noteId && candidate.repo === repo);
     if (draft === undefined) {
-      throw new DeskmateError("that draft is no longer waiting");
+      throw new PlayerTwoError("that draft is no longer waiting");
     }
     this.drafts.set(
       chat,
@@ -588,7 +588,7 @@ export class Session {
   private async joinChannel(name: string): Promise<void> {
     const bare = nameSchema.safeParse(name.trim().replace(/^#/, ""));
     if (!bare.success) {
-      throw new DeskmateError("a channel's name is lowercase letters, digits, - and _, at most 32 characters");
+      throw new PlayerTwoError("a channel's name is lowercase letters, digits, - and _, at most 32 characters");
     }
     const channel = (await this.client.joinChannel(bare.data)).name;
     this.sync(await this.snapshot(null), true); // A channel's earlier notes are older than the poll's cursor, so load them now.
@@ -617,7 +617,7 @@ export class Session {
   private async pin(chat: string, repo: string): Promise<void> {
     const checkout = this.checkouts.get(repo);
     if (checkout === undefined) {
-      throw new DeskmateError(`you have no checkout of ${repo} to pin`);
+      throw new PlayerTwoError(`you have no checkout of ${repo} to pin`);
     }
     this.setChannel(await this.client.pin(chat, checkout.remote));
   }
@@ -633,10 +633,10 @@ export class Session {
     const known: readonly RepoRef[] = [...this.team.map(refOf), ...(pinned === null ? [] : [pinned])];
     const ref = known.find((candidate) => candidate.name === repo);
     if (this.checkouts.has(repo)) {
-      throw new DeskmateError(`you already have ${repo}`);
+      throw new PlayerTwoError(`you already have ${repo}`);
     }
     if (ref === undefined) {
-      throw new DeskmateError(`nobody on this hub has ${repo}, so there is nowhere to clone it from`);
+      throw new PlayerTwoError(`nobody on this hub has ${repo}, so there is nowhere to clone it from`);
     }
     const destination = joinPath(this.dev, decodeURIComponent(ref.url.replace(/\/+$/, "").split("/").at(-1) ?? repo));
     if (!(await this.hooks.confirmClone(ref.url, destination))) {
@@ -657,7 +657,7 @@ export class Session {
       return;
     }
     if (checkout === undefined) {
-      throw new DeskmateError(`there is no checkout of ${repo} under ${this.dev}`);
+      throw new PlayerTwoError(`there is no checkout of ${repo} under ${this.dev}`);
     }
     const argv = [...splitCommand(this.client.config.agent), agentPrompt(entry, this.me, repo, this.chats.earlier(entry), !post)];
     const run: AgentRun = { entry, repo, post, cancel: new AbortController(), startedAt: Date.now(), done: Promise.resolve() };

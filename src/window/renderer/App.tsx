@@ -23,7 +23,7 @@ interface Toast extends Notice {
 
 const submit: Submit = async (command) => {
   try {
-    const outcome = outcomeSchema.parse(await window.deskmate.command(command));
+    const outcome = outcomeSchema.parse(await window.playerTwo.command(command));
     return outcome.ok ? "" : outcome.problem;
   } catch (error) {
     return error instanceof Error ? error.message : String(error);
@@ -50,11 +50,11 @@ function Setup({ defaultAgent, tell }: { readonly defaultAgent: string; readonly
   };
   return (
     <form className="setup" onSubmit={join}>
-      <h1>deskmate</h1>
+      <h1>Player Two</h1>
       <p>Join your team&rsquo;s hub. Whoever runs it has the address and the join token.</p>
       <label>
         Hub address
-        <input name="hub" type="url" placeholder="https://deskmate.example.com" required autoFocus />
+        <input name="hub" type="url" placeholder="https://player-two.example.com" required autoFocus />
       </label>
       <label>
         Your name
@@ -201,11 +201,11 @@ export function App(): JSX.Element {
     const accept = (raw: unknown): void => {
       setView(viewSchema.parse(raw));
     };
-    const offView = window.deskmate.onView(accept);
-    const offNotice = window.deskmate.onNotice((raw) => {
+    const offView = window.playerTwo.onView(accept);
+    const offNotice = window.playerTwo.onNotice((raw) => {
       tell(noticeSchema.parse(raw));
     });
-    window.deskmate.view().then(accept).catch(console.error);
+    window.playerTwo.view().then(accept).catch(console.error);
     return (): void => {
       offView();
       offNotice();

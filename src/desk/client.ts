@@ -16,7 +16,7 @@ export const POLL_WAIT = 25; // Seconds one long-poll stays open; under the hub'
 const CALL_TIMEOUT = 10;
 const JSON_BODY = { "Content-Type": "application/json" };
 
-/** Makes one HTTP request and resolves with the response body. Rejects with a DeskmateError the user can act on. */
+/** Makes one HTTP request and resolves with the response body. Rejects with a PlayerTwoError the user can act on. */
 export type Transport = (method: string, url: string, headers: Readonly<Record<string, string>>, body: string | null, timeoutSeconds: number, signal?: AbortSignal) => Promise<string>;
 /** Runs the agent command in a folder and resolves with what it printed. Aborting `cancel` stops it. */
 export type Runner = (argv: readonly string[], cwd: string, cancel: AbortSignal) => Promise<string>;
@@ -30,10 +30,10 @@ const pinsSchema = z.record(z.string(), z.string());
 const hubErrorSchema = z.object({ detail: z.string() });
 
 /** A failure the user can act on; shown as it is. */
-export class DeskmateError extends Error {}
+export class PlayerTwoError extends Error {}
 
 /** The user stopped an agent run. */
-export class AgentCancelledError extends DeskmateError {}
+export class AgentCancelledError extends PlayerTwoError {}
 
 function parseJson(text: string): unknown {
   return JSON.parse(text);
@@ -55,11 +55,11 @@ export const http: Transport = async (method, url, headers, body, timeoutSeconds
     response = await fetch(url, { method, headers, body, signal: signal === undefined ? timeout : AbortSignal.any([timeout, signal]) });
     text = await response.text();
   } catch (error) {
-    throw new DeskmateError(`cannot reach the hub at ${url}: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+    throw new PlayerTwoError(`cannot reach the hub at ${url}: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
   }
   if (!response.ok) {
     const detail = detailOf(text);
-    throw new DeskmateError(detail === "" ? `the hub answered ${String(response.status)} for ${url}` : detail);
+    throw new PlayerTwoError(detail === "" ? `the hub answered ${String(response.status)} for ${url}` : detail);
   }
   return text;
 };
@@ -159,15 +159,15 @@ export class Client {
   }
 }
 
-/** Where the identity lives. The override lets one machine hold several; the default is shared with the `deskmate` command. */
+/** Where the identity lives. The override lets one machine hold several; the default is shared with the `player-two` command. */
 export function defaultHome(): string {
-  const override = process.env["DESKMATE_HOME"] ?? "";
-  return override === "" ? joinPath(homedir(), ".config", "deskmate") : override;
+  const override = process.env["PLAYER_TWO_HOME"] ?? "";
+  return override === "" ? joinPath(homedir(), ".config", "player-two") : override;
 }
 
 /** Everyone keeps their repos in ~/dev, so a repo's name is all it takes to find it. The override exists for a second identity on one machine. */
 export function defaultDev(): string {
-  const override = process.env["DESKMATE_DEV"] ?? "";
+  const override = process.env["PLAYER_TWO_DEV"] ?? "";
   return override === "" ? joinPath(homedir(), "dev") : override;
 }
 

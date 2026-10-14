@@ -6,7 +6,7 @@ import type { KeyObject } from "node:crypto";
 import { MAX_SKEW, noteSchema } from "./wire.ts";
 import type { Kind, Note } from "./wire.ts";
 
-const AUTH_SCHEME = "Deskmate";
+const AUTH_SCHEME = "PlayerTwo";
 // A raw 32-byte Ed25519 key is these fixed DER headers followed by the key itself.
 const PKCS8_HEADER = Buffer.from("302e020100300506032b657004220420", "hex");
 const SPKI_HEADER = Buffer.from("302a300506032b6570032100", "hex");
@@ -59,7 +59,7 @@ interface NoteFields {
 function notePayload(note: NoteFields): Buffer {
   // A JSON array of fixed positions has exactly one encoding, so both sides sign the same bytes.
   // JSON.stringify writes it with no spaces and leaves every character outside ASCII as it is; test/vectors.test.ts holds the bytes to the record.
-  return Buffer.from(JSON.stringify(["deskmate-note-v3", note.sender, note.to, note.kind, note.body, note.ts, note.agent, note.re]), "utf8");
+  return Buffer.from(JSON.stringify(["player-two-note-v3", note.sender, note.to, note.kind, note.body, note.ts, note.agent, note.re]), "utf8");
 }
 
 export function signNote(key: KeyObject, fields: NoteFields): Note {
@@ -72,7 +72,7 @@ export function noteIsAuthentic(note: Note, pubkey: string): boolean {
 
 /** What an auth header signs: who is asking, when, and for what. `path` is the path and query exactly as sent, so a header taken off one request is no use on another. */
 function authPayload(name: string, ts: number, method: string, path: string): Buffer {
-  return Buffer.from(`deskmate-auth-v2:${name}:${String(ts)}:${method}:${path}`, "utf8");
+  return Buffer.from(`player-two-auth-v2:${name}:${String(ts)}:${method}:${path}`, "utf8");
 }
 
 /** Prove who is asking for this one request. It gates reads and channel membership: every note carries its own signature. */

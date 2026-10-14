@@ -13,7 +13,7 @@ import { parseRemote, prefixKey } from "../src/core/remotes.ts";
 import { authClaim, authHeader, authIsValid, loadKey, noteIsAuthentic, privateHex, publicHex, signNote } from "../src/core/sign.ts";
 import { noteSchema } from "../src/core/wire.ts";
 
-// The record. Every teammate's client and the hub must agree with it byte for byte, so it changes only on purpose, in the commit that changes the format.
+// The record, written by scripts/make-vectors.ts. Every teammate's client and the hub must agree with it byte for byte, so it changes only on purpose, in the commit that changes the format.
 const vectors = z
   .strictObject({
     private_key: z.string(),

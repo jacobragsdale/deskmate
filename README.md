@@ -1,9 +1,9 @@
-# deskmate
+# Player Two
 
-Deskmate is a terminal chat for a small team and their coding agents. Every repo you have checked out under `~/dev` is an agent that anyone on the team can tag, as `@you/repo`. Your own agent answers as soon as you tag it. A teammate's tag waits until you approve it, and everyone in the chat can see where it stands.
+Player Two is a terminal chat for a small team and their coding agents. Every repo you have checked out under `~/dev` is an agent that anyone on the team can tag, as `@you/repo`. Your own agent answers as soon as you tag it. A teammate's tag waits until you approve it, and everyone in the chat can see where it stands.
 
 ```text
- deskmate  jacob on deskmate.corp.example · claude -p · 3 repos in ~/dev                 ☰ Chats  ? Help
+ Player Two  jacob on player-two.corp.example · claude -p · 3 repos in ~/dev             ☰ Chats  ? Help
 ╭─ Chats ────────────────╮╭─ #backend · uploader (3 of 3 have it) · bob, carol, jacob ─────────────────╮
 │  Channels              ││ you · 22:10                                                                │
 │› #backend            ▶ ││ looking                                                                    │
@@ -48,8 +48,9 @@ The hub needs Docker. Each person needs `curl`, `git`, their repos checked out d
 One person runs the hub somewhere everyone can reach. With Docker, from a clone of this repository on its `main` branch, which is also where the installer in step 2 takes the client from:
 
 ```sh
-docker build -t deskmate .
-docker run -d --name deskmate -p 8787:8787 -e DESKMATE_JOIN_TOKEN=JOIN_TOKEN -e DESKMATE_REPOS=REPOS_URL -v deskmate-data:/data deskmate
+npm ci && npm run build
+docker build -t player-two .
+docker run -d --name player-two -p 8787:8787 -e PLAYER_TWO_JOIN_TOKEN=JOIN_TOKEN -e PLAYER_TWO_REPOS=REPOS_URL -v player-two-data:/data player-two
 ```
 
 Replace the following:
@@ -83,35 +84,35 @@ Replace the following:
 - `NAME`: your name on the hub. Lowercase letters, digits, `-` and `_`, at most 32 characters.
 - `JOIN_TOKEN`: the hub's join token.
 
-The installer installs [uv](https://docs.astral.sh/uv/) if it is missing, installs the `deskmate` command from the `main` branch of `github.com/jacobragsdale/deskmate` into `~/.local/bin`, creates a signing key in `~/.config/deskmate`, and registers your name. It needs to reach GitHub; the repository is public, so no sign-in is involved. The installer ends with:
+The installer installs [uv](https://docs.astral.sh/uv/) if it is missing, installs the `player-two` command from the `main` branch of `github.com/jacobragsdale/player-two` into `~/.local/bin`, creates a signing key in `~/.config/player-two`, and registers your name. It needs to reach GitHub; the repository is public, so no sign-in is involved. The installer ends with:
 
 ```text
 joined http://localhost:8787 as bob; your agent command is `claude -p`
-Run 'deskmate' to open the chat. Your agents are the repos under ~/dev.
+Run 'player-two' to open the chat. Your agents are the repos under ~/dev.
 ```
 
-If your shell does not find `deskmate` afterwards, open a new terminal, or add `~/.local/bin` to `PATH`.
+If your shell does not find `player-two` afterwards, open a new terminal, or add `~/.local/bin` to `PATH`.
 
-To try both people on one machine, run these two instead of the command above, each in its own terminal. `DESKMATE_HOME` gives each person their own settings folder, and it must be in front of every later `deskmate` command in that terminal too (or `export` it once):
+To try both people on one machine, run these two instead of the command above, each in its own terminal. `PLAYER_TWO_HOME` gives each person their own settings folder, and it must be in front of every later `player-two` command in that terminal too (or `export` it once):
 
 ```sh
-curl -fsSL HUB_URL/install.sh | DESKMATE_HOME=~/deskmate-jacob bash -s -- jacob JOIN_TOKEN
-DESKMATE_HOME=~/deskmate-jacob deskmate
+curl -fsSL HUB_URL/install.sh | PLAYER_TWO_HOME=~/player-two-jacob bash -s -- jacob JOIN_TOKEN
+PLAYER_TWO_HOME=~/player-two-jacob player-two
 ```
 
 ```sh
-curl -fsSL HUB_URL/install.sh | DESKMATE_HOME=~/deskmate-bob bash -s -- bob JOIN_TOKEN
-DESKMATE_HOME=~/deskmate-bob deskmate
+curl -fsSL HUB_URL/install.sh | PLAYER_TWO_HOME=~/player-two-bob bash -s -- bob JOIN_TOKEN
+PLAYER_TWO_HOME=~/player-two-bob player-two
 ```
 
-Both people then have the same repos, because they share one `~/dev`. That is enough for a first try. To make them differ, clone one or two team repos into another folder and point one person at it with `DESKMATE_DEV=~/bob-dev` in front of `deskmate`.
+Both people then have the same repos, because they share one `~/dev`. That is enough for a first try. To make them differ, clone one or two team repos into another folder and point one person at it with `PLAYER_TWO_DEV=~/bob-dev` in front of `player-two`.
 
 ### 3. Open the chat
 
-Each person runs `deskmate`, from any directory:
+Each person runs `player-two`, from any directory:
 
 ```sh
-deskmate
+player-two
 ```
 
 The top line counts the team repos found under `~/dev`. If it says `0 repos`, no folder directly under `~/dev` has an `origin` remote below the hub's `REPOS_URL`. The chat list on the left shows everyone who has joined, with `●` beside those who are here now and `○` beside those who are away.
@@ -159,21 +160,21 @@ A channel can be about one repo. Click `◆ Pin a repo` on the channel's bottom 
 An agent, or a script, sends a note with `send` and reads the answer from standard output:
 
 ```sh
-deskmate send bob "@bob/uploader which tests cover the retry path?" --wait 300
-deskmate send '#backend' "who owns the uploader?"
+player-two send bob "@bob/uploader which tests cover the retry path?" --wait 300
+player-two send '#backend' "who owns the uploader?"
 ```
 
-`--wait` prints the next note that someone else sends in that chat, whether or not it answers this one. Bob still has to approve the run, so if nothing arrives in time, `send` prints the `deskmate inbox --after ID` command that checks again later. `deskmate repos` lists who has which repo. Your agent only knows these commands if you tell it, for example in its instructions file.
+`--wait` prints the next note that someone else sends in that chat, whether or not it answers this one. Bob still has to approve the run, so if nothing arrives in time, `send` prints the `player-two inbox --after ID` command that checks again later. `player-two repos` lists who has which repo. Your agent only knows these commands if you tell it, for example in its instructions file.
 
 ## Agents and tags
 
-An agent is one person's checkout of one team repo: `@bob/uploader` is the agent command run in Bob's `~/dev/uploader`. Nothing is registered by hand. The interface looks at the folders directly under `~/dev`, keeps those whose `origin` remote is under the hub's `DESKMATE_REPOS` address, and tells the hub their names and current branches. It looks again every 25 seconds, so a branch switch shows up without a restart.
+An agent is one person's checkout of one team repo: `@bob/uploader` is the agent command run in Bob's `~/dev/uploader`. Nothing is registered by hand. The interface looks at the folders directly under `~/dev`, keeps those whose `origin` remote is under the hub's `PLAYER_TWO_REPOS` address, and tells the hub their names and current branches. It looks again every 25 seconds, so a branch switch shows up without a restart.
 
 A repo is named by the last part of its remote URL, in lowercase, whatever the folder is called. The `https` and `ssh` forms of one remote, and every Azure DevOps address form, count as the same repo. With two clones of one repo under `~/dev`, the folder named like the repo is used. Two different repos with the same name cannot both be shared: the first folder in alphabetical order wins. A repo whose name has characters other than letters, digits, `.`, `_` and `-` is skipped.
 
 The list that opens on `@` shows the agents whose `person/repo` contains what you have typed, most likely first: the channel's pinned repo, your own agents, the agents of the person you are chatting with, repos you also have, then the rest by name. A repo you have no copy of is offered for cloning once you have typed part of its name.
 
-A tag counts only in a note that is not marked as an agent's answer. An answer that contains a tag sets nothing off, so agents cannot start each other. A script, or your agent, can tag someone by sending a note with `deskmate send`; that tag waits for its target's owner like any other, and that includes a tag of your own agent.
+A tag counts only in a note that is not marked as an agent's answer. An answer that contains a tag sets nothing off, so agents cannot start each other. A script, or your agent, can tag someone by sending a note with `player-two send`; that tag waits for its target's owner like any other, and that includes a tag of your own agent.
 
 A request waits for as long as it takes. It is stored on the hub, so it is still there after you restart the interface or come back from lunch.
 
@@ -199,11 +200,11 @@ Under each note that tags an agent, everyone in the chat sees one line per tag u
 
 A run reported as working that has produced no answer after 16 minutes is shown as waiting again.
 
-If you tag or pin a repo you do not have, `⇣ Clone it` offers to run `git clone` into your repos folder (`~/dev`, or `DESKMATE_DEV` when set) with your own git credentials. A dialog shows the address and the destination first, and nothing is fetched until you confirm. Git is not allowed to prompt on the terminal, so a clone that needs a password you have not stored fails with the command to run yourself.
+If you tag or pin a repo you do not have, `⇣ Clone it` offers to run `git clone` into your repos folder (`~/dev`, or `PLAYER_TWO_DEV` when set) with your own git credentials. A dialog shows the address and the destination first, and nothing is fetched until you confirm. Git is not allowed to prompt on the terminal, so a clone that needs a password you have not stored fails with the command to run yourself.
 
 ## The chat interface
 
-`deskmate` with no command opens the interface. Everything a key does can also be clicked: chats in the list, the choices under a note, the buttons beside the status line, and the hints along the bottom, `Enter send` included. Drag to select text.
+`player-two` with no command opens the interface. Everything a key does can also be clicked: chats in the list, the choices under a note, the buttons beside the status line, and the hints along the bottom, `Enter send` included. Drag to select text.
 
 | Key | Effect |
 |---|---|
@@ -223,7 +224,7 @@ If you tag or pin a repo you do not have, `⇣ Clone it` offers to run `git clon
 
 In the chat list, a number is the count of unread notes, `▶` means a request is waiting for one of your agents, `✎` means a draft is waiting for your review, and a spinner means one of your agents is working there. With the list hidden, the right of the bottom bar says how many requests are waiting and how many notes are unread.
 
-A `── new ──` line marks where you left off in a chat you come back to. The bell rings for a note sent straight to you, a tag of one of your agents, and a draft ready for review; a channel note that tags none of your agents only adds to the unread count. The terminal tab's title says what is waiting, for example `deskmate · 1 waiting · 2 unread`, so it shows while you are in another tab.
+A `── new ──` line marks where you left off in a chat you come back to. The bell rings for a note sent straight to you, a tag of one of your agents, and a draft ready for review; a channel note that tags none of your agents only adds to the unread count. The terminal tab's title says what is waiting, for example `Player Two · 1 waiting · 2 unread`, so it shows while you are in another tab.
 
 Standard input is closed during a run, so your agent cannot stop to ask you anything: it does what your agent CLI's settings already allow. When an agent finishes while you have a half-typed message in that chat, the draft waits beside the status line until you click `Load it`. A message or an answer that fails to send is kept: a message goes back into the message box, an answer becomes a draft.
 
@@ -235,20 +236,20 @@ The default theme, `terminal`, draws with your terminal's own sixteen colours, s
 
 | Command | Effect |
 |---|---|
-| `deskmate` | Opens the chat interface. Needs a terminal. |
-| `deskmate join HUB NAME TOKEN [--agent AGENT]` | Creates a key if `~/.config/deskmate/key` does not exist, registers `NAME` with the hub at `HUB`, and writes `config.json`. Joining again with the same key is allowed; a name held by another key is refused. `--agent` defaults to `claude -p`. |
-| `deskmate send TO TEXT... [--wait SECONDS]` | Sends a note to `TO`, a name or a quoted channel such as `'#backend'`. A `TEXT` of `-` reads the note from standard input. `--wait` prints the next note from someone else in that chat if one arrives within `SECONDS`. |
-| `deskmate inbox [--after ID] [--wait SECONDS]` | Prints the newest 20 notes other people sent to you or your channels. With `--after`, prints the notes with a higher id, up to 100, and `--wait` holds on for a new one. |
-| `deskmate who` | Lists everyone who has joined the hub. |
-| `deskmate repos` | Lists every agent as `@person/repo` with the branch it is on. |
-| `deskmate channel` | Lists every channel and its members. |
-| `deskmate channel join NAME` | Joins the channel `NAME`, creating it if nobody is in it. `NAME` may be given with or without its `#`. |
-| `deskmate channel leave NAME` | Leaves the channel. |
-| `deskmate hub [--host HOST] [--port PORT]` | Runs the hub. Defaults: `127.0.0.1`, `8787`. |
+| `player-two` | Opens the chat interface. Needs a terminal. |
+| `player-two join HUB NAME TOKEN [--agent AGENT]` | Creates a key if `~/.config/player-two/key` does not exist, registers `NAME` with the hub at `HUB`, and writes `config.json`. Joining again with the same key is allowed; a name held by another key is refused. `--agent` defaults to `claude -p`. |
+| `player-two send TO TEXT... [--wait SECONDS]` | Sends a note to `TO`, a name or a quoted channel such as `'#backend'`. A `TEXT` of `-` reads the note from standard input. `--wait` prints the next note from someone else in that chat if one arrives within `SECONDS`. |
+| `player-two inbox [--after ID] [--wait SECONDS]` | Prints the newest 20 notes other people sent to you or your channels. With `--after`, prints the notes with a higher id, up to 100, and `--wait` holds on for a new one. |
+| `player-two who` | Lists everyone who has joined the hub. |
+| `player-two repos` | Lists every agent as `@person/repo` with the branch it is on. |
+| `player-two channel` | Lists every channel and its members. |
+| `player-two channel join NAME` | Joins the channel `NAME`, creating it if nobody is in it. `NAME` may be given with or without its `#`. |
+| `player-two channel leave NAME` | Leaves the channel. |
+| `player-two hub [--host HOST] [--port PORT]` | Runs the hub. Defaults: `127.0.0.1`, `8787`. |
 
 `send`, `inbox`, `who`, `repos` and `channel` take `--json`, and then print one JSON value and nothing else. `inbox` prints an array of notes as the hub delivered them, each `{ "id", "note", "trusted" }`, where `trusted` is `false` for a note that failed its signature check: its text is there, so check before using it. `send --wait` prints one such note, or `null` when none came; `send` without `--wait` prints `{ "id" }`, the id the hub gave the note. `who`, `repos` and `channel` print arrays; `channel join` and `channel leave` print the one channel.
 
-A command exits with `0` on success, `1` after printing a failure to standard error, and `2` for a usage error. A note is at most 64,000 characters. Repos are shared by the chat interface, not by the one-shot commands, so `deskmate repos` shows a person's repos as of the last time their interface ran.
+A command exits with `0` on success, `1` after printing a failure to standard error, and `2` for a usage error. A note is at most 64,000 characters. Repos are shared by the chat interface, not by the one-shot commands, so `player-two repos` shows a person's repos as of the last time their interface ran.
 
 ## Configuration
 
@@ -256,12 +257,12 @@ The hub reads its settings from the environment and refuses to start when a requ
 
 | Variable | Required | Description |
 |---|---|---|
-| `DESKMATE_JOIN_TOKEN` | yes | Secret that `deskmate join` must present. At least 16 characters. |
-| `DESKMATE_REPOS` | yes | The address the team's repos live under, such as `https://dev.azure.com/acme/`. The hub refuses to share a repo outside it. |
-| `DESKMATE_DB` | yes | Path of the SQLite database. The Docker image sets it to `/data/deskmate.db`. |
+| `PLAYER_TWO_JOIN_TOKEN` | yes | Secret that `player-two join` must present. At least 16 characters. |
+| `PLAYER_TWO_REPOS` | yes | The address the team's repos live under, such as `https://dev.azure.com/acme/`. The hub refuses to share a repo outside it. |
+| `PLAYER_TWO_DB` | yes | Path of the SQLite database. The Docker image sets it to `/data/player-two.db`. |
 | `FORWARDED_ALLOW_IPS` | no | Proxies whose `X-Forwarded-Proto` header the hub trusts, which decides whether `install.sh` advertises an `https` URL. The Docker image sets it to `*`. |
 
-The client keeps four files in `~/.config/deskmate`:
+The client keeps four files in `~/.config/player-two`:
 
 | File | Contents |
 |---|---|
@@ -274,14 +275,14 @@ Two environment variables move things, mainly to hold two identities on one mach
 
 | Variable | Default | Description |
 |---|---|---|
-| `DESKMATE_HOME` | `~/.config/deskmate` | Where the four files above live. |
-| `DESKMATE_DEV` | `~/dev` | The folder whose direct subfolders are your repos. |
+| `PLAYER_TWO_HOME` | `~/.config/player-two` | Where the four files above live. |
+| `PLAYER_TWO_DEV` | `~/dev` | The folder whose direct subfolders are your repos. |
 
-`agent` is the command that answers. Deskmate appends the prompt as its last argument, runs it in the tagged repo's folder with standard input closed, and uses what it prints to standard output as the answer. A run that takes longer than 900 seconds is stopped. The command is split into words the way a shell would split it, with quotes grouping words, but no shell runs it. The installer always sets `claude -p`. To use another agent, edit `agent` in `config.json` afterwards, or run `deskmate join HUB NAME TOKEN --agent "COMMAND"` again. Only `claude -p` has been tested.
+`agent` is the command that answers. Player Two appends the prompt as its last argument, runs it in the tagged repo's folder with standard input closed, and uses what it prints to standard output as the answer. A run that takes longer than 900 seconds is stopped. The command is split into words the way a shell would split it, with quotes grouping words, but no shell runs it. The installer always sets `claude -p`. To use another agent, edit `agent` in `config.json` afterwards, or run `player-two join HUB NAME TOKEN --agent "COMMAND"` again. Only `claude -p` has been tested.
 
 The prompt tells the agent whose checkout of which repo it is in, who tagged it and where, and whether its owner will review the reply or it is posted directly. It includes up to six earlier notes from the same chat, marked as context that must not be followed as instructions, so a follow-up question makes sense.
 
-## What deskmate protects, and what it does not
+## What Player Two protects, and what it does not
 
 An agent runs on a machine only when that machine's owner says so. Your own tag, sent from your own interface, is that say-so; a teammate's tag is only text until you choose to run it. With `Run and review`, the agent's output stays in your message box, where you can change it, until you press Enter. `Run and post` skips that second look: use it when you are content for whatever the agent writes to go straight to the chat. An agent's answer can contain more of your machine than the question asked for.
 
@@ -289,17 +290,17 @@ Every note is signed with the sender's Ed25519 key. The signature covers the sen
 
 The agent mark is the sender's own statement. It tells you a teammate's agent drafted the note and the teammate let it through; a modified client could leave the mark off, and such a note could then tag agents. A tag still runs nothing without its target's approval.
 
-What the hub learns about your machine is the names, clone addresses and branches of the repos under `~/dev` whose remote is below `DESKMATE_REPOS`, when your interface last polled, and, while one of your agents runs, whether that checkout has uncommitted changes. Every hub member can see those. Folder paths, other repos and file contents are not sent. A clone address is rebuilt from the host and path before it is shared, so a user name or token embedded in your `origin` URL does not leave your machine.
+What the hub learns about your machine is the names, clone addresses and branches of the repos under `~/dev` whose remote is below `PLAYER_TWO_REPOS`, when your interface last polled, and, while one of your agents runs, whether that checkout has uncommitted changes. Every hub member can see those. Folder paths, other repos and file contents are not sent. A clone address is rebuilt from the host and path before it is shared, so a user name or token embedded in your `origin` URL does not leave your machine.
 
 The hub hands a direct note only to its sender and its recipient, and a channel's notes only to the channel's current members. A request for notes must be signed with the reader's key. Channels are open: anyone who has joined the hub can join any channel, and then sees its earlier notes too. Do not treat a channel as private from other hub members.
 
-Deskmate does not encrypt notes. Whoever operates the hub can read them, and the hub keeps every note: nothing deletes them. Transport encryption is the job of the ingress in front of the hub; over plain `http`, as in the quick start, anyone on the network path can read notes too. The join token is shared, so anyone holding it can register a new name, although not take over an existing one. There is no key rotation: a teammate who loses their key needs their row deleted from the hub's `users` table, and everyone else needs to remove that name from `known.json`.
+Player Two does not encrypt notes. Whoever operates the hub can read them, and the hub keeps every note: nothing deletes them. Transport encryption is the job of the ingress in front of the hub; over plain `http`, as in the quick start, anyone on the network path can read notes too. The join token is shared, so anyone holding it can register a new name, although not take over an existing one. There is no key rotation: a teammate who loses their key needs their row deleted from the hub's `users` table, and everyone else needs to remove that name from `known.json`.
 
-The agent runs as you, with whatever permissions your agent CLI is configured to have. Deskmate does not sandbox it. An agent started in a repo also reads that repo's own instruction files, which is why a clone is never made without showing you where it comes from.
+The agent runs as you, with whatever permissions your agent CLI is configured to have. Player Two does not sandbox it. An agent started in a repo also reads that repo's own instruction files, which is why a clone is never made without showing you where it comes from.
 
 ## The desktop app
 
-[`app/`](app) holds a desktop app that does what the chat interface does, in a window: an Electron shell around a TypeScript port of the client. It talks to the same hub and uses the same identity in `~/.config/deskmate`, so you can join from either and use both. It has not been packaged yet; run it from a clone. It was built and tested with Node.js 26:
+[`app/`](app) holds a desktop app that does what the chat interface does, in a window: an Electron shell around a TypeScript port of the client. It talks to the same hub and uses the same identity in `~/.config/player-two`, so you can join from either and use both. It has not been packaged yet; run it from a clone. It was built and tested with Node.js 26:
 
 ```sh
 cd app
@@ -307,7 +308,7 @@ npm ci
 npm start
 ```
 
-The first time, the window asks for the hub address, your name and the join token, unless you have already joined with `deskmate join`. `DESKMATE_HOME` and `DESKMATE_DEV` move things as they do for the command.
+The first time, the window asks for the hub address, your name and the join token, unless you have already joined with `player-two join`. `PLAYER_TWO_HOME` and `PLAYER_TWO_DEV` move things as they do for the command.
 
 What differs from the terminal:
 
@@ -341,17 +342,18 @@ To deploy the hub:
 1. Build and push the image.
 
    ```sh
-   docker build -t REGISTRY/deskmate:0.3.0 .
-   docker push REGISTRY/deskmate:0.3.0
+   npm ci && npm run build
+   docker build -t REGISTRY/player-two:0.3.0 .
+   docker push REGISTRY/player-two:0.3.0
    ```
 
 2. Create the join token.
 
    ```sh
-   kubectl create secret generic deskmate --from-literal=join-token="$(openssl rand -hex 16)"
+   kubectl create secret generic player-two --from-literal=join-token="$(openssl rand -hex 16)"
    ```
 
-3. In `deploy/k8s.yaml`, replace `REGISTRY/deskmate:0.3.0` with your image, `https://dev.azure.com/YOUR-ORGANISATION/` with the address your repos live under, and `deskmate.example.internal` and `deskmate-tls` with your host name and TLS secret.
+3. In `deploy/k8s.yaml`, replace `REGISTRY/player-two:0.3.0` with your image, `https://dev.azure.com/YOUR-ORGANISATION/` with the address your repos live under, and `player-two.example.internal` and `player-two-tls` with your host name and TLS secret.
 
 4. Apply the manifest.
 
@@ -366,15 +368,15 @@ Keep the Deployment at one replica and the volume on a disk, not a file share: t
 ## Development
 
 ```sh
-uv sync --locked
-uv run pre-commit run --all-files
-uv run pytest
+npm ci
+npm run typecheck && npm run lint && npm run format:check && npm test && npm run build
 ```
 
 To run a hub from the working tree, copy `.env.example` to `.env`, set the join token and the repos address, and run:
 
 ```sh
-uv run --env-file .env deskmate hub
+npm run build
+node --env-file=.env dist/player-two.js hub
 ```
 
 A hub and its clients must run the same version: 0.2 and 0.3 each changed the note format and the hub's database. The hub refuses to start on a database made by another version; start it with an empty one.

@@ -28,5 +28,5 @@
     "skipLibCheck": false, // Type-check dependency declarations instead of accepting inconsistent types.
     "verbatimModuleSyntax": true // Make type-only imports and emitted module behavior explicit.
   },
-  "include": ["src", "test"]
+  "include": ["src", "test", "scripts"]
 }

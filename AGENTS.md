@@ -1,6 +1,6 @@
 # For agents working in this repository
 
-Player Two is a chat for a small team and their coding agents. The code still calls it deskmate; task P0-E4 of the plan renames it. An agent is one person's checkout of one repo, and nothing runs on a machine unless its owner said so.
+Player Two is a chat for a small team and their coding agents. The code called it deskmate until task P0-E4 of the plan renamed it. An agent is one person's checkout of one repo, and nothing runs on a machine unless its owner said so.
 
 The repository is in the middle of a planned rebuild. Before changing anything, read:
 
@@ -33,8 +33,8 @@ Find the first unticked task in the lowest-numbered phase file and continue from
 | `src/core/` | What every part shares: the wire format, signing, chat state. No disk and no process. |
 | `src/hub/` | The hub: its database, its routes, and starting it. |
 | `src/desk/` | One person's side: their identity, the client, their repos, the session, running an agent. |
-| `src/cli/` | The `deskmate` command, built to `dist/deskmate.js`. The hub is started with it. |
+| `src/cli/` | The `player-two` command, built to `dist/player-two.js`. The hub is started with it. |
 | `src/window/`, `src/shared/` | The Electron main process and the React window, and what crosses between them. |
-| `test/` | The tests, run with `node --test`. |
+| `test/`, `scripts/` | The tests, run with `node --test`, and the script that writes the signing vectors they are held to. |
 | `deploy/`, `Dockerfile` | The hub's image and its Kubernetes manifest. |
 | `docs/plan/` | The implementation plan. |

@@ -1,7 +1,7 @@
-# Deskmate hub on Kubernetes. Before applying:
+# Player Two's hub on Kubernetes. Before applying:
 #   1. Build and push the image, then set `image` below.
-#   2. kubectl create secret generic deskmate --from-literal=join-token="$(openssl rand -hex 16)"
-#   3. Set DESKMATE_REPOS to the address your team's repos live under.
+#   2. kubectl create secret generic player-two --from-literal=join-token="$(openssl rand -hex 16)"
+#   3. Set PLAYER_TWO_REPOS to the address your team's repos live under.
 #   4. Set the Ingress host and TLS secret for your cluster.
 # The volume must be a disk (on AKS: managed-csi), not a file share: SQLite needs real file locking.
 apiVersion: v1
@@ -10,7 +10,7 @@ items:
   - apiVersion: v1
     kind: PersistentVolumeClaim
     metadata:
-      name: deskmate
+      name: player-two
     spec:
       accessModes: [ReadWriteOnce]
       resources:
@@ -19,18 +19,18 @@ items:
   - apiVersion: apps/v1
     kind: Deployment
     metadata:
-      name: deskmate
+      name: player-two
     spec:
       replicas: 1 # One SQLite file on one disk: never run a second pod.
       strategy:
         type: Recreate
       selector:
         matchLabels:
-          app: deskmate
+          app: player-two
       template:
         metadata:
           labels:
-            app: deskmate
+            app: player-two
         spec:
           securityContext:
             runAsNonRoot: true
@@ -38,16 +38,16 @@ items:
             fsGroup: 10001
           containers:
             - name: hub
-              image: REGISTRY/deskmate:0.3.0
+              image: REGISTRY/player-two:0.3.0
               ports:
                 - containerPort: 8787
               env:
-                - name: DESKMATE_REPOS
+                - name: PLAYER_TWO_REPOS
                   value: https://dev.azure.com/YOUR-ORGANISATION/
-                - name: DESKMATE_JOIN_TOKEN
+                - name: PLAYER_TWO_JOIN_TOKEN
                   valueFrom:
                     secretKeyRef:
-                      name: deskmate
+                      name: player-two
                       key: join-token
               readinessProbe:
                 httpGet:
@@ -59,34 +59,34 @@ items:
           volumes:
             - name: data
               persistentVolumeClaim:
-                claimName: deskmate
+                claimName: player-two
   - apiVersion: v1
     kind: Service
     metadata:
-      name: deskmate
+      name: player-two
     spec:
       selector:
-        app: deskmate
+        app: player-two
       ports:
         - port: 80
           targetPort: 8787
   - apiVersion: networking.k8s.io/v1
     kind: Ingress
     metadata:
-      name: deskmate
+      name: player-two
     spec:
       ingressClassName: nginx
       tls:
-        - hosts: [deskmate.example.internal]
-          secretName: deskmate-tls
+        - hosts: [player-two.example.internal]
+          secretName: player-two-tls
       rules:
-        - host: deskmate.example.internal
+        - host: player-two.example.internal
           http:
             paths:
               - path: /
                 pathType: Prefix
                 backend:
                   service:
-                    name: deskmate
+                    name: player-two
                     port:
                       number: 80

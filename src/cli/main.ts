@@ -1,4 +1,4 @@
-/** The deskmate command: one-shot commands for scripts and agents, and the hub. One program, so one file to ship. */
+/** The player-two command: one-shot commands for scripts and agents, and the hub. One program, so one file to ship. */
 
 import { text } from "node:stream/consumers";
 import { parseArgs } from "node:util";
@@ -8,14 +8,14 @@ import { z } from "zod";
 import { chatOf } from "../core/chat.ts";
 import { isChannel } from "../core/wire.ts";
 import type { Delivered } from "../core/wire.ts";
-import { DEFAULT_AGENT, defaultHome, DeskmateError, http, join, loadClient, POLL_WAIT } from "../desk/client.ts";
+import { DEFAULT_AGENT, defaultHome, http, join, loadClient, PlayerTwoError, POLL_WAIT } from "../desk/client.ts";
 import type { Client, Transport } from "../desk/client.ts";
 import { problemOf } from "../desk/session.ts";
 import { runHub } from "../hub/main.ts";
 
 const INBOX = 20; // Notes `inbox` prints when it is not told where to start.
 
-const USAGE = `usage: deskmate COMMAND
+const USAGE = `usage: player-two COMMAND
 
   join HUB NAME TOKEN [--agent AGENT]   register your name and a new key with a hub
   send TO TEXT... [--wait SECONDS]      send a note to a name or a channel such as '#backend'; a TEXT of - reads it from standard input
@@ -23,7 +23,7 @@ const USAGE = `usage: deskmate COMMAND
   who                                   list everyone who has joined
   repos                                 list every agent as @person/repo with the branch it is on
   channel [join NAME | leave NAME]      list the channels, or join or leave one
-  hub [--host HOST] [--port PORT]       run the hub; it reads DESKMATE_JOIN_TOKEN, DESKMATE_DB and DESKMATE_REPOS
+  hub [--host HOST] [--port PORT]       run the hub; it reads PLAYER_TWO_JOIN_TOKEN, PLAYER_TWO_DB and PLAYER_TWO_REPOS
 
 send, inbox, who, repos and channel take --json, and then print one JSON value and nothing else.
 A command exits with 0 on success, 1 after printing a failure, and 2 when it was not given what it takes.`;
@@ -107,7 +107,7 @@ async function send(joined: () => Client, args: string[], stdin: NodeJS.Readable
   if (seconds > 0) {
     // With --json the one value is the reply as the hub delivered it, or null when none came; without --wait it is the hub's receipt for what was sent.
     const reply = await awaitReply(client, to, sent, seconds);
-    const words = reply === null ? `nothing new in ${to} yet; check later with: deskmate inbox --after ${String(sent)}` : render(reply, true);
+    const words = reply === null ? `nothing new in ${to} yet; check later with: player-two inbox --after ${String(sent)}` : render(reply, true);
     show(out, values.json, reply === null ? null : { ...reply, trusted: true }, words);
   } else if (values.json) {
     out(JSON.stringify({ id: sent }));
@@ -141,7 +141,7 @@ async function channel(joined: () => Client, args: string[], out: (line: string)
     return;
   }
   if (name === undefined) {
-    throw new DeskmateError(`which channel? Try: deskmate channel ${action} backend`);
+    throw new PlayerTwoError(`which channel? Try: player-two channel ${action} backend`);
   }
   const info = action === "join" ? await client.joinChannel(name) : await client.leaveChannel(name);
   show(out, values.json, info, `${action === "join" ? "joined" : "left"} ${info.name}; members: ${info.members.length === 0 ? "none" : info.members.join(", ")}`);
@@ -164,7 +164,7 @@ async function run(argv: readonly string[], options: Options, out: (line: string
   const joined = (): Client => {
     const client = loadClient(home, transport, options.now ?? (() => Date.now() / 1000));
     if (client === null) {
-      throw new DeskmateError("not joined yet: run `deskmate join HUB NAME TOKEN`");
+      throw new PlayerTwoError("not joined yet: run `player-two join HUB NAME TOKEN`");
     }
     return client;
   };
@@ -216,10 +216,10 @@ export async function main(argv: readonly string[], options: Options = {}): Prom
     return 0;
   } catch (error) {
     if (isUsage(error)) {
-      err(`deskmate: ${error.message}\n\n${USAGE}`);
+      err(`player-two: ${error.message}\n\n${USAGE}`);
       return 2;
     }
-    err(`deskmate: ${problemOf(error)}`);
+    err(`player-two: ${problemOf(error)}`);
     return 1;
   }
 }
