@@ -306,6 +306,25 @@ await test(
     assert.equal(await page.eval(`document.querySelectorAll("main script, main img").length`), 0);
     assert.equal(await page.eval("window.pwned"), undefined);
 
+    // Carol starts a channel and pins a repo to it, and alice joins it from the dialog: a quiet line for each, in its place among the messages.
+    const carol = await hub.join("carol");
+    await carol.publish("#history", "channel.join", {});
+    await carol.publish("#history", "message", { text: "the first", via: "cli" });
+    await carol.publish("#history", "channel.pin", { repo: { name: "uploader", key: "dev.azure.com/acme/platform/uploader", url: "https://dev.azure.com/acme/Platform/_git/uploader" }, branch: null });
+    await page.press("n", CTRL);
+    await page.until("the dialog", `document.querySelector('[role="dialog"] input[name="name"]') !== null`);
+    await page.type('[role="dialog"] input[name="name"]', "history");
+    await page.click('[role="dialog"] button[type="submit"]');
+    await page.until("the channel", `document.querySelector("main h1")?.textContent === "#history"`);
+    await page.until("the channel's lines", `document.querySelector("main").innerText.includes("→ you joined")`);
+    const history = String(await page.eval(`document.querySelector("main").innerText`));
+    const order = ["→ carol joined", "the first", "◆ carol pinned uploader", "→ you joined"].map((said) => history.indexOf(said));
+    assert.deepEqual(
+      order.toSorted((a, b) => a - b),
+      order
+    );
+    assert.ok(!order.includes(-1), history);
+
     assert.deepEqual(page.problems, []);
   }
 );

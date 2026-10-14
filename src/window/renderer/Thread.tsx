@@ -1,4 +1,4 @@
-/** The open chat: who is in it, and its messages, each with its thread and where each agent it tags stands (Message.tsx). */
+/** The open chat: who is in it, and its messages, each with its thread and where each agent it tags stands (Message.tsx), with a quiet line wherever someone joined, left or pinned. */
 
 import { cn } from "cn";
 import { Fragment, useLayoutEffect, useRef } from "react";
@@ -7,7 +7,7 @@ import type { JSX } from "react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
-import type { ChatView, CurrentView } from "../../shared/ipc.ts";
+import type { ChatView, CurrentView, LineView, MessageView } from "../../shared/ipc.ts";
 import type { Act } from "./App.tsx";
 import { Message } from "./Message.tsx";
 
@@ -23,11 +23,23 @@ function dayLabel(ts: number): string {
   return daysAgo === 1 ? "yesterday" : day.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
 }
 
+/** Someone joined or left the channel, or pinned a repo to it or unpinned it: one quiet line. */
+function Line({ line, me }: { readonly line: LineView; readonly me: string }): JSX.Element {
+  const who = line.who === me ? "you" : line.who;
+  const said = { joined: `→ ${who} joined`, left: `← ${who} left`, pinned: `◆ ${who} pinned ${line.repo}`, unpinned: `◆ ${who} unpinned the repo` }[line.did];
+  return (
+    <p className="my-1 text-xs text-muted-foreground">
+      {said} · {new Date(line.ts * 1000).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}
+    </p>
+  );
+}
+
 export function Thread({ view, current, act, onPin }: { readonly view: ChatView; readonly current: CurrentView; readonly act: Act; readonly onPin: () => void }): JSX.Element {
   const scroller = useRef<HTMLDivElement>(null);
   const atEnd = useRef(true);
   const shown = useRef("");
-  const newest = current.messages.at(-1)?.seq ?? 0;
+  const items: readonly (MessageView | LineView)[] = [...current.messages, ...current.lines].sort((a, b) => a.seq - b.seq); // The lines go among the messages in the order the hub stored them.
+  const newest = items.at(-1)?.seq ?? 0;
 
   // Keep the newest message in view when the chat is opened, and when one arrives while the reader is already at the end.
   useLayoutEffect(() => {
@@ -108,14 +120,14 @@ export function Thread({ view, current, act, onPin }: { readonly view: ChatView;
       >
         <div className="px-4 pt-2 pb-3">
           {current.messages.length === 0 && <p className="text-muted-foreground">No messages here yet. Type @ to tag an agent.</p>}
-          {current.messages.map((message, index) => {
-            const before = current.messages[index - 1];
-            const newDay = before === undefined || new Date(before.ts * 1000).toDateString() !== new Date(message.ts * 1000).toDateString();
+          {items.map((item, index) => {
+            const before = items[index - 1];
+            const newDay = before === undefined || new Date(before.ts * 1000).toDateString() !== new Date(item.ts * 1000).toDateString();
             return (
-              <Fragment key={message.id}>
-                {newDay && <p className={RULE}>{dayLabel(message.ts)}</p>}
-                {message === firstNew && <p className={cn(RULE, "text-destructive before:border-destructive after:border-destructive")}>new</p>}
-                <Message message={message} me={view.me} act={act} />
+              <Fragment key={"did" in item ? `line ${String(item.seq)}` : item.id}>
+                {newDay && <p className={RULE}>{dayLabel(item.ts)}</p>}
+                {item === firstNew && <p className={cn(RULE, "text-destructive before:border-destructive after:border-destructive")}>new</p>}
+                {"did" in item ? <Line line={item} me={view.me} /> : <Message message={item} me={view.me} act={act} />}
               </Fragment>
             );
           })}
