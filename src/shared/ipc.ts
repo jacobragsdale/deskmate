@@ -109,6 +109,7 @@ export const viewSchema = z.discriminatedUnion("kind", [
       agents: z.array(agentSchema).readonly(), // The user's agents, as config.json has them.
       defaultAgent: z.string(), // The id of the one that answers.
       presets: z.array(agentSchema).readonly(), // The agents Player Two knows how to start, for the setup page to offer.
+      cannot: z.record(permissionModeSchema, z.string()).readonly(), // Why the agent that answers cannot be held to each mode, "" for each it can: the modes a run may be offered at.
       dev: z.string(),
       link: z.discriminatedUnion("state", [
         z.strictObject({ state: z.literal("connecting") }),

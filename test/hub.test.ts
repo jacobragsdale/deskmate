@@ -782,6 +782,55 @@ await test("a teammate's request runs at the mode its owner chose, which job.acc
   );
 });
 
+await test(
+  "a run at a mode the agent that answers cannot keep is refused before the chat is told anything, saying which setting would let it run, and one's own tag runs at the most below ownMode it keeps",
+  { timeout: 30_000 },
+  async (t) => {
+    const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+    const alice = await hub.join("alice");
+    const owner = await hub.join("bob"); // His agent is a one-shot command of his own, which runs only at full; his own requests run at auto-edits.
+    const dev = join(hub.dir, "dev-bob");
+    checkout(dev, "uploader");
+    const bob = deskOf(t, owner, dev, { describe: () => Promise.resolve({ branch: "main", commit: COMMIT, dirty: false }) });
+    await until(bob.session, "the checkout shared", (view) => view.loaded && view.myRepos.includes("uploader"));
+    const jobs = async (): Promise<string[]> =>
+      (await alice.events({ chat: "bob" }))
+        .map((delivered) => readContent(delivered.event))
+        .flatMap((said) => (said.kind.startsWith("job.") ? [`${said.kind} ${said.kind === "job.accepted" ? said.content.mode : ""}`] : []));
+
+    const custom = "fake-agent runs as a single command and cannot be limited: it runs only with full access";
+    assert.deepEqual(bob.session.view().cannot, { "read-only": custom, supervised: custom, "auto-edits": custom, full: "" });
+    const { event } = await alice.publish("bob", "message", { text: "@bob/uploader have a look", via: "cli" });
+    await until(bob.session, "the request", () => shownTo(bob.session, event.id)?.requests[0]?.status.kind === "ready");
+    await assert.rejects(run(bob.session, event.id, false, "read-only"), {
+      message: `${custom}. To run it read-only, make an agent spoken to over ACP, such as Cursor or Copilot, the one that answers on the Setup page, or run it with full access`
+    });
+    await bob.session.handle({ do: "send", chat: "alice", text: "@bob/uploader and mine" });
+    await until(bob.session, "his own message sent", () => bob.notices.length > 0);
+    assert.deepEqual(bob.notices, [
+      {
+        title: "your uploader agent did not start",
+        body: `${custom}. To let your own requests run it, make an agent spoken to over ACP, such as Cursor or Copilot, the one that answers on the Setup page, or set "ownMode" to "full" in ${join(hub.dir, "bob", "config.json")}`,
+        severity: "error"
+      }
+    ]);
+    assert.deepEqual([bob.ran, await jobs()], [[], []]); // Nothing ran, and nothing was told to the chat.
+
+    // Cursor's one-shot command keeps read-only and full, and nothing between: his own tag runs read-only, the most below auto-edits it keeps.
+    owner.saveAgents([CURSOR_ONESHOT], CURSOR_ONESHOT.id);
+    const cursor = "Cursor one-shot runs either read-only, when it only proposes changes, or with full access, and nothing between";
+    assert.deepEqual(bob.session.view().cannot, { "read-only": "", supervised: cursor, "auto-edits": cursor, full: "" });
+    await bob.session.handle({ do: "send", chat: "alice", text: "@bob/uploader mine, again" });
+    await until(bob.session, "its answer", (view) => view.busy.working === 0 && bob.ran.length === 1);
+    assert.deepEqual(bob.ran[0]?.slice(0, -1), ["agent", "-p", "--output-format", "text"]);
+    for (let tries = 0; tries < 100 && (await jobs()).length < 2; tries += 1) {
+      await pause(50);
+    }
+    assert.deepEqual(await jobs(), ["job.result ", "job.accepted read-only"]); // Newest first.
+    assert.equal(bob.notices.length, 1);
+  }
+);
+
 await test("your own tag, sent from your window on one machine, waits for your click on another", { timeout: 30_000 }, async (t) => {
   const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
   const jacob = await hub.join("jacob", "full");

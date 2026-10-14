@@ -18,11 +18,12 @@ import { PRESETS } from "./agents/presets.ts";
 import type { AgentRunner, FollowUp, RunHandlers } from "./agents/runner.ts";
 import { AgentCancelledError, PlayerTwoError, Refused } from "./client.ts";
 import type { Client, Found, Runner } from "./client.ts";
+import { atMost } from "./permissions.ts";
 import * as repos from "./repos.ts";
 import type { Checkout, Head } from "./repos.ts";
 import { cloneFolder } from "../core/remotes.ts";
 import { oneLine, problemOf } from "../core/text.ts";
-import { defaultAgentOf, fitText, isChannel, nameSchema, PROTOCOL } from "../core/wire.ts";
+import { defaultAgentOf, fitText, isChannel, MODES, nameSchema, PROTOCOL } from "../core/wire.ts";
 import type { Agent, ChannelInfo, Delivered, PermissionMode, Person, RepoRef, TeamRepo } from "../core/wire.ts";
 
 const PRESENCE = 25; // Seconds between asking the hub who is here, which channels there are and who has which repo. Each is a signed request, which is what says the user is here; the repo scan runs on the same beat.
@@ -336,6 +337,7 @@ export class Session {
       agents: this.client.config.agents,
       defaultAgent: this.client.config.defaultAgent,
       presets: PRESETS,
+      cannot: { "read-only": this.cannotRun("read-only"), supervised: this.cannotRun("supervised"), "auto-edits": this.cannotRun("auto-edits"), full: this.cannotRun("full") },
       dev: this.dev.startsWith(home) ? `~${this.dev.slice(home.length)}` : this.dev,
       link,
       loaded: this.loaded,
@@ -778,7 +780,15 @@ export class Session {
     const message = this.chats.message(sent.event.id);
     for (const request of message === null ? [] : this.chats.requests(message, this.client.now())) {
       if (message !== null && request.owner === this.me && request.state === "waiting" && this.checkouts.has(request.repo)) {
-        this.startRun(message, request.repo, true, this.client.config.ownMode);
+        const mode = this.ownMode();
+        const why = this.cannotRun(mode);
+        if (why === "") {
+          this.startRun(message, request.repo, true, mode);
+        } else {
+          const config = joinPath(this.client.home, "config.json");
+          const body = `${why}. To let your own requests run it, make an agent spoken to over ACP, such as Cursor or Copilot, the one that answers on the Setup page, or set "ownMode" to "full" in ${config}`;
+          this.hooks.notice({ title: `your ${request.repo} agent did not start`, body, severity: "error" }); // The message is sent all the same.
+        }
       }
     }
   }
@@ -998,6 +1008,23 @@ export class Session {
 
   // ── running an agent ──────────────────────────────────────────────────────
 
+  /**
+   * Why the agent that answers cannot be held to `mode`, "" when it can. Where a mode is chosen, only one it can keep is offered, and a run at any other is refused before anything starts.
+   */
+  private cannotRun(mode: PermissionMode): string {
+    return this.runnerFor(defaultAgentOf(this.client.config)).cannotHonour(mode);
+  }
+
+  /**
+   * The mode the user's own requests of their own agents run at: `ownMode`, or else the most below it that the agent that answers can keep, as Cursor's one-shot command keeps read-only and nothing
+   * between that and full. When it can keep none, `ownMode` itself, which the run is then refused at.
+   */
+  private ownMode(): PermissionMode {
+    const { ownMode } = this.client.config;
+    return MODES.toReversed().find((mode) => atMost(mode, ownMode) && this.cannotRun(mode) === "") ?? ownMode;
+  }
+
+  /** Start a run at `mode`, unless the agent that answers cannot be held to it: then refuse it, before anything is told to the chat, saying which setting would let it run. */
   private startRun(message: Message, repo: string, post: boolean, mode: PermissionMode): void {
     const checkout = this.checkouts.get(repo);
     const key = runKey(message.entry.event.id, repo);
@@ -1006,6 +1033,10 @@ export class Session {
     }
     if (checkout === undefined) {
       throw new PlayerTwoError(`there is no checkout of ${repo} under ${this.dev}`);
+    }
+    const why = this.cannotRun(mode);
+    if (why !== "") {
+      throw new PlayerTwoError(`${why}. To run it ${mode}, make an agent spoken to over ACP, such as Cursor or Copilot, the one that answers on the Setup page, or run it with full access`);
     }
     const agent = defaultAgentOf(this.client.config);
     const prompt = agentPrompt(message, this.me, repo, this.chats.earlier(message), !post, agent.protocol === "acp");
