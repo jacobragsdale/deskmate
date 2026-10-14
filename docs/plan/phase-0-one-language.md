@@ -37,7 +37,7 @@ No behaviour changes in this section. The Python hub stays and the tests keep ru
   | `app/src/renderer/` | `src/window/renderer/` |
 
 - [x] **P0-A3** In `package.json`: name `deskmate`, `"engines": { "node": ">=26" }`. Add `.nvmrc` with `26`. Point `build.mjs` and `tsconfig.json` at the new paths.
-- [ ] **P0-A4** `test/hub.test.ts` finds the Python project one folder up from `test`, not two. All checks green, with the scenario test still passing against the Python hub.
+- [x] **P0-A4** `test/hub.test.ts` finds the Python project one folder up from `test`, not two. All checks green, with the scenario test still passing against the Python hub.
 
 ## B. The hub in Node
 
