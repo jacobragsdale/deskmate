@@ -15,7 +15,7 @@ import type { Content, ContentOf } from "../core/kinds.ts";
 import { acpRunner } from "./agents/acp.ts";
 import { oneshotRunner, runAgent } from "./agents/oneshot.ts";
 import { PRESETS } from "./agents/presets.ts";
-import type { AgentRunner, RunHandlers } from "./agents/runner.ts";
+import type { AgentRunner, FollowUp, RunHandlers } from "./agents/runner.ts";
 import { AgentCancelledError, PlayerTwoError, Refused } from "./client.ts";
 import type { Client, Found, Runner } from "./client.ts";
 import * as repos from "./repos.ts";
@@ -23,7 +23,7 @@ import type { Checkout, Head } from "./repos.ts";
 import { cloneFolder } from "../core/remotes.ts";
 import { oneLine, problemOf } from "../core/text.ts";
 import { defaultAgentOf, fitText, isChannel, nameSchema, PROTOCOL } from "../core/wire.ts";
-import type { ChannelInfo, Delivered, PermissionMode, Person, RepoRef, TeamRepo } from "../core/wire.ts";
+import type { Agent, ChannelInfo, Delivered, PermissionMode, Person, RepoRef, TeamRepo } from "../core/wire.ts";
 
 const PRESENCE = 25; // Seconds between asking the hub who is here, which channels there are and who has which repo. Each is a signed request, which is what says the user is here; the repo scan runs on the same beat.
 const RETRY_DELAY = 5; // Seconds to wait before asking a hub that did not answer again.
@@ -152,6 +152,7 @@ export class Session {
   private attentive = true; // Whether the user is looking at the window. Messages that arrive while they are not stay unread.
   private following: Promise<void> = Promise.resolve();
   private streaming: Promise<void> | null = null; // The hub's stream, followed once what was there before it has been loaded.
+  private agentRunner: { readonly which: string; readonly runner: AgentRunner } | null = null; // The runner of the agent that answers, by the agent as configured.
 
   constructor(client: Client, dev: string, hooks: Hooks, options: Options = {}) {
     this.client = client;
@@ -173,7 +174,7 @@ export class Session {
   }
 
   /**
-   * Stop following the hub, stop every agent still working, and throw away every draft not sent, waiting briefly so each agent is gone and the chat has been told how each run ended.
+   * Stop following the hub, stop every agent still working, end the sessions kept for follow-ups, and throw away every draft not sent, waiting briefly so each agent is gone and the chat has been told how each run ended.
    * A draft is lost with the desk, so its job ends as throwing it away ends it: declined.
    */
   public async stop(): Promise<void> {
@@ -186,7 +187,9 @@ export class Session {
     this.drafts.clear();
     const declined = unsent.map((draft) => this.decline(draft.entry.event.id, draft.repo));
     const settled = new AbortController();
-    await Promise.race([Promise.all([this.following, this.streaming, ...runs.map((run) => run.done), ...declined]), sleep(STOP_WAIT, settled.signal)]);
+    // Sessions kept for follow-ups are ended now, and a run still going keeps none: its runner is closed.
+    const retired = this.retire();
+    await Promise.race([Promise.all([this.following, this.streaming, retired, ...runs.map((run) => run.done), ...declined]), sleep(STOP_WAIT, settled.signal)]);
     settled.abort(); // Take the timer down with it, so a desk that has stopped is free to exit at once.
   }
 
@@ -235,6 +238,9 @@ export class Session {
           break;
         case "agents":
           this.client.saveAgents(command.agents, command.defaultAgent);
+          if (this.agentRunner?.which !== JSON.stringify(defaultAgentOf(this.client.config))) {
+            await this.retire();
+          }
           this.hooks.changed();
           break;
       }
@@ -998,11 +1004,12 @@ export class Session {
       throw new PlayerTwoError(`there is no checkout of ${repo} under ${this.dev}`);
     }
     const agent = defaultAgentOf(this.client.config);
-    const overAcp = agent.protocol === "acp";
-    const prompt = agentPrompt(message, this.me, repo, this.chats.earlier(message), !post, overAcp);
+    const prompt = agentPrompt(message, this.me, repo, this.chats.earlier(message), !post, agent.protocol === "acp");
+    // A reply in a thread from the same asker to the same agent goes on in the session the thread's last such request left open, if one is.
+    const followUp = { key: [message.root ?? message.entry.event.id, message.entry.event.author, repo].join(" "), text: message.text };
     const run: AgentRun = { entry: message.entry, repo, post, cancel: new AbortController(), startedAt: Date.now(), done: Promise.resolve() };
     this.runs.set(key, run);
-    run.done = this.work(key, run, checkout, overAcp ? acpRunner(agent) : oneshotRunner(agent, this.runner), prompt);
+    run.done = this.work(key, run, checkout, this.runnerFor(agent), prompt, followUp);
     this.hooks.changed();
   }
 
@@ -1010,7 +1017,24 @@ export class Session {
    * Tell the chat the user let the agent run, on which branch and commit, then run it and see its answer to where it belongs. Never rejects: every way a run can end is told to the user.
    * Nothing runs until the chat has been told: when that cannot be published, the agent does not start. Once it has, the chat hears one ending: the answer (now, or when the draft is sent, or a decline when it is thrown away), a failure, or a stop.
    */
-  private async work(key: string, run: AgentRun, checkout: Checkout, runner: AgentRunner, prompt: string): Promise<void> {
+  /** The runner for the agent that answers: the one already made while that agent is unchanged, whose sessions kept for follow-ups are then still good. */
+  private runnerFor(agent: Agent): AgentRunner {
+    const which = JSON.stringify(agent);
+    if (this.agentRunner?.which !== which) {
+      this.retire().catch(() => undefined); // It cannot fail: it waits for the agents to go.
+      this.agentRunner = { which, runner: agent.protocol === "acp" ? acpRunner(agent) : oneshotRunner(agent, this.runner) };
+    }
+    return this.agentRunner.runner;
+  }
+
+  /** Close the runner of an agent that no longer answers, ending its sessions kept for follow-ups. */
+  private retire(): Promise<void> {
+    const retired = this.agentRunner?.runner.close() ?? Promise.resolve();
+    this.agentRunner = null;
+    return retired;
+  }
+
+  private async work(key: string, run: AgentRun, checkout: Checkout, runner: AgentRunner, prompt: string, followUp: FollowUp): Promise<void> {
     const { entry, repo } = run;
     const chat = chatOf(entry.event, this.me);
     const request = [entry.event.id];
@@ -1035,7 +1059,7 @@ export class Session {
       if (stopped()) {
         throw new AgentCancelledError("stopped"); // While the chat was being told: it ends as stopped, without the agent being started only to be killed.
       }
-      const text = fitText(await runner.run(prompt, checkout.path, RUN_MODE, IN_THE_DARK, run.cancel.signal));
+      const text = fitText(await runner.run(prompt, checkout.path, RUN_MODE, IN_THE_DARK, run.cancel.signal, followUp));
       if (text === "") {
         ending = "the agent returned nothing";
       } else if (run.post) {

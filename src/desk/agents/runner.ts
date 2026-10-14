@@ -15,10 +15,21 @@ export interface RunHandlers {
   permission(ask: PermissionAsk): Promise<"allow-once" | "allow-run" | "refuse">;
 }
 
+/** A request that may carry on from an earlier one: `key` names its thread's root, its asker and the agent, and `text` is the request alone, without the usual context. */
+export interface FollowUp {
+  readonly key: string;
+  readonly text: string;
+}
+
 export interface AgentRunner {
   readonly restrictable: boolean; // False means modes cannot be enforced on it.
   /** Why it cannot be held to `mode`, said before a run starts; "" when it can. A run at such a mode is refused before anything starts. */
   cannotHonour(mode: PermissionMode): string;
-  /** Run the agent on `prompt` in `cwd` and resolve with its answer. Aborting `cancel` stops it and everything it started, and rejects with AgentCancelledError. */
-  run(prompt: string, cwd: string, mode: PermissionMode, handlers: RunHandlers, cancel: AbortSignal): Promise<string>;
+  /**
+   * Run the agent on `prompt` in `cwd` and resolve with its answer. Aborting `cancel` stops it and everything it started, and rejects with AgentCancelledError.
+   * With `followUp`, an agent that can keep a session goes on in the one an earlier run with the same key left open, with only the follow-up's text, and keeps its own open for the next.
+   */
+  run(prompt: string, cwd: string, mode: PermissionMode, handlers: RunHandlers, cancel: AbortSignal, followUp?: FollowUp): Promise<string>;
+  /** End every session kept open for a follow-up, and everything their agents started. */
+  close(): Promise<void>;
 }

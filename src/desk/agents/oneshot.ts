@@ -121,6 +121,7 @@ export function oneshotRunner(agent: Agent, exec: Runner = runAgent): AgentRunne
         return Promise.reject(new PlayerTwoError(why));
       }
       return exec([agent.command, ...agent.args, ...(cursor && mode === "full" ? ["--force"] : []), prompt], cwd, cancel);
-    }
+    },
+    close: () => Promise.resolve() // A one-shot command keeps nothing open.
   };
 }

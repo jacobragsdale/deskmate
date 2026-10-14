@@ -22,12 +22,13 @@ import { decide } from "../permissions.ts";
 import type { Action, PermissionMode } from "../permissions.ts";
 import { AGENT_TIMEOUT } from "./oneshot.ts";
 import { signInFor } from "./presets.ts";
-import type { AgentRunner, RunHandlers } from "./runner.ts";
+import type { AgentRunner, FollowUp, RunHandlers } from "./runner.ts";
 
 const AUTH_REQUIRED = -32000; // The JSON-RPC error code an ACP agent answers with when it needs signing in first.
 const SAID = 500; // Characters of what the agent last wrote on standard error that a failure quotes.
 const GOING = 1; // Seconds to wait, once the connection has closed, for the agent's process to say how it ended.
 const STOP_GRACE = 2; // Seconds a stopped agent has to end its turn before it is killed.
+const IDLE = 30 * 60; // Seconds a finished session is kept for a follow-up.
 const DETAIL = 8_000; // Characters of a tool call's input an ask shows.
 const CANCELLED: acp.RequestPermissionResponse = { outcome: { outcome: "cancelled" } };
 // Player Two's own MCP server, attached to every session: found on the PATH by name, as the `player-two` an agent is told about in its prompt is,
@@ -196,6 +197,7 @@ class Clock {
 class Conversation {
   public turn: Turn | null = null;
   public readonly gone: Promise<void>; // Settles once the process has exited, or never started.
+  public exited = false;
   private readonly agent: Agent;
   private readonly child: ChildProcessByStdio<Writable, Readable, Readable>;
   private readonly connection: acp.ClientConnection;
@@ -212,9 +214,11 @@ class Conversation {
     });
     this.gone = new Promise((resolve) => {
       this.child.once("exit", () => {
+        this.exited = true;
         resolve();
       });
       this.child.once("error", () => {
+        this.exited = true;
         resolve();
       });
     });
@@ -385,48 +389,112 @@ class Conversation {
   }
 }
 
-/** An agent over ACP as an agent runner: a process and a session for each run, ended when the run ends. */
-export function acpRunner(agent: Agent, limit = AGENT_TIMEOUT): AgentRunner {
+/** A session kept open after its run for a follow-up, and the folder it was opened in. */
+interface Kept {
+  readonly conversation: Conversation;
+  readonly cwd: string;
+  readonly timer: NodeJS.Timeout;
+}
+
+/**
+ * An agent over ACP as an agent runner: a process and a session for each run, ended when the run ends; or, for a run that may be followed up, kept open until
+ * IDLE seconds pass without a follow-up, a fresh run with the same key takes its place, or the runner is closed.
+ */
+export function acpRunner(agent: Agent, seconds: { readonly limit: number; readonly idle: number } = { limit: AGENT_TIMEOUT, idle: IDLE }): AgentRunner {
+  const kept = new Map<string, Kept>();
+  let closed = false;
+  const end = (conversation: Conversation): void => {
+    conversation.end().catch(() => undefined); // It cannot fail: it waits for the process to go.
+  };
+  /** The session a follow-up goes on in: one kept under its key, in the same folder, whose agent is still there. It is taken out while it is in use. */
+  const take = (followUp: FollowUp | undefined, cwd: string): Conversation | null => {
+    const found = followUp === undefined ? undefined : kept.get(followUp.key);
+    if (followUp === undefined || found === undefined) {
+      return null;
+    }
+    kept.delete(followUp.key);
+    clearTimeout(found.timer);
+    if (found.cwd !== cwd || found.conversation.exited) {
+      end(found.conversation);
+      return null;
+    }
+    return found.conversation;
+  };
+  const keep = (key: string, cwd: string, conversation: Conversation): void => {
+    const before = kept.get(key);
+    if (before !== undefined) {
+      clearTimeout(before.timer);
+      end(before.conversation);
+    }
+    const timer = setTimeout(() => {
+      if (kept.get(key)?.conversation === conversation) {
+        kept.delete(key);
+      }
+      end(conversation);
+    }, seconds.idle * 1000);
+    kept.set(key, { conversation, cwd, timer });
+  };
   return {
     restrictable: true,
     cannotHonour: () => "",
-    run: async (prompt, cwd, mode, handlers, cancel) => {
-      const conversation = new Conversation(agent, cwd);
-      const end = (): void => {
-        conversation.end().catch(() => undefined); // It cannot fail: it waits for the process to go.
-      };
+    run: async (prompt, cwd, mode, handlers, cancel, followUp) => {
+      const reused = take(followUp, cwd);
+      const conversation = reused ?? new Conversation(agent, cwd);
       const late = new AbortController();
-      const clock = new Clock(limit, () => {
+      const clock = new Clock(seconds.limit, () => {
         late.abort();
-        end();
+        end(conversation);
       });
       // A stop asks the agent to end its turn, and ends the agent itself if it has not within STOP_GRACE.
       let grace: NodeJS.Timeout | undefined;
       const onCancel = (): void => {
         conversation.cancel();
-        grace = setTimeout(end, STOP_GRACE * 1000);
+        grace = setTimeout(() => {
+          end(conversation);
+        }, STOP_GRACE * 1000);
       };
       cancel.addEventListener("abort", onCancel, { once: true });
       if (cancel.aborted) {
         onCancel();
       }
+      let answered = false;
       try {
-        await conversation.open(cwd);
-        return await conversation.prompt(prompt, { mode, handlers, cancel, clock, tools: new Map(), kinds: new Map(), allowed: new Set(), text: "" });
+        if (reused === null) {
+          await conversation.open(cwd);
+        }
+        const turn: Turn = { mode, handlers, cancel, clock, tools: new Map(), kinds: new Map(), allowed: new Set(), text: "" };
+        const answer = await conversation.prompt(reused === null || followUp === undefined ? prompt : followUp.text, turn);
+        answered = true;
+        return answer;
       } catch (error) {
         if (cancel.aborted) {
           throw new AgentCancelledError("the agent was stopped");
         }
         if (late.signal.aborted) {
-          throw new PlayerTwoError(`the agent did not finish within ${String(limit)} seconds`);
+          throw new PlayerTwoError(`the agent did not finish within ${String(seconds.limit)} seconds`);
         }
         throw error;
       } finally {
         clock.stop();
         clearTimeout(grace);
         cancel.removeEventListener("abort", onCancel);
-        await conversation.end();
+        if (answered && followUp !== undefined && !closed) {
+          keep(followUp.key, cwd, conversation);
+        } else {
+          await conversation.end();
+        }
       }
+    },
+    close: async () => {
+      closed = true;
+      const all = [...kept.values()];
+      kept.clear();
+      await Promise.all(
+        all.map((each) => {
+          clearTimeout(each.timer);
+          return each.conversation.end();
+        })
+      );
     }
   };
 }

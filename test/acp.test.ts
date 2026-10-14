@@ -1,18 +1,25 @@
-/** The ACP runner against a scripted agent, test/fixtures/fake-acp-agent.ts, run with node: its answer, signing in, what each mode allows, asks and refuses, stopping, follow-ups, and that nothing it started is left behind. */
+/**
+ * The ACP runner against a scripted agent, test/fixtures/fake-acp-agent.ts, run with node: its answer, signing in, what each mode allows, asks and refuses, stopping,
+ * follow-ups, also through a session against a real hub, and that nothing the agent started is left behind.
+ */
 
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
+import { readContent } from "../src/core/kinds.ts";
 import type { Agent } from "../src/core/wire.ts";
 import { acpRunner } from "../src/desk/agents/acp.ts";
+import type { FollowUp, PermissionAsk, RunHandlers } from "../src/desk/agents/runner.ts";
 import { AgentCancelledError } from "../src/desk/client.ts";
-import type { PermissionAsk, RunHandlers } from "../src/desk/agents/runner.ts";
+import type { Client } from "../src/desk/client.ts";
+import { Session } from "../src/desk/session.ts";
 import type { ActivityItem } from "../src/shared/ipc.ts";
+import { startHub, TEAM_REPOS } from "./startHub.ts";
 
 const FAKE = join(import.meta.dirname, "fixtures", "fake-acp-agent.ts");
 const never = new AbortController().signal;
@@ -30,14 +37,13 @@ function folder(t: TestContext): string {
   return dir;
 }
 
-/** The processes the fake agent started in `dir` that are still there, given a moment to go. */
-async function left(dir: string): Promise<number[]> {
-  const pids = readFileSync(join(dir, "pids"), "utf8")
+/** The processes the fake agent started in `dir` that are there now. */
+function alive(dir: string): number[] {
+  return readFileSync(join(dir, "pids"), "utf8")
     .split("\n")
     .filter((line) => line !== "")
-    .map(Number);
-  const there = (): number[] =>
-    pids.filter((pid) => {
+    .map(Number)
+    .filter((pid) => {
       try {
         process.kill(pid, 0);
         return true;
@@ -45,10 +51,14 @@ async function left(dir: string): Promise<number[]> {
         return false;
       }
     });
-  for (let tries = 0; tries < 20 && there().length > 0; tries += 1) {
+}
+
+/** The processes the fake agent started in `dir` that are still there, given a moment to go. */
+async function left(dir: string): Promise<number[]> {
+  for (let tries = 0; tries < 20 && alive(dir).length > 0; tries += 1) {
     await delay(50);
   }
-  return there();
+  return alive(dir);
 }
 
 /** Handlers that keep what the runner reports, and answer every ask with `answer`. */
@@ -186,10 +196,81 @@ await test(
 );
 
 await test("the time limit ends a run, and time spent waiting for the owner's answer does not count against it", { timeout: 30_000 }, async (t) => {
-  const runner = acpRunner(fake(), 1);
+  const runner = acpRunner(fake(), { limit: 1, idle: 60 });
   const slowOwner: RunHandlers = { activity: () => undefined, permission: () => delay(1500).then((): "allow-once" => "allow-once") };
   assert.equal(await runner.run("edit", folder(t), "supervised", slowOwner, never), "turn 1: edit allowed");
   const dir = folder(t);
   await assert.rejects(runner.run("deaf", dir, "full", recorder().handlers, never), { message: "the agent did not finish within 1 seconds" });
   assert.deepEqual(await left(dir), []);
 });
+
+await test(
+  "a follow-up goes on in the session its key left open, with only its text, until that has been idle too long or the runner is closed; anything else starts afresh",
+  { timeout: 30_000 },
+  async (t) => {
+    const dir = folder(t);
+    const runner = acpRunner(fake(), { limit: 60, idle: 1 });
+    t.after(() => runner.close());
+    const { handlers } = recorder();
+    const thread = (text: string): FollowUp => ({ key: "root alice uploader", text });
+    assert.equal(await runner.run("read", dir, "full", handlers, never, thread("not this")), "turn 1: read"); // Afresh: the whole prompt.
+    assert.equal(await runner.run("not this", dir, "full", handlers, never, thread("read")), "turn 2: read"); // Followed up: only its text.
+    assert.equal(await runner.run("read", dir, "full", handlers, never, { key: "root carol uploader", text: "not this" }), "turn 1: read");
+    assert.equal(await runner.run("read", dir, "full", handlers, never), "turn 1: read"); // Nothing to follow: ended at once.
+    assert.equal(alive(dir).length, 2);
+    await delay(1500);
+    assert.deepEqual(await left(dir), []); // Idle too long: what follows starts afresh, with the whole prompt.
+    assert.equal(await runner.run("read", dir, "full", handlers, never, thread("not this")), "turn 1: read");
+    assert.equal(alive(dir).length, 1);
+    await runner.close();
+    assert.deepEqual(await left(dir), []);
+  }
+);
+
+await test(
+  "in a session, a reply in a request's thread from the same asker to the same ACP agent goes on in that agent's session; any other request starts one, and quitting ends them all",
+  { timeout: 60_000 },
+  async (t) => {
+    const hub = await startHub(t, () => Date.now() / 1000);
+    const [alice, carol, bob] = [await hub.join("alice"), await hub.join("carol"), await hub.join("bob")];
+    bob.saveAgents([fake()], "fake");
+    for (const person of [alice, carol, bob]) {
+      await person.publish("#team", "channel.join", {});
+    }
+    const dev = join(hub.dir, "dev-bob");
+    const checkout = join(dev, "uploader");
+    mkdirSync(join(checkout, ".git"), { recursive: true });
+    writeFileSync(join(checkout, ".git", "config"), `[remote "origin"]\n\turl = ${TEAM_REPOS}Platform/_git/uploader\n`);
+    writeFileSync(join(checkout, ".git", "HEAD"), "ref: refs/heads/main\n");
+    const hooks = { changed: () => undefined, notice: () => undefined, arrived: () => undefined, confirmClone: () => Promise.resolve(false) };
+    const session = new Session(bob, dev, hooks, { presence: 1, describe: () => Promise.resolve({ branch: "main", commit: "c0ffee".padEnd(40, "0"), dirty: false }) });
+    session.start();
+    t.after(() => session.stop());
+
+    /** Ask bob's agent in #team, have bob run it and post the answer, and read the answer. */
+    const answer = async (asker: Client, text: string, root: string | null = null): Promise<{ readonly id: string; readonly said: string }> => {
+      const { id } = (await asker.publish("#team", "message", { text, via: "cli" }, root === null ? [] : [root])).event;
+      for (let tries = 0; tries < 200 && session.view().waiting === 0; tries += 1) {
+        await delay(50);
+      }
+      await session.handle({ do: "run", id, repo: "uploader", post: true, text });
+      for (let tries = 0; tries < 200; tries += 1) {
+        const result = (await asker.events({ chat: "#team" })).find((delivered) => delivered.event.kind === "job.result" && delivered.event.refs[0] === id);
+        const said = result === undefined ? null : readContent(result.event);
+        if (said?.kind === "job.result") {
+          return { id, said: said.content.text };
+        }
+        await delay(50);
+      }
+      throw new Error(`no answer to ${text}`);
+    };
+    const first = await answer(alice, "@bob/uploader read");
+    assert.equal(first.said, "turn 1: read");
+    assert.equal((await answer(alice, "@bob/uploader read again", first.id)).said, "turn 2: read");
+    assert.equal((await answer(carol, "@bob/uploader read it too", first.id)).said, "turn 1: read"); // Another asker.
+    assert.equal((await answer(alice, "@bob/uploader read once more")).said, "turn 1: read"); // Another thread.
+    assert.equal(alive(checkout).length, 3);
+    await session.stop();
+    assert.deepEqual(await left(checkout), []);
+  }
+);
