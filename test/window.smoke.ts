@@ -306,19 +306,34 @@ await test(
     assert.equal(await page.eval(`document.querySelectorAll("main script, main img").length`), 0);
     assert.equal(await page.eval("window.pwned"), undefined);
 
-    // Carol starts a channel and pins a repo to it, and alice joins it from the dialog: a quiet line for each, in its place among the messages.
+    // Carol starts a channel, pins a repo to it and writes more than a page, and alice joins it from the dialog. Scrolling to the top loads the page before, and the message that was first stays where it was.
     const carol = await hub.join("carol");
     await carol.publish("#history", "channel.join", {});
     await carol.publish("#history", "message", { text: "the first", via: "cli" });
     await carol.publish("#history", "channel.pin", { repo: { name: "uploader", key: "dev.azure.com/acme/platform/uploader", url: "https://dev.azure.com/acme/Platform/_git/uploader" }, branch: null });
+    for (let count = 1; count <= 60; count += 1) {
+      await carol.publish("#history", "message", { text: `history ${String(count)}`, via: "cli" });
+    }
     await page.press("n", CTRL);
     await page.until("the dialog", `document.querySelector('[role="dialog"] input[name="name"]') !== null`);
     await page.type('[role="dialog"] input[name="name"]', "history");
     await page.click('[role="dialog"] button[type="submit"]');
-    await page.until("the channel", `document.querySelector("main h1")?.textContent === "#history"`);
-    await page.until("the channel's lines", `document.querySelector("main").innerText.includes("→ you joined")`);
+    await page.until("the channel's newest page", `document.querySelector("main h1")?.textContent === "#history" && document.querySelector("main").innerText.includes("→ you joined")`);
+    assert.ok(!String(await page.eval(`document.querySelector("main").innerText`)).includes("the first"));
+    const scrolled = `document.querySelector("main [data-radix-scroll-area-viewport]")`;
+    const first = `document.querySelector("main [data-seq]")`;
+    const placed = z.object({ seq: z.string(), at: z.number() });
+    // Where the first message shown is in what scrolls, which is where it is on the screen once the top is scrolled to.
+    const before = placed.parse(await page.eval(`({ seq: ${first}.dataset.seq, at: ${first}.getBoundingClientRect().top - ${scrolled}.getBoundingClientRect().top + ${scrolled}.scrollTop })`));
+    await page.eval(`${scrolled}.scrollTop = 0`);
+    await page.until("the page before", `document.querySelector("main").innerText.includes("the first")`);
+    await page.until("the earlier messages loaded above", `document.querySelector("main [data-seq]").dataset.seq !== ${JSON.stringify(before.seq)}`);
+    const after = z.number().parse(await page.eval(`document.querySelector('main [data-seq="${before.seq}"]').getBoundingClientRect().top - ${scrolled}.getBoundingClientRect().top`));
+    assert.ok(Math.abs(after - before.at) < 2, `the message that was first moved from ${String(before.at)} to ${String(after)}`);
+
+    // The lines say who joined and pinned, each in its place among the messages.
     const history = String(await page.eval(`document.querySelector("main").innerText`));
-    const order = ["→ carol joined", "the first", "◆ carol pinned uploader", "→ you joined"].map((said) => history.indexOf(said));
+    const order = ["→ carol joined", "the first", "◆ carol pinned uploader", "history 1\n", "history 60", "→ you joined"].map((said) => history.indexOf(said));
     assert.deepEqual(
       order.toSorted((a, b) => a - b),
       order

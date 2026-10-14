@@ -1,4 +1,4 @@
-/** The open chat: who is in it, and its messages, each with its thread and where each agent it tags stands (Message.tsx), with a quiet line wherever someone joined, left or pinned. */
+/** The open chat: who is in it, and its messages, each with its thread and where each agent it tags stands (Message.tsx), with a quiet line wherever someone joined, left or pinned, and older ones loaded on the way up. */
 
 import { cn } from "cn";
 import { Fragment, useLayoutEffect, useRef } from "react";
@@ -12,6 +12,7 @@ import type { Act } from "./App.tsx";
 import { Message } from "./Message.tsx";
 
 const NEAR_BOTTOM = 80; // Pixels from the end within which new messages keep the view pinned to the end.
+const NEAR_TOP = 40; // Pixels from the top within which scrolling loads the page before what is shown.
 const RULE = "mt-3.5 mb-1.5 flex items-center gap-2.5 text-xs text-muted-foreground before:flex-1 before:border-t after:flex-1 after:border-t"; // A line across the thread with a word in it.
 
 function dayLabel(ts: number): string {
@@ -50,6 +51,42 @@ export function Thread({ view, current, act, onPin }: { readonly view: ChatView;
     }
     shown.current = current.chat;
   }, [current.chat, newest]);
+
+  // While older events are being loaded: the first item shown when they were asked for, and where it was on the screen, to keep it there as they arrive above it.
+  const anchor = useRef<{ readonly chat: string; readonly seq: number; readonly top: number; answered: boolean } | null>(null);
+  const topOf = (seq: number): number | undefined => scroller.current?.querySelector(`[data-seq="${String(seq)}"]`)?.getBoundingClientRect().top;
+
+  /** Ask for the page before the oldest event loaded, once at a time. */
+  const older = (): void => {
+    if (!current.hasOlder || anchor.current !== null) {
+      return;
+    }
+    const first = items[0]?.seq ?? 0;
+    const asked = { chat: current.chat, seq: first, top: topOf(first) ?? 0, answered: false };
+    anchor.current = asked;
+    act({ do: "older" }, (ok) => {
+      asked.answered = true;
+      if (!ok && anchor.current === asked) {
+        anchor.current = null; // Nothing is coming, so scrolling up may ask again.
+      }
+    });
+  };
+
+  // Each view while the page is being loaded puts the anchor back where it was. The desk answers the command before it sends the view with the page in it, so the first view after the answer has it, and is the last one to move.
+  useLayoutEffect(() => {
+    const box = scroller.current;
+    const kept = anchor.current;
+    if (box === null || kept === null) {
+      return;
+    }
+    const top = kept.chat === current.chat ? topOf(kept.seq) : undefined;
+    if (top !== undefined) {
+      box.scrollTop += top - kept.top;
+    }
+    if (kept.answered || kept.chat !== current.chat) {
+      anchor.current = null;
+    }
+  }, [current]);
 
   const { pinned, members } = current;
   const firstNew = current.newAfter === null ? undefined : current.messages.find((message) => message.seq > (current.newAfter ?? 0) && message.sender !== view.me);
@@ -116,9 +153,19 @@ export function Thread({ view, current, act, onPin }: { readonly view: ChatView;
         onViewportScroll={(event) => {
           const box = event.currentTarget;
           atEnd.current = box.scrollHeight - box.scrollTop - box.clientHeight < NEAR_BOTTOM;
+          if (box.scrollTop < NEAR_TOP) {
+            older();
+          }
         }}
       >
         <div className="px-4 pt-2 pb-3">
+          {current.hasOlder && (
+            <p className="text-center">
+              <Button variant="link" size="xs" className="text-muted-foreground" type="button" onClick={older}>
+                Load earlier messages
+              </Button>
+            </p>
+          )}
           {current.messages.length === 0 && <p className="text-muted-foreground">No messages here yet. Type @ to tag an agent.</p>}
           {items.map((item, index) => {
             const before = items[index - 1];
@@ -127,7 +174,7 @@ export function Thread({ view, current, act, onPin }: { readonly view: ChatView;
               <Fragment key={"did" in item ? `line ${String(item.seq)}` : item.id}>
                 {newDay && <p className={RULE}>{dayLabel(item.ts)}</p>}
                 {item === firstNew && <p className={cn(RULE, "text-destructive before:border-destructive after:border-destructive")}>new</p>}
-                {"did" in item ? <Line line={item} me={view.me} /> : <Message message={item} me={view.me} act={act} />}
+                <div data-seq={item.seq}>{"did" in item ? <Line line={item} me={view.me} /> : <Message message={item} me={view.me} act={act} />}</div>
               </Fragment>
             );
           })}
