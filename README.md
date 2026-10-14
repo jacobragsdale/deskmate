@@ -246,6 +246,8 @@ The default theme, `terminal`, draws with your terminal's own sixteen colours, s
 | `deskmate channel leave NAME` | Leaves the channel. |
 | `deskmate hub [--host HOST] [--port PORT]` | Runs the hub. Defaults: `127.0.0.1`, `8787`. |
 
+`send`, `inbox`, `who`, `repos` and `channel` take `--json`, and then print one JSON value and nothing else. `inbox` prints an array of notes as the hub delivered them, each `{ "id", "note", "trusted" }`, where `trusted` is `false` for a note that failed its signature check: its text is there, so check before using it. `send --wait` prints one such note, or `null` when none came; `send` without `--wait` prints `{ "id" }`, the id the hub gave the note. `who`, `repos` and `channel` print arrays; `channel join` and `channel leave` print the one channel.
+
 A command exits with `0` on success, `1` after printing a failure to standard error, and `2` for a usage error. A note is at most 64,000 characters. Repos are shared by the chat interface, not by the one-shot commands, so `deskmate repos` shows a person's repos as of the last time their interface ran.
 
 ## Configuration
