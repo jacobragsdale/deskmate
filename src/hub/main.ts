@@ -61,7 +61,7 @@ export function verifyHub(env: NodeJS.ProcessEnv): string {
   }
   const { events, head, broken } = verifyChain(setting.data.PLAYER_TWO_DB);
   if (broken !== null) {
-    throw new Error(`the chain breaks at seq ${String(broken)}: that event, or its chain value, is not what was stored after the ${String(events)} before it`);
+    throw new Error(`the chain breaks at seq ${String(broken.seq)}: ${broken.why}`);
   }
   return `the chain holds: ${String(events)} events, the last chain value ${head}`;
 }

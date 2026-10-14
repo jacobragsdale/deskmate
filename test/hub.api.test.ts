@@ -543,7 +543,7 @@ await test("a stream whose reader hangs up is closed, leaving no timer behind", 
   assert.equal(await say(hub, "alice", "alice", "nobody is listening"), 1); // And the hub goes on.
 });
 
-await test("the audit head is the newest seq and chain value, and hub verify passes a clean log and names the first row changed by hand", async (t) => {
+await test("the audit head is the newest seq and chain value, and hub verify passes a clean log and names the first row changed by hand, its signature too, or that cannot be read", async (t) => {
   const hub = await startHub(t);
   await hub.join("alice");
   await hub.join("bob");
@@ -569,10 +569,22 @@ await test("the audit head is the newest seq and chain value, and hub verify pas
   assert.deepEqual(verify(), [0, `the chain holds: 3 events, the last chain value ${chain}\n`]);
 
   const kept = new DatabaseSync(join(hub.dir, "hub.db"));
-  kept.prepare("UPDATE events SET content = ? WHERE seq = 2").run(JSON.stringify({ text: "TWO", via: "cli" }));
-  kept.close();
-
+  const change = (sql: string, ...values: string[]): void => {
+    kept.prepare(sql).run(...values);
+  };
+  change("UPDATE events SET content = ? WHERE seq = 2", JSON.stringify({ text: "TWO", via: "cli" }));
   assert.deepEqual(verify(), [1, "player-two: the chain breaks at seq 2: that event, or its chain value, is not what was stored after the 1 before it\n"]);
+  change("UPDATE events SET content = ? WHERE seq = 2", JSON.stringify({ text: "two", via: "cli" }));
+  assert.equal(verify()[0], 0);
+
+  change("UPDATE events SET sig = (SELECT sig FROM events WHERE seq = 1) WHERE seq = 3"); // Not part of what the id is the hash of, so only the signature can tell.
+  assert.deepEqual(verify(), [1, "player-two: the chain breaks at seq 3: its signature does not hold under the key alice joined with\n"]);
+  change("UPDATE events SET refs = ? WHERE seq = 1", "not JSON");
+  assert.deepEqual(verify(), [1, "player-two: the chain breaks at seq 1: that row cannot be read as an event (invalid event.refs: Invalid input: expected array, received undefined)\n"]);
+  change("UPDATE events SET refs = '[]' WHERE seq = 1");
+  change("DELETE FROM users WHERE name = 'alice'");
+  assert.deepEqual(verify(), [1, "player-two: the chain breaks at seq 1: its author, alice, has no key on this hub to check its signature against\n"]);
+  kept.close();
 });
 
 await test("the hub says which repos it shares, which version and protocol it is, and what time it has", async (t) => {

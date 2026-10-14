@@ -6,7 +6,8 @@ import { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 
 import { readContent } from "../core/kinds.ts";
-import { eventId } from "../core/sign.ts";
+import { eventId, eventIsAuthentic } from "../core/sign.ts";
+import { problemOf } from "../core/text.ts";
 import { deliveredSchema, HIT_CLOSE, HIT_OPEN, isChannel, personSchema, teamRepoSchema } from "../core/wire.ts";
 import type { Delivered, Event, Person, Repo, RepoRef, TeamRepo } from "../core/wire.ts";
 
@@ -63,9 +64,15 @@ const eventRowSchema = z
   .pipe(deliveredSchema);
 const eventRowsSchema = z.array(eventRowSchema);
 const linkSchema = z.object({ seq: z.int(), chain: z.string() });
+const keysSchema = z.array(z.strictObject({ name: z.string(), pubkey: z.string() }));
 
+/** JSON text as a value; undefined for text that is not JSON, which the schema it goes on to then refuses, as it refuses any other row it cannot read. */
 function parseJson(text: string): unknown {
-  return JSON.parse(text);
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
 }
 const hitRowSchema = z.object({ snippet: z.string() }); // Read beside the event's own columns, which eventRowSchema reads strictly.
 const headSchema = z.strictObject({ seq: z.int(), chain: z.string() }).optional();
@@ -87,21 +94,40 @@ function chainAfter(previous: string, id: string): string {
     .digest("hex");
 }
 
+/** What is wrong with one row of the log, given the chain value before it and the keys the hub holds; null when nothing is. */
+function wrongWith(row: Record<string, unknown>, chain: string, previous: string, before: number, keys: ReadonlyMap<string, string>): string | null {
+  const stored = eventRowSchema.safeParse(Object.fromEntries(Object.entries(row).filter(([column]) => column !== "chain")));
+  if (!stored.success) {
+    return `that row cannot be read as an event (${problemOf(stored.error)})`;
+  }
+  const { event } = stored.data;
+  const id = eventId(event);
+  if (id !== event.id || chain !== chainAfter(previous, id)) {
+    return `that event, or its chain value, is not what was stored after the ${String(before)} before it`;
+  }
+  const pubkey = keys.get(event.author);
+  if (pubkey === undefined) {
+    return `its author, ${event.author}, has no key on this hub to check its signature against`; // The hub stores nobody's event before they have joined, and never forgets a key.
+  }
+  return eventIsAuthentic(event, pubkey) ? null : `its signature does not hold under the key ${event.author} joined with`;
+}
+
 /**
- * Walk the event log in the database at `path`, without changing it, and say how far its chain holds: how many events there are and the newest chain value,
- * or the first seq whose chain does not follow from the one before. Each event's id is worked out again from its fields, so a row changed by hand breaks the chain at that row.
+ * Walk the event log in the database at `path`, without changing it, and say how far it holds: how many events there are and the newest chain value,
+ * or the first seq that breaks it, and how. Each event's id is worked out again from its fields, its chain value from the one before, and its signature checked against the key its author joined with,
+ * so a row changed by hand, its signature included, breaks the log at that row; a row taken out breaks it at the one after; and a row that cannot be read is named, not passed over.
  */
-export function verifyChain(path: string): { readonly events: number; readonly head: string; readonly broken: number | null } {
+export function verifyChain(path: string): { readonly events: number; readonly head: string; readonly broken: { readonly seq: number; readonly why: string } | null } {
   const db = new DatabaseSync(path, { readOnly: true });
   try {
+    const keys = new Map(keysSchema.parse(db.prepare("SELECT name, pubkey FROM users").all()).map((user) => [user.name, user.pubkey]));
     let previous = FIRST_CHAIN;
     let events = 0;
     for (const row of db.prepare(`SELECT ${EVENT_COLUMNS}, chain FROM events ORDER BY seq`).iterate()) {
       const { seq, chain } = linkSchema.parse(row);
-      const stored = eventRowSchema.safeParse(Object.fromEntries(Object.entries(row).filter(([column]) => column !== "chain")));
-      const id = stored.success ? eventId(stored.data.event) : "";
-      if (!stored.success || id !== stored.data.event.id || chain !== chainAfter(previous, id)) {
-        return { events, head: previous, broken: seq };
+      const why = wrongWith(row, chain, previous, events, keys);
+      if (why !== null) {
+        return { events, head: previous, broken: { seq, why } };
       }
       previous = chain;
       events += 1;
