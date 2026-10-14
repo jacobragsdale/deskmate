@@ -7,7 +7,7 @@ import { test } from "node:test";
 
 import { z } from "zod";
 
-import { agentPrompt, mentions } from "../src/core/chat.ts";
+import { agentPrompt, mentions, NOT_INSTRUCTIONS } from "../src/core/chat.ts";
 import type { Message } from "../src/core/chat.ts";
 import { parseRemote, prefixKey } from "../src/core/remotes.ts";
 import { authClaim, authHeader, authIsValid, eventIsAuthentic, loadKey, privateHex, publicHex, signEvent } from "../src/core/sign.ts";
@@ -108,5 +108,11 @@ await test("an agent is told what is on record", () => {
   assert.deepEqual(
     prompts,
     vectors.prompts.map((expected) => expected.prompt)
+  );
+  // What search and read hand back is data, and may come from chats that whoever the answer goes to cannot see.
+  assert.ok(prompts.every((prompt) => prompt.includes(NOT_INSTRUCTIONS)));
+  assert.deepEqual(
+    prompts.map((prompt) => /some of which (.+) cannot see/.exec(prompt)?.[1]),
+    ["the members of #backend", "bob", "bob", "the members of #backend"]
   );
 });

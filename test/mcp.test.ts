@@ -11,12 +11,13 @@ import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
 
+import { NOT_INSTRUCTIONS } from "../src/core/chat.ts";
 import { readContent } from "../src/core/kinds.ts";
 import { noteLink } from "../src/core/links.ts";
 import type { Delivered } from "../src/core/wire.ts";
 import type { Client } from "../src/desk/client.ts";
 import { Session } from "../src/desk/session.ts";
-import { createServer, NOT_INSTRUCTIONS } from "../src/mcp/server.ts";
+import { createServer } from "../src/mcp/server.ts";
 import type { ChatView } from "../src/shared/ipc.ts";
 import { NOW, startHub } from "./startHub.ts";
 

@@ -97,6 +97,14 @@ function show(out: (line: string) => void, json: boolean, found: unknown, words:
   out(json ? JSON.stringify(found) : words);
 }
 
+/**
+ * An entry as --json prints it: as the hub delivered it, with whether it is trusted, and with its `content` null when it is not.
+ * A script or an agent reading the JSON gets no more of a note that failed its signature check than a person reading the words does.
+ */
+function vouched(entry: Entry): Omit<Entry, "event"> & { readonly event: Omit<Event, "content"> & { readonly content: string | null } } {
+  return entry.trusted ? entry : { ...entry, event: { ...entry.event, content: null } };
+}
+
 /** What a message or an agent's answer says, and which agent's answer it is; null for an event of any other kind, which the inbox passes over. */
 function saying(event: Event): { readonly text: string; readonly agent: string | null } | null {
   const said = readContent(event);
@@ -214,7 +222,7 @@ async function inbox(joined: () => Client, args: string[], out: (line: string) =
       found = await next(client, caught.at(-1)?.seq ?? after, wait, () => true);
     }
   }
-  show(out, values.json, found, found.length === 0 ? "no messages" : found.map((each) => render(each, each.trusted)).join("\n"));
+  show(out, values.json, found.map(vouched), found.length === 0 ? "no messages" : found.map((each) => render(each, each.trusted)).join("\n"));
 }
 
 /** Print the messages and answers that hold every word given, best match first, each with a stretch of its text as last edited and its link. */
@@ -229,12 +237,13 @@ async function search(joined: () => Client, args: string[], out: (line: string) 
   const trusted = await trust(client, found);
   const matches = found.map((match, index) => ({ ...match, trusted: trusted[index]?.trusted ?? false, link: noteLink(match.event.id) }));
   const words = matches.map((match) => render(match, match.trusted, { me: client.config.name, text: match.snippet.map((piece) => piece.text).join("") }));
-  show(out, values.json, matches, words.length === 0 ? "nothing found" : words.join("\n"));
+  const json = matches.map((match) => ({ ...vouched(match), snippet: match.trusted ? match.snippet : null, link: match.link })); // The snippet is a stretch of the same text.
+  show(out, values.json, json, words.length === 0 ? "nothing found" : words.join("\n"));
 }
 
-/** A note as `read --json` prints it: as the hub delivered it and whether it is trusted, its link, and its text as last edited, null when it is not a message or an answer or its signature fails. */
-function shown(entry: Entry, message: Message | null): Entry & { readonly link: string; readonly text: string | null; readonly edited: boolean; readonly deleted: boolean } {
-  return { ...entry, link: noteLink(entry.event.id), text: message?.text ?? null, edited: message?.edited ?? false, deleted: message?.deleted ?? false };
+/** A note as `read --json` prints it: as --json prints any entry, with its link, and its text as last edited, null when it is not a message or an answer or its signature fails. */
+function shown(entry: Entry, message: Message | null): ReturnType<typeof vouched> & { readonly link: string; readonly text: string | null; readonly edited: boolean; readonly deleted: boolean } {
+  return { ...vouched(entry), link: noteLink(entry.event.id), text: message?.text ?? null, edited: message?.edited ?? false, deleted: message?.deleted ?? false };
 }
 
 /** A note as `read` shows it in words: what it says now, edits applied. */
