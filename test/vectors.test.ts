@@ -1,4 +1,4 @@
-/** Holds this port to the Python implementation: both must sign the same bytes, name repos the same way, find the same tags and tell agents the same thing. */
+/** Holds the code to the frozen record of the signing format, and of how repos are named, which tags are found and what an agent is told. A change to what is signed has to change the record as well, so it cannot happen by accident. */
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -13,8 +13,7 @@ import { parseRemote, prefixKey } from "../src/core/remotes.ts";
 import { authClaim, authHeader, authIsValid, loadKey, noteIsAuthentic, privateHex, publicHex, signNote } from "../src/core/sign.ts";
 import { noteSchema } from "../src/core/wire.ts";
 
-// Written by tests/test_app_vectors.py, which fails on the Python side if that implementation stops producing them.
-// All but `auth`: Python stops at version 1 of the header, so that one was written from this implementation and checked once against Python's own signing library.
+// The record. Every teammate's client and the hub must agree with it byte for byte, so it changes only on purpose, in the commit that changes the format.
 const vectors = z
   .strictObject({
     private_key: z.string(),
@@ -27,7 +26,7 @@ const vectors = z
     mentions: z.array(z.tuple([z.string(), z.array(z.tuple([z.string(), z.string()]))])),
     prompts: z.array(z.strictObject({ review: z.boolean(), prompt: z.string() }))
   })
-  .parse(JSON.parse(readFileSync(join(import.meta.dirname, "fixtures", "python-vectors.json"), "utf8")));
+  .parse(JSON.parse(readFileSync(join(import.meta.dirname, "fixtures", "signing-vectors.json"), "utf8")));
 
 const key = loadKey(vectors.private_key);
 
@@ -40,7 +39,7 @@ await test("a key loads from its hex and gives the same public key", () => {
   assert.equal(publicHex(key), vectors.public_key);
 });
 
-await test("every note signs to the same signature as in Python, and Python's verifies here", () => {
+await test("every note signs to the signature on record, and the one on record verifies", () => {
   for (const note of vectors.notes) {
     assert.equal(signNote(key, note).sig, note.sig, note.body);
     assert.ok(noteIsAuthentic(note, vectors.public_key), note.body);
@@ -65,7 +64,7 @@ await test("the auth header signs the request it is for, and no other", () => {
   assert.ok(!authIsValid(claim, vectors.public_key, vectors.ts, method, `${path}&tail=1`));
 });
 
-await test("every remote names the same repo as in Python", () => {
+await test("every remote names the repo on record", () => {
   for (const [remote, expected] of vectors.remotes) {
     assert.deepEqual(parseRemote(remote), expected, remote);
   }
@@ -80,7 +79,7 @@ await test("the same tags are found in a note's text", () => {
   }
 });
 
-await test("an agent is told what Python would tell it", () => {
+await test("an agent is told what is on record", () => {
   const earlier = [entry(1, "bob", "#backend", "it was the connection pool"), entry(2, "carol", "#backend", "Retries live in queue.py", "uploader")];
   const ask = "@jacob/uploader where do we retry?";
   const prompts = [

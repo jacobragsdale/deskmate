@@ -86,7 +86,7 @@ One program with subcommands, built to one file, `dist/deskmate.js`. It is what 
 Only when sections A to D are ticked and green.
 
 - [x] **P0-E1** Delete `src/deskmate/`, `tests/`, `pyproject.toml`, `uv.lock`, `.python-version`, `.pre-commit-config.yaml`. Remove the Python lines from `.gitignore` and `.dockerignore`.
-- [ ] **P0-E2** Rename `test/fixtures/python-vectors.json` to `signing-vectors.json`. In `test/vectors.test.ts`, change the header comment: the file is now the frozen record of the signing format, kept so a change to what is signed cannot happen by accident.
+- [x] **P0-E2** Rename `test/fixtures/python-vectors.json` to `signing-vectors.json`. In `test/vectors.test.ts`, change the header comment: the file is now the frozen record of the signing format, kept so a change to what is signed cannot happen by accident.
 - [ ] **P0-E3** `grep -ri "python\|uv run\|pytest\|textual" --exclude-dir=node_modules --exclude-dir=docs .` finds nothing outside the README, which section K rewrites.
 
 ### The rename
