@@ -10,6 +10,7 @@ import type { Arrival, ChatView, Command, CurrentView, MessageView, Notice, Requ
 import { agentPrompt, ChatLog, chatOf, continues, mentions, ONLINE, refOf, rings } from "../core/chat.ts";
 import type { Accepted, Entry, Message, Request } from "../core/chat.ts";
 import { readContent } from "../core/kinds.ts";
+import type { Content, ContentOf } from "../core/kinds.ts";
 import { runAgent, splitCommand } from "./agents/oneshot.ts";
 import { AgentCancelledError, PlayerTwoError } from "./client.ts";
 import type { Client, Runner } from "./client.ts";
@@ -61,6 +62,19 @@ interface AgentRun {
 }
 
 type ChatCommand = Exclude<Command, { do: "join" | "doctor" }>;
+type MessageDo = "send" | "reply" | "react" | "edit" | "delete";
+type JobDo = "sendDraft" | "discardDraft" | "run" | "stop" | "decline" | "withdraw";
+
+const MESSAGE_DOS: ReadonlySet<string> = new Set<MessageDo>(["send", "reply", "react", "edit", "delete"]);
+const JOB_DOS: ReadonlySet<string> = new Set<JobDo>(["sendDraft", "discardDraft", "run", "stop", "decline", "withdraw"]);
+
+function isAboutMessages(command: ChatCommand): command is Extract<ChatCommand, { readonly do: MessageDo }> {
+  return MESSAGE_DOS.has(command.do);
+}
+
+function isAboutJobs(command: ChatCommand): command is Extract<ChatCommand, { readonly do: JobDo }> {
+  return JOB_DOS.has(command.do);
+}
 
 /** The hub speaks another protocol: asked again only after UPDATE_DELAY. */
 class ProtocolError extends PlayerTwoError {}
@@ -172,13 +186,69 @@ export class Session {
   }
 
   public async handle(command: ChatCommand): Promise<void> {
+    if (isAboutMessages(command)) {
+      await this.handleMessage(command);
+    } else if (isAboutJobs(command)) {
+      await this.handleJob(command);
+    } else {
+      switch (command.do) {
+        case "open":
+          this.open(command.chat);
+          break;
+        case "older":
+          await this.older();
+          break;
+        case "joinChannel":
+          await this.joinChannel(command.name);
+          break;
+        case "leaveChannel":
+          await this.leaveChannel(command.chat);
+          break;
+        case "pin":
+          await this.pin(command.chat, command.repo);
+          break;
+        case "unpin":
+          await this.publish(command.chat, "channel.pin", { repo: null, branch: null });
+          await this.refreshChannels();
+          break;
+        case "clone":
+          await this.clone(command.repo);
+          break;
+      }
+    }
+  }
+
+  private async handleMessage(command: Extract<ChatCommand, { readonly do: MessageDo }>): Promise<void> {
     switch (command.do) {
-      case "open":
-        this.open(command.chat);
-        break;
       case "send":
-        await this.send(command.chat, command.text);
+        await this.send(command.chat, command.text, []);
         break;
+      case "reply": {
+        const root = this.found(command.root);
+        await this.send(chatOf(root.entry.event, this.me), command.text, [root.root ?? command.root]); // A reply to a reply goes to the root of its thread.
+        break;
+      }
+      case "react": {
+        const target = this.found(command.id);
+        await this.publish(chatOf(target.entry.event, this.me), "reaction", { emoji: command.emoji, on: command.on }, [command.id]);
+        break;
+      }
+      case "edit": {
+        const text = fitText(command.text.trim());
+        if (text === "") {
+          throw new PlayerTwoError("a message cannot be edited down to nothing: delete it instead");
+        }
+        await this.publish(chatOf(this.mine(command.id).entry.event, this.me), "message.edit", { text }, [command.id]); // Its tags stay as they were sent: an edit starts nothing.
+        break;
+      }
+      case "delete":
+        await this.publish(chatOf(this.mine(command.id).entry.event, this.me), "message.delete", {}, [command.id]);
+        break;
+    }
+  }
+
+  private async handleJob(command: Extract<ChatCommand, { readonly do: JobDo }>): Promise<void> {
+    switch (command.do) {
       case "sendDraft":
         await this.sendDraft(command.chat, command.id, command.repo, command.text);
         break;
@@ -194,23 +264,8 @@ export class Session {
       case "decline":
         await this.decline(command.id, command.repo);
         break;
-      case "joinChannel":
-        await this.joinChannel(command.name);
-        break;
-      case "leaveChannel":
-        await this.leaveChannel(command.chat);
-        break;
-      case "pin":
-        await this.pin(command.chat, command.repo);
-        break;
-      case "unpin":
-        this.setChannel(await this.client.unpin(command.chat));
-        break;
-      case "clone":
-        await this.clone(command.repo);
-        break;
-      case "older":
-        await this.older();
+      case "withdraw":
+        await this.withdraw(command.id, command.owner, command.repo);
         break;
     }
   }
@@ -482,9 +537,12 @@ export class Session {
     }
   }
 
-  /** What the stream has just delivered. Should this fail, the stream delivers it again. */
+  /** What the stream has just delivered. Should this fail, the stream delivers it again. Someone joining, leaving or pinning changes what the window says about the channel, so its members and pin are asked for again. */
   private async arrive(batch: readonly Delivered[]): Promise<void> {
     this.take(await this.trust(batch), true);
+    if (batch.some((delivered) => delivered.event.kind.startsWith("channel."))) {
+      await this.refreshChannels().catch(() => undefined); // Best effort: the next presence check asks again.
+    }
   }
 
   private async trust(found: readonly Delivered[]): Promise<Entry[]> {
@@ -574,22 +632,55 @@ export class Session {
   }
 
   /**
-   * Send what the user typed. They typed it here, so its tags of their own agents run at once without asking: its id is known as soon as it is signed, so it is folded in its place and run from there.
+   * Send what the user typed, as a message or with `refs` as a reply in a thread. They typed it here, so its tags of their own agents run at once without asking: its id is known as soon as it is signed, so it is folded in its place and run from there.
    * Nothing that arrives from the hub ever starts an agent. A message from anyone else, from the command or anything else that is not this window, or from this window before the desk last started, waits for the owner's click.
    */
-  private async send(chat: string, text: string): Promise<void> {
+  private async send(chat: string, text: string, refs: readonly string[]): Promise<void> {
     const body = fitText(text.trim());
     if (body === "") {
       return;
     }
-    const sent = await this.client.publish(chat, "message", { text: body, via: "window" });
-    this.take([{ ...sent, trusted: true }], false);
+    const sent = await this.publish(chat, "message", { text: body, via: "window" }, refs);
     const message = this.chats.message(sent.event.id);
     for (const request of message === null ? [] : this.chats.requests(message, this.client.now())) {
       if (message !== null && request.owner === this.me && request.state === "waiting" && this.checkouts.has(request.repo)) {
         this.startRun(message, request.repo, true);
       }
     }
+  }
+
+  /** Publish an event and fold it at once under the id it was signed with, so the window shows it without waiting for the stream, which brings it again to be kept once. */
+  private async publish<K extends Content["kind"]>(to: string, kind: K, content: ContentOf<K>, refs: readonly string[] = []): Promise<Delivered> {
+    const sent = await this.client.publish(to, kind, content, refs);
+    this.take([{ ...sent, trusted: true }], false);
+    return sent;
+  }
+
+  /** A message or an answer the window named. */
+  private found(id: string): Message {
+    const message = this.chats.message(id);
+    if (message === null) {
+      throw new PlayerTwoError("that message is not loaded here");
+    }
+    return message;
+  }
+
+  /** One of the user's own messages, to edit or delete. Anyone else's, an agent's answer, and one already deleted are refused: nobody would count the change. */
+  private mine(id: string): Message {
+    const message = this.found(id);
+    if (message.entry.event.author !== this.me || message.agent !== null || message.deleted) {
+      throw new PlayerTwoError("only your own messages can be edited or deleted");
+    }
+    return message;
+  }
+
+  /** Take back a request the user made of someone's agent, while it is still waiting. */
+  private async withdraw(request: string, owner: string, repo: string): Promise<void> {
+    const message = this.found(request);
+    if (message.entry.event.author !== this.me || !this.chats.requests(message, this.client.now()).some((each) => each.owner === owner && each.repo === repo && each.state === "waiting")) {
+      throw new PlayerTwoError("only a request of yours that is still waiting can be taken back");
+    }
+    await this.publish(chatOf(message.entry.event, this.me), "job.withdrawn", { agent: `${owner}/${repo}` }, [request]);
   }
 
   private takeDraft(chat: string, request: string, repo: string): Draft {
@@ -638,14 +729,16 @@ export class Session {
     }
   }
 
+  /** Join a channel, which makes it if nobody is in it, and load its newest page: its earlier events are behind the stream's place in the log. */
   private async joinChannel(name: string): Promise<void> {
     const bare = nameSchema.safeParse(name.trim().replace(/^#/, ""));
     if (!bare.success) {
       throw new PlayerTwoError("a channel's name is lowercase letters, digits, - and _, at most 32 characters");
     }
-    const channel = (await this.client.joinChannel(bare.data)).name;
-    this.channels = await this.client.channels();
-    await this.page(channel); // A channel's earlier events are behind the stream's place in the log, so its newest page is loaded here.
+    const channel = `#${bare.data}`;
+    await this.publish(channel, "channel.join", {});
+    await this.refreshChannels();
+    await this.page(channel);
     this.open(channel);
   }
 
@@ -653,8 +746,8 @@ export class Session {
     if (!isChannel(chat)) {
       return;
     }
-    await this.client.leaveChannel(chat);
-    this.channels = await this.client.channels();
+    await this.client.publish(chat, "channel.leave", {}); // Not folded: what was said in the channel is forgotten here.
+    await this.refreshChannels();
     this.chats.forget(chat);
     this.paged.delete(chat);
     this.drafts.delete(chat);
@@ -669,16 +762,19 @@ export class Session {
     this.hooks.changed();
   }
 
+  /** Say which repo a channel is about: one the user has a checkout of. */
   private async pin(chat: string, repo: string): Promise<void> {
     const checkout = this.checkouts.get(repo);
     if (checkout === undefined) {
       throw new PlayerTwoError(`you have no checkout of ${repo} to pin`);
     }
-    this.setChannel(await this.client.pin(chat, checkout.remote));
+    await this.publish(chat, "channel.pin", { repo: refOf(checkout.remote), branch: null });
+    await this.refreshChannels();
   }
 
-  private setChannel(info: ChannelInfo): void {
-    this.channels = [...this.channels.filter((other) => other.name !== info.name), info];
+  /** Ask again who is in each channel and what it is pinned to, after the user or someone else changed either. */
+  private async refreshChannels(): Promise<void> {
+    this.channels = await this.client.channels();
     this.hooks.changed();
   }
 

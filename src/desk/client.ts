@@ -9,7 +9,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 
 import { contentSchema } from "../core/kinds.ts";
-import type { Content } from "../core/kinds.ts";
+import type { Content, ContentOf } from "../core/kinds.ts";
 import { authHeader, eventIsAuthentic, loadKey, newKey, noteIsAuthentic, privateHex, publicHex, signEvent, signNote } from "../core/sign.ts";
 import {
   channelInfoSchema,
@@ -163,7 +163,7 @@ export class Client {
   }
 
   /** Sign an event and hand it to the hub. Its id is known once it is signed; resolves with the event and the place the hub gave it. */
-  public async publish<K extends Content["kind"]>(to: string, kind: K, content: Extract<Content, { readonly kind: K }>["content"], refs: readonly string[] = []): Promise<Delivered> {
+  public async publish<K extends Content["kind"]>(to: string, kind: K, content: ContentOf<K>, refs: readonly string[] = []): Promise<Delivered> {
     const said = contentSchema.parse({ kind, content }); // What is signed is what this version reads the kind as, so every reader of the kind can read it.
     const event = signEvent(this.key, { author: this.config.name, to, kind, content: JSON.stringify(said.content), ts: Math.floor(this.now()), refs });
     const { seq } = receiptSchema.parse(parseJson(await this.call("POST", "/events", JSON.stringify(event))));

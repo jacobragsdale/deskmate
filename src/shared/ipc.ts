@@ -110,6 +110,11 @@ export const commandSchema = z.discriminatedUnion("do", [
   z.strictObject({ do: z.literal("join"), hub: z.string().max(500), name: z.string().max(40), token: z.string().max(500), agent: z.string().max(500) }),
   z.strictObject({ do: z.literal("open"), chat }),
   z.strictObject({ do: z.literal("send"), chat, text: z.string().min(1) }),
+  z.strictObject({ do: z.literal("reply"), root: id, text: z.string().min(1) }), // A message in the thread of the message `root` names. Tags in it work as in any message.
+  z.strictObject({ do: z.literal("react"), id, emoji: z.string().min(1).max(32), on: z.boolean() }), // `on: false` takes the user's reaction back.
+  z.strictObject({ do: z.literal("edit"), id, text: z.string().min(1) }), // One of the user's own messages. Its tags stay as they were sent.
+  z.strictObject({ do: z.literal("delete"), id }), // One of the user's own messages.
+  z.strictObject({ do: z.literal("withdraw"), id, owner: z.string(), repo }), // Take back a request of the user's that `owner`'s agent has not started on.
   z.strictObject({ do: z.literal("sendDraft"), chat, id, repo, text: z.string().min(1) }),
   z.strictObject({ do: z.literal("discardDraft"), chat, id, repo }),
   z.strictObject({ do: z.literal("run"), id, repo, post: z.boolean() }),

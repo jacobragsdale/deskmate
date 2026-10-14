@@ -45,6 +45,9 @@ export const contentSchema = z
 
 export type Content = z.infer<typeof contentSchema>;
 
+/** What an event of kind K holds. */
+export type ContentOf<K extends Content["kind"]> = Extract<Content, { readonly kind: K }>["content"];
+
 function parseJson(text: string): unknown {
   return JSON.parse(text);
 }
