@@ -14,6 +14,9 @@ export default defineConfig(
     ignores: ["coverage/**", "dist/**"] // Skip generated build and coverage output.
   },
   {
+    ignores: ["src/window/renderer/components/ui/**"] // Vendored from shadcn/ui and written in its style; the compiler still checks it.
+  },
+  {
     linterOptions: {
       reportUnusedDisableDirectives: "error", // Reject stale eslint-disable comments.
       reportUnusedInlineConfigs: "error" // Reject inline rule settings that no longer change behavior.
