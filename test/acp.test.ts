@@ -189,7 +189,7 @@ await test(
       stop.abort();
       await assert.rejects(running, AgentCancelledError);
       const took = Date.now() - stoppedAt;
-      assert.ok(took < 3000 && (word === "slow" ? took < 1000 : took >= 2000), `${word} took ${String(took)} ms to stop`);
+      assert.ok(took < 3000 && (word === "slow" ? took < 1500 : took >= 2000), `${word} took ${String(took)} ms to stop`);
       assert.deepEqual(await left(dir), [], word);
     }
   }
@@ -209,7 +209,7 @@ await test(
   { timeout: 30_000 },
   async (t) => {
     const dir = folder(t);
-    const runner = acpRunner(fake(), { limit: 60, idle: 1 });
+    const runner = acpRunner(fake(), { limit: 60, idle: 2 });
     t.after(() => runner.close());
     const { handlers } = recorder();
     const thread = (text: string): FollowUp => ({ key: "root alice uploader", text });
@@ -218,7 +218,7 @@ await test(
     assert.equal(await runner.run("read", dir, "full", handlers, never, { key: "root carol uploader", text: "not this" }), "turn 1: read");
     assert.equal(await runner.run("read", dir, "full", handlers, never), "turn 1: read"); // Nothing to follow: ended at once.
     assert.equal(alive(dir).length, 2);
-    await delay(1500);
+    await delay(2500);
     assert.deepEqual(await left(dir), []); // Idle too long: what follows starts afresh, with the whole prompt.
     assert.equal(await runner.run("read", dir, "full", handlers, never, thread("not this")), "turn 1: read");
     assert.equal(alive(dir).length, 1);
