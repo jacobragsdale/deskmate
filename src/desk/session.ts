@@ -15,11 +15,12 @@ import type { Client, Runner } from "./client.ts";
 import * as repos from "./repos.ts";
 import type { Checkout } from "./repos.ts";
 import { oneLine } from "../core/text.ts";
-import { fitBody, isChannel, nameSchema } from "../core/wire.ts";
+import { fitBody, isChannel, nameSchema, PROTOCOL } from "../core/wire.ts";
 import type { ChannelInfo, Person, RepoRef, TeamRepo } from "../core/wire.ts";
 
 const HISTORY = 300; // Notes loaded when the session starts or a channel is joined.
 const RETRY_DELAY = 5; // Seconds to wait before asking a hub that did not answer again.
+const UPDATE_DELAY = 60; // Seconds to wait before asking a hub on another protocol again: its answer changes only when someone updates one side.
 const STOP_WAIT = 3; // Seconds to give stopped agents to go before the session is done.
 
 /** What the session remembers between runs. Kept apart from the terminal interface's state.json, which refuses fields it does not know. */
@@ -375,10 +376,18 @@ export class Session {
   private async poll(): Promise<void> {
     const stopped = (): boolean => this.stopping.signal.aborted; // Asked afresh each time: it changes while this waits.
     let after: number | null = null;
+    let greeted = false; // Whether the hub has said it speaks this protocol since it last failed to answer.
     while (!stopped()) {
+      let retry = RETRY_DELAY;
       try {
-        if (this.prefix === "") {
-          this.prefix = (await this.client.info()).repos;
+        if (!greeted) {
+          const info = await this.client.info();
+          if (info.protocol !== PROTOCOL) {
+            retry = UPDATE_DELAY;
+            throw new DeskmateError(`the hub speaks protocol ${String(info.protocol)} and this app speaks protocol ${String(PROTOCOL)}: update the ${info.protocol > PROTOCOL ? "app" : "hub"}`);
+          }
+          this.prefix = info.repos;
+          greeted = true;
         }
         await this.share();
         const snapshot = await this.snapshot(after);
@@ -391,10 +400,11 @@ export class Session {
         if (stopped()) {
           return;
         }
+        greeted = false;
         this.connected = false;
         this.problem = problemOf(error);
         this.hooks.changed();
-        await sleep(RETRY_DELAY, this.stopping.signal);
+        await sleep(retry, this.stopping.signal);
       }
     }
   }

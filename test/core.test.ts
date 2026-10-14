@@ -1,4 +1,4 @@
-/** The parts of the client that have logic of their own: tag states, the tag list, reading what the hub answers, splitting the agent command, and running it. */
+/** The parts of the client that have logic of their own: tag states, the tag list, reading what the hub answers, a hub on another protocol, splitting the agent command, and running it. */
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -9,7 +9,8 @@ import { runAgent, splitCommand } from "../src/desk/agents/oneshot.ts";
 import { AgentCancelledError, Client, DeskmateError } from "../src/desk/client.ts";
 import type { Transport } from "../src/desk/client.ts";
 import { loadKey, publicHex, signNote } from "../src/core/sign.ts";
-import { fitBody, MAX_BODY } from "../src/core/wire.ts";
+import { Session } from "../src/desk/session.ts";
+import { fitBody, MAX_BODY, PROTOCOL } from "../src/core/wire.ts";
 import type { Kind, TeamRepo } from "../src/core/wire.ts";
 
 const NOW = 1_800_000_000;
@@ -60,9 +61,12 @@ await test("the tag list leads with the pinned repo, then my agents, then my par
   assert.deepEqual(candidates("", team, "jacob", null, null, 2).more, 3);
 });
 
-/** A client whose hub is a table of answers, by method and path. Nothing is sent anywhere. */
-function clientOf(answers: Readonly<Record<string, unknown>>): Client {
-  const transport: Transport = (method, url) => Promise.resolve(JSON.stringify(answers[`${method} ${new URL(url).pathname}`]));
+/** A client whose hub is a table of answers, by method and path. Nothing is sent anywhere; what was asked is added to `asked`. */
+function clientOf(answers: Readonly<Record<string, unknown>>, asked: string[] = []): Client {
+  const transport: Transport = (method, url) => {
+    asked.push(`${method} ${new URL(url).pathname}`);
+    return Promise.resolve(JSON.stringify(answers[asked.at(-1) ?? ""]));
+  };
   return new Client("/nowhere", { hub: "http://hub.test", name: "jacob", agent: "fake-agent" }, key, transport, () => NOW);
 }
 
@@ -87,6 +91,34 @@ await test("the client reads past a field a newer hub adds, but refuses one insi
   assert.equal(await client.send("bob", "hello"), 7);
   assert.deepEqual(await client.notes(), [{ id: 7, note }]);
   await assert.rejects(clientOf({ "GET /notes": [{ id: 7, note: { ...note, via: "new" } }] }).notes(), /Unrecognized key/);
+});
+
+await test("a hub on another protocol is not followed: the session says which side to update, and asks again only once a minute", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const settle = (): Promise<void> =>
+    new Promise((resolve) => {
+      setImmediate(resolve);
+    });
+  const cases: readonly (readonly [number, string])[] = [
+    [PROTOCOL + 1, "app"],
+    [PROTOCOL - 1, "hub"]
+  ];
+  for (const [protocol, side] of cases) {
+    const asked: string[] = [];
+    const client = clientOf({ "GET /info": { version: "9.0.0", protocol, repos: "dev.azure.com/acme", now: NOW } }, asked);
+    const session = new Session(client, "/nowhere", { changed: () => undefined, notice: () => undefined, arrived: () => undefined, confirmClone: () => Promise.resolve(false) });
+
+    session.start();
+    await settle();
+    assert.deepEqual(session.view().link, { state: "down", problem: `the hub speaks protocol ${String(protocol)} and this app speaks protocol ${String(PROTOCOL)}: update the ${side}` });
+    t.mock.timers.tick(59_000);
+    await settle();
+    assert.deepEqual(asked, ["GET /info"]);
+    t.mock.timers.tick(1_000);
+    await settle();
+    assert.deepEqual(asked, ["GET /info", "GET /info"]);
+    await session.stop();
+  }
 });
 
 await test("an agent command is split the way a shell would split it", () => {
