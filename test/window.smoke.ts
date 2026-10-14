@@ -148,7 +148,7 @@ class Page {
 }
 
 await test(
-  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, and pages back, keeping its place",
+  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, and shows editor agents' snippets on the Setup page",
   { skip: NO_DISPLAY ? "no display: run it under xvfb-run" : false, timeout: 120_000 },
   async (t) => {
     assert.ok(existsSync(join(ROOT, "dist", "main.js")), "dist/ is not built: run `npm run build` first");
@@ -425,6 +425,11 @@ await test(
     const chips = `[...document.querySelectorAll("main [data-note]")].map((each) => each.textContent).join(" | ")`;
     await page.until("the chips", `${chips} === "carol: the first | a note you cannot see | carol: the first"`);
     assert.equal(await page.eval(`document.querySelectorAll('main a[href^="player-two"], main a[href=""]').length`), 0);
+
+    // The Setup page shows what to add to Cursor and to Copilot's command line to start the MCP server, each to copy.
+    await page.click("button", "Setup");
+    const snippets = `[...document.querySelectorAll("pre")].map((each) => JSON.stringify(JSON.parse(each.textContent).mcpServers["player-two"].args)).join(" ")`;
+    await page.until("the editor agents' snippets", `document.body.innerText.includes("Editor agents") && ${snippets} === '["mcp"] ["mcp"]'`);
 
     assert.deepEqual(page.problems, []);
   }

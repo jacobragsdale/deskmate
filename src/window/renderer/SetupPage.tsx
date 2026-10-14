@@ -1,4 +1,7 @@
-/** The setup check as a page: each item with how it stands and what was found, its fix with a button to copy it, "Check again", and on Windows the distribution the desk runs in. */
+/**
+ * The setup check as a page: each item with how it stands and what was found, its fix with a button to copy it, "Check again", and on Windows the distribution the desk runs in.
+ * Below it, what to add to an editor's agent so it can use Player Two's MCP server, to copy; the page never writes those files.
+ */
 
 import { cn } from "cn";
 import { useCallback, useEffect, useState } from "react";
@@ -17,6 +20,12 @@ const checksSchema = z.array(checkSchema).readonly();
 const MARKS = { ok: "✓", warn: "!", fail: "✗", skip: "–" } as const;
 const MARK_COLOURS = { ok: "text-tag", warn: "text-warn", fail: "text-destructive", skip: "" } as const;
 const DETAIL = "mt-0.5 wrap-anywhere whitespace-pre-wrap text-muted-foreground"; // What a check found, in the lines it came in.
+
+/** Where each editor's agent looks for MCP servers, and what to put there to start `player-two mcp`. */
+const EDITORS = [
+  { name: "Cursor", file: "~/.cursor/mcp.json", server: { command: "player-two", args: ["mcp"] } },
+  { name: "Copilot's command line", file: "~/.copilot/mcp-config.json", server: { type: "local", command: "player-two", args: ["mcp"], tools: ["*"] } }
+].map((editor) => ({ ...editor, json: JSON.stringify({ mcpServers: { "player-two": editor.server } }, null, 2) }));
 
 /** Ask for the setup check. With `again`, a desk that is not up is started afresh first, so what the user fixed is tried. */
 export async function runSetupCheck(again: boolean): Promise<readonly Check[]> {
@@ -165,6 +174,34 @@ export function SetupPage({ problem, initial, onClose, tell }: Props): JSX.Eleme
             Back
           </Button>
         )}
+      </p>
+      <h2 className="mt-4 text-lg font-bold">Editor agents</h2>
+      <p className="text-muted-foreground">
+        An agent in your editor can read and search this chat through Player Two&rsquo;s MCP server, <code>player-two mcp</code>, which runs as you. Add it to the file named below in your home folder
+        where the agent runs, inside WSL on Windows; if the file has other servers already, add the <code>player-two</code> entry to its <code>mcpServers</code>.
+      </p>
+      {EDITORS.map((editor) => (
+        <div key={editor.file}>
+          <p className="flex items-center gap-2">
+            <strong>{editor.name}</strong>
+            <code className="text-muted-foreground">{editor.file}</code>
+            <Button
+              type="button"
+              size="xs"
+              variant="outline"
+              onClick={() => {
+                copy(editor.json);
+              }}
+            >
+              Copy
+            </Button>
+          </p>
+          <pre className="mt-1 overflow-x-auto rounded bg-muted px-2 py-1.5 text-xs">{editor.json}</pre>
+        </div>
+      ))}
+      <p className="text-muted-foreground">
+        As it is, the agent can only read. With <code>&quot;--allow-send&quot;</code> after <code>&quot;mcp&quot;</code> in <code>args</code>, it can also send messages, ask agents and withdraw
+        requests, as you; a tag it sends waits for the agent&rsquo;s owner like any other, even when the agent is yours.
       </p>
     </div>
   );
