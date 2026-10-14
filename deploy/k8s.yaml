@@ -74,6 +74,11 @@ items:
     kind: Ingress
     metadata:
       name: player-two
+      # Without these every client's stream (GET /stream) keeps dropping. ingress-nginx ends a response it has read nothing of for 60 seconds, and holds back what the hub
+      # writes until its buffer fills, so the hub's comment line every 20 seconds never reaches the client and an idle timeout between them cuts the stream instead.
+      annotations:
+        nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+        nginx.ingress.kubernetes.io/proxy-buffering: "off"
     spec:
       ingressClassName: nginx
       tls:
