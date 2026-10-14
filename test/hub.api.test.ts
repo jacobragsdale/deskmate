@@ -363,17 +363,17 @@ await test("pinning needs membership and a repo the hub shares", async (t) => {
   }
 });
 
-await test("the hub refuses to start on a database from another version", (t) => {
+await test("the hub refuses to start on a database from another version, such as 0.4's", (t) => {
   const dir = mkdtempSync(join(tmpdir(), "player-two-hub-"));
   t.after(() => {
     rmSync(dir, { recursive: true, force: true });
   });
   const old = join(dir, "old.db");
   const made = new DatabaseSync(old);
-  made.exec("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT)");
+  made.exec("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT); PRAGMA user_version = 3;");
   made.close();
 
-  assert.throws(() => createHub({ joinToken: TOKEN, db: old, repos: TEAM_REPOS, downloads: "" }), /another version of Player Two/);
+  assert.throws(() => createHub({ joinToken: TOKEN, db: old, repos: TEAM_REPOS, downloads: "" }), /another version of Player Two \(schema 3, this one uses 5\)/);
 });
 
 await test("a request the hub cannot serve is told why", async (t) => {

@@ -7,7 +7,7 @@ import { z } from "zod";
 import { deliveredNoteSchema, personSchema, repoRefSchema, teamRepoSchema } from "../core/wire.ts";
 import type { DeliveredNote, Note, Person, Repo, RepoRef, TeamRepo } from "../core/wire.ts";
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 5; // 3 was the notes alone, from the Python hub to 0.4.
 const PAGE = 100; // Most notes one request gets when it does not ask for the newest few.
 const CONSTRAINT = 19; // SQLite's code for a broken constraint: the low byte of the fuller code a failed statement reports.
 const BUSY_WAIT = 5; // Seconds to wait for another program that holds the file, such as a backup, before giving up.
@@ -16,7 +16,7 @@ const SCHEMA = `
 PRAGMA journal_mode = WAL;
 CREATE TABLE IF NOT EXISTS users (name TEXT PRIMARY KEY, pubkey TEXT NOT NULL, seen INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS members (channel TEXT NOT NULL, user TEXT NOT NULL, PRIMARY KEY (channel, user));
-CREATE TABLE IF NOT EXISTS pins (channel TEXT PRIMARY KEY, name TEXT NOT NULL, key TEXT NOT NULL, url TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS pins (channel TEXT PRIMARY KEY, name TEXT NOT NULL, key TEXT NOT NULL, url TEXT NOT NULL, branch TEXT);
 CREATE TABLE IF NOT EXISTS repos (user TEXT NOT NULL, name TEXT NOT NULL, key TEXT NOT NULL, url TEXT NOT NULL, branch TEXT NOT NULL, PRIMARY KEY (user, name));
 CREATE TABLE IF NOT EXISTS notes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -31,6 +31,22 @@ CREATE TABLE IF NOT EXISTS notes (
 );
 CREATE INDEX IF NOT EXISTS notes_by_recipient ON notes (recipient, id);
 CREATE INDEX IF NOT EXISTS notes_by_sender ON notes (sender, id);
+CREATE TABLE IF NOT EXISTS events (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    id TEXT NOT NULL UNIQUE,
+    author TEXT NOT NULL,
+    recipient TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    content TEXT NOT NULL,
+    ts INTEGER NOT NULL,
+    refs TEXT NOT NULL, -- A JSON array of the ids it refers to; event_refs indexes them.
+    nonce TEXT NOT NULL,
+    sig TEXT NOT NULL,
+    chain TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS events_by_recipient ON events (recipient, seq);
+CREATE INDEX IF NOT EXISTS events_by_author ON events (author, seq);
+CREATE TABLE IF NOT EXISTS event_refs (ref TEXT NOT NULL, seq INTEGER NOT NULL, PRIMARY KEY (ref, seq));
 `;
 
 // A row is whatever the file holds, so each is parsed like anything else that comes from outside.
