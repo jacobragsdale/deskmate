@@ -150,6 +150,15 @@ await test("a job's event counts only from the agent's owner, and a withdrawal o
   assert.deepEqual(states(logOf("jacob", [ask, withdrawn("jacob", "jacob/uploader"), withdrawn("carol", "jacob/uploader")]), ask), ["jacob/uploader waiting", "carol/uploader waiting"]);
   assert.deepEqual(states(logOf("jacob", [ask, withdrawn("bob", "jacob/uploader"), accepted("jacob")]), ask), ["jacob/uploader withdrawn", "carol/uploader waiting"]); // Too late to run it.
   assert.deepEqual(states(logOf("jacob", [ask, accepted("jacob"), withdrawn("bob", "jacob/uploader")]), ask), ["jacob/uploader working", "carol/uploader waiting"]); // Too late to take it back.
+
+  // Accepted longer ago than any run takes, it is shown as waiting, and whoever asked may take it back then, counted by the withdrawal's own time. Nobody else may.
+  const long = NOW - STALE - 1;
+  const acceptedLongAgo = entry("jacob", "#backend", "job.accepted", { repo: "uploader", ...ACCEPTED }, { ...about, ts: long });
+  const withdrawnAt = (author: string, ts: number): Entry => entry(author, "#backend", "job.withdrawn", { agent: "jacob/uploader" }, { ...about, ts });
+  assert.deepEqual(states(logOf("jacob", [ask, acceptedLongAgo]), ask), ["jacob/uploader waiting", "carol/uploader waiting"]);
+  assert.deepEqual(states(logOf("jacob", [ask, acceptedLongAgo, withdrawnAt("bob", NOW)]), ask), ["jacob/uploader withdrawn", "carol/uploader waiting"]);
+  assert.deepEqual(states(logOf("jacob", [ask, acceptedLongAgo, withdrawnAt("bob", long + STALE)]), ask, long + STALE), ["jacob/uploader working", "carol/uploader waiting"]); // Still believed then.
+  assert.deepEqual(states(logOf("jacob", [ask, acceptedLongAgo, withdrawnAt("carol", NOW)]), ask), ["jacob/uploader waiting", "carol/uploader waiting"]);
 });
 
 await test("an event whose signature fails changes nothing and is shown as a warning, without what it says", () => {

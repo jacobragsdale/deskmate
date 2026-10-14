@@ -207,6 +207,7 @@ interface Folded {
 }
 
 // What each job event moves a job to, and from where. The owner may run a request again after declining it, after a run that failed or was stopped, or while it is still working, as when a run never ended because its desk went (the later acceptance is the one that counts), and may decline one at any time until it is answered.
+// Whoever asked may also withdraw one working for longer than STALE, which is shown as waiting by then: see `moves`.
 const MOVES: Readonly<Record<JobKind, readonly [State, readonly State[]]>> = {
   "job.accepted": ["working", ["waiting", "working", "declined", "failed", "stopped"]],
   "job.declined": ["declined", ["waiting", "working", "failed", "stopped"]],
@@ -215,6 +216,15 @@ const MOVES: Readonly<Record<JobKind, readonly [State, readonly State[]]>> = {
   "job.cancelled": ["stopped", ["working"]],
   "job.withdrawn": ["withdrawn", ["waiting"]]
 };
+
+/**
+ * Whether a job's event, sent at `ts`, moves the job from where it stands: as MOVES says, or, for a withdrawal, from working for longer than STALE.
+ * A run with no result for that long is taken for one that never ended and shown as waiting, so its asker may take the request back as they may one waiting.
+ * It is counted by the withdrawal's own time, not the reader's clock, so that everyone folds it alike.
+ */
+function moves(kind: JobKind, job: Job, ts: number): boolean {
+  return MOVES[kind][1].includes(job.state) || (kind === "job.withdrawn" && job.state === "working" && ts - job.since > STALE);
+}
 
 function jobKey(request: string, agent: string): string {
   return `${request} ${agent}`;
@@ -285,9 +295,8 @@ function applyToJob(folded: Folded, entry: Entry, said: Extract<Content, { reado
   const request = event.refs[0] ?? "";
   const found = folded.jobs.get(jobKey(request, said.kind === "job.withdrawn" ? said.content.agent : `${event.author}/${said.content.repo}`));
   const job = said.kind !== "job.withdrawn" || found?.request.entry.event.author === event.author ? found : undefined;
-  const [to, from] = MOVES[said.kind];
-  if (job !== undefined && from.includes(job.state)) {
-    job.state = to;
+  if (job !== undefined && moves(said.kind, job, event.ts)) {
+    job.state = MOVES[said.kind][0];
     job.since = event.ts;
     job.accepted = said.kind === "job.accepted" ? said.content : job.accepted;
   }
