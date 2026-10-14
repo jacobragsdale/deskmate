@@ -17,7 +17,9 @@ export default defineConfig({
   root: renderer,
   base: "./", // The page is opened from a file, so everything it loads is named relative to it.
   plugins: [react(), tailwindcss()],
-  resolve: { alias: { "@": renderer } },
+  // react-style-singleton writes <style> elements, which the page's content security policy refuses; see styleSingleton.ts.
+  resolve: { alias: { "@": renderer, "react-style-singleton": join(renderer, "styleSingleton.ts") } },
   define: { PLAYER_TWO_HUB_URL: JSON.stringify(hub) },
-  build: { outDir: join(import.meta.dirname, "dist/renderer"), emptyOutDir: true, sourcemap: true }
+  // The page is read from disk, never downloaded, so one bundle is right and Vite's warning about its size does not apply.
+  build: { outDir: join(import.meta.dirname, "dist/renderer"), emptyOutDir: true, sourcemap: true, chunkSizeWarningLimit: 2000 }
 });

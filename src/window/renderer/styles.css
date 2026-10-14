@@ -474,35 +474,7 @@ footer.down span:last-child {
   background: var(--accent);
 }
 
-/* ── dialogs, the join form, notices ── */
-
-dialog {
-  width: 360px;
-  margin: auto; /* How the browser centres a modal dialog, which Tailwind's reset takes away. */
-  padding: 16px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--background);
-  color: var(--foreground);
-}
-
-dialog::backdrop {
-  background: rgb(0 0 0 / 35%);
-}
-
-dialog h2 {
-  margin: 0 0 10px;
-  font-size: 15px;
-}
-
-dialog form {
-  display: flex;
-  gap: 6px;
-}
-
-dialog form input {
-  flex: 1;
-}
+/* ── the dialogs' lists, the join form, notices ── */
 
 .choices {
   margin-top: 8px;

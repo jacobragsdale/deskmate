@@ -1,19 +1,28 @@
-/** The two questions the window asks in a dialog: which channel to join, and which repo a channel is about. Both use the browser's own <dialog>. */
+/** The two questions the window asks in a dialog: which channel to join, and which repo a channel is about. */
 
-import { useEffect, useRef } from "react";
 import type { JSX, ReactNode, SyntheticEvent } from "react";
 
-/** A modal dialog that reports "" when it is dismissed with Esc. */
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+
+/** A modal dialog, open for as long as it is drawn, that reports "" when it is dismissed with Esc, its close button or a click outside it. */
 function Modal({ title, onDismiss, children }: { readonly title: string; readonly onDismiss: () => void; readonly children: ReactNode }): JSX.Element {
-  const dialog = useRef<HTMLDialogElement>(null);
-  useEffect(() => {
-    dialog.current?.showModal();
-  }, []);
   return (
-    <dialog ref={dialog} onClose={onDismiss}>
-      <h2>{title}</h2>
-      {children}
-    </dialog>
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) {
+          onDismiss();
+        }
+      }}
+    >
+      {/* The title says it all, so there is no description to point to. */}
+      <DialogContent className="gap-3 sm:max-w-sm" aria-describedby={undefined}>
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+        </DialogHeader>
+        {children}
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -30,8 +39,17 @@ export function JoinChannel({ others, onDone }: { readonly others: readonly { re
         onDone("");
       }}
     >
-      <form onSubmit={join}>
-        <input name="name" aria-label="Channel name" placeholder="backend" pattern="#?[a-z0-9][a-z0-9_\-]{0,31}" title="lowercase letters, digits, - and _, at most 32 characters" required autoFocus />
+      <form className="flex gap-1.5" onSubmit={join}>
+        <input
+          className="flex-1"
+          name="name"
+          aria-label="Channel name"
+          placeholder="backend"
+          pattern="#?[a-z0-9][a-z0-9_\-]{0,31}"
+          title="lowercase letters, digits, - and _, at most 32 characters"
+          required
+          autoFocus
+        />
         <button type="submit" className="primary">
           Join
         </button>
