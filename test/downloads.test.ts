@@ -115,7 +115,11 @@ await test("the page and the script carry the address the hub was reached by, an
   assert.ok(page.body.includes('<a href="/downloads/player-two-setup.exe">'));
   assert.ok(page.body.includes("<code>https://player-two.acme.internal</code>"));
   assert.ok(page.body.includes("<code>curl -fsSL https://player-two.acme.internal/install.sh | sh</code>"));
-  assert.ok((await ask(hub, "/install.sh", { Host: "hub.acme.internal:8787" })).body.includes("\nhub='http://hub.acme.internal:8787'\n"));
+  const script = await ask(hub, "/install.sh", { Host: "hub.acme.internal:8787" });
+  assert.ok(script.body.includes("\nhub='http://hub.acme.internal:8787'\n"));
+  for (const answer of [page, script]) {
+    assert.deepEqual([answer.headers["cache-control"], answer.headers["vary"]], ["no-store", "Host"]); // Each is made from its own request's Host, so no cache may share it.
+  }
 
   for (const host of ["x'$(touch pwned)'", 'x"><script>alert(1)</script>', "x;reboot", "x y"]) {
     for (const path of ["/", "/install.sh"]) {

@@ -506,6 +506,9 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     pipeline(createReadStream(path), response, () => undefined); // A reader who hangs up, or a file that goes, ends the response and nothing more.
   }
 
+  // The page and the script carry the address in the request's Host, so a cache between the hub and a teammate must not hand one person's answer to another.
+  const BY_HOST = { "Cache-Control": "no-store", Vary: "Host" };
+
   /** Answer what a teammate installs from, open to anyone: the page, a file from the downloads folder, and the script for Linux. False when `path` is none of these. */
   function served(path: string, request: IncomingMessage, response: ServerResponse): boolean {
     const file = path.startsWith("/downloads/") ? path.slice("/downloads/".length) : null;
@@ -518,9 +521,9 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     if (file !== null) {
       download(file, response);
     } else if (path === "/install.sh") {
-      sendText(response, "text/x-shellscript; charset=utf-8", hubInstallScript(addressOf(request), runtimeDigest()));
+      sendText(response, "text/x-shellscript; charset=utf-8", hubInstallScript(addressOf(request), runtimeDigest()), BY_HOST);
     } else {
-      sendText(response, "text/html; charset=utf-8", installPage(addressOf(request)), { "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'" });
+      sendText(response, "text/html; charset=utf-8", installPage(addressOf(request)), { ...BY_HOST, "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'" });
     }
     return true;
   }
