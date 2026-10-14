@@ -5,6 +5,9 @@
   "private": true,
   "type": "module",
   "main": "dist/main.js",
+  "bin": {
+    "deskmate": "dist/deskmate.js"
+  },
   "engines": {
     "node": ">=26"
   },
