@@ -1,4 +1,4 @@
-/** The hub: keeps everyone's public key and which repos each has checked out, and takes in signed notes. Ported from src/deskmate/hub.py route for route: the same paths, the same statuses, the same words. */
+/** The hub: keeps everyone's public key and which repos each has checked out, relays signed notes, and keeps them for later reading. Ported from src/deskmate/hub.py route for route: the same paths, the same statuses, the same words. */
 
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
@@ -12,6 +12,8 @@ import { isChannel, joinSchema, noteSchema, repoSchema } from "../core/wire.ts";
 import type { RepoRef } from "../core/wire.ts";
 import { Database } from "./db.ts";
 
+const MAX_WAIT = 30; // Longest a client may hold one long-poll open, in seconds.
+const HISTORY = 500; // Most notes one `tail` request may ask for.
 const MAX_REPOS = 500; // Most checkouts one person may advertise.
 const MAX_REQUEST = 4_000_000; // Most characters one request's body may hold: several times the longest list of repos or the longest note.
 
@@ -26,10 +28,26 @@ export type Log = (event: string, facts: Readonly<Record<string, string | number
 
 const advertsSchema = z.array(repoSchema).max(MAX_REPOS);
 
+// A query string holds only text, so numbers and yes-or-no arrive written out. The words for yes and no are the ones the Python hub took.
+const numeric = z
+  .string()
+  .regex(/^\d+(\.\d+)?$/)
+  .transform(Number);
+const flag = z.stringbool({ truthy: ["1", "on", "t", "true", "y", "yes"], falsy: ["0", "off", "f", "false", "n", "no"] });
+const notesQuerySchema = z.object({
+  after: numeric.pipe(z.int()).default(0),
+  wait: numeric.pipe(z.number().max(MAX_WAIT)).default(0),
+  tail: numeric.pipe(z.int().min(1).max(HISTORY)).optional(),
+  mine: flag.default(true),
+  status: flag.default(true)
+});
+
 /** One request as a route sees it. */
 interface Ask {
   readonly me: string; // Who is asking, proved by their signature; "" on the routes open to anyone.
+  readonly query: URLSearchParams;
   readonly body: string; // What the request carried, not yet parsed.
+  readonly response: ServerResponse; // Only for a long-poll to see that its reader has hung up.
 }
 
 type Answer = readonly [status: number, body: unknown];
@@ -38,7 +56,7 @@ interface Route {
   readonly method: string;
   readonly path: string;
   readonly open?: true; // Answered without asking who is calling.
-  readonly answer: (ask: Ask) => Answer;
+  readonly answer: (ask: Ask) => Answer | Promise<Answer>;
 }
 
 /** A request the hub will not serve. The words are for whoever sent it. */
@@ -105,6 +123,22 @@ function send(response: ServerResponse, [status, body]: Answer): void {
 export function createHub(settings: HubSettings, now: () => number = () => Date.now() / 1000, log: Log = () => undefined): Server {
   const prefix = prefixKey(settings.repos);
   const db = new Database(settings.db);
+  const waiting = new Set<() => void>(); // Readers holding a request open for the next note; each is called when one arrives.
+
+  /** Settles when a note arrives, when `ms` have passed, or when the reader hangs up, whichever is first. A waiting reader costs a timer, not a thread. */
+  function arrival(ms: number, response: ServerResponse): Promise<void> {
+    return new Promise((resolve) => {
+      const wake = (): void => {
+        clearTimeout(timer);
+        waiting.delete(wake);
+        response.off("close", wake);
+        resolve();
+      };
+      const timer = setTimeout(wake, ms);
+      waiting.add(wake);
+      response.once("close", wake);
+    });
+  }
 
   function caller(header: string): string {
     const claim = authClaim(header);
@@ -166,8 +200,32 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     if (id === null) {
       throw new Refusal(409, "this exact note was already delivered");
     }
+    waiting.forEach((wake) => {
+      wake();
+    });
     log("note queued", { note_id: id, sender: note.sender, recipient: note.to, kind: note.kind });
     return [201, { id }];
+  }
+
+  /**
+   * Notes the caller can see with an id above `after`, oldest first: sent to them, to a channel they are in, or (unless `mine` is false) sent by them.
+   * `wait` holds the request open until one arrives; `tail` returns only the newest few; `status` false leaves out agent status reports.
+   */
+  async function getNotes(ask: Ask): Promise<Answer> {
+    const { after, wait, tail, mine, status } = parsed(notesQuerySchema, Object.fromEntries(ask.query), "query");
+    const deadline = performance.now() + wait * 1000;
+    for (;;) {
+      // Looking and going to sleep happen in one turn of the loop, so a note cannot land between "nothing yet" and waiting for it.
+      const notes = db.notes(ask.me, after, tail ?? null, mine, status);
+      const remaining = deadline - performance.now();
+      if (notes.length > 0 || remaining <= 0) {
+        return [200, notes];
+      }
+      await arrival(remaining, ask.response);
+      if (ask.response.destroyed) {
+        return [200, []]; // Nobody is listening, and the database may have closed with the server.
+      }
+    }
   }
 
   const routes: readonly Route[] = [
@@ -177,22 +235,23 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     { method: "GET", path: "/users", answer: () => [200, db.users()] },
     { method: "PUT", path: "/repos", answer: putRepos },
     { method: "GET", path: "/repos", answer: () => [200, db.repos()] },
-    { method: "POST", path: "/notes", open: true, answer: postNote } // A note carries its own signature, so it needs no header.
+    { method: "POST", path: "/notes", open: true, answer: postNote }, // A note carries its own signature, so it needs no header.
+    { method: "GET", path: "/notes", answer: getNotes }
   ];
 
-  async function answer(request: IncomingMessage): Promise<Answer> {
-    const path = (request.url ?? "").split("?")[0];
+  async function answer(request: IncomingMessage, response: ServerResponse): Promise<Answer> {
+    const [path, ...query] = (request.url ?? "").split("?");
     const there = routes.filter((route) => route.path === path);
     const route = there.find((candidate) => candidate.method === request.method);
     if (route === undefined) {
       throw there.length === 0 ? new Refusal(404, "Not Found") : new Refusal(405, "Method Not Allowed");
     }
     const me = route.open === true ? "" : caller(request.headers.authorization ?? "");
-    return route.answer({ me, body: await bodyText(request) });
+    return route.answer({ me, query: new URLSearchParams(query.join("?")), body: await bodyText(request), response });
   }
 
   const server = createServer((request, response) => {
-    answer(request).then(
+    answer(request, response).then(
       (found) => {
         send(response, found);
       },

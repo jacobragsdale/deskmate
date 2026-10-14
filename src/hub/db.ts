@@ -4,10 +4,11 @@ import { DatabaseSync } from "node:sqlite";
 
 import { z } from "zod";
 
-import { personSchema, teamRepoSchema } from "../core/wire.ts";
-import type { Note, Person, Repo, TeamRepo } from "../core/wire.ts";
+import { deliveredSchema, personSchema, teamRepoSchema } from "../core/wire.ts";
+import type { Delivered, Note, Person, Repo, TeamRepo } from "../core/wire.ts";
 
 const SCHEMA_VERSION = 3;
+const PAGE = 100; // Most notes one request gets when it does not ask for the newest few.
 const BUSY_WAIT = 5; // Seconds to wait for another program that holds the file, such as a backup, before giving up.
 
 const SCHEMA = `
@@ -38,6 +39,7 @@ const pubkeySchema = z.strictObject({ pubkey: z.string() }).optional();
 const peopleSchema = z.array(personSchema);
 const teamReposSchema = z.array(teamRepoSchema);
 const membersSchema = z.array(z.strictObject({ user: z.string() }));
+const deliveredListSchema = z.array(deliveredSchema);
 
 export class Database {
   private readonly db: DatabaseSync;
@@ -109,5 +111,20 @@ export class Database {
       .prepare("INSERT OR IGNORE INTO notes (sender, recipient, kind, body, ts, agent, re, sig) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
       .run(note.sender, note.to, note.kind, note.body, note.ts, note.agent, note.re, note.sig);
     return Number(added.changes) === 0 ? null : Number(added.lastInsertRowid);
+  }
+
+  /**
+   * The notes `me` can see with an id above `after`, oldest first: sent to them, to a channel they are in, or (unless `mine` is false) by them.
+   * With `tail` they are the newest that many; without, the first page. `status` false leaves out agent status reports.
+   */
+  public notes(me: string, after: number, tail: number | null, mine: boolean, status: boolean): readonly Delivered[] {
+    const visible = "(recipient = :me OR recipient IN (SELECT channel FROM members WHERE user = :me) OR sender = :me) AND (:mine OR sender != :me) AND (:status OR kind = 'note')";
+    const columns = 'id, sender, recipient AS "to", kind, body, ts, agent, re, sig';
+    const query =
+      tail === null
+        ? `SELECT ${columns} FROM notes WHERE id > :after AND ${visible} ORDER BY id LIMIT :limit`
+        : `SELECT * FROM (SELECT ${columns} FROM notes WHERE id > :after AND ${visible} ORDER BY id DESC LIMIT :limit) ORDER BY id`;
+    const rows = this.db.prepare(query).all({ me, after, mine: mine ? 1 : 0, status: status ? 1 : 0, limit: tail ?? PAGE });
+    return deliveredListSchema.parse(rows.map(({ id, ...note }) => ({ id, note })));
   }
 }
