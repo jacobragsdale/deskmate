@@ -5,24 +5,26 @@ import { parseArgs } from "node:util";
 
 import { z } from "zod";
 
-import { chatOf } from "../core/notes.ts";
+import { chatOf } from "../core/chat.ts";
+import type { Entry } from "../core/chat.ts";
+import { readContent } from "../core/kinds.ts";
 import { problemOf } from "../core/text.ts";
-import { isChannel } from "../core/wire.ts";
-import type { DeliveredNote } from "../core/wire.ts";
-import { DEFAULT_AGENT, defaultDev, defaultHome, http, join, loadClient, PlayerTwoError, POLL_WAIT } from "../desk/client.ts";
+import { fitText, isChannel } from "../core/wire.ts";
+import type { Delivered, Event } from "../core/wire.ts";
+import { DEFAULT_AGENT, defaultDev, defaultHome, http, join, loadClient, PlayerTwoError } from "../desk/client.ts";
 import type { Client, Transport } from "../desk/client.ts";
 import { runChecks } from "../desk/doctor.ts";
 import { runDesk } from "../desk/main.ts";
 import { runHub, verifyHub } from "../hub/main.ts";
 import type { Check } from "../shared/ipc.ts";
 
-const INBOX = 20; // Notes `inbox` prints when it is not told where to start.
+const INBOX = 20; // Messages and answers `inbox` prints when it is not told where to start.
 
 const USAGE = `usage: player-two COMMAND
 
   join HUB NAME TOKEN [--agent AGENT]   register your name and a new key with a hub
-  send TO TEXT... [--wait SECONDS]      send a note to a name or a channel such as '#backend'; a TEXT of - reads it from standard input
-  inbox [--after ID] [--wait SECONDS]   print the notes other people sent you or your channels
+  send TO TEXT... [--wait SECONDS]      send a message to a name or a channel such as '#backend'; a TEXT of - reads it from standard input
+  inbox [--after SEQ] [--wait SECONDS]  print the messages and agents' answers other people sent you or your channels
   who                                   list everyone who has joined
   repos                                 list every agent as @person/repo with the branch it is on
   channel [join NAME | leave NAME]      list the channels, or join or leave one
@@ -47,7 +49,7 @@ export interface Options {
   readonly home?: string; // The folder the identity is in.
   readonly transport?: Transport;
   readonly now?: () => number; // Unix seconds.
-  readonly stdin?: NodeJS.ReadableStream; // Where `send TO -` reads the note from.
+  readonly stdin?: NodeJS.ReadableStream; // Where `send TO -` reads the message from.
   readonly out?: (line: string) => void;
   readonly err?: (line: string) => void;
 }
@@ -57,7 +59,7 @@ const secondsSchema = z
   .string()
   .regex(/^\d+(\.\d+)?$/)
   .transform(Number);
-const idSchema = z.string().regex(/^\d+$/).transform(Number).pipe(z.int());
+const seqSchema = z.string().regex(/^\d+$/).transform(Number).pipe(z.int());
 
 function numberOf(schema: z.ZodType<number>, given: string, option: string): number {
   const result = schema.safeParse(given);
@@ -72,15 +74,26 @@ function show(out: (line: string) => void, json: boolean, found: unknown, words:
   out(json ? JSON.stringify(found) : words);
 }
 
-/** One note as the terminal shows it. One that failed its signature check is never shown with its text. */
-export function render(delivered: DeliveredNote, trusted: boolean): string {
-  const { id, note } = delivered;
-  if (!trusted) {
-    return `!! note ${String(id)} claims to be from ${note.sender}, but its signature does not match the key first seen for them. Ignored.`;
+/** What a message or an agent's answer says, and which agent's answer it is; null for an event of any other kind, which the inbox passes over as status notes were. */
+function saying(event: Event): { readonly text: string; readonly agent: string | null } | null {
+  const said = readContent(event);
+  if (said.kind === "message") {
+    return { text: said.content.text, agent: null };
   }
-  const when = new Date(note.ts * 1000).toLocaleString("en-GB", { weekday: "short", hour: "2-digit", minute: "2-digit" }); // "Fri 14:05", in this machine's own time.
-  const lines = note.body.split(/\r\n|\r|\n/).map((line) => `│ ${line}`);
-  return [`┌ ${String(id)} · ${note.sender}${note.agent === null ? "" : ` (${note.agent} agent)`}${isChannel(note.to) ? ` in ${note.to}` : ""} · ${when}`, ...lines, "└"].join("\n");
+  return said.kind === "job.result" ? { text: said.content.text, agent: said.content.repo } : null;
+}
+
+/** One message or answer as the terminal shows it, numbered by its seq, which `inbox --after` takes. One that failed its signature check is never shown with its text. */
+export function render(delivered: Delivered, trusted: boolean): string {
+  const { seq, event } = delivered;
+  if (!trusted) {
+    return `!! ${String(seq)} claims to be from ${event.author}, but its signature does not match the key first seen for them. Ignored.`;
+  }
+  const said = saying(event);
+  const when = new Date(event.ts * 1000).toLocaleString("en-GB", { weekday: "short", hour: "2-digit", minute: "2-digit" }); // "Fri 14:05", in this machine's own time.
+  const lines = (said?.text ?? `(${event.kind})`).split(/\r\n|\r|\n/).map((line) => `│ ${line}`);
+  const agent = said?.agent ?? null;
+  return [`┌ ${String(seq)} · ${event.author}${agent === null ? "" : ` (${agent} agent)`}${isChannel(event.to) ? ` in ${event.to}` : ""} · ${when}`, ...lines, "└"].join("\n");
 }
 
 /** The setup check as aligned text: how each item stands, what was checked and what was found, and under one that is not right, the fix to copy. */
@@ -89,19 +102,48 @@ function layout(checks: readonly Check[]): string {
   return checks.flatMap((check) => [`${check.status.padEnd(4)}  ${check.title.padEnd(width)}  ${check.detail}`, ...(check.fix === "" ? [] : [`      fix: ${check.fix}`])]).join("\n");
 }
 
-/** The next trusted note from someone else in this chat, if one arrives in time. */
-async function awaitReply(client: Client, chat: string, sent: number, seconds: number): Promise<DeliveredNote | null> {
-  const deadline = performance.now() + seconds * 1000;
-  let after = sent;
-  for (let remaining = seconds; remaining > 0; remaining = (deadline - performance.now()) / 1000) {
-    for (const delivered of await client.notes({ after, wait: Math.min(remaining, POLL_WAIT), mine: false, status: false })) {
-      after = delivered.id;
-      if (chatOf(delivered.note, client.config.name) === chat && (await client.isTrusted(delivered.note))) {
-        return delivered;
-      }
+/** The messages and answers among what the hub delivered that someone else sent, as delivered, each with whether it holds under the key first seen for its author. */
+async function fromOthers(client: Client, found: readonly Delivered[]): Promise<Entry[]> {
+  const kept: Entry[] = [];
+  for (const delivered of found) {
+    if (delivered.event.author !== client.config.name && saying(delivered.event) !== null) {
+      kept.push({ ...delivered, trusted: await client.isTrusted(delivered.event) });
     }
   }
-  return null;
+  return kept;
+}
+
+/** The first messages and answers from someone else after `after` that `wanted` keeps, from the hub's stream as soon as there are any; none once `seconds` have passed. */
+async function next(client: Client, after: number, seconds: number, wanted: (entry: Entry) => boolean): Promise<Entry[]> {
+  const stop = new AbortController();
+  const timer = setTimeout(() => {
+    stop.abort();
+  }, seconds * 1000);
+  let found: Entry[] = [];
+  await client.stream(
+    after,
+    async (batch) => {
+      found = (await fromOthers(client, batch)).filter(wanted);
+      if (found.length > 0) {
+        stop.abort();
+      }
+    },
+    stop.signal
+  );
+  clearTimeout(timer);
+  return found;
+}
+
+/** The newest `count` messages and answers from someone else, looking back from the hub's newest seq four times as far each time until there are enough or there is nothing further back. */
+async function newest(client: Client, count: number): Promise<Entry[]> {
+  const { seq } = await client.head();
+  for (let span = count * 10; ; span *= 4) {
+    const after = Math.max(0, seq - span);
+    const found = await fromOthers(client, await client.catchUp(after));
+    if (found.length >= count || after === 0) {
+      return found.slice(-count);
+    }
+  }
 }
 
 async function send(joined: () => Client, args: string[], out: (line: string) => void, stdin: NodeJS.ReadableStream = process.stdin): Promise<void> {
@@ -109,34 +151,43 @@ async function send(joined: () => Client, args: string[], out: (line: string) =>
   const [to, ...words] = positionals;
   const seconds = numberOf(secondsSchema, values.wait, "wait");
   if (to === undefined || words.length === 0) {
-    throw new UsageError("send takes who it is to and the note");
+    throw new UsageError("send takes who it is to and the message");
   }
   const client = joined();
-  const sent = await client.send(to, words.length === 1 && words[0] === "-" ? (await text(stdin)).trim() : words.join(" "));
+  const message = fitText(words.length === 1 && words[0] === "-" ? (await text(stdin)).trim() : words.join(" "));
+  if (message === "") {
+    throw new PlayerTwoError("there is nothing to send");
+  }
+  const sent = await client.publish(to, "message", { text: message, via: "cli" });
   if (!values.json) {
-    out(`→ sent ${String(sent)} to ${to}`);
+    out(`→ sent ${String(sent.seq)} to ${to}`);
   }
   if (seconds > 0) {
-    // With --json the one value is the reply as the hub delivered it, or null when none came; without --wait it is the hub's receipt for what was sent.
-    const reply = await awaitReply(client, to, sent, seconds);
-    const words = reply === null ? `nothing new in ${to} yet; check later with: player-two inbox --after ${String(sent)}` : render(reply, true);
-    show(out, values.json, reply === null ? null : { ...reply, trusted: true }, words);
+    // With --json the one value is the reply as the hub delivered it with whether it is trusted, or null when none came; without --wait it is the message as sent, with its place in the hub's log.
+    const [reply] = await next(client, sent.seq, seconds, (entry) => entry.trusted && chatOf(entry.event, client.config.name) === to);
+    const words = reply === undefined ? `nothing new in ${to} yet; check later with: player-two inbox --after ${String(sent.seq)}` : render(reply, true);
+    show(out, values.json, reply ?? null, words);
   } else if (values.json) {
-    out(JSON.stringify({ id: sent }));
+    out(JSON.stringify(sent));
   }
 }
 
 async function inbox(joined: () => Client, args: string[], out: (line: string) => void): Promise<void> {
   const { values } = parseArgs({ args, options: { after: { type: "string" }, wait: { type: "string", default: "0" }, json: { type: "boolean", default: false } } });
   const wait = numberOf(secondsSchema, values.wait, "wait");
-  const after = values.after === undefined ? null : numberOf(idSchema, values.after, "after");
+  const after = values.after === undefined ? null : numberOf(seqSchema, values.after, "after");
   const client = joined();
-  const notes = after === null ? await client.notes({ tail: INBOX, mine: false, status: false }) : await client.notes({ after, wait, mine: false, status: false });
-  const found: (DeliveredNote & { readonly trusted: boolean })[] = [];
-  for (const delivered of notes) {
-    found.push({ ...delivered, trusted: await client.isTrusted(delivered.note) });
+  let found: Entry[];
+  if (after === null) {
+    found = await newest(client, INBOX);
+  } else {
+    const caught = await client.catchUp(after);
+    found = await fromOthers(client, caught);
+    if (found.length === 0 && wait > 0) {
+      found = await next(client, caught.at(-1)?.seq ?? after, wait, () => true);
+    }
   }
-  show(out, values.json, found, found.length === 0 ? "no notes" : found.map((each) => render(each, each.trusted)).join("\n"));
+  show(out, values.json, found, found.length === 0 ? "no messages" : found.map((each) => render(each, each.trusted)).join("\n"));
 }
 
 async function channel(joined: () => Client, args: string[], out: (line: string) => void): Promise<void> {

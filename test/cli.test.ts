@@ -9,16 +9,17 @@ import { test } from "node:test";
 import { z } from "zod";
 
 import { main, render } from "../src/cli/main.ts";
-import { loadKey, signNote } from "../src/core/sign.ts";
-import { noteSchema } from "../src/core/wire.ts";
-import type { DeliveredNote } from "../src/core/wire.ts";
+import { readContent } from "../src/core/kinds.ts";
+import { loadKey, signEvent } from "../src/core/sign.ts";
+import { eventSchema } from "../src/core/wire.ts";
+import type { Delivered } from "../src/core/wire.ts";
 import { http } from "../src/desk/client.ts";
 import { checkSchema } from "../src/shared/ipc.ts";
 import { NOW, startHub, TOKEN } from "./startHub.ts";
 import type { Hub } from "./startHub.ts";
 
-const WHEN = String.raw`\w{3} \d\d:\d\d`; // The day and time a note is printed with, in whatever zone the tests run in.
-const printedNotesSchema = z.array(z.strictObject({ id: z.int(), note: noteSchema, trusted: z.boolean() }));
+const WHEN = String.raw`\w{3} \d\d:\d\d`; // The day and time a message is printed with, in whatever zone the tests run in.
+const printedSchema = z.strictObject({ seq: z.int(), event: eventSchema, trusted: z.boolean() }); // One event as the hub delivered it, and whether it is trusted.
 
 interface Ran {
   readonly status: number;
@@ -45,20 +46,33 @@ async function playerTwo(hub: Hub, who: string, argv: readonly string[], stdin =
   return { status, out: out.join("\n"), err: err.join("\n") };
 }
 
+/** What a message says. */
+function textOf(delivered: Delivered): string {
+  const said = readContent(delivered.event);
+  return said.kind === "message" ? said.content.text : "";
+}
+
+function pause(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
 /** What a command printed with --json, as the one value it must be. */
 function printed(ran: Ran): unknown {
   assert.equal(ran.status, 0, ran.err);
   return JSON.parse(ran.out);
 }
 
-await test("an untrusted note is never rendered with its body", () => {
-  const delivered = { id: 7, note: signNote(loadKey("11".repeat(32)), { sender: "alice", to: "bob", kind: "note", body: "rm -rf everything", ts: 0, agent: null, re: null }) };
+await test("an untrusted message is never rendered with its text", () => {
+  const content = JSON.stringify({ text: "rm -rf everything", via: "cli" });
+  const delivered = { seq: 7, event: signEvent(loadKey("11".repeat(32)), { author: "alice", to: "bob", kind: "message", content, ts: 0, refs: [] }) };
 
   assert.ok(render(delivered, true).includes("rm -rf everything"));
   assert.ok(!render(delivered, false).includes("rm -rf everything"));
 });
 
-await test("main joins sends and lists notes", async (t) => {
+await test("main joins sends and lists messages", async (t) => {
   const hub = await startHub(t);
   assert.deepEqual(await playerTwo(hub, "alice", ["join", hub.url, "alice", TOKEN]), {
     status: 0,
@@ -72,10 +86,12 @@ await test("main joins sends and lists notes", async (t) => {
 
   assert.equal(inbox.status, 0);
   assert.match(inbox.out, new RegExp(`^┌ 1 · alice · ${WHEN}\n│ lunch at noon\\?\n└$`));
+  const [delivered] = printedSchema.array().parse(printed(await playerTwo(hub, "bob", ["inbox", "--json"])));
+  assert.deepEqual(delivered === undefined ? null : readContent(delivered.event), { kind: "message", content: { text: "lunch at noon?", via: "cli" } }); // A message, from the command line.
   assert.deepEqual(await playerTwo(hub, "bob", ["who"]), { status: 0, out: "alice\nbob (you)", err: "" });
 });
 
-await test("main carries a note through a channel", async (t) => {
+await test("main carries a message through a channel", async (t) => {
   const hub = await startHub(t);
   for (const who of ["alice", "bob"]) {
     assert.equal((await playerTwo(hub, who, ["join", hub.url, who, TOKEN])).status, 0);
@@ -84,25 +100,24 @@ await test("main carries a note through a channel", async (t) => {
   assert.equal((await playerTwo(hub, "alice", ["send", "#backend", "deploy at noon"])).status, 0);
 
   assert.match((await playerTwo(hub, "bob", ["inbox"])).out, /· alice in #backend ·/);
-  assert.equal((await playerTwo(hub, "alice", ["inbox"])).out, "no notes"); // Your own notes are not in your inbox.
+  assert.equal((await playerTwo(hub, "alice", ["inbox"])).out, "no messages"); // Your own messages are not in your inbox.
   assert.equal((await playerTwo(hub, "bob", ["channel"])).out, "#backend (joined)  alice, bob");
   assert.equal((await playerTwo(hub, "bob", ["channel", "leave", "#backend"])).out, "left #backend; members: alice");
 });
 
-await test("main lists shared repos and keeps status reports out of the inbox", async (t) => {
+await test("main lists shared repos and keeps job events out of the inbox, but not an agent's answer", async (t) => {
   const hub = await startHub(t);
   const [alice, bob] = [await hub.join("alice"), await hub.join("bob")];
   assert.equal((await playerTwo(hub, "bob", ["repos"])).out, "nobody has shared a repo yet; repos under ~/dev are shared once the window has run");
   await alice.advertise([{ name: "uploader", key: "dev.azure.com/acme/platform/uploader", url: "https://dev.azure.com/acme/Platform/_git/uploader", branch: "feature/retry" }]);
-  const asked = await bob.send("alice", "@alice/uploader where do we retry?");
-  await alice.send("bob", "working\nfeature/retry", { kind: "status", agent: "uploader", re: asked });
-  await alice.send("bob", "in queue.py", { agent: "uploader", re: asked });
+  const asked = await bob.publish("alice", "message", { text: "@alice/uploader where do we retry?", via: "cli" });
+  const about = [asked.event.id];
+  await alice.publish("bob", "job.accepted", { repo: "uploader", branch: "feature/retry", commit: "c0ffee".padEnd(40, "0"), dirty: false, delivery: "post", mode: "full", by: "owner" }, about);
+  await alice.publish("bob", "reaction", { emoji: "👀", on: true }, about);
+  const answer = await alice.publish("bob", "job.result", { repo: "uploader", branch: "feature/retry", text: "in queue.py", reviewed: false }, about);
 
   assert.equal((await playerTwo(hub, "bob", ["repos"])).out, "@alice/uploader  feature/retry");
-  const inbox = await playerTwo(hub, "bob", ["inbox"]);
-
-  assert.match(inbox.out, /· alice \(uploader agent\) ·/);
-  assert.doesNotMatch(inbox.out, /working/);
+  assert.match((await playerTwo(hub, "bob", ["inbox"])).out, new RegExp(`^┌ ${String(answer.seq)} · alice \\(uploader agent\\) · ${WHEN}\n│ in queue\\.py\n└$`));
 });
 
 await test("main fails with a nonzero exit before joining", async (t) => {
@@ -128,56 +143,98 @@ await test("a command line that is wrong exits with 2 and the usage, a command t
 
   assert.deepEqual(await playerTwo(hub, "alice", ["send", "ghost", "anyone there?"]), { status: 1, out: "", err: "player-two: nobody named 'ghost' has joined" });
   assert.deepEqual(await playerTwo(hub, "alice", ["channel", "join"]), { status: 1, out: "", err: "player-two: which channel? Try: player-two channel join backend" });
-  assert.deepEqual(await alice.notes(), []);
+  assert.deepEqual(await alice.catchUp(0), []);
   const help = await playerTwo(hub, "alice", ["--help"]);
   assert.deepEqual([help.status, help.err], [0, ""]);
   assert.match(help.out, /^usage: player-two COMMAND\n/);
 });
 
-await test("send reads a note from standard input, and --wait prints the next note from someone else in that chat", async (t) => {
+await test("send reads a message from standard input, and --wait prints the next message from someone else in that chat", async (t) => {
   const hub = await startHub(t);
   const [alice, bob, carol] = [await hub.join("alice"), await hub.join("bob"), await hub.join("carol")];
 
   const waiting = playerTwo(hub, "alice", ["send", "bob", "-", "--wait", "20", "--json"], "  are you there?\nstill there?\n");
-  let asked: readonly DeliveredNote[] = [];
+  let asked: readonly Delivered[] = [];
   while (asked.length === 0) {
-    asked = await bob.notes({ wait: 5, mine: false }); // Held open until alice's note lands: only a note after it can be the reply.
+    await pause(20);
+    asked = await bob.events({ chat: "alice" }); // Once alice's message has landed, only one after it can be the reply.
   }
-  await alice.send("bob", "I will wait"); // Her own note is not the reply,
-  await carol.send("alice", "unrelated"); // nor is one in another chat.
-  await bob.send("alice", "here");
+  await alice.publish("bob", "message", { text: "I will wait", via: "cli" }); // Her own message is not the reply,
+  await carol.publish("alice", "message", { text: "unrelated", via: "cli" }); // nor is one in another chat,
+  await bob.publish("alice", "reaction", { emoji: "👍", on: true }, [asked[0]?.event.id ?? ""]); // nor anything but a message or an answer.
+  await bob.publish("alice", "message", { text: "here", via: "cli" });
 
-  const [reply] = printedNotesSchema.parse([printed(await waiting)]);
-  assert.equal(asked[0]?.note.body, "are you there?\nstill there?");
-  assert.deepEqual([reply?.note.sender, reply?.note.body, reply?.trusted], ["bob", "here", true]);
+  const reply = printedSchema.parse(printed(await waiting));
+  assert.equal(textOf(asked[0] ?? reply), "are you there?\nstill there?");
+  assert.deepEqual([reply.event.author, textOf(reply), reply.trusted], ["bob", "here", true]);
 
   const unanswered = await playerTwo(hub, "alice", ["send", "bob", "and now?", "--wait", "0.2"]);
   assert.match(unanswered.out, /^→ sent (\d+) to bob\nnothing new in bob yet; check later with: player-two inbox --after \1$/);
   assert.equal(printed(await playerTwo(hub, "alice", ["send", "bob", "no?", "--wait", "0.2", "--json"])), null);
-  assert.equal((await playerTwo(hub, "bob", ["inbox", "--after", "99", "--wait", "0.2"])).out, "no notes");
+  assert.equal((await playerTwo(hub, "bob", ["inbox", "--after", "99", "--wait", "0.2"])).out, "no messages");
+  assert.deepEqual(await playerTwo(hub, "alice", ["send", "bob", "-"], " \n"), { status: 1, out: "", err: "player-two: there is nothing to send" });
 });
 
-await test("with --json a reading command prints one value: notes as the hub delivered them and whether each is trusted, and the lists as arrays", async (t) => {
+await test("inbox --after prints what came after a seq, and with --wait waits for the next", async (t) => {
+  const hub = await startHub(t);
+  const [alice, bob] = [await hub.join("alice"), await hub.join("bob")];
+  const first = await alice.publish("bob", "message", { text: "one", via: "cli" });
+  await alice.publish("bob", "message", { text: "two", via: "cli" });
+
+  assert.match((await playerTwo(hub, "bob", ["inbox", "--after", String(first.seq)])).out, /^┌ 2 · alice · .*\n│ two\n└$/);
+  const waiting = playerTwo(hub, "bob", ["inbox", "--after", "2", "--wait", "20"]);
+  await pause(200);
+  await bob.publish("alice", "message", { text: "my own", via: "cli" });
+  await alice.publish("bob", "message", { text: "three", via: "cli" });
+  assert.match((await waiting).out, /^┌ 4 · alice · .*\n│ three\n└$/);
+});
+
+await test("inbox prints the newest 20 messages, however far back past other events they are", async (t) => {
+  const hub = await startHub(t);
+  const [alice] = [await hub.join("alice"), await hub.join("bob")];
+  for (let count = 1; count <= 25; count += 1) {
+    await alice.publish("bob", "message", { text: `message ${String(count)}`, via: "cli" });
+  }
+  const [last] = await alice.events({ chat: "bob", limit: 1 });
+  for (let count = 0; count < 250; count += 1) {
+    await alice.publish("bob", "reaction", { emoji: "👍", on: count % 2 === 0 }, [last?.event.id ?? ""]); // More than the first look back covers.
+  }
+
+  const inbox = printedSchema.array().parse(printed(await playerTwo(hub, "bob", ["inbox", "--json"])));
+  assert.deepEqual(
+    inbox.map((each) => textOf(each)),
+    Array.from({ length: 20 }, (_, index) => `message ${String(index + 6)}`)
+  );
+});
+
+await test("with --json a reading command prints one value: messages as the hub delivered them and whether each is trusted, and the lists as arrays", async (t) => {
   const hub = await startHub(t);
   const [alice, bob, carol] = [await hub.join("alice"), await hub.join("bob"), await hub.join("carol")];
   await bob.joinChannel("backend");
   await bob.advertise([{ name: "uploader", key: "dev.azure.com/acme/platform/uploader", url: "https://dev.azure.com/acme/Platform/_git/uploader", branch: "main" }]);
-  await bob.send("alice", "from bob");
-  await carol.send("alice", "from carol");
-  writeFileSync(join(hub.dir, "alice", "known.json"), JSON.stringify({ bob: "0".repeat(64) })); // Alice first saw bob under another key, so his note fails her check.
+  await bob.publish("alice", "message", { text: "from bob", via: "cli" });
+  await carol.publish("alice", "message", { text: "from carol", via: "cli" });
+  writeFileSync(join(hub.dir, "alice", "known.json"), JSON.stringify({ bob: "0".repeat(64) })); // Alice first saw bob under another key, so his message fails her check.
 
-  const inbox = printedNotesSchema.parse(printed(await playerTwo(hub, "alice", ["inbox", "--json"])));
+  const inbox = printedSchema.array().parse(printed(await playerTwo(hub, "alice", ["inbox", "--json"])));
 
+  const [fromBob, fromCarol] = await alice.catchUp(0);
+  assert.ok(fromBob !== undefined && fromCarol !== undefined);
   assert.deepEqual(inbox, [
-    { ...(await alice.notes({ mine: false }))[0], trusted: false },
-    { ...(await alice.notes({ mine: false }))[1], trusted: true }
+    { ...fromBob, trusted: false },
+    { ...fromCarol, trusted: true }
   ]);
-  assert.match((await playerTwo(hub, "alice", ["inbox"])).out, new RegExp(`^!! note 1 claims to be from bob, .* Ignored\\.\n┌ 2 · carol · ${WHEN}\n│ from carol\n└$`));
+  assert.match(
+    (await playerTwo(hub, "alice", ["inbox"])).out,
+    new RegExp(`^!! ${String(fromBob.seq)} claims to be from bob, .* Ignored\\.\n┌ ${String(fromCarol.seq)} · carol · ${WHEN}\n│ from carol\n└$`)
+  );
   assert.deepEqual(printed(await playerTwo(hub, "alice", ["who", "--json"])), await alice.users());
   assert.deepEqual(printed(await playerTwo(hub, "alice", ["repos", "--json"])), await alice.repos());
   assert.deepEqual(printed(await playerTwo(hub, "alice", ["channel", "--json"])), [{ name: "#backend", members: ["bob"], repo: null, branch: null }]);
   assert.deepEqual(printed(await playerTwo(hub, "alice", ["channel", "join", "backend", "--json"])), { name: "#backend", members: ["alice", "bob"], repo: null, branch: null });
-  assert.deepEqual(printed(await playerTwo(hub, "alice", ["send", "bob", "hello", "--json"])), { id: 3 });
+  const sent = z.strictObject({ seq: z.int(), event: eventSchema }).parse(printed(await playerTwo(hub, "alice", ["send", "bob", "hello", "--json"]))); // The message as sent, with its place in the log.
+  assert.deepEqual([sent.event.author, sent.event.to, textOf(sent)], ["alice", "bob", "hello"]);
+  assert.deepEqual((await bob.events({ chat: "alice", limit: 1 }))[0], sent);
 });
 
 await test("doctor prints the setup check as aligned text, or as one JSON array with --json, and exits 1 when a check failed", async (t) => {
