@@ -13,6 +13,7 @@ import { loadKey, signNote } from "../src/core/sign.ts";
 import { noteSchema } from "../src/core/wire.ts";
 import type { Delivered } from "../src/core/wire.ts";
 import { http } from "../src/desk/client.ts";
+import { checkSchema } from "../src/shared/ipc.ts";
 import { NOW, startHub, TOKEN } from "./startHub.ts";
 import type { Hub } from "./startHub.ts";
 
@@ -177,4 +178,35 @@ await test("with --json a reading command prints one value: notes as the hub del
   assert.deepEqual(printed(await playerTwo(hub, "alice", ["channel", "--json"])), [{ name: "#backend", members: ["bob"], repo: null }]);
   assert.deepEqual(printed(await playerTwo(hub, "alice", ["channel", "join", "backend", "--json"])), { name: "#backend", members: ["alice", "bob"], repo: null });
   assert.deepEqual(printed(await playerTwo(hub, "alice", ["send", "bob", "hello", "--json"])), { id: 3 });
+});
+
+await test("doctor prints the setup check as aligned text, or as one JSON array with --json, and exits 1 when a check failed", async (t) => {
+  const hub = await startHub(t);
+  process.env["PLAYER_TWO_DEV"] = hub.dir;
+  const home = join(hub.dir, "alice"); // Nobody has joined from here, so the identity check fails.
+
+  const json = await playerTwo(hub, "alice", ["doctor", "--json"]);
+  const checks = z.array(checkSchema).parse(JSON.parse(json.out));
+  assert.equal(json.status, 1);
+  assert.match(json.err, /^player-two: \d+ checks? failed$/);
+  assert.deepEqual(
+    checks.find((check) => check.id === "identity"),
+    {
+      id: "identity",
+      title: "This machine has joined a hub",
+      status: "fail",
+      detail: `not joined: there is no config.json or key in ${home}`,
+      fix: "Join from the window, or run: player-two join HUB NAME TOKEN"
+    }
+  );
+
+  // In words: one line each, the titles in a column as wide as the longest, and the fix under any that has one.
+  const words = await playerTwo(hub, "alice", ["doctor"]);
+  const width = Math.max(...checks.map((check) => check.title.length));
+  const lines = words.out.split("\n");
+  const at = lines.indexOf(`fail  ${"This machine has joined a hub".padEnd(width)}  not joined: there is no config.json or key in ${home}`);
+  assert.notEqual(at, -1, words.out);
+  assert.equal(lines[at + 1], "      fix: Join from the window, or run: player-two join HUB NAME TOKEN");
+  assert.equal(lines.filter((line) => !line.startsWith("      fix: ")).length, checks.length);
+  assert.equal(words.status, 1);
 });

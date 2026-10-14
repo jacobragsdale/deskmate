@@ -9,10 +9,12 @@ import { chatOf } from "../core/chat.ts";
 import { problemOf } from "../core/text.ts";
 import { isChannel } from "../core/wire.ts";
 import type { Delivered } from "../core/wire.ts";
-import { DEFAULT_AGENT, defaultHome, http, join, loadClient, PlayerTwoError, POLL_WAIT } from "../desk/client.ts";
+import { DEFAULT_AGENT, defaultDev, defaultHome, http, join, loadClient, PlayerTwoError, POLL_WAIT } from "../desk/client.ts";
 import type { Client, Transport } from "../desk/client.ts";
+import { runChecks } from "../desk/doctor.ts";
 import { runDesk } from "../desk/main.ts";
 import { runHub } from "../hub/main.ts";
+import type { Check } from "../shared/ipc.ts";
 
 const INBOX = 20; // Notes `inbox` prints when it is not told where to start.
 
@@ -26,8 +28,9 @@ const USAGE = `usage: player-two COMMAND
   channel [join NAME | leave NAME]      list the channels, or join or leave one
   hub [--host HOST] [--port PORT]       run the hub; it reads PLAYER_TWO_JOIN_TOKEN, PLAYER_TWO_DB, PLAYER_TWO_REPOS and, if set, PLAYER_TWO_DOWNLOADS
   desk                                  run your side with no window, for the window to start: it speaks JSON lines on standard input and output
+  doctor                                check what Player Two needs on this machine, and say how to fix what is missing
 
-send, inbox, who, repos and channel take --json, and then print one JSON value and nothing else.
+send, inbox, who, repos, channel and doctor take --json, and then print one JSON value and nothing else.
 A command exits with 0 on success, 1 after printing a failure, and 2 when it was not given what it takes.`;
 
 /** The command was not given what it takes. The usage is printed, and the exit status says so. */
@@ -79,6 +82,12 @@ export function render(delivered: Delivered, trusted: boolean): string {
   return [`┌ ${String(id)} · ${note.sender}${note.agent === null ? "" : ` (${note.agent} agent)`}${isChannel(note.to) ? ` in ${note.to}` : ""} · ${when}`, ...lines, "└"].join("\n");
 }
 
+/** The setup check as aligned text: how each item stands, what was checked and what was found, and under one that is not right, the fix to copy. */
+function layout(checks: readonly Check[]): string {
+  const width = Math.max(...checks.map((check) => check.title.length));
+  return checks.flatMap((check) => [`${check.status.padEnd(4)}  ${check.title.padEnd(width)}  ${check.detail}`, ...(check.fix === "" ? [] : [`      fix: ${check.fix}`])]).join("\n");
+}
+
 /** The next trusted note from someone else in this chat, if one arrives in time. */
 async function awaitReply(client: Client, chat: string, sent: number, seconds: number): Promise<Delivered | null> {
   const deadline = performance.now() + seconds * 1000;
@@ -94,7 +103,7 @@ async function awaitReply(client: Client, chat: string, sent: number, seconds: n
   return null;
 }
 
-async function send(joined: () => Client, args: string[], stdin: NodeJS.ReadableStream, out: (line: string) => void): Promise<void> {
+async function send(joined: () => Client, args: string[], out: (line: string) => void, stdin: NodeJS.ReadableStream = process.stdin): Promise<void> {
   const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { wait: { type: "string", default: "0" }, json: { type: "boolean", default: false } } });
   const [to, ...words] = positionals;
   const seconds = numberOf(secondsSchema, values.wait, "wait");
@@ -159,6 +168,17 @@ async function register(home: string, transport: Transport, args: string[], out:
   out(`joined ${config.hub} as ${config.name}; your agent command is \`${config.agent}\``);
 }
 
+/** Print the setup check, and fail when any of it failed: what is printed is the list, and the exit status says whether it is all right. */
+async function doctor(home: string, args: string[], out: (line: string) => void): Promise<void> {
+  const { json } = parseArgs({ args, options: { json: { type: "boolean", default: false } } }).values;
+  const checks = await runChecks(home, defaultDev());
+  show(out, json, checks, layout(checks));
+  const failed = checks.filter((check) => check.status === "fail").length;
+  if (failed > 0) {
+    throw new PlayerTwoError(`${String(failed)} ${failed === 1 ? "check" : "checks"} failed`);
+  }
+}
+
 async function run(argv: readonly string[], options: Options, out: (line: string) => void): Promise<void> {
   const [command = "", ...args] = argv;
   const home = options.home ?? defaultHome();
@@ -181,8 +201,11 @@ async function run(argv: readonly string[], options: Options, out: (line: string
     case "join":
       await register(home, transport, args, out);
       break;
+    case "doctor":
+      await doctor(home, args, out);
+      break;
     case "send":
-      await send(joined, args, options.stdin ?? process.stdin, out);
+      await send(joined, args, out, options.stdin);
       break;
     case "inbox":
       await inbox(joined, args, out);
