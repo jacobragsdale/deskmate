@@ -27,6 +27,7 @@ import type { AgentRunner, RunHandlers } from "./runner.ts";
 const AUTH_REQUIRED = -32000; // The JSON-RPC error code an ACP agent answers with when it needs signing in first.
 const SAID = 500; // Characters of what the agent last wrote on standard error that a failure quotes.
 const GOING = 1; // Seconds to wait, once the connection has closed, for the agent's process to say how it ended.
+const STOP_GRACE = 2; // Seconds a stopped agent has to end its turn before it is killed.
 const DETAIL = 8_000; // Characters of a tool call's input an ask shows.
 const CANCELLED: acp.RequestPermissionResponse = { outcome: { outcome: "cancelled" } };
 // Player Two's own MCP server, attached to every session: found on the PATH by name, as the `player-two` an agent is told about in its prompt is,
@@ -45,6 +46,7 @@ interface Turn {
   readonly mode: PermissionMode;
   readonly handlers: RunHandlers;
   readonly cancel: AbortSignal; // The run's: a stop ends any wait for the owner's answer.
+  readonly clock: Clock; // The run's time limit, which waiting for the owner does not count against.
   readonly tools: Map<string, ActivityItem>;
   readonly kinds: Map<string, Action>; // Each tool call's kind, as the agent first said it, for a permission request that leaves it out.
   readonly allowed: Set<Action>; // Kinds of action the owner allowed for this run. Never kept past it.
@@ -153,6 +155,43 @@ function readable(output: Readable): ReadableStream<Uint8Array> {
   });
 }
 
+/** A run's time limit, which stands still while the owner is asked: `expire` is called once the agent has had `seconds` of its own. */
+class Clock {
+  private readonly expire: () => void;
+  private left: number; // Milliseconds.
+  private since = Date.now();
+  private waiting = 0; // Asks the owner has not answered yet.
+  private timer: NodeJS.Timeout | undefined;
+
+  constructor(seconds: number, expire: () => void) {
+    this.expire = expire;
+    this.left = seconds * 1000;
+    this.timer = setTimeout(expire, this.left);
+  }
+
+  /** The owner is asked: stop counting until every ask is answered. */
+  public pause(): void {
+    this.waiting += 1;
+    if (this.waiting === 1) {
+      clearTimeout(this.timer);
+      this.left -= Date.now() - this.since;
+    }
+  }
+
+  public resume(): void {
+    this.waiting -= 1;
+    if (this.waiting === 0) {
+      this.since = Date.now();
+      this.timer = setTimeout(this.expire, this.left);
+    }
+  }
+
+  public stop(): void {
+    clearTimeout(this.timer);
+    this.waiting = -1; // Never counts again.
+  }
+}
+
 /** One agent process and the ACP session open in it. */
 class Conversation {
   public turn: Turn | null = null;
@@ -238,6 +277,15 @@ class Conversation {
     }
   }
 
+  /** Ask the agent to stop its turn. One that has no session yet has no turn to stop, and is ended at once. */
+  public cancel(): void {
+    if (this.sessionId === "") {
+      this.end().catch(() => undefined); // It cannot fail: it waits for the process to go.
+      return;
+    }
+    this.connection.agent.notify("session/cancel", { sessionId: this.sessionId }).catch(() => undefined); // An agent that has gone needs no telling.
+  }
+
   /** Kill the agent and everything it started, and wait until it has gone. */
   public async end(): Promise<void> {
     this.connection.close();
@@ -300,7 +348,10 @@ class Conversation {
     let decision = turn.allowed.has(action) ? "allow" : decide(turn.mode, action);
     if (decision === "ask") {
       item("", "running");
-      const answer = await Promise.race([turn.handlers.permission(ask), aborted(turn.cancel), aborted(signal)]);
+      turn.clock.pause();
+      const answer = await Promise.race([turn.handlers.permission(ask), aborted(turn.cancel), aborted(signal)]).finally(() => {
+        turn.clock.resume();
+      });
       if (answer === "aborted") {
         item("cancelled", "done");
         return CANCELLED;
@@ -335,34 +386,45 @@ class Conversation {
 }
 
 /** An agent over ACP as an agent runner: a process and a session for each run, ended when the run ends. */
-export function acpRunner(agent: Agent): AgentRunner {
+export function acpRunner(agent: Agent, limit = AGENT_TIMEOUT): AgentRunner {
   return {
     restrictable: true,
     cannotHonour: () => "",
     run: async (prompt, cwd, mode, handlers, cancel) => {
       const conversation = new Conversation(agent, cwd);
-      const late = AbortSignal.timeout(AGENT_TIMEOUT * 1000);
-      const stopped = AbortSignal.any([cancel, late]);
-      const onStop = (): void => {
+      const end = (): void => {
         conversation.end().catch(() => undefined); // It cannot fail: it waits for the process to go.
       };
-      stopped.addEventListener("abort", onStop, { once: true });
-      if (stopped.aborted) {
-        onStop();
+      const late = new AbortController();
+      const clock = new Clock(limit, () => {
+        late.abort();
+        end();
+      });
+      // A stop asks the agent to end its turn, and ends the agent itself if it has not within STOP_GRACE.
+      let grace: NodeJS.Timeout | undefined;
+      const onCancel = (): void => {
+        conversation.cancel();
+        grace = setTimeout(end, STOP_GRACE * 1000);
+      };
+      cancel.addEventListener("abort", onCancel, { once: true });
+      if (cancel.aborted) {
+        onCancel();
       }
       try {
         await conversation.open(cwd);
-        return await conversation.prompt(prompt, { mode, handlers, cancel, tools: new Map(), kinds: new Map(), allowed: new Set(), text: "" });
+        return await conversation.prompt(prompt, { mode, handlers, cancel, clock, tools: new Map(), kinds: new Map(), allowed: new Set(), text: "" });
       } catch (error) {
         if (cancel.aborted) {
           throw new AgentCancelledError("the agent was stopped");
         }
-        if (late.aborted) {
-          throw new PlayerTwoError(`the agent did not finish within ${String(AGENT_TIMEOUT)} seconds`);
+        if (late.signal.aborted) {
+          throw new PlayerTwoError(`the agent did not finish within ${String(limit)} seconds`);
         }
         throw error;
       } finally {
-        stopped.removeEventListener("abort", onStop);
+        clock.stop();
+        clearTimeout(grace);
+        cancel.removeEventListener("abort", onCancel);
         await conversation.end();
       }
     }

@@ -10,6 +10,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import type { Agent } from "../src/core/wire.ts";
 import { acpRunner } from "../src/desk/agents/acp.ts";
+import { AgentCancelledError } from "../src/desk/client.ts";
 import type { PermissionAsk, RunHandlers } from "../src/desk/agents/runner.ts";
 import type { ActivityItem } from "../src/shared/ipc.ts";
 
@@ -153,3 +154,42 @@ await test(
     assert.equal(await acpRunner(fake("--always-only")).run("edit", folder(t), "full", recorder().handlers, never), "turn 1: edit refused");
   }
 );
+
+/** Wait until the fake agent in `dir` has said it started `count` processes. */
+async function started(dir: string, count: number): Promise<void> {
+  for (let tries = 0; tries < 200; tries += 1) {
+    if (existsSync(join(dir, "pids")) && readFileSync(join(dir, "pids"), "utf8").trim().split("\n").length >= count) {
+      return;
+    }
+    await delay(25);
+  }
+  throw new Error(`the fake agent never started ${String(count)} processes`);
+}
+
+await test(
+  "a stop asks the agent to end its turn and kills it two seconds later if it has not, ending as stopped within three seconds either way, with nothing it started left",
+  { timeout: 30_000 },
+  async (t) => {
+    for (const word of ["slow", "deaf"]) {
+      const dir = folder(t);
+      const stop = new AbortController();
+      const running = acpRunner(fake()).run(word, dir, "full", recorder().handlers, stop.signal);
+      await started(dir, 2); // The agent, and the child it started.
+      const stoppedAt = Date.now();
+      stop.abort();
+      await assert.rejects(running, AgentCancelledError);
+      const took = Date.now() - stoppedAt;
+      assert.ok(took < 3000 && (word === "slow" ? took < 1000 : took >= 2000), `${word} took ${String(took)} ms to stop`);
+      assert.deepEqual(await left(dir), [], word);
+    }
+  }
+);
+
+await test("the time limit ends a run, and time spent waiting for the owner's answer does not count against it", { timeout: 30_000 }, async (t) => {
+  const runner = acpRunner(fake(), 1);
+  const slowOwner: RunHandlers = { activity: () => undefined, permission: () => delay(1500).then((): "allow-once" => "allow-once") };
+  assert.equal(await runner.run("edit", folder(t), "supervised", slowOwner, never), "turn 1: edit allowed");
+  const dir = folder(t);
+  await assert.rejects(runner.run("deaf", dir, "full", recorder().handlers, never), { message: "the agent did not finish within 1 seconds" });
+  assert.deepEqual(await left(dir), []);
+});
