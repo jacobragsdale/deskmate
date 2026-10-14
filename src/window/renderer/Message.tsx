@@ -1,12 +1,14 @@
-/** One message in the open chat and what hangs off it: where each agent it tags stands, and its thread, with a box to reply in. Everything in it that someone else wrote is drawn as text. */
+/** One message in the open chat and what hangs off it: its reactions, where each agent it tags stands, and its thread, with a box to reply in. Everything in it that someone else wrote is drawn as text. */
 
 import { cn } from "cn";
-import { Loader2Icon, ReplyIcon } from "lucide-react";
+import { Loader2Icon, ReplyIcon, SmilePlusIcon } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { JSX } from "react";
+import type { JSX, SyntheticEvent } from "react";
 import Markdown from "react-markdown";
 
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
@@ -17,6 +19,7 @@ import type { Act } from "./App.tsx";
 
 const LINE = "my-1 text-muted-foreground"; // Where a tagged agent stands, under the message.
 const MINE = "my-1 text-warn"; // The same, when it waits on the user.
+const COMMON = ["👍", "❤️", "😂", "🎉", "👀"] as const; // The emoji offered in one click; any other is typed.
 const BEFORE = { "": "", declined: "you declined · ", failed: "it failed · ", stopped: "stopped · ", interrupted: "interrupted · " } as const; // What happened to a request the user can run again.
 
 /** An agent at work. */
@@ -209,16 +212,93 @@ function Body({ message }: { readonly message: ReplyView }): JSX.Element {
   );
 }
 
-/** What the user can do to a message, shown while the pointer is over it or the keyboard is in it. */
-function Actions({ onReply }: { readonly onReply: (() => void) | null }): JSX.Element | null {
-  if (onReply === null) {
+/** A field for any emoji at all, beside the common few. What is typed is sent as text and drawn as text. */
+function AnyEmoji({ react }: { readonly react: (emoji: string) => void }): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const pick = (event: SyntheticEvent<HTMLFormElement>): void => {
+    event.preventDefault();
+    const emoji = new FormData(event.currentTarget).get("emoji");
+    if (typeof emoji === "string" && emoji.trim() !== "") {
+      react(emoji.trim());
+    }
+    setOpen(false);
+  };
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button size="icon-xs" variant="ghost" type="button" aria-label="React with another emoji" title="React with another emoji">
+          <SmilePlusIcon />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-56 p-2">
+        <form className="flex gap-1.5" onSubmit={pick}>
+          <Input name="emoji" aria-label="Emoji" placeholder="any emoji" maxLength={32} required autoFocus />
+          <Button type="submit" size="sm">
+            React
+          </Button>
+        </form>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/** What the user can do to a message, shown while the pointer is over it or the keyboard is in it: react, and for a message at the top of the chat, reply. */
+function Actions({ react, onReply }: { readonly react: (emoji: string) => void; readonly onReply: (() => void) | null }): JSX.Element {
+  return (
+    <div className="invisible absolute top-0 right-0 flex gap-0.5 rounded-md border bg-background p-0.5 shadow-xs group-focus-within:visible group-hover:visible has-[[aria-expanded=true]]:visible">
+      {COMMON.map((emoji) => (
+        <Button
+          key={emoji}
+          size="icon-xs"
+          variant="ghost"
+          type="button"
+          aria-label={`React with ${emoji}`}
+          onClick={() => {
+            react(emoji);
+          }}
+        >
+          {emoji}
+        </Button>
+      ))}
+      <AnyEmoji react={react} />
+      {onReply !== null && (
+        <Button size="icon-xs" variant="ghost" type="button" aria-label="Reply" title="Reply" onClick={onReply}>
+          <ReplyIcon />
+        </Button>
+      )}
+    </div>
+  );
+}
+
+/** Each emoji used on a message, with how many used it and, on hover, who. One the user used is pressed, and clicking it takes it back; clicking another adds theirs. */
+function Reactions({ message, me, react }: { readonly message: ReplyView; readonly me: string; readonly react: (emoji: string) => void }): JSX.Element | null {
+  if (message.reactions.length === 0) {
     return null;
   }
   return (
-    <div className="invisible absolute top-0 right-0 flex gap-0.5 rounded-md border bg-background p-0.5 shadow-xs group-focus-within:visible group-hover:visible has-[[aria-expanded=true]]:visible">
-      <Button size="icon-xs" variant="ghost" type="button" aria-label="Reply" title="Reply" onClick={onReply}>
-        <ReplyIcon />
-      </Button>
+    <div className="my-0.5 flex flex-wrap gap-1">
+      {message.reactions.map(({ emoji, people }) => {
+        const names = people.map((person) => (person === me ? "you" : person)).join(", ");
+        return (
+          <Tooltip key={emoji}>
+            <TooltipTrigger asChild>
+              <Button
+                size="xs"
+                variant={people.includes(me) ? "secondary" : "outline"}
+                type="button"
+                aria-pressed={people.includes(me)}
+                aria-label={`${emoji} ${String(people.length)}: ${names}`}
+                onClick={() => {
+                  react(emoji);
+                }}
+              >
+                {emoji} {people.length}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{names}</TooltipContent>
+          </Tooltip>
+        );
+      })}
     </div>
   );
 }
@@ -226,6 +306,10 @@ function Actions({ onReply }: { readonly onReply: (() => void) | null }): JSX.El
 /** One message or answer. `onReply` opens its thread; null for a reply, which is in its thread already. */
 function Said({ message, me, act, onReply }: { readonly message: ReplyView; readonly me: string; readonly act: Act; readonly onReply: (() => void) | null }): JSX.Element {
   const when = new Date(message.ts * 1000);
+  // Using an emoji the user has already used on this message takes it back.
+  const react = (emoji: string): void => {
+    act({ do: "react", id: message.id, emoji, on: !message.reactions.some((each) => each.emoji === emoji && each.people.includes(me)) });
+  };
   if (!message.trusted) {
     return <p className="my-2 text-destructive">✗ a message claiming to be from {message.sender} failed its signature check and is hidden</p>;
   }
@@ -251,10 +335,11 @@ function Said({ message, me, act, onReply }: { readonly message: ReplyView; read
       )}
       {message.quote !== "" && <p className="my-0.5 truncate border-l-3 pl-2 text-muted-foreground">{message.quote}</p>}
       <Body message={message} />
+      <Reactions message={message} me={me} react={react} />
       {message.requests.map((request) => (
         <RequestLine key={`${request.owner}/${request.repo}`} request={request} act={act} />
       ))}
-      <Actions onReply={onReply} />
+      {!message.deleted && <Actions react={react} onReply={onReply} />}
     </article>
   );
 }

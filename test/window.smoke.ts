@@ -270,6 +270,15 @@ await test(
     await page.press("Enter");
     await page.until("alice's reply in the thread", `document.querySelector('[aria-label="Thread"]').innerText.includes("answered in the thread")`);
 
+    // Bob's reaction, an "emoji" that tries to be HTML, is drawn as text with its count; alice adds 👍 from the message's bar and takes it back from its count.
+    await bob.publish("alice", "reaction", { emoji: "<img src=x onerror=pwned=6>", on: true }, [root.event.id]);
+    await page.until("bob's reaction", `document.querySelector("main").innerText.includes("<img src=x onerror=pwned=6> 1")`);
+    const hello = `[...document.querySelectorAll("main article")].find((each) => each.innerText.includes("hello from the window"))`;
+    await page.eval(`${hello}.querySelector('button[aria-label="React with 👍"]').click()`);
+    await page.until("alice's 👍", `${hello}.querySelector('button[aria-pressed="true"]')?.innerText === "👍 1"`);
+    await page.eval(`${hello}.querySelector('button[aria-pressed="true"]').click()`);
+    await page.until("her 👍 taken back", `${hello}.querySelector('button[aria-pressed="true"]') === null`);
+
     assert.equal(await page.eval(`document.querySelectorAll("main script, main img").length`), 0);
     assert.equal(await page.eval("window.pwned"), undefined);
     assert.ok(String(await page.eval(`document.querySelector("main").innerText`)).includes("<script>window.pwned = 1</script>"));
