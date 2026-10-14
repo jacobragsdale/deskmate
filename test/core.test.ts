@@ -75,7 +75,7 @@ await test("the client reads past a field a newer hub adds, but refuses one insi
   const note = signNote(key, { sender: "bob", to: "jacob", kind: "note", body: "hello", ts: NOW, agent: null, re: null });
   const info = { version: "9.0.0", protocol: 1, repos: "dev.azure.com/acme", now: NOW };
   const bob = { name: "bob", pubkey: publicHex(key), seen: NOW };
-  const backend = { name: "#backend", members: ["bob"], repo: null };
+  const backend = { name: "#backend", members: ["bob"], repo: null, branch: null };
   const client = clientOf({
     "GET /info": { ...info, hubKey: "new" },
     "GET /users": [{ ...bob, role: "new" }],

@@ -147,7 +147,7 @@ JSON in and out. Errors are `{ "detail": "words for the user" }` with a 4xx stat
 | `POST /join` | join token | Registers a name and key. `201`. `409` if another key holds the name. |
 | `GET /users` | yes | Everyone, with key and last-seen time. |
 | `PUT /repos`, `GET /repos` | yes | Replace my advertised checkouts; list everyone's. |
-| `GET /channels` | yes | Channels with members and pinned repo. |
+| `GET /channels` | yes | Channels with members, pinned repo, and (phase 1 on) the branch the pin names, `null` until phase 6. |
 | `POST /channels/{name}/join`, `/leave`; `PUT`, `DELETE /channels/{name}/repo` | yes | As today. Removed in phase 1. |
 | `POST /notes`, `GET /notes` | signed note; yes | As today. Removed in phase 1. |
 | `GET /`, `GET /downloads/{file}`, `GET /install.sh` | none | A page with the install steps, the installers, and a script that installs the Linux runtime. |

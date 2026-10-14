@@ -175,8 +175,8 @@ await test("with --json a reading command prints one value: notes as the hub del
   assert.match((await playerTwo(hub, "alice", ["inbox"])).out, new RegExp(`^!! note 1 claims to be from bob, .* Ignored\\.\n┌ 2 · carol · ${WHEN}\n│ from carol\n└$`));
   assert.deepEqual(printed(await playerTwo(hub, "alice", ["who", "--json"])), await alice.users());
   assert.deepEqual(printed(await playerTwo(hub, "alice", ["repos", "--json"])), await alice.repos());
-  assert.deepEqual(printed(await playerTwo(hub, "alice", ["channel", "--json"])), [{ name: "#backend", members: ["bob"], repo: null }]);
-  assert.deepEqual(printed(await playerTwo(hub, "alice", ["channel", "join", "backend", "--json"])), { name: "#backend", members: ["alice", "bob"], repo: null });
+  assert.deepEqual(printed(await playerTwo(hub, "alice", ["channel", "--json"])), [{ name: "#backend", members: ["bob"], repo: null, branch: null }]);
+  assert.deepEqual(printed(await playerTwo(hub, "alice", ["channel", "join", "backend", "--json"])), { name: "#backend", members: ["alice", "bob"], repo: null, branch: null });
   assert.deepEqual(printed(await playerTwo(hub, "alice", ["send", "bob", "hello", "--json"])), { id: 3 });
 });
 

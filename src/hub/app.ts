@@ -10,6 +10,7 @@ import { pipeline } from "node:stream";
 import { z } from "zod";
 
 import { digestIn, hubInstallScript } from "../core/install.ts";
+import { readContent } from "../core/kinds.ts";
 import { isUnder, prefixKey, unquote } from "../core/remotes.ts";
 import { authClaim, authIsValid, eventId, eventIsAuthentic, isFresh, noteIsAuthentic } from "../core/sign.ts";
 import { VERSION } from "../core/version.ts";
@@ -213,7 +214,7 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
   }
 
   function channelInfo(channel: string): ChannelInfo {
-    return { name: channel, members: db.members(channel), repo: db.pinOf(channel) };
+    return { name: channel, members: db.members(channel), ...db.pinOf(channel) };
   }
 
   function mustBeIn(channel: string, me: string): void {
@@ -293,6 +294,38 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     }
   }
 
+  /**
+   * Act on a structural kind: joining and leaving change who is in the channel, and a pin sets or clears the repo it is about. Anything else the hub only stores.
+   * Run in the event's transaction, and refuses an event it cannot act on, so that what the hub keeps and what its tables say never disagree.
+   */
+  function apply(event: Event): void {
+    if (event.kind !== "channel.join" && event.kind !== "channel.leave" && event.kind !== "channel.pin") {
+      return;
+    }
+    const said = readContent(event);
+    if (!isChannel(event.to)) {
+      throw new Refusal(422, `${event.kind} is sent to the channel it is about`);
+    }
+    if (said.kind === "channel.join") {
+      db.addMember(event.to, event.author); // A channel nobody was in starts here.
+      log("channel joined", { channel: event.to, user: event.author });
+    } else if (said.kind === "channel.leave") {
+      db.removeMember(event.to, event.author);
+      log("channel left", { channel: event.to, user: event.author });
+    } else if (said.kind === "channel.pin") {
+      // The fourth check has already made sure the author is in the channel.
+      const { repo, branch } = said.content;
+      if (repo === null) {
+        db.removePin(event.to);
+      } else {
+        shareable(repo);
+        db.setPin(event.to, repo, branch);
+      }
+    } else {
+      throw new Refusal(422, `invalid content: not what ${event.kind} holds`);
+    }
+  }
+
   /** Store one signed event once it passes the protocol's four checks, in their order, and nothing else: the hub keeps kinds it has never heard of. */
   function postEvent(ask: Ask): Answer {
     const event = jsonBody(eventSchema, ask.body);
@@ -310,7 +343,10 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
       throw new Refusal(409, "this event was already stored");
     }
     mayWrite(event);
-    const seq = db.transaction(() => db.addEvent(event));
+    const seq = db.transaction(() => {
+      apply(event);
+      return db.addEvent(event);
+    });
     waiting.forEach((wake) => {
       wake();
     });
@@ -357,7 +393,7 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     const repo = jsonBody(repoRefSchema, ask.body);
     mustBeIn(ask.channel, ask.me);
     shareable(repo);
-    db.setPin(ask.channel, repo);
+    db.setPin(ask.channel, repo, null);
     return [200, channelInfo(ask.channel)];
   }
 

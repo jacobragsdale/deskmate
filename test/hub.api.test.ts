@@ -127,6 +127,35 @@ await test("an event passes the protocol's four checks in their order, each refu
   ); // and what each refers to indexed once.
 });
 
+await test("joining, leaving and pinning are events the hub acts on, and one it cannot act on is refused and not stored", async (t) => {
+  const hub = await startHub(t);
+  const alice = await hub.join("alice");
+  await hub.join("bob");
+  const uploader = { name: UPLOADER.name, key: UPLOADER.key, url: UPLOADER.url };
+  const channel = async (): Promise<unknown> => (await alice.channels())[0];
+
+  assert.deepEqual(await post(hub, "alice", signed(hub, "alice", "#backend", "channel.join")), [201, 1]); // Joining makes the channel.
+  assert.deepEqual(await post(hub, "bob", signed(hub, "bob", "#backend", "channel.join")), [201, 2]);
+  assert.deepEqual(await post(hub, "alice", signed(hub, "alice", "#backend", "channel.pin", { repo: uploader, branch: null })), [201, 3]);
+  assert.deepEqual(await channel(), { name: "#backend", members: ["alice", "bob"], repo: uploader, branch: null });
+  assert.deepEqual(await post(hub, "bob", signed(hub, "bob", "#backend", "channel.leave")), [201, 4]);
+  assert.deepEqual(await post(hub, "alice", signed(hub, "alice", "#backend", "channel.pin", { repo: null, branch: null })), [201, 5]);
+  assert.deepEqual(await channel(), { name: "#backend", members: ["alice"], repo: null, branch: null });
+
+  const elsewhere = { name: ELSEWHERE.name, key: ELSEWHERE.key, url: ELSEWHERE.url };
+  assert.deepEqual(await post(hub, "bob", signed(hub, "bob", "#backend", "channel.pin", { repo: uploader, branch: null })), [403, "join #backend before posting to it"]);
+  assert.deepEqual(await post(hub, "alice", signed(hub, "alice", "#backend", "channel.pin", { repo: elsewhere, branch: null })), [
+    422,
+    "side-project is not under dev.azure.com/acme, so this hub does not share it"
+  ]);
+  assert.deepEqual(await post(hub, "alice", signed(hub, "alice", "#backend", "channel.pin", { repo: uploader, branch: "main" })), [422, "invalid content: not what channel.pin holds"]); // Not until phase 6.
+  assert.deepEqual(await post(hub, "alice", signed(hub, "alice", "#backend", "channel.join", "not JSON")), [422, "invalid content: not what channel.join holds"]);
+  assert.deepEqual(await post(hub, "alice", signed(hub, "alice", "bob", "channel.join")), [422, "channel.join is sent to the channel it is about"]);
+  assert.deepEqual(await post(hub, "bob", signed(hub, "bob", "#backend", "channel.leave")), [403, "join #backend before posting to it"]);
+  assert.deepEqual(await channel(), { name: "#backend", members: ["alice"], repo: null, branch: null });
+  assert.deepEqual(await post(hub, "alice", signed(hub, "alice", "#backend", "message", { text: "still here", via: "cli" })), [201, 6]); // Nothing refused was stored.
+});
+
 await test("joining again with the same key is allowed", async (t) => {
   const hub = await startHub(t);
   await hub.join("alice");
@@ -295,8 +324,8 @@ await test("channels list their members", async (t) => {
   await bob.joinChannel("oncall");
 
   assert.deepEqual(await alice.channels(), [
-    { name: "#backend", members: ["alice", "bob"], repo: null },
-    { name: "#oncall", members: ["bob"], repo: null }
+    { name: "#backend", members: ["alice", "bob"], repo: null, branch: null },
+    { name: "#oncall", members: ["bob"], repo: null, branch: null }
   ]);
 });
 

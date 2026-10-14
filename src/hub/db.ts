@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import { z } from "zod";
 
-import { deliveredNoteSchema, personSchema, repoRefSchema, teamRepoSchema } from "../core/wire.ts";
+import { deliveredNoteSchema, personSchema, teamRepoSchema } from "../core/wire.ts";
 import type { DeliveredNote, Event, Note, Person, Repo, RepoRef, TeamRepo } from "../core/wire.ts";
 
 const SCHEMA_VERSION = 5; // 3 was the notes alone, from the Python hub to 0.4.
@@ -59,7 +59,7 @@ const peopleSchema = z.array(personSchema);
 const teamReposSchema = z.array(teamRepoSchema);
 const membersSchema = z.array(z.strictObject({ user: z.string() }));
 const channelsSchema = z.array(z.strictObject({ channel: z.string() }));
-const pinSchema = repoRefSchema.optional();
+const pinSchema = z.strictObject({ name: z.string(), key: z.string(), url: z.string(), branch: z.string().nullable() }).optional();
 const deliveredListSchema = z.array(deliveredNoteSchema);
 const foundSchema = z.strictObject({ found: z.literal(1) }).optional();
 const headSchema = z.strictObject({ seq: z.int(), chain: z.string() }).optional();
@@ -156,13 +156,14 @@ export class Database {
     this.db.prepare("DELETE FROM members WHERE channel = ? AND user = ?").run(channel, user);
   }
 
-  /** The repo a channel is about, or null when none is pinned. */
-  public pinOf(channel: string): RepoRef | null {
-    return pinSchema.parse(this.db.prepare("SELECT name, key, url FROM pins WHERE channel = ?").get(channel)) ?? null;
+  /** The repo a channel is about and the branch it names, or nulls when none is pinned. */
+  public pinOf(channel: string): { readonly repo: RepoRef | null; readonly branch: string | null } {
+    const pin = pinSchema.parse(this.db.prepare("SELECT name, key, url, branch FROM pins WHERE channel = ?").get(channel));
+    return pin === undefined ? { repo: null, branch: null } : { repo: { name: pin.name, key: pin.key, url: pin.url }, branch: pin.branch };
   }
 
-  public setPin(channel: string, repo: RepoRef): void {
-    this.db.prepare("INSERT OR REPLACE INTO pins (channel, name, key, url) VALUES (?, ?, ?, ?)").run(channel, repo.name, repo.key, repo.url);
+  public setPin(channel: string, repo: RepoRef, branch: string | null): void {
+    this.db.prepare("INSERT OR REPLACE INTO pins (channel, name, key, url, branch) VALUES (?, ?, ?, ?, ?)").run(channel, repo.name, repo.key, repo.url, branch);
   }
 
   public removePin(channel: string): void {
