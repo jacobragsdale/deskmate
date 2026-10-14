@@ -1,0 +1,27 @@
+# The checks every commit is held to, run on every push, then the window's smoke test on a virtual display.
+name: CI
+
+on: push
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm test
+      - run: npm run build
+      # The smoke test is task P0-J6's. Until that file exists there is nothing to run, and the step is skipped rather than failed.
+      - name: Window smoke test
+        if: hashFiles('test/window.smoke.ts') != ''
+        run: xvfb-run --auto-servernum node --test test/window.smoke.ts
