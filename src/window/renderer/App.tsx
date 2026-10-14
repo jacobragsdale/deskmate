@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Toaster } from "@/components/ui/sonner";
+import { TooltipProvider } from "@/components/ui/tooltip";
 
 import { AGENT_CHOICES, noticeSchema, outcomeSchema, viewSchema } from "../../shared/ipc.ts";
 import type { ChatView, Check, Command, Notice, View } from "../../shared/ipc.ts";
@@ -309,9 +310,9 @@ export function App(): JSX.Element {
     );
   }
   return (
-    <>
+    <TooltipProvider>
       {page}
       <Toaster duration={NOTICE_SECONDS * 1000} offset={{ bottom: 36, right: 12 }} />
-    </>
+    </TooltipProvider>
   );
 }
