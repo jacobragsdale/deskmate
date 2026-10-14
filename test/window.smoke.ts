@@ -157,7 +157,10 @@ await test(
     const env: Record<string, string | undefined> = { ...process.env, HOME: home, XDG_CONFIG_HOME: join(home, ".config") };
     delete env["PLAYER_TWO_HOME"];
     delete env["PLAYER_TWO_DEV"];
-    const app = spawn(electron, [ROOT, "--remote-debugging-port=0"], { env, stdio: ["ignore", "ignore", "pipe"] });
+    // On a virtual display with no window manager, as in CI, Chromium may take the window for hidden and stop drawing frames, which freezes every
+    // transition at its start: a toast that never slides in is "out of place". These are the switches Playwright starts Chromium with for the same reason.
+    const unthrottled = ["--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding", "--disable-background-timer-throttling"];
+    const app = spawn(electron, [ROOT, "--remote-debugging-port=0", ...unthrottled], { env, stdio: ["ignore", "ignore", "pipe"] });
     const exited = new Promise((resolve) => {
       app.once("exit", resolve);
     });
@@ -209,7 +212,7 @@ await test(
     const viewport = z.object({ width: z.number(), height: z.number() }).parse(await page.eval("({ width: innerWidth, height: innerHeight })"));
     assert.ok(
       toast.height > 0 && toast.bottom <= viewport.height && toast.right <= viewport.width && toast.left > viewport.width / 2,
-      `the toast is out of place: ${JSON.stringify(toast)} in ${JSON.stringify(viewport)}`
+      `the toast is out of place: ${JSON.stringify(toast)} in ${JSON.stringify(viewport)}, ${String(await page.eval(`JSON.stringify({ visibility: document.visibilityState, mounted: document.querySelector("[data-sonner-toast]").dataset.mounted })`))}`
     );
 
     await page.type('input[name="token"]', TOKEN);
