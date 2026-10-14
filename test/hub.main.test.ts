@@ -22,7 +22,7 @@ await test("the hub refuses to start without its settings and names each one", (
 await test("the hub stops at once when told to, even with a reader waiting", { timeout: 20_000 }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "player-two-hub-main-"));
   const hub = spawn(process.execPath, [COMMAND, "hub", "--port", "0"], {
-    env: { PLAYER_TWO_JOIN_TOKEN: TOKEN, PLAYER_TWO_DB: join(dir, "hub.db"), PLAYER_TWO_REPOS: "https://dev.azure.com/acme/" },
+    env: { PLAYER_TWO_JOIN_TOKEN: TOKEN, PLAYER_TWO_DB: join(dir, "hub.db"), PLAYER_TWO_REPOS: "https://dev.azure.com/acme/", PLAYER_TWO_DOWNLOADS: dir },
     stdio: ["ignore", "ignore", "pipe"]
   });
   t.after(() => {
@@ -62,5 +62,5 @@ await test("the hub stops at once when told to, even with a reader waiting", { t
   assert.equal(await exited, 0);
   assert.ok(Date.now() - told < 3000, `took ${String(Date.now() - told)} ms`);
   assert.equal(await reading, "cut off");
-  assert.match(logged, /^hub ready db=\S+ repos=dev\.azure\.com\/acme\nhub listening host=127\.0\.0\.1 port=\d+\nuser joined user=alice\nhub stopping\n$/);
+  assert.match(logged, /^hub ready db=\S+ repos=dev\.azure\.com\/acme downloads=\S+\nhub listening host=127\.0\.0\.1 port=\d+\nuser joined user=alice\nhub stopping\n$/);
 });

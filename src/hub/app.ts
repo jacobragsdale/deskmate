@@ -1,11 +1,15 @@
 /** The hub: keeps everyone's public key and channel memberships, relays signed notes, and keeps them for later reading. One table of routes on node:http. */
 
 import { createHash, timingSafeEqual } from "node:crypto";
+import { createReadStream, readFileSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
+import { join as joinPath } from "node:path";
+import { pipeline } from "node:stream";
 
 import { z } from "zod";
 
+import { digestIn, hubInstallScript } from "../core/install.ts";
 import { isUnder, prefixKey, unquote } from "../core/remotes.ts";
 import { authClaim, authIsValid, isFresh, noteIsAuthentic } from "../core/sign.ts";
 import { VERSION } from "../core/version.ts";
@@ -17,11 +21,16 @@ const MAX_WAIT = 30; // Longest a client may hold one long-poll open, in seconds
 const HISTORY = 500; // Most notes one `tail` request may ask for.
 const MAX_REPOS = 500; // Most checkouts one person may advertise.
 const MAX_REQUEST = 4_000_000; // Most characters one request's body may hold: several times the longest list of repos or the longest note.
+const RUNTIME = "wsl-runtime.tar.gz"; // The Linux runtime in the downloads folder, with its digest beside it in the same name and ".sha256".
+const INSTALLER = "player-two-setup.exe"; // The Windows installer, as electron-builder names it (`nsis.artifactName` in package.json).
+const PLAIN_FILE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/; // A file in the downloads folder is asked for by this name as it arrived: no slash, no "..", nothing percent-encoded.
+const ADDRESS = /^https?:\/\/[A-Za-z0-9.\-:[\]/_]+$/; // The hub's own address is written into a script and a page, so only plain URL characters pass.
 
 export interface HubSettings {
   readonly joinToken: string; // The shared secret that lets a teammate register a name.
   readonly db: string; // The file the hub keeps everything in.
   readonly repos: string; // The URL the team's repos live under; only those may be shared.
+  readonly downloads: string; // The folder of what a teammate installs, served to anyone who asks; "" when there is none.
 }
 
 /** Something worth a line in the hub's log: what happened, and the facts of it. */
@@ -119,6 +128,56 @@ function sameSecret(given: string, expected: string): boolean {
 function send(response: ServerResponse, [status, body]: Answer): void {
   const text = JSON.stringify(body);
   response.writeHead(status, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(text) }).end(text);
+}
+
+function sendText(response: ServerResponse, type: string, text: string, headers: Readonly<Record<string, string>> = {}): void {
+  response.writeHead(200, { ...headers, "Content-Type": type, "Content-Length": Buffer.byteLength(text) }).end(text);
+}
+
+/** The address a request reached the hub by: the host it named, and https when the ingress in front of the hub says the request came that way. */
+function addressOf(request: IncomingMessage): string {
+  const address = `${request.headers["x-forwarded-proto"] === "https" ? "https" : "http"}://${request.headers.host ?? ""}`;
+  if (!ADDRESS.test(address)) {
+    throw new Refusal(400, "unsupported host header");
+  }
+  return address;
+}
+
+/** The size of a file, or null when there is no file there. */
+function sizeOf(path: string): number | null {
+  try {
+    const found = statSync(path);
+    return found.isFile() ? found.size : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The page a teammate is sent to: the installer and the three steps, with the hub's address where they need it. `hub` has passed ADDRESS, so it holds nothing HTML would read as markup. */
+function installPage(hub: string): string {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Player Two</title>
+    <style>
+      body { font: 15px/1.5 system-ui, sans-serif; max-width: 42em; margin: 3em auto; padding: 0 1em; color-scheme: light dark; }
+      code { background: #8882; padding: 0 0.25em; border-radius: 3px; }
+    </style>
+  </head>
+  <body>
+    <h1>Player Two</h1>
+    <p>Chat with your team and their coding agents. To join this hub from Windows:</p>
+    <ol>
+      <li>Install WSL with Ubuntu, if you have not: in PowerShell, <code>wsl --install -d Ubuntu</code>, then restart and open Ubuntu once to make your user.</li>
+      <li>Download <a href="/downloads/${INSTALLER}">the Player Two installer</a> and run it.</li>
+      <li>Open Player Two and join with this hub's address, <code>${hub}</code>, your name, and the join token from whoever runs the hub.</li>
+    </ol>
+    <p>On Linux, for the <code>player-two</code> command alone: <code>curl -fsSL ${hub}/install.sh | sh</code></p>
+  </body>
+</html>
+`;
 }
 
 /** Open the hub's database and return its server, not yet listening. `now` is the hub's clock in Unix seconds. Closing the server closes the database. */
@@ -286,8 +345,55 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
   ];
   const table = routes.map((route) => ({ route, pattern: new RegExp(`^${route.path.replace("{name}", "([^/]+)")}$`) }));
 
-  async function answer(request: IncomingMessage, response: ServerResponse): Promise<Answer> {
+  /** The digest of the runtime in the downloads folder, from the file beside it. */
+  function runtimeDigest(): string {
+    let digest = "";
+    try {
+      digest = digestIn(readFileSync(joinPath(settings.downloads, `${RUNTIME}.sha256`), "utf8"));
+    } catch {
+      // Not there: said below.
+    }
+    if (digest === "") {
+      throw new Refusal(404, `${RUNTIME}.sha256 is not on this hub, so there is no runtime to install`);
+    }
+    return digest;
+  }
+
+  /** Send one file from the downloads folder. It is named by a plain file name and nothing else, so nothing outside that folder can be asked for. */
+  function download(name: string, response: ServerResponse): void {
+    const path = joinPath(settings.downloads, name);
+    const size = PLAIN_FILE.test(name) ? sizeOf(path) : null;
+    if (size === null) {
+      throw new Refusal(404, "Not Found");
+    }
+    response.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Length": size, "Content-Disposition": `attachment; filename="${name}"` });
+    pipeline(createReadStream(path), response, () => undefined); // A reader who hangs up, or a file that goes, ends the response and nothing more.
+  }
+
+  /** Answer what a teammate installs from, open to anyone: the page, a file from the downloads folder, and the script for Linux. False when `path` is none of these. */
+  function served(path: string, request: IncomingMessage, response: ServerResponse): boolean {
+    const file = path.startsWith("/downloads/") ? path.slice("/downloads/".length) : null;
+    if (request.method !== "GET" || (path !== "/" && path !== "/install.sh" && file === null)) {
+      return false;
+    }
+    if (settings.downloads === "") {
+      throw new Refusal(404, "Not Found");
+    }
+    if (file !== null) {
+      download(file, response);
+    } else if (path === "/install.sh") {
+      sendText(response, "text/x-shellscript; charset=utf-8", hubInstallScript(addressOf(request), runtimeDigest()));
+    } else {
+      sendText(response, "text/html; charset=utf-8", installPage(addressOf(request)), { "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'" });
+    }
+    return true;
+  }
+
+  async function answer(request: IncomingMessage, response: ServerResponse): Promise<Answer | null> {
     const [path = "", ...query] = (request.url ?? "").split("?");
+    if (served(path, request, response)) {
+      return null; // Answered already, with a file, a page or a script rather than JSON.
+    }
     const there = table.flatMap(({ route, pattern }) => {
       const found = pattern.exec(path);
       return found === null ? [] : [{ route, name: found[1] }];
@@ -304,7 +410,9 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
   const server = createServer((request, response) => {
     answer(request, response).then(
       (found) => {
-        send(response, found);
+        if (found !== null) {
+          send(response, found);
+        }
       },
       (error: unknown) => {
         if (error instanceof Refusal) {
@@ -319,6 +427,6 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
   server.on("close", () => {
     db.close();
   });
-  log("hub ready", { db: settings.db, repos: prefix });
+  log("hub ready", { db: settings.db, repos: prefix, downloads: settings.downloads });
   return server;
 }

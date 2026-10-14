@@ -372,7 +372,7 @@ await test("the hub refuses to start on a database from another version", (t) =>
   made.exec("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT)");
   made.close();
 
-  assert.throws(() => createHub({ joinToken: TOKEN, db: old, repos: TEAM_REPOS }), /another version of Player Two/);
+  assert.throws(() => createHub({ joinToken: TOKEN, db: old, repos: TEAM_REPOS, downloads: "" }), /another version of Player Two/);
 });
 
 await test("a request the hub cannot serve is told why", async (t) => {

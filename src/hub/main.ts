@@ -12,9 +12,10 @@ const settingsSchema = z
   .object({
     PLAYER_TWO_JOIN_TOKEN: z.string("is not set").min(16, "must be at least 16 characters"),
     PLAYER_TWO_DB: z.string("is not set").min(1, "is empty"),
-    PLAYER_TWO_REPOS: z.string("is not set").min(1, "is empty")
+    PLAYER_TWO_REPOS: z.string("is not set").min(1, "is empty"),
+    PLAYER_TWO_DOWNLOADS: z.string().default("") // Optional: without it the hub serves no installers.
   })
-  .transform((env) => ({ joinToken: env.PLAYER_TWO_JOIN_TOKEN, db: env.PLAYER_TWO_DB, repos: env.PLAYER_TWO_REPOS }));
+  .transform((env) => ({ joinToken: env.PLAYER_TWO_JOIN_TOKEN, db: env.PLAYER_TWO_DB, repos: env.PLAYER_TWO_REPOS, downloads: env.PLAYER_TWO_DOWNLOADS }));
 const portSchema = z.string().regex(/^\d+$/).transform(Number).pipe(z.int().max(65_535));
 
 const log: Log = (event, facts) => {

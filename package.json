@@ -72,6 +72,9 @@
       "target": "AppImage",
       "category": "Development"
     },
-    "publish": null
+    "publish": null,
+    "nsis": {
+      "artifactName": "player-two-setup.exe"
+    }
   }
 }

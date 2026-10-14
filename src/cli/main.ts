@@ -24,7 +24,7 @@ const USAGE = `usage: player-two COMMAND
   who                                   list everyone who has joined
   repos                                 list every agent as @person/repo with the branch it is on
   channel [join NAME | leave NAME]      list the channels, or join or leave one
-  hub [--host HOST] [--port PORT]       run the hub; it reads PLAYER_TWO_JOIN_TOKEN, PLAYER_TWO_DB and PLAYER_TWO_REPOS
+  hub [--host HOST] [--port PORT]       run the hub; it reads PLAYER_TWO_JOIN_TOKEN, PLAYER_TWO_DB, PLAYER_TWO_REPOS and, if set, PLAYER_TWO_DOWNLOADS
   desk                                  run your side with no window, for the window to start: it speaks JSON lines on standard input and output
 
 send, inbox, who, repos and channel take --json, and then print one JSON value and nothing else.

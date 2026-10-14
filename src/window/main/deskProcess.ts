@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { join as joinPath } from "node:path";
 import { createInterface } from "node:readline";
 
-import { installScript } from "../../core/install.ts";
+import { digestIn, installScript } from "../../core/install.ts";
 import { problemOf } from "../../core/text.ts";
 import { PROTOCOL } from "../../core/wire.ts";
 import { deskLineSchema, readLine } from "../../shared/ipc.ts";
@@ -35,7 +35,7 @@ export function localLaunch(): Promise<Result<Launch>> {
 /** The SHA-256 the app was shipped with for its runtime archive, from the file beside it; "" when that file is missing or holds something else. */
 function shippedDigest(archive: string): string {
   try {
-    return /^[0-9a-f]{64}(?=\s|$)/.exec(readFileSync(`${archive}.sha256`, "utf8"))?.[0] ?? "";
+    return digestIn(readFileSync(`${archive}.sha256`, "utf8"));
   } catch {
     return "";
   }

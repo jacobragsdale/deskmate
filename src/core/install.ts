@@ -5,6 +5,11 @@ function quote(text: string): string {
   return `'${text.replaceAll("'", `'\\''`)}'`;
 }
 
+/** The SHA-256 in a runtime archive's .sha256 file: its first word, so `sha256sum`'s own format and a bare digest both do. "" when it holds something else. */
+export function digestIn(text: string): string {
+  return /^[0-9a-f]{64}(?=\s|$)/.exec(text)?.[0] ?? "";
+}
+
 /**
  * The script that installs the runtime in `archivePath`, a .tar.gz with `bin/` and `lib/` at its top, whose SHA-256 is `digest` in lowercase hex.
  * It is plain POSIX `sh`, and running it again changes nothing. Each runtime is kept under its own digest, `~/.player-two/current` points at the one in use,
@@ -47,5 +52,24 @@ for each in "$root"/runtime/*; do
     rm -rf "$each"
   fi
 done
+`;
+}
+
+/**
+ * The script a hub serves as /install.sh, for someone on Linux who wants only the command: fetch the runtime from the hub at `hub` into a folder of its own,
+ * then install it as the window does. The archive is named from inside that folder, so the install script above is used as it is.
+ */
+export function hubInstallScript(hub: string, digest: string): string {
+  return `#!/bin/sh
+# Installs the player-two command from a Player Two hub, on Linux: curl -fsSL HUB/install.sh | sh
+set -eu
+hub=${quote(hub)}
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+curl -fsSL "$hub/downloads/wsl-runtime.tar.gz" -o "$tmp/wsl-runtime.tar.gz"
+cd "$tmp"
+${installScript("wsl-runtime.tar.gz", digest)}
+echo "Installed player-two. Join with: player-two join $hub YOUR-NAME THE-JOIN-TOKEN"
+command -v player-two >/dev/null || echo "~/.local/bin is not on your PATH yet: open a new terminal, or add it."
 `;
 }

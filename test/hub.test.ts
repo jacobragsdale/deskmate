@@ -97,7 +97,7 @@ function messages(view: ChatView): readonly MessageView[] {
 }
 
 await test("two people, their agents and a channel, through the real hub", { timeout: 60_000 }, async () => {
-  const server = createHub({ joinToken: TOKEN, db: join(root, "hub.db"), repos: "https://dev.azure.com/acme/" });
+  const server = createHub({ joinToken: TOKEN, db: join(root, "hub.db"), repos: "https://dev.azure.com/acme/", downloads: "" });
   await new Promise<void>((resolve) => {
     server.listen(0, "127.0.0.1", resolve);
   });
