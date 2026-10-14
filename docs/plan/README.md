@@ -1,6 +1,6 @@
 # How to build from this plan
 
-This folder is the implementation plan for deskmate. It is written for a coding agent working through it on a Linux server, with a person checking in between phases. [`../plan.md`](../plan.md) is the one-page overview and holds the decisions; the files here hold the work.
+This folder is the implementation plan for Player Two, which the code still calls deskmate until task P0-E4 renames it. It is written for a coding agent working through it on a Linux server, with a person checking in between phases. [`../plan.md`](../plan.md) is the one-page overview and holds the decisions; the files here hold the work.
 
 ## The files
 
@@ -9,7 +9,7 @@ This folder is the implementation plan for deskmate. It is written for a coding 
 | [`protocol.md`](protocol.md) | Reference: the event envelope, the kinds, the hub's API, the desk's protocol, permission modes. The phase files point here instead of repeating it. |
 | [`phase-0-one-language.md`](phase-0-one-language.md) | Node hub, TypeScript command, desk and window split, WSL, setup check, shadcn, packaging. Python deleted. |
 | [`phase-1-event-log.md`](phase-1-event-log.md) | One signed event log; jobs; threads, reactions, edits; paging. |
-| [`phase-2-search-cli-mcp.md`](phase-2-search-cli-mcp.md) | Search, note links, `deskmate ask`, and an MCP server for outside agents. |
+| [`phase-2-search-cli-mcp.md`](phase-2-search-cli-mcp.md) | Search, note links, `player-two ask`, and an MCP server for outside agents. |
 | [`phase-3-acp-permissions.md`](phase-3-acp-permissions.md) | Agents over ACP, permission modes, the live activity feed. |
 | [`phase-4-agent-keys-grants.md`](phase-4-agent-keys-grants.md) | Agent keys and standing grants. |
 | [`phase-5-delegation.md`](phase-5-delegation.md) | Agents asking agents, gated at every hop. |
@@ -36,7 +36,7 @@ A phase is finished when every task is ticked and its "Done when" holds. Then st
 3. **Match the code that is there.** Comments say why, in plain words, at about the density the existing files have. Read `src/core/session.ts` before writing anything like it.
 4. **Smallest thing that satisfies the task.** No frameworks the task does not name, no abstraction with one use, no configuration for a value that never changes. A new dependency needs a task that names it.
 5. **Each piece of logic leaves one test behind.** Tests run with `node --test` and import the `.ts` sources directly. Prefer one scenario test against a real in-process hub over many mocked unit tests.
-6. **Never weaken what deskmate protects.** Nothing runs on a machine unless its owner said so. The window draws text from other people and their agents and must stay unable to execute it. If a task seems to need either rule bent, stop and ask.
+6. **Never weaken what Player Two protects.** Nothing runs on a machine unless its owner said so. The window draws text from other people and their agents and must stay unable to execute it. If a task seems to need either rule bent, stop and ask.
 7. **Do not use Cursor's SDK** (`@cursor/sdk`). It does not work behind the team's proxy. Cursor is driven only through its command line.
 8. **When the plan is wrong, say so.** If a task cannot be done as written, or a fact in it turns out false, write what you found under a "Notes" heading at the end of that phase file, do the nearest correct thing, and carry on. Do not silently do something else.
 

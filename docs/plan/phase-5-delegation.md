@@ -4,7 +4,7 @@ Goal: "does this API change break the client?" asked of one agent can fan out to
 
 Depends on: phase 4. A delegated request is signed by the asking agent's key.
 
-Borrowed from Buzz: job requests between agents and delegation trees. Today deskmate forbids an agent's answer from tagging anyone, and that stays true: a tag still counts only in a message a person wrote. Delegation is a separate, explicit event.
+Borrowed from Buzz: job requests between agents and delegation trees. Today Player Two forbids an agent's answer from tagging anyone, and that stays true: a tag still counts only in a message a person wrote. Delegation is a separate, explicit event.
 
 ## The design
 

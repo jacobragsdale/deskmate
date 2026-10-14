@@ -14,10 +14,10 @@ What only a real workstation can prove: Windows 11, WSL2 Ubuntu, the team's prox
 Install the Windows installer from the release run.
 
 - [ ] The installer runs and the window opens.
-- [ ] On first launch the window unpacks its runtime into Ubuntu: `ls ~/.deskmate/current/bin` in WSL shows `node`, `deskmate` and `deskmate-desk`.
-- [ ] `deskmate --help` works in a new WSL terminal. If not, `~/.local/bin` is not on `PATH`.
+- [ ] On first launch the window unpacks its runtime into Ubuntu: `ls ~/.player-two/current/bin` in WSL shows `node`, `player-two` and `player-two-desk`.
+- [ ] `player-two --help` works in a new WSL terminal. If not, `~/.local/bin` is not on `PATH`.
 - [ ] The setup page is all green, or says exactly what is wrong and how to fix it. Break one thing on purpose (rename the key file) and check the page says so.
-- [ ] Joining through the form works, and `~/.config/deskmate` appears in WSL, not on the Windows side.
+- [ ] Joining through the form works, and `~/.config/player-two` appears in WSL, not on the Windows side.
 - [ ] The chat list shows the right count of repos from WSL's `~/dev`.
 - [ ] Tag your own agent with Cursor chosen. It answers. Write down the exact one-shot command that worked.
 - [ ] The same with Copilot chosen.
@@ -30,11 +30,11 @@ Install the Windows installer from the release run.
 
 ## Phase 2
 
-- [ ] Add `deskmate mcp` to Cursor using the snippet on the setup page. Cursor lists deskmate's tools. Note the file it had to go in.
+- [ ] Add `player-two mcp` to Cursor using the snippet on the setup page. Cursor lists Player Two's tools. Note the file it had to go in.
 - [ ] The same for Copilot's command line.
-- [ ] From the editor's agent, "search deskmate for the retry discussion" returns notes.
+- [ ] From the editor's agent, "search Player Two for the retry discussion" returns notes.
 - [ ] With `--allow-send`, the editor's agent asks a teammate's agent, the teammate approves, and the answer comes back as the tool's result.
-- [ ] A `deskmate://note/…` link clicked in Windows opens the window at that note.
+- [ ] A `player-two://note/…` link clicked in Windows opens the window at that note.
 
 ## Phase 3
 

@@ -1,6 +1,6 @@
 # Phase 6: branch rooms, patches, and Azure DevOps
 
-Goal: a branch has a room. In it, an agent can hand over a change as a patch that a person reads and applies with a click, and the branch's pull request and build are in view. The team's code stays on Azure DevOps; deskmate hosts no git.
+Goal: a branch has a room. In it, an agent can hand over a change as a patch that a person reads and applies with a click, and the branch's pull request and build are in view. The team's code stays on Azure DevOps; Player Two hosts no git.
 
 Depends on: phase 5.
 
@@ -18,14 +18,14 @@ Borrowed from Buzz: the branch is the room, and a patch is a message. Borrowed f
 
 **Where a run happens.** From this phase, a teammate's request accepted at any mode above `read-only` runs in a throwaway git worktree, so the owner's working tree is never touched by someone else's request. A `read-only` run stays in the checkout itself, so it can see uncommitted work. A request I make of my own agent runs in place, as now.
 
-- [ ] **P6-B1** `src/desk/worktree.ts`: `open(checkout, jobId)` runs `git worktree add --detach ~/.deskmate/worktrees/<first 12 of jobId> HEAD` and returns its path; `collect(path)` runs `git add -A` then `git diff --cached --binary HEAD` there and returns the diff; `close(path)` removes it with `git worktree remove --force`. On start, the desk removes worktrees left by a crash. Tests against a real temporary repository.
+- [ ] **P6-B1** `src/desk/worktree.ts`: `open(checkout, jobId)` runs `git worktree add --detach ~/.player-two/worktrees/<first 12 of jobId> HEAD` and returns its path; `collect(path)` runs `git add -A` then `git diff --cached --binary HEAD` there and returns the diff; `close(path)` removes it with `git worktree remove --force`. On start, the desk removes worktrees left by a crash. Tests against a real temporary repository.
 - [ ] **P6-B2** The session uses a worktree as above. When accepting, the window says which: "runs on a clean copy of `a1b2c3d`; your uncommitted changes are not included".
 - [ ] **P6-B3** After such a run, a non-empty diff is published as a `patch` event, referring to the request: the repo as a `RepoRef`, the base commit, the branch, a title (the first line of the agent's answer, cut to 80 characters), and the diff. The same review-or-post choice that governs the answer governs the patch: with review, the owner sees the diff beside the draft and nothing is sent until they send it.
 - [ ] **P6-B4** A diff over 512,000 characters is not sent. The worktree is kept, the answer says the change was too large to send as a patch, and the owner gets a notice with the path.
-- [ ] **P6-B5** `src/core/diff.ts`, pure: parse a unified diff into files and hunks for display, and `unsafePaths(diff)` listing any path that is absolute, contains a `..` part, or is inside `.git/`. `touchesInstructions(diff)` lists files an agent would read as instructions: `AGENTS.md`, `CLAUDE.md`, `.cursor/`, `.github/copilot-instructions.md`, `.deskmate/`. Tests for each.
+- [ ] **P6-B5** `src/core/diff.ts`, pure: parse a unified diff into files and hunks for display, and `unsafePaths(diff)` listing any path that is absolute, contains a `..` part, or is inside `.git/`. `touchesInstructions(diff)` lists files an agent would read as instructions: `AGENTS.md`, `CLAUDE.md`, `.cursor/`, `.github/copilot-instructions.md`, `.player-two/`. Tests for each.
 - [ ] **P6-B6** In the window a patch is a card: title, the files with added and removed line counts, and the diff folded per file, drawn from `diff.ts` as text. No HTML from the diff is ever inserted.
 - [ ] **P6-B7** "Apply" on the card, for anyone with a checkout of that repo. The desk: refuses if `unsafePaths` is not empty; runs `git apply --check --3way` with the diff on standard input; then asks, with a native dialog that names the repo, the branch the checkout is on, the files, a warning if the tree has uncommitted changes, and a separate warning if `touchesInstructions` is not empty. Only on yes does it run `git apply --3way`. It never passes `--unsafe-paths`. Afterwards it publishes `patch.applied`.
-- [ ] **P6-B8** "Apply to a new branch": when the base commit exists in the recipient's checkout, create `deskmate/<first 8 of the patch id>` from it and apply there, leaving the current branch alone. Offered alongside "Apply".
+- [ ] **P6-B8** "Apply to a new branch": when the base commit exists in the recipient's checkout, create `player-two/<first 8 of the patch id>` from it and apply there, leaving the current branch alone. Offered alongside "Apply".
 - [ ] **P6-B9** `review` events: "Approve" and "Request changes" with an optional comment on a patch card; shown on the card as who said what.
 - [ ] **P6-B10** In the two-session scenario: bob asks jacob's agent for a change; jacob accepts at `auto-edits`; the scripted agent writes a file; jacob's own working tree is unchanged; a patch card reaches bob; bob applies it and the file appears in bob's checkout; a patch with a `../` path is refused before git is called.
 
@@ -42,7 +42,7 @@ Things to know before writing it:
 
 Tasks:
 
-- [ ] **P6-C1** `src/desk/azure.ts`: finding a token, in this order: the environment variable `AZURE_DEVOPS_EXT_PAT`; a token saved in `~/.config/deskmate/azure.json` (mode `0600`); `git credential fill` for the repo's host and path, with terminal prompts off and a ten-second limit. Send it as Basic authentication; if that is answered `203` and the credential came from git, try the same secret once as a Bearer token. Remember which worked for the session. Never log a token.
+- [ ] **P6-C1** `src/desk/azure.ts`: finding a token, in this order: the environment variable `AZURE_DEVOPS_EXT_PAT`; a token saved in `~/.config/player-two/azure.json` (mode `0600`); `git credential fill` for the repo's host and path, with terminal prompts off and a ten-second limit. Send it as Basic authentication; if that is answered `203` and the credential came from git, try the same secret once as a Bearer token. Remember which worked for the session. Never log a token.
 - [ ] **P6-C2** The calls, each returning parsed data or a problem in words, each with a timeout:
 
   | Function | Call |

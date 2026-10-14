@@ -1,5 +1,7 @@
 # Protocol reference
 
+The project is called deskmate in the code until task P0-E4 of phase 0 renames it to Player Two. This file uses the new name.
+
 What the pieces say to each other. The phase files say when each part is built; this file says what it is. Where this file and the code disagree after a phase is done, fix whichever is wrong in the same commit.
 
 ## The pieces
@@ -12,9 +14,9 @@ Windows                                   WSL (Ubuntu)                         A
 │ draws, notifies      │  (wsl.exe)    │ agents, git               │         │ SQLite   │
 └──────────────────────┘               └───────────┬───────────────┘         └──────────┘
                                                    │ stdio (ACP or one-shot)        ▲
-                                         ┌─────────▼─────────┐   `deskmate` command │
+                                         ┌─────────▼─────────┐   `player-two` command │
                                          │ agent CLI         │──────────────────────┘
-                                         │ Cursor / Copilot  │   and `deskmate mcp`
+                                         │ Cursor / Copilot  │   and `player-two mcp`
                                          └───────────────────┘
 ```
 
@@ -41,19 +43,19 @@ Ed25519, raw 32-byte keys in lowercase hex. Everything signed is the UTF-8 bytes
 Proves who is asking. Sent on every request except `POST /join`, `GET /healthz` and the download routes.
 
 ```text
-Authorization: Deskmate <name>:<ts>:<sig>
+Authorization: PlayerTwo <name>:<ts>:<sig>
 ```
 
 | Version | Signed text | From |
 |---|---|---|
-| 1 | `deskmate-auth-v1:<name>:<ts>` | today |
-| 2 | `deskmate-auth-v2:<name>:<ts>:<METHOD>:<path and query exactly as sent>` | phase 0 |
+| 1 | `deskmate-auth-v1:<name>:<ts>` | today, with the scheme `Deskmate` |
+| 2 | `player-two-auth-v2:<name>:<ts>:<METHOD>:<path and query exactly as sent>` | phase 0 |
 
 `ts` is Unix seconds and must be within 300 seconds of the hub's clock. Version 2 stops a captured header being replayed against another route. The ingress must not rewrite paths.
 
 ### Notes (until phase 1)
 
-As in `src/core/sign.ts` today: `["deskmate-note-v3", sender, to, kind, body, ts, agent, re]`.
+As in `src/core/sign.ts`: `["deskmate-note-v3", sender, to, kind, body, ts, agent, re]`, with the prefix `player-two-note-v3` once task P0-E4 has renamed it.
 
 ### Events (phase 1 on)
 
@@ -71,7 +73,7 @@ interface Event {
 }
 ```
 
-Signed bytes: `JSON.stringify(["deskmate-event-v1", author, to, kind, content, ts, refs, nonce])`.
+Signed bytes: `JSON.stringify(["player-two-event-v1", author, to, kind, content, ts, refs, nonce])`.
 
 `content` travels as a string so nobody has to agree on a canonical form for objects. It is at most 64,000 characters, except for `patch`, which may be 512,000.
 
@@ -221,16 +223,16 @@ Inside WSL (or the home folder on Linux and macOS):
 
 | Path | Holds |
 |---|---|
-| `~/.config/deskmate/config.json` | Hub address, name, agents. |
-| `~/.config/deskmate/key` | The person's private key. Mode `0600`. |
-| `~/.config/deskmate/known.json` | The key first seen for each teammate and agent. |
-| `~/.config/deskmate/app-state.json` | Read marks, last open chat. Safe to delete. |
-| `~/.config/deskmate/agents/<repo>.key` | Phase 4. One key per checkout's agent. Mode `0600`. |
-| `~/.config/deskmate/azure.json` | Phase 6. An Azure DevOps token, if one was saved. Mode `0600`. |
-| `~/.deskmate/runtime/sha256-<digest>/` | The Linux runtime the window unpacked. `~/.deskmate/current` links to the one in use. |
-| `~/.deskmate/worktrees/` | Phase 6. Throwaway git worktrees for runs that change files. |
+| `~/.config/player-two/config.json` | Hub address, name, agents. |
+| `~/.config/player-two/key` | The person's private key. Mode `0600`. |
+| `~/.config/player-two/known.json` | The key first seen for each teammate and agent. |
+| `~/.config/player-two/app-state.json` | Read marks, last open chat. Safe to delete. |
+| `~/.config/player-two/agents/<repo>.key` | Phase 4. One key per checkout's agent. Mode `0600`. |
+| `~/.config/player-two/azure.json` | Phase 6. An Azure DevOps token, if one was saved. Mode `0600`. |
+| `~/.player-two/runtime/sha256-<digest>/` | The Linux runtime the window unpacked. `~/.player-two/current` links to the one in use. |
+| `~/.player-two/worktrees/` | Phase 6. Throwaway git worktrees for runs that change files. |
 
-`DESKMATE_HOME` moves `~/.config/deskmate`; `DESKMATE_DEV` moves `~/dev`. On Windows the window keeps one file of its own, `settings.json` in Electron's user-data folder, with the name of the WSL distribution.
+`PLAYER_TWO_HOME` moves `~/.config/player-two`; `PLAYER_TWO_DEV` moves `~/dev`. On Windows the window keeps one file of its own, `settings.json` in Electron's user-data folder, with the name of the WSL distribution.
 
 ## Versions
 

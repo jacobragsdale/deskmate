@@ -55,7 +55,7 @@ This phase starts a fresh database. Version `0.5.0`, protocol `2`.
 - [ ] **P1-B3** Structural kinds: `channel.join` and `channel.leave` change `members`; `channel.pin` checks the author is a member and the repo is under the hub's address, then writes or clears `pins`. An event that fails its structural check is refused, not stored.
 - [ ] **P1-B4** `GET /events` in its two forms, `chat` with `before`, and `after`. The visibility rule is one SQL fragment used by every read. For a direct chat, `chat=bob` means events between the caller and bob in either direction.
 - [ ] **P1-B5** `GET /stream?after=S`: `Content-Type: text/event-stream`, first everything visible after S, then each new visible event as it is stored, and a comment line every 20 seconds. Membership is checked when each event is sent, so leaving a channel stops its events on an open stream. Close the response when the client goes away.
-- [ ] **P1-B6** `GET /audit/head`, and `deskmate hub verify`, which walks the table and reports the first `seq` whose `chain` does not follow from the one before.
+- [ ] **P1-B6** `GET /audit/head`, and `player-two hub verify`, which walks the table and reports the first `seq` whose `chain` does not follow from the one before.
 - [ ] **P1-B7** Remove `POST /notes`, `GET /notes`, and the four channel-changing routes. `GET /channels` stays and reports each channel's pinned branch.
 - [ ] **P1-B8** In `deploy/k8s.yaml`, on the ingress: a read timeout of an hour and response buffering off for the hub, as annotations for the `nginx` class, with a comment that without them every client's stream drops each minute.
 - [ ] **P1-B9** `test/hub.api.test.ts`, rewritten for events. It keeps every guarantee the note tests held: only the author can sign, the freshness window, one delivery for a replay, direct events reach two people only, channel events reach members only, leaving stops them, joining reveals earlier ones. New: an unknown kind is stored and returned; a bad `id` is refused; a non-member cannot pin; the stream delivers an event posted after it opened and stops delivering a channel's events after a leave; `hub verify` passes on a clean database and names the row after one is altered by hand.
@@ -103,4 +103,4 @@ This phase starts a fresh database. Version `0.5.0`, protocol `2`.
 2. The two-session scenario passes on events.
 3. A test proves that a client shows a chat correctly when it contains a kind the client has never heard of.
 4. `grep -rn "status\b.*note\|kind: \"status\"\|re: " src` finds no trace of the note format.
-5. The README's "What deskmate protects" section describes events, ids, the chain and the approval record.
+5. The README's "What Player Two protects" section describes events, ids, the chain and the approval record.

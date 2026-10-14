@@ -36,13 +36,13 @@ A request matches a grant when the grant's author owns the agent, the asker is l
 
 ## A. Agent keys
 
-- [ ] **P4-A1** `src/desk/agentKeys.ts`: `agentKey(home, repo)` loads `~/.config/deskmate/agents/<repo>.key`, creating it with mode `0600` in a `0700` folder if missing.
+- [ ] **P4-A1** `src/desk/agentKeys.ts`: `agentKey(home, repo)` loads `~/.config/player-two/agents/<repo>.key`, creating it with mode `0600` in a `0700` folder if missing.
 - [ ] **P4-A2** When the session shares a repo for the first time, or finds no `agent.register` of its own for that repo with the current public key, it publishes one to `*`. Replacing the key file and restarting therefore rotates the key.
 - [ ] **P4-A3** The hub: schema version 7 adds `agents (owner, repo, pubkey, seq)`. `agent.register` is structural: only a person may author it, and it sets the key for `author/repo`, the newest winning.
 - [ ] **P4-A4** The hub accepts an author of the form `owner/repo` when the signature verifies against that agent's registered key, the owner could write to `to`, and the kind is one an agent may author: `job.progress`, `job.result`, `job.error`, `job.cancelled`. Anything else from an agent is refused with a `detail` that says agents cannot send it. Phase 5 adds `job.request` to the list.
 - [ ] **P4-A5** The auth header may be signed by an agent: the name is `owner/repo`. Reads then see what the owner sees. Update `caller` in the hub and the header's pattern.
 - [ ] **P4-A6** Clients learn agent keys from `agent.register` events signed by an owner whose key they have pinned, and check agent-authored events against them. An agent-authored event with no known registration is untrusted. In `src/core/chat.ts`, a `job.*` event from `owner/repo` counts exactly as one from `owner` does, for that repo only.
-- [ ] **P4-A7** The session signs as in the table above. During a run the agent's process gets `DESKMATE_AGENT=owner/repo` and `DESKMATE_AGENT_KEY_FILE`; the `deskmate` command and `deskmate mcp` sign with that key when both are set, so anything the agent does through them is the agent's, not the owner's.
+- [ ] **P4-A7** The session signs as in the table above. During a run the agent's process gets `PLAYER_TWO_AGENT=owner/repo` and `PLAYER_TWO_AGENT_KEY_FILE`; the `player-two` command and `player-two mcp` sign with that key when both are set, so anything the agent does through them is the agent's, not the owner's.
 - [ ] **P4-A8** Tests: an event signed with the wrong agent key is refused; an agent cannot author a `message`; a reviewed result verifies against the owner's key and an unreviewed one against the agent's; after a rotation the old key is refused and the new one accepted; a client that has never seen the owner treats the agent's events as untrusted.
 
 ## B. Grants
@@ -66,7 +66,7 @@ A request matches a grant when the grant's author owns the agent, the asker is l
 ## D. The setup check and the README
 
 - [ ] **P4-D1** A check `agent-keys`: each shared repo has a key file with mode `0600` and a registration on the hub that matches it.
-- [ ] **P4-D2** The README's "What deskmate protects" section gains the table of who signs what, how a grant is matched, that the hub does not enforce grants, and the honest edge above.
+- [ ] **P4-D2** The README's "What Player Two protects" section gains the table of who signs what, how a grant is matched, that the hub does not enforce grants, and the honest edge above.
 
 ## Done when
 

@@ -2,7 +2,7 @@
 
 Agreed on 2026-10-13. This page is the overview and the record of decisions. The work itself, task by task, is in [`plan/`](plan/README.md): start there to build.
 
-## What deskmate keeps as its own
+## What Player Two keeps as its own
 
 An agent is a person's checkout of a repo, and nothing runs on a machine unless its owner said so. Every phase must leave that true.
 
@@ -10,6 +10,7 @@ An agent is a person's checkout of a repo, and nothing runs on a machine unless 
 
 | Decision | Choice | Why |
 |---|---|---|
+| Name | Player Two. The command, the package and the folders are `player-two`. | Renamed from deskmate on 2026-10-13. The code changes in task P0-E4, after Python is deleted. |
 | Client | TypeScript only. The Python interface and command are deleted. | One implementation of the wire format instead of two that must move together. |
 | Hub | Ported to Node and TypeScript. | It then shares its schemas and signing code with the client. It is about 300 lines, and phase 1 rewrites its core anyway. |
 | Desktop app | Electron, React, shadcn/ui. | The app exists and works; the styling moves in phase 0. |
@@ -27,7 +28,7 @@ An agent is a person's checkout of a repo, and nothing runs on a machine unless 
 |---|---|---|
 | 0. One language | Node hub, TypeScript command, desk and window split, WSL, the setup check, shadcn, a Windows installer, Python deleted | [`phase-0-one-language.md`](plan/phase-0-one-language.md) |
 | 1. Event log | Every action is a signed event with a kind; jobs; approvals become signed records; threads, reactions, edits; paging | [`phase-1-event-log.md`](plan/phase-1-event-log.md) |
-| 2. Search, command, MCP | Full-text search, Cmd+K, note links, `deskmate ask`, an MCP server for agents in the editor | [`phase-2-search-cli-mcp.md`](plan/phase-2-search-cli-mcp.md) |
+| 2. Search, command, MCP | Full-text search, Cmd+K, note links, `player-two ask`, an MCP server for agents in the editor | [`phase-2-search-cli-mcp.md`](plan/phase-2-search-cli-mcp.md) |
 | 3. ACP and permissions | Agents over ACP, permission modes, a live activity feed, permission cards | [`phase-3-acp-permissions.md`](plan/phase-3-acp-permissions.md) |
 | 4. Agent keys and grants | Agents sign their own answers; expiring standing approvals; tray and start at login | [`phase-4-agent-keys-grants.md`](plan/phase-4-agent-keys-grants.md) |
 | 5. Delegation | Agents can ask agents, with an owner or a grant at every hop | [`phase-5-delegation.md`](plan/phase-5-delegation.md) |

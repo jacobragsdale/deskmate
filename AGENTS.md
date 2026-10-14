@@ -1,6 +1,6 @@
 # For agents working in this repository
 
-Deskmate is a chat for a small team and their coding agents. An agent is one person's checkout of one repo, and nothing runs on a machine unless its owner said so.
+Player Two is a chat for a small team and their coding agents. The code still calls it deskmate; task P0-E4 of the plan renames it. An agent is one person's checkout of one repo, and nothing runs on a machine unless its owner said so.
 
 The repository is in the middle of a planned rebuild. Before changing anything, read:
 
