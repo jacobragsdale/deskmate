@@ -258,9 +258,22 @@ await test(
       via: "cli"
     });
     await page.until("both notes in the thread", `document.querySelector("main").innerText.includes("plain") && document.querySelector("main").innerText.includes("fenced")`);
+
+    // A reply from bob shows as its root's count and last reply; alice opens the thread and replies in it.
+    const root = (await bob.events({ chat: "alice" })).find((each) => each.event.content.includes("hello from the window"));
+    assert.ok(root !== undefined);
+    await bob.publish("alice", "message", { text: `<img src=x onerror="window.pwned = 5"> in a thread`, via: "cli" }, [root.event.id]);
+    await page.until("the thread's count and last reply", `document.querySelector("main").innerText.includes("1 reply · last from bob: <img src=x")`);
+    await page.click("main button", "1 reply");
+    await page.until("the reply box", `document.querySelector('textarea[aria-label="Reply"]') !== null`);
+    await page.type('textarea[aria-label="Reply"]', "answered in the thread");
+    await page.press("Enter");
+    await page.until("alice's reply in the thread", `document.querySelector('[aria-label="Thread"]').innerText.includes("answered in the thread")`);
+
     assert.equal(await page.eval(`document.querySelectorAll("main script, main img").length`), 0);
     assert.equal(await page.eval("window.pwned"), undefined);
     assert.ok(String(await page.eval(`document.querySelector("main").innerText`)).includes("<script>window.pwned = 1</script>"));
+    assert.ok(String(await page.eval(`document.querySelector('[aria-label="Thread"]').innerText`)).includes(`<img src=x onerror="window.pwned = 5"> in a thread`));
 
     assert.deepEqual(page.problems, []);
   }

@@ -26,8 +26,8 @@ const FIELD = "flex-col items-stretch gap-1.5"; // A label above its field.
 
 /** Sends a command and resolves with "" when it worked, or with the problem in words for the user. */
 export type Submit = (command: Command) => Promise<string>;
-/** Sends a command and shows the problem if there is one. */
-export type Act = (command: Command) => void;
+/** Sends a command and shows the problem if there is one; then `done`, when given, hears whether it worked. */
+export type Act = (command: Command, done?: (ok: boolean) => void) => void;
 
 /** Show the user something that is not part of the picture, for a few seconds, in the corner above the status line. */
 function tell(notice: Notice): void {
@@ -242,12 +242,13 @@ export function App(): JSX.Element {
   const checkedAtLaunch = useRef(false);
   const up = view !== null && view.kind !== "stopped";
 
-  const act = useCallback<Act>((command) => {
+  const act = useCallback<Act>((command, done) => {
     submit(command)
       .then((problem) => {
         if (problem !== "") {
           tell({ title: "", body: problem, severity: "error" });
         }
+        done?.(problem === "");
       })
       .catch(console.error);
   }, []);
