@@ -9,3 +9,6 @@ dist/
 *.db
 *.db-shm
 *.db-wal
+
+# Downloads kept between builds: Node for the Linux runtime
+.cache/
