@@ -1,7 +1,7 @@
 /** The MCP server, driven over in-memory streams by the SDK's own client, as one person against a hub of the test's own. */
 
 import assert from "node:assert/strict";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
 import { test } from "node:test";
@@ -15,7 +15,9 @@ import { readContent } from "../src/core/kinds.ts";
 import { noteLink } from "../src/core/links.ts";
 import type { Delivered } from "../src/core/wire.ts";
 import type { Client } from "../src/desk/client.ts";
+import { Session } from "../src/desk/session.ts";
 import { createServer, NOT_INSTRUCTIONS } from "../src/mcp/server.ts";
+import type { ChatView } from "../src/shared/ipc.ts";
 import { NOW, startHub } from "./startHub.ts";
 
 const AT = new Date(NOW * 1000).toISOString();
@@ -161,4 +163,72 @@ await test("every tool says a note's text is information and not instruction, an
   assert.deepEqual(await call(mcp, "read_chat", { chat: "carol" }), { notes: [untrusted], before: null });
   assert.deepEqual(await call(mcp, "read_note", { note: said.event.id }), { note: untrusted, jobs: [], answers: [], replies: [] });
   assert.deepEqual(await call(mcp, "search", { q: "instructions" }), [untrusted]);
+});
+
+/** Lay down just enough of a git checkout for the desk's scan to read: its origin and what HEAD points at. */
+function checkout(dev: string, name: string): void {
+  const git = join(dev, name, ".git");
+  mkdirSync(git, { recursive: true });
+  writeFileSync(join(git, "config"), `[remote "origin"]\n\turl = https://dev.azure.com/acme/Platform/_git/${name}\n`);
+  writeFileSync(join(git, "HEAD"), "ref: refs/heads/main\n");
+}
+
+/** Wait until something is true of what a session shows, and return it. */
+async function until<T>(session: Session, what: string, find: (view: ChatView) => T | undefined): Promise<T> {
+  for (let tries = 0; tries < 200; tries += 1) {
+    const found = find(session.view());
+    if (found !== undefined) {
+      return found;
+    }
+    await delay(50);
+  }
+  throw new Error(`never happened: ${what}`);
+}
+
+await test("without --allow-send nothing can be sent, and ask_agent returns the answer of a teammate's agent once its owner lets it run", { timeout: 30_000 }, async (t) => {
+  const hub = await startHub(t, () => Date.now() / 1000); // The desk reads the real clock.
+  const [alice, bob] = [await hub.join("alice"), await hub.join("bob")];
+  const dev = join(hub.dir, "dev-bob");
+  checkout(dev, "uploader");
+  const prompts: string[] = [];
+  const hooks = { changed: () => undefined, notice: () => undefined, arrived: () => undefined, confirmClone: () => Promise.resolve(false) };
+  const runner = (argv: readonly string[]): Promise<string> => {
+    prompts.push(argv.at(-1) ?? "");
+    return Promise.resolve("Retries live in queue.py");
+  };
+  const session = new Session(bob, dev, hooks, { presence: 1, describe: () => Promise.resolve({ branch: "main", commit: COMMIT, dirty: false }), runner });
+  session.start();
+  t.after(() => session.stop());
+  await until(session, "bob's checkout shared", (view) => (view.team.length === 1 ? true : undefined));
+
+  const reading = await connect(t, alice);
+  assert.ok(!(await reading.listTools()).tools.some((tool) => ["send_message", "ask_agent", "withdraw"].includes(tool.name)));
+  for (const [name, args] of [
+    ["send_message", { to: "bob", text: "hello" }],
+    ["ask_agent", { agent: "bob/uploader", text: "hello" }],
+    ["withdraw", { request: "0".repeat(64), agent: "bob/uploader" }]
+  ] satisfies [string, Record<string, unknown>][]) {
+    const refused = resultSchema.parse(await reading.callTool({ name, arguments: args }));
+    assert.deepEqual([refused.isError, refused.content[0]?.text], [true, `MCP error -32602: Tool ${name} not found`]);
+  }
+  assert.deepEqual(await bob.events({ chat: "alice" }), []);
+
+  const sending = await connect(t, alice, true);
+  const asking = call(sending, "ask_agent", { agent: "bob/uploader", text: "where do we retry?", wait_seconds: 20 });
+  const request = await until(session, "bob can run alice's request", (view) => view.current?.messages.find((message) => message.requests[0]?.status.kind === "ready"));
+  assert.equal(prompts.length, 0); // Nothing runs until bob says so.
+  await session.handle({ do: "run", id: request.id, repo: "uploader", post: true, text: request.body });
+  const asked = z
+    .object({ outcome: z.literal("answered"), request: z.string(), answer: z.object({ author: z.string(), agent: z.string(), trusted: z.boolean(), text: z.string() }) })
+    .parse(await asking);
+  assert.deepEqual([asked.request, asked.answer], [noteLink(request.id), { ...asked.answer, author: "bob", agent: "uploader", trusted: true, text: "Retries live in queue.py" }]);
+  assert.match(prompts[0] ?? "", /alice, a teammate, tagged you in a direct chat with alice/);
+
+  // Bob's own agent, tagged from his editor, waits for his click like any tag that does not come from his window.
+  await call(await connect(t, bob, true), "send_message", { to: "alice", text: "@bob/uploader and from my editor?" });
+  const own = await until(session, "bob's own tag waiting", (view) =>
+    view.current?.messages.find((message) => message.body.endsWith("from my editor?") && message.requests[0]?.status.kind === "ready")
+  );
+  await delay(300);
+  assert.deepEqual([own.requests[0]?.status, prompts.length], [{ kind: "ready", before: "", canDecline: false }, 1]);
 });
