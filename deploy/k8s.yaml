@@ -3,7 +3,7 @@
 #   2. kubectl create secret generic player-two --from-literal=join-token="$(openssl rand -hex 16)"
 #   3. Set PLAYER_TWO_REPOS to the address your team's repos live under.
 #   4. Set the Ingress host and TLS secret for your cluster.
-# The volume must be a disk (on AKS: managed-csi), not a file share: SQLite needs real file locking.
+# The volume must be an Azure Disk (on AKS, the managed-csi storage class), not Azure Files: SQLite needs real file locking, which a file share does not give.
 apiVersion: v1
 kind: List
 items:
@@ -38,7 +38,7 @@ items:
             fsGroup: 10001
           containers:
             - name: hub
-              image: REGISTRY/player-two:0.3.0
+              image: REGISTRY/player-two:0.4.0
               ports:
                 - containerPort: 8787
               env:

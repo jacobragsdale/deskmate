@@ -96,21 +96,32 @@ function messages(view: ChatView): readonly MessageView[] {
   return view.current?.messages ?? [];
 }
 
-await test("two people, their agents and a channel, through the real hub", { timeout: 60_000 }, async () => {
+/** The hub in this process, or the one PLAYER_TWO_TEST_HUB names: a container from the image, say, started with TOKEN as its join token and PLAYER_TWO_REPOS=https://dev.azure.com/acme/. */
+async function startHub(): Promise<{ readonly url: string; readonly close: () => Promise<unknown> }> {
+  const given = process.env["PLAYER_TWO_TEST_HUB"] ?? "";
+  if (given !== "") {
+    return { url: given, close: () => Promise.resolve() };
+  }
   const server = createHub({ joinToken: TOKEN, db: join(root, "hub.db"), repos: "https://dev.azure.com/acme/", downloads: "" });
   await new Promise<void>((resolve) => {
     server.listen(0, "127.0.0.1", resolve);
   });
   const address = server.address();
   assert.ok(address !== null && typeof address === "object");
-  const hub = `http://127.0.0.1:${String(address.port)}`;
-  const people: Person[] = [];
-  after(async () => {
-    await Promise.all(people.map((each) => each.session.stop()));
-    await new Promise((resolve) => {
+  const close = (): Promise<unknown> =>
+    new Promise((resolve) => {
       server.close(resolve);
       server.closeAllConnections();
     });
+  return { url: `http://127.0.0.1:${String(address.port)}`, close };
+}
+
+await test("two people, their agents and a channel, through the real hub", { timeout: 60_000 }, async () => {
+  const { url: hub, close } = await startHub();
+  const people: Person[] = [];
+  after(async () => {
+    await Promise.all(people.map((each) => each.session.stop()));
+    await close();
     rmSync(root, { recursive: true, force: true });
   });
 
