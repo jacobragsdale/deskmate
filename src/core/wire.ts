@@ -78,7 +78,7 @@ export const noteSchema = z
   .readonly();
 
 export const deliveredNoteSchema = z.object({ id: z.int(), note: noteSchema }).readonly();
-export const receiptSchema = z.object({ id: z.int() }).readonly();
+export const noteReceiptSchema = z.object({ id: z.int() }).readonly();
 
 /** Anything that happens, signed by whoever did it. The hub stores and relays it unchanged, whatever its kind, so every reader can check it too. */
 export const eventSchema = z
@@ -101,6 +101,9 @@ export const eventSchema = z
 
 /** An event as the hub hands it over, with the place it was given in the hub's log. */
 export const deliveredSchema = z.object({ seq: z.int(), event: eventSchema }).readonly();
+
+/** What the hub answers when it has stored an event: the place it gave it. */
+export const receiptSchema = z.object({ seq: z.int() }).readonly();
 
 export const configSchema = z.strictObject({ hub: z.string().regex(/^https?:\/\/\S*[^/\s]$/), name: nameSchema, agent: z.string().min(1) }).readonly();
 

@@ -1,4 +1,4 @@
-/** The hub: keeps everyone's public key and channel memberships, relays signed notes, and keeps them for later reading. One table of routes on node:http. */
+/** The hub: keeps everyone's public key and channel memberships, relays signed events (and, until they go, notes), and keeps them for later reading. One table of routes on node:http. */
 
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createReadStream, readFileSync, statSync } from "node:fs";
@@ -11,10 +11,10 @@ import { z } from "zod";
 
 import { digestIn, hubInstallScript } from "../core/install.ts";
 import { isUnder, prefixKey, unquote } from "../core/remotes.ts";
-import { authClaim, authIsValid, isFresh, noteIsAuthentic } from "../core/sign.ts";
+import { authClaim, authIsValid, eventId, eventIsAuthentic, isFresh, noteIsAuthentic } from "../core/sign.ts";
 import { VERSION } from "../core/version.ts";
-import { isChannel, joinSchema, nameSchema, noteSchema, PROTOCOL, repoRefSchema, repoSchema } from "../core/wire.ts";
-import type { ChannelInfo, RepoRef } from "../core/wire.ts";
+import { eventSchema, isChannel, joinSchema, nameSchema, noteSchema, PROTOCOL, repoRefSchema, repoSchema } from "../core/wire.ts";
+import type { ChannelInfo, Event, RepoRef } from "../core/wire.ts";
 import { Database } from "./db.ts";
 
 const MAX_WAIT = 30; // Longest a client may hold one long-poll open, in seconds.
@@ -184,7 +184,7 @@ function installPage(hub: string): string {
 export function createHub(settings: HubSettings, now: () => number = () => Date.now() / 1000, log: Log = () => undefined): Server {
   const prefix = prefixKey(settings.repos);
   const db = new Database(settings.db);
-  const waiting = new Set<() => void>(); // Readers holding a request open for the next note; each is called when one arrives.
+  const waiting = new Set<() => void>(); // Readers holding a request open for the next note or event; each is called when one arrives.
 
   /** Settles when a note arrives, when `ms` have passed, or when the reader hangs up, whichever is first. A waiting reader costs a timer, not a thread. */
   function arrival(ms: number, response: ServerResponse): Promise<void> {
@@ -279,6 +279,45 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     return [201, { id }];
   }
 
+  /** The fourth of the checks an event passes: whether its author may write to whom it is for. */
+  function mayWrite(event: Event): void {
+    if (event.to === "*") {
+      throw new Refusal(403, `${event.kind} cannot be sent to everyone`); // Phase 4's public kinds are the ones that will be.
+    }
+    if (isChannel(event.to)) {
+      if (event.kind !== "channel.join" && !db.members(event.to).includes(event.author)) {
+        throw new Refusal(403, `join ${event.to} before posting to it`);
+      }
+    } else if (db.pubkeyOf(event.to) === null) {
+      throw new Refusal(404, `nobody named '${event.to}' has joined`);
+    }
+  }
+
+  /** Store one signed event once it passes the protocol's four checks, in their order, and nothing else: the hub keeps kinds it has never heard of. */
+  function postEvent(ask: Ask): Answer {
+    const event = jsonBody(eventSchema, ask.body);
+    if (event.id !== eventId(event)) {
+      throw new Refusal(422, "invalid id: not the hash of the event's signed bytes");
+    }
+    const pubkey = db.pubkeyOf(event.author);
+    if (pubkey === null || !eventIsAuthentic(event, pubkey)) {
+      throw new Refusal(401, "event is not signed by its author");
+    }
+    if (!isFresh(event.ts, now())) {
+      throw new Refusal(400, "event timestamp is more than 5 minutes off the hub clock; check your system time");
+    }
+    if (db.hasEvent(event.id)) {
+      throw new Refusal(409, "this event was already stored");
+    }
+    mayWrite(event);
+    const seq = db.transaction(() => db.addEvent(event));
+    waiting.forEach((wake) => {
+      wake();
+    });
+    log("event stored", { seq, author: event.author, recipient: event.to, kind: event.kind });
+    return [201, { seq }];
+  }
+
   /**
    * Notes the caller can see with an id above `after`, oldest first: sent to them, to a channel they are in, or (unless `mine` is false) sent by them.
    * `wait` holds the request open until one arrives; `tail` returns only the newest few; `status` false leaves out agent status reports.
@@ -337,6 +376,7 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     { method: "GET", path: "/repos", answer: () => [200, db.repos()] },
     { method: "POST", path: "/notes", open: true, answer: postNote }, // A note carries its own signature, so it needs no header.
     { method: "GET", path: "/notes", answer: getNotes },
+    { method: "POST", path: "/events", answer: postEvent },
     { method: "GET", path: "/channels", answer: () => [200, db.channels().map(channelInfo)] },
     { method: "POST", path: "/channels/{name}/join", answer: joinChannel },
     { method: "POST", path: "/channels/{name}/leave", answer: leaveChannel },

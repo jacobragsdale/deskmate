@@ -1,16 +1,18 @@
 /** The hub's database: opening it, its schema, and one function for each thing the hub asks of it. */
 
+import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 
 import { z } from "zod";
 
 import { deliveredNoteSchema, personSchema, repoRefSchema, teamRepoSchema } from "../core/wire.ts";
-import type { DeliveredNote, Note, Person, Repo, RepoRef, TeamRepo } from "../core/wire.ts";
+import type { DeliveredNote, Event, Note, Person, Repo, RepoRef, TeamRepo } from "../core/wire.ts";
 
 const SCHEMA_VERSION = 5; // 3 was the notes alone, from the Python hub to 0.4.
 const PAGE = 100; // Most notes one request gets when it does not ask for the newest few.
 const CONSTRAINT = 19; // SQLite's code for a broken constraint: the low byte of the fuller code a failed statement reports.
 const BUSY_WAIT = 5; // Seconds to wait for another program that holds the file, such as a backup, before giving up.
+const FIRST_CHAIN = "0".repeat(64); // The chain value before the first event.
 
 const SCHEMA = `
 PRAGMA journal_mode = WAL;
@@ -59,6 +61,15 @@ const membersSchema = z.array(z.strictObject({ user: z.string() }));
 const channelsSchema = z.array(z.strictObject({ channel: z.string() }));
 const pinSchema = repoRefSchema.optional();
 const deliveredListSchema = z.array(deliveredNoteSchema);
+const foundSchema = z.strictObject({ found: z.literal(1) }).optional();
+const headSchema = z.strictObject({ seq: z.int(), chain: z.string() }).optional();
+
+/** The chain value of an event: the sha256 of the one before it and the event's id, written one after the other in hex. Each depends on every event before it, so none can be changed or taken out without changing every value after it. */
+function chainAfter(previous: string, id: string): string {
+  return createHash("sha256")
+    .update(previous + id)
+    .digest("hex");
+}
 
 export class Database {
   private readonly db: DatabaseSync;
@@ -98,20 +109,28 @@ export class Database {
     return peopleSchema.parse(this.db.prepare("SELECT name, pubkey, seen FROM users ORDER BY name").all());
   }
 
-  /** Replace the repos one person has checked out, all of them or none. */
-  public replaceRepos(user: string, repos: readonly Repo[]): void {
+  /** Do all of `work` or, when it throws, none of it. */
+  public transaction<T>(work: () => T): T {
     this.db.exec("BEGIN");
     try {
+      const done = work();
+      this.db.exec("COMMIT");
+      return done;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  /** Replace the repos one person has checked out, all of them or none. */
+  public replaceRepos(user: string, repos: readonly Repo[]): void {
+    this.transaction(() => {
       this.db.prepare("DELETE FROM repos WHERE user = ?").run(user);
       const insert = this.db.prepare("INSERT INTO repos (user, name, key, url, branch) VALUES (?, ?, ?, ?, ?)");
       for (const repo of repos) {
         insert.run(user, repo.name, repo.key, repo.url, repo.branch);
       }
-      this.db.exec("COMMIT");
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
+    });
   }
 
   /** Every repo anyone has checked out, with whose copy it is. */
@@ -148,6 +167,29 @@ export class Database {
 
   public removePin(channel: string): void {
     this.db.prepare("DELETE FROM pins WHERE channel = ?").run(channel);
+  }
+
+  /** Whether an event with this id is already kept. */
+  public hasEvent(id: string): boolean {
+    return foundSchema.parse(this.db.prepare("SELECT 1 AS found FROM events WHERE id = ?").get(id)) !== undefined;
+  }
+
+  /** The newest event's seq and chain value; 0 and FIRST_CHAIN before there is one. */
+  public head(): { readonly seq: number; readonly chain: string } {
+    return headSchema.parse(this.db.prepare("SELECT seq, chain FROM events ORDER BY seq DESC LIMIT 1").get()) ?? { seq: 0, chain: FIRST_CHAIN };
+  }
+
+  /** Keep an event, chained to the one before it, with what it refers to indexed, and return its seq. Run it inside `transaction`, with whatever else the event changes. */
+  public addEvent(event: Event): number {
+    const added = this.db
+      .prepare("INSERT INTO events (id, author, recipient, kind, content, ts, refs, nonce, sig, chain) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(event.id, event.author, event.to, event.kind, event.content, event.ts, JSON.stringify(event.refs), event.nonce, event.sig, chainAfter(this.head().chain, event.id));
+    const seq = Number(added.lastInsertRowid);
+    const refer = this.db.prepare("INSERT OR IGNORE INTO event_refs (ref, seq) VALUES (?, ?)"); // Ignored: an event that names one id twice refers to it once.
+    for (const ref of event.refs) {
+      refer.run(ref, seq);
+    }
+    return seq;
   }
 
   /** Keep a note and return the id it was given. Null when this exact note is already kept: a signature is stored once, which is what stops a replay. */

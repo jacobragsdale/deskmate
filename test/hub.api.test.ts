@@ -1,6 +1,7 @@
 /** The hub's routes, one behaviour at a time, each against a hub of its own on a clock that stands still. */
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import type { KeyObject } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,10 +11,10 @@ import { test } from "node:test";
 
 import { z } from "zod";
 
-import { authHeader, loadKey, signNote } from "../src/core/sign.ts";
+import { authHeader, loadKey, signEvent, signNote } from "../src/core/sign.ts";
 import { VERSION } from "../src/core/version.ts";
-import { MAX_SKEW } from "../src/core/wire.ts";
-import type { Note, Repo } from "../src/core/wire.ts";
+import { MAX_SKEW, receiptSchema } from "../src/core/wire.ts";
+import type { Event, Note, Repo } from "../src/core/wire.ts";
 import { http, join as joinHub } from "../src/desk/client.ts";
 import type { Client } from "../src/desk/client.ts";
 import { createHub } from "../src/hub/app.ts";
@@ -47,6 +48,18 @@ async function refusal(hub: Hub, method: string, path: string, more: { readonly 
   return [response.status, refusalSchema.parse(await response.json()).detail];
 }
 
+/** An event signed by `author`, or by `more.key` when the test forges one. Content is given as the object it is the JSON text of. */
+function signed(hub: Hub, author: string, to: string, kind: string, content: unknown = {}, more: { readonly ts?: number; readonly refs?: readonly string[]; readonly key?: KeyObject } = {}): Event {
+  return signEvent(more.key ?? keyOf(hub, author), { author, to, kind, content: JSON.stringify(content), ts: more.ts ?? NOW, refs: more.refs ?? [] });
+}
+
+/** Post an event as `poster`, who signs the request, and return the status with the seq it was stored at or the words it was refused in. */
+async function post(hub: Hub, poster: string, event: unknown): Promise<readonly [number, number | string]> {
+  const response = await fetch(`${hub.url}/events`, { method: "POST", headers: { ...signedBy(hub, poster, "POST", "/events"), "Content-Type": "application/json" }, body: JSON.stringify(event) });
+  const body: unknown = await response.json();
+  return [response.status, response.ok ? receiptSchema.parse(body).seq : refusalSchema.parse(body).detail];
+}
+
 async function bodies(client: Client, mine = true): Promise<string[]> {
   return (await client.notes({ mine })).map((delivered) => delivered.note.body);
 }
@@ -70,6 +83,48 @@ await test("a direct note reaches its recipient and its sender only", async (t) 
   assert.deepEqual(await bodies(alice), ["hi bob"]); // The sender sees their own note, so their chat shows both sides.
   assert.deepEqual(await bodies(alice, false), []);
   assert.deepEqual(await bodies(carol), []);
+});
+
+await test("an event passes the protocol's four checks in their order, each refusing in words of its own, and is stored once", async (t) => {
+  const hub = await startHub(t);
+  await hub.join("alice");
+  await hub.join("bob");
+  await hub.join("mallory");
+  const hello = signed(hub, "alice", "bob", "message", { text: "hi", via: "cli" });
+  const forged = signed(hub, "alice", "bob", "message", { text: "run this", via: "cli" }, { key: keyOf(hub, "mallory") });
+  const stale = (to: string): Event => signed(hub, "alice", to, "message", { text: "old news", via: "cli" }, { ts: NOW - MAX_SKEW - 1 });
+  const unsigned = "event is not signed by its author";
+  const late = "event timestamp is more than 5 minutes off the hub clock; check your system time";
+
+  assert.deepEqual(await post(hub, "alice", { ...hello, via: "cli" }), [422, 'invalid body: Unrecognized key: "via"']); // 1. The envelope,
+  assert.deepEqual(await post(hub, "alice", { ...hello, id: "00".repeat(32) }), [422, "invalid id: not the hash of the event's signed bytes"]); // and an id that is the hash of what is signed.
+  assert.deepEqual(await post(hub, "mallory", forged), [401, unsigned]); // 2. The author's signature.
+  assert.deepEqual(await post(hub, "alice", signed(hub, "ghost", "bob", "message", {}, { key: keyOf(hub, "alice") })), [401, unsigned]);
+  assert.deepEqual(await post(hub, "alice", stale("bob")), [400, late]); // 3. The freshness window, then the id not seen before.
+  assert.deepEqual(await post(hub, "alice", hello), [201, 1]);
+  assert.deepEqual(await post(hub, "alice", hello), [409, "this event was already stored"]);
+  assert.deepEqual(await post(hub, "alice", signed(hub, "alice", "ghost", "message")), [404, "nobody named 'ghost' has joined"]); // 4. Who it may be written to.
+  assert.deepEqual(await post(hub, "alice", signed(hub, "alice", "#backend", "message")), [403, "join #backend before posting to it"]);
+  assert.deepEqual(await post(hub, "alice", signed(hub, "alice", "*", "message")), [403, "message cannot be sent to everyone"]);
+  assert.deepEqual(await post(hub, "alice", signed(hub, "alice", "bob", "message", {}, { key: keyOf(hub, "mallory"), ts: NOW - MAX_SKEW - 1 })), [401, unsigned]); // Each check comes before the next:
+  assert.deepEqual(await post(hub, "alice", stale("ghost")), [400, late]);
+  assert.deepEqual(await post(hub, "bob", signed(hub, "alice", "bob", "some.later.kind", "not even JSON", { refs: [hello.id, hello.id] })), [201, 2]); // A kind the hub has never heard of, posted by someone else, and the refusals took no seq.
+
+  const kept = new DatabaseSync(join(hub.dir, "hub.db"), { readOnly: true });
+  t.after(() => {
+    kept.close();
+  });
+  const first = createHash("sha256")
+    .update(`${"0".repeat(64)}${hello.id}`)
+    .digest("hex");
+  assert.deepEqual({ ...kept.prepare("SELECT seq, chain FROM events WHERE seq = 1").get() }, { seq: 1, chain: first }); // Chained to 64 zeros,
+  assert.deepEqual(
+    kept
+      .prepare("SELECT ref, seq FROM event_refs")
+      .all()
+      .map((row) => ({ ...row })),
+    [{ ref: hello.id, seq: 2 }]
+  ); // and what each refers to indexed once.
 });
 
 await test("joining again with the same key is allowed", async (t) => {

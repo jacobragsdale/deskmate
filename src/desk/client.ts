@@ -8,7 +8,19 @@ import { join as joinPath } from "node:path";
 import { z } from "zod";
 
 import { authHeader, loadKey, newKey, noteIsAuthentic, privateHex, publicHex, signNote } from "../core/sign.ts";
-import { channelInfoSchema, configSchema, deliveredNoteSchema, hubInfoSchema, nameSchema, personSchema, receiptSchema, repoRefSchema, repoSchema, teamRepoSchema, userSchema } from "../core/wire.ts";
+import {
+  channelInfoSchema,
+  configSchema,
+  deliveredNoteSchema,
+  hubInfoSchema,
+  nameSchema,
+  noteReceiptSchema,
+  personSchema,
+  repoRefSchema,
+  repoSchema,
+  teamRepoSchema,
+  userSchema
+} from "../core/wire.ts";
 import type { ChannelInfo, Config, DeliveredNote, HubInfo, Kind, Note, Person, Repo, RepoRef, TeamRepo } from "../core/wire.ts";
 import { AGENT_CHOICES } from "../shared/ipc.ts";
 
@@ -129,7 +141,7 @@ export class Client {
   /** Sign a note and hand it to the hub. Resolves with the id the hub gave it. */
   public async send(to: string, body: string, options: { readonly kind?: Kind; readonly agent?: string | null; readonly re?: number | null } = {}): Promise<number> {
     const note = signNote(this.key, { sender: this.config.name, to, kind: options.kind ?? "note", body, ts: Math.floor(this.now()), agent: options.agent ?? null, re: options.re ?? null });
-    return receiptSchema.parse(parseJson(await this.transport("POST", `${this.config.hub}/notes`, JSON_BODY, JSON.stringify(note), CALL_TIMEOUT))).id;
+    return noteReceiptSchema.parse(parseJson(await this.transport("POST", `${this.config.hub}/notes`, JSON_BODY, JSON.stringify(note), CALL_TIMEOUT))).id;
   }
 
   /** Notes this user can see: sent to them, to their channels, and (unless `mine` is false) by them. `status` false leaves out agent status reports. */
