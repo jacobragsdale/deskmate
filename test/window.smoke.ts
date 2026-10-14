@@ -16,7 +16,7 @@ import { startHub, TOKEN } from "./startHub.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 const NO_DISPLAY = process.platform === "linux" && (process.env["DISPLAY"] ?? "") === "" && (process.env["WAYLAND_DISPLAY"] ?? "") === "";
-const KEYS = { Enter: { code: "Enter", keyCode: 13 }, Escape: { code: "Escape", keyCode: 27 }, n: { code: "KeyN", keyCode: 78 } } as const;
+const KEYS = { Enter: { code: "Enter", keyCode: 13 }, Escape: { code: "Escape", keyCode: 27 }, k: { code: "KeyK", keyCode: 75 }, n: { code: "KeyN", keyCode: 78 } } as const;
 const CTRL = 2; // The DevTools protocol's bit for the Ctrl key.
 
 const replySchema = z.object({ id: z.number(), result: z.unknown().optional(), error: z.object({ message: z.string() }).optional() });
@@ -362,6 +362,27 @@ await test(
     await page.until("where it runs", `document.querySelector("main").innerText.includes("bob's uploader agent is working on main ± at c0ffee0")`);
     await bob.publish("alice", "job.result", { repo: "uploader", branch: "main", text: "in queue.py", reviewed: false }, [asked.event.id]);
     await page.until("the answer, with where it ran", `document.querySelector("main").innerText.includes("/uploader agent on main ± at c0ffee0")`);
+
+    // Ctrl+K finds a chat by its name as it is typed, and after a pause the messages that hold the words, the words picked out. Enter on one opens its chat with it in view and highlighted.
+    const search = '[role="dialog"] input[aria-label="Search"]';
+    await page.press("k", CTRL);
+    await page.until("the search dialog", `document.querySelector(${JSON.stringify(search)}) !== null`);
+    await page.type(search, "his");
+    await page.until("#history found by its name", `document.querySelector('[role="dialog"] [cmdk-item]')?.textContent === "#history"`);
+    await page.type(search, "the first");
+    const chosen = `document.querySelector('[role="dialog"] [cmdk-item][data-selected="true"]')`;
+    await page.until("carol's message found and chosen", `${chosen}?.textContent.includes("carol in #history") === true`);
+    assert.deepEqual(await page.eval(`[...${chosen}.querySelectorAll("span.text-tag")].map((each) => each.textContent)`), ["the", "first"]);
+    await page.press("Enter");
+    const focused = 'main article[data-focused="true"]';
+    await page.until(
+      "its chat open, with it highlighted",
+      `document.querySelector("main h1")?.textContent === "#history" && document.querySelector('${focused}')?.innerText.includes("the first") === true`
+    );
+    const [note, frame] = [await page.rect(focused), await page.rect("main [data-radix-scroll-area-viewport]")];
+    assert.ok(note.height > 0 && note.top >= frame.top && note.bottom <= frame.bottom, `the message opened is out of view: ${JSON.stringify({ note, frame })}`);
+    await page.click("nav button", "bob");
+    await page.until("the chat with bob again", `document.querySelector("main h1")?.textContent === "bob"`);
 
     // A link to a note is a chip of text: who wrote it and its first words when alice can see it, in plain text and written out in Markdown alike, and "a note you cannot see" when she cannot. None is a link the window follows.
     await carol.publish("#hidden", "channel.join", {});

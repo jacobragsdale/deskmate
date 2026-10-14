@@ -16,7 +16,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { AGENT_CHOICES, noticeSchema, outcomeSchema, viewSchema } from "../../shared/ipc.ts";
 import type { ChatView, Check, Command, Notice, View } from "../../shared/ipc.ts";
 import { Composer } from "./Composer.tsx";
-import { JoinChannel, PickRepo } from "./dialogs.tsx";
+import { JoinChannel, PickRepo, Search } from "./dialogs.tsx";
 import { runSetupCheck, SetupPage } from "./SetupPage.tsx";
 import { Sidebar } from "./Sidebar.tsx";
 import { Thread } from "./Thread.tsx";
@@ -124,29 +124,40 @@ function Setup({ defaultAgent, tell }: { readonly defaultAgent: string; readonly
 }
 
 function Chat({ view, act, tell, onSetup }: { readonly view: ChatView; readonly act: Act; readonly tell: (notice: Notice) => void; readonly onSetup: () => void }): JSX.Element {
-  const [dialog, setDialog] = useState<"" | "join" | "pin">("");
+  const [dialog, setDialog] = useState<"" | "join" | "pin" | "search">("");
   const [sidebar, setSidebar] = useState(true);
   const current = view.current;
   const chats = view.rows.map((row) => row.chat);
   // The chat list's width as the user last dragged it, kept in localStorage; one layout with the list shown and one without.
   const layout = useDefaultLayout({ id: "player-two", panelIds: sidebar ? ["chats", "chat"] : ["chat"], onlySaveAfterUserInteractions: true });
 
+  /** Open the chat `by` rows down the list from the open one, or up when it is negative, going round at either end. */
+  const step = (by: number): void => {
+    const at = chats.indexOf(current?.chat ?? "");
+    const next = chats[(at + by + chats.length) % chats.length];
+    if (next !== undefined) {
+      act({ do: "open", chat: next });
+    }
+  };
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
       const mod = event.metaKey || event.ctrlKey;
+      if (event.defaultPrevented) {
+        return; // Taken already: in the search dialog's list, Ctrl+N and Ctrl+K move down and up.
+      }
       if (mod && event.key === "n") {
         event.preventDefault();
         setDialog("join");
+      } else if (mod && event.key === "k") {
+        event.preventDefault();
+        setDialog("search"); // Cmd+K on macOS, Ctrl+K elsewhere.
       } else if (mod && event.key === "b") {
         event.preventDefault();
         setSidebar((shown) => !shown);
-      } else if (event.altKey && (event.key === "ArrowUp" || event.key === "ArrowDown") && chats.length > 0) {
+      } else if (event.altKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
         event.preventDefault();
-        const at = chats.indexOf(current?.chat ?? "");
-        const next = chats[(at + (event.key === "ArrowDown" ? 1 : -1) + chats.length) % chats.length];
-        if (next !== undefined) {
-          act({ do: "open", chat: next });
-        }
+        step(event.key === "ArrowDown" ? 1 : -1);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -216,6 +227,17 @@ function Chat({ view, act, tell, onSetup }: { readonly view: ChatView; readonly 
             setDialog("");
             if (name !== "") {
               act({ do: "joinChannel", name });
+            }
+          }}
+        />
+      )}
+      {dialog === "search" && (
+        <Search
+          chats={chats}
+          onDone={(command) => {
+            setDialog("");
+            if (command !== null) {
+              act(command);
             }
           }}
         />
