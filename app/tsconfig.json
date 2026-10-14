@@ -1,0 +1,32 @@
+{
+  "compilerOptions": {
+    "target": "ES2024",
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "module": "preserve",
+    "moduleResolution": "bundler",
+    "types": ["node"],
+    "jsx": "react-jsx",
+    "noEmit": true, // esbuild writes the JavaScript; the compiler only checks.
+    "allowImportingTsExtensions": true, // Imports name the .ts file, so Node can run the tests without a build.
+    "erasableSyntaxOnly": true, // For the same reason: nothing that needs more than stripping the types.
+
+    "strict": true, // Enable TypeScript's complete strict family, including future strict checks.
+    "allowUnreachableCode": false, // Reject unreachable statements.
+    "allowUnusedLabels": false, // Reject labels that are never targeted.
+    "exactOptionalPropertyTypes": true, // Distinguish an absent property from a present undefined value.
+    "forceConsistentCasingInFileNames": true, // Keep imports portable across case-sensitive filesystems.
+    "isolatedModules": true, // Require every file to be safe for independent transpilation.
+    "noEmitOnError": true, // Never emit JavaScript from a failed type check.
+    "noFallthroughCasesInSwitch": true, // Reject accidental switch fallthrough.
+    "noImplicitOverride": true, // Require override when replacing a base-class member.
+    "noImplicitReturns": true, // Require every reachable path to honor the return contract.
+    "noPropertyAccessFromIndexSignature": true, // Make undeclared index-signature access explicit.
+    "noUncheckedIndexedAccess": true, // Include undefined for unchecked array and object lookups.
+    "noUncheckedSideEffectImports": true, // Reject unresolved side-effect-only imports.
+    "noUnusedLocals": true, // Reject unread local declarations.
+    "noUnusedParameters": true, // Reject unread parameters; prefix intentional placeholders with an underscore.
+    "skipLibCheck": false, // Type-check dependency declarations instead of accepting inconsistent types.
+    "verbatimModuleSyntax": true // Make type-only imports and emitted module behavior explicit.
+  },
+  "include": ["src", "test"]
+}

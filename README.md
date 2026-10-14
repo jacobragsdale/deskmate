@@ -295,6 +295,35 @@ Deskmate does not encrypt notes. Whoever operates the hub can read them, and the
 
 The agent runs as you, with whatever permissions your agent CLI is configured to have. Deskmate does not sandbox it. An agent started in a repo also reads that repo's own instruction files, which is why a clone is never made without showing you where it comes from.
 
+## The desktop app
+
+[`app/`](app) holds a desktop app that does what the chat interface does, in a window: an Electron shell around a TypeScript port of the client. It talks to the same hub and uses the same identity in `~/.config/deskmate`, so you can join from either and use both. It has not been packaged yet; run it from a clone. It was built and tested with Node.js 26:
+
+```sh
+cd app
+npm ci
+npm start
+```
+
+The first time, the window asks for the hub address, your name and the join token, unless you have already joined with `deskmate join`. `DESKMATE_HOME` and `DESKMATE_DEV` move things as they do for the command.
+
+What differs from the terminal:
+
+- An agent's draft opens in its own box above the message box, with `Send answer` and `Discard`, instead of replacing what you were typing.
+- A note that arrives while you are looking elsewhere raises a system notification, and the dock badge and window title count what is waiting. Notes that arrive while the window is in the background stay unread until you come back.
+- An agent's Markdown is drawn as text and structure only: raw HTML in it stays text, images are not fetched, and a link opens in your browser.
+- Enter sends and Shift+Enter starts a new line. Ctrl+N (Cmd+N on a Mac) joins a channel, Ctrl+B hides the chat list, and Alt+↑ and Alt+↓ change chat. Esc in the message box stops your agents in the open chat.
+
+The app keeps its read marks in `app-state.json`, beside the four files the command keeps. Started from a terminal, it finds your agent command on that terminal's `PATH`.
+
+To check a change to the app:
+
+```sh
+npm run typecheck && npm run lint && npm run format:check && npm test
+```
+
+`npm test` starts a real hub with `uv` and runs two sessions against it. The app and the Python client must sign and name things identically; `tests/test_app_vectors.py` and `app/test/vectors.test.ts` hold both to one file of examples. After changing what is signed, run `uv run python tests/test_app_vectors.py` and make the app's tests pass again.
+
 ## Deploy the hub on Kubernetes
 
 [`deploy/k8s.yaml`](deploy/k8s.yaml) holds a volume claim, a single-replica Deployment, a Service and an Ingress. The manifest passes schema validation but has not been applied to a live cluster.

@@ -1,0 +1,216 @@
+/** Where the user writes: the message box with its list of agents on "@", and above it any agent's draft waiting for their review. */
+
+import { useEffect, useRef, useState } from "react";
+import type { JSX, KeyboardEvent } from "react";
+
+import { candidates } from "../core/chat.ts";
+import type { Candidate } from "../core/chat.ts";
+import type { ChatView, CurrentView, Notice } from "../shared/ipc.ts";
+import type { Act, Submit } from "./App.tsx";
+
+const TAG_BEING_TYPED = /(?:^|\s)@([\w./-]*)$/;
+
+interface Props {
+  readonly view: ChatView;
+  readonly current: CurrentView;
+  readonly act: Act;
+  readonly submit: Submit;
+  readonly tell: (notice: Notice) => void;
+}
+
+/** The oldest draft waiting in this chat, for its owner to edit and send, or discard. Keyed by draft, so each starts from the agent's own words. */
+function Review({ current, submit, tell, act }: Omit<Props, "view">): JSX.Element | null {
+  const draft = current.drafts[0];
+  const [text, setText] = useState(draft?.text ?? "");
+  const [sending, setSending] = useState(false);
+  if (draft === undefined) {
+    return null;
+  }
+  const target = { chat: current.chat, noteId: draft.noteId, repo: draft.repo };
+  const send = (): void => {
+    setSending(true);
+    submit({ do: "sendDraft", ...target, text })
+      .then((problem) => {
+        setSending(false);
+        if (problem !== "") {
+          tell({ title: `not sent to ${current.chat}`, body: problem, severity: "error" });
+        }
+      })
+      .catch(console.error);
+  };
+  return (
+    <section className="review">
+      <p>
+        ✎ Your {draft.repo} agent&rsquo;s answer for {draft.asker}. Nothing is sent until you send it.
+        {current.drafts.length > 1 && ` ${String(current.drafts.length - 1)} more waiting.`}
+      </p>
+      <textarea
+        aria-label="Draft answer"
+        value={text}
+        rows={8}
+        onChange={(event) => {
+          setText(event.target.value);
+        }}
+      />
+      <div className="actions">
+        <button type="button" className="primary" disabled={sending || text.trim() === ""} onClick={send}>
+          Send answer
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            act({ do: "discardDraft", ...target });
+          }}
+        >
+          × Discard
+        </button>
+      </div>
+    </section>
+  );
+}
+
+export function Composer({ view, current, act, submit, tell }: Props): JSX.Element {
+  const chat = current.chat;
+  const box = useRef<HTMLTextAreaElement>(null);
+  const [typed, setTyped] = useState<Readonly<Record<string, string>>>({}); // Per chat, what is in its message box.
+  const [lastSent, setLastSent] = useState<Readonly<Record<string, string>>>({}); // Per chat, for ↑ to bring back.
+  const [caret, setCaret] = useState(0);
+  const [picked, setPicked] = useState(0);
+  const [closedFor, setClosedFor] = useState(""); // The tag being typed when Esc closed the list; typing on opens it again.
+  const text = typed[chat] ?? "";
+  const setText = (value: string): void => {
+    setTyped((all) => ({ ...all, [chat]: value }));
+  };
+
+  useEffect(() => {
+    box.current?.focus();
+  }, [chat]);
+
+  const beforeCaret = text.slice(0, caret);
+  const tag = TAG_BEING_TYPED.exec(beforeCaret)?.[1];
+  const partner = current.members === null ? chat : null;
+  const picks = tag === undefined || `${chat} ${tag}` === closedFor ? { rows: [], more: 0 } : candidates(tag, view.team, view.me, current.pinned?.name ?? null, partner);
+  const highlighted = Math.min(picked, picks.rows.length - 1);
+
+  const take = (pick: Candidate | undefined): void => {
+    if (pick === undefined || tag === undefined) {
+      return;
+    }
+    const start = caret - tag.length - 1;
+    const insert = pick.clone ? "" : `@${pick.owner}/${pick.repo} `;
+    setText(text.slice(0, start) + insert + text.slice(caret));
+    setCaret(start + insert.length);
+    setPicked(0);
+    if (pick.clone) {
+      act({ do: "clone", repo: pick.repo });
+    }
+    box.current?.focus();
+  };
+
+  const send = (): void => {
+    const message = text.trim();
+    if (message === "") {
+      return;
+    }
+    setText("");
+    setLastSent((all) => ({ ...all, [chat]: message }));
+    submit({ do: "send", chat, text: message })
+      .then((problem) => {
+        if (problem !== "") {
+          // Put an unsent message back where it was, unless something newer has been typed there since.
+          setTyped((all) => ((all[chat] ?? "") === "" ? { ...all, [chat]: message } : all));
+          tell({ title: `not sent to ${chat}`, body: problem, severity: "error" });
+        }
+      })
+      .catch(console.error);
+  };
+
+  const stopAgents = (): void => {
+    for (const message of current.messages) {
+      for (const request of message.requests) {
+        if (request.status.kind === "running") {
+          act({ do: "stop", noteId: request.noteId, repo: request.repo });
+        }
+      }
+    }
+  };
+
+  /** A key while the list of agents is open: move in it, take from it, or close it. */
+  const onPickerKey = (key: string): void => {
+    if (key === "Escape") {
+      setClosedFor(`${chat} ${tag ?? ""}`);
+    } else if (key === "ArrowUp" || key === "ArrowDown") {
+      setPicked((highlighted + (key === "ArrowDown" ? 1 : -1) + picks.rows.length) % picks.rows.length);
+    } else {
+      take(picks.rows[highlighted]);
+    }
+  };
+
+  const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
+    const recalled = lastSent[chat];
+    if (event.nativeEvent.isComposing) {
+      return;
+    }
+    if (picks.rows.length > 0 && ["ArrowUp", "ArrowDown", "Enter", "Tab", "Escape"].includes(event.key)) {
+      event.preventDefault();
+      onPickerKey(event.key);
+    } else if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      send();
+    } else if (event.key === "ArrowUp" && text === "" && recalled !== undefined) {
+      event.preventDefault();
+      setText(recalled);
+    } else if (event.key === "Escape" && current.running) {
+      stopAgents();
+    }
+  };
+
+  return (
+    <div className="composer">
+      <Review key={`${chat} ${String(current.drafts[0]?.noteId ?? 0)} ${current.drafts[0]?.repo ?? ""}`} current={current} act={act} submit={submit} tell={tell} />
+      {picks.rows.length > 0 && (
+        <ul className="picker" role="listbox" aria-label="Agents">
+          {picks.rows.map((pick, index) => (
+            <li
+              key={`${pick.owner}/${pick.repo}/${String(pick.clone)}`}
+              role="option"
+              aria-selected={index === highlighted}
+              className={index === highlighted ? "picked" : undefined}
+              onMouseDown={(event) => {
+                event.preventDefault(); // Keep the caret in the message box.
+                take(pick);
+              }}
+            >
+              {pick.clone ? (
+                <span className="quiet">
+                  ⇣ clone {pick.repo} into {view.dev}
+                </span>
+              ) : (
+                <>
+                  @{pick.owner}/{pick.repo} <span className="quiet">{pick.branch}</span>
+                </>
+              )}
+            </li>
+          ))}
+          {picks.more > 0 && <li className="quiet">{picks.more} more · keep typing</li>}
+        </ul>
+      )}
+      <textarea
+        ref={box}
+        aria-label={`Message ${chat}`}
+        placeholder={`Message ${chat} · @ tags an agent · Enter sends, Shift+Enter starts a new line`}
+        rows={Math.min(8, text.split("\n").length)}
+        value={text}
+        onChange={(event) => {
+          setText(event.target.value);
+          setCaret(event.target.selectionStart);
+          setPicked(0);
+        }}
+        onSelect={(event) => {
+          setCaret(event.currentTarget.selectionStart);
+        }}
+        onKeyDown={onKeyDown}
+      />
+    </div>
+  );
+}
