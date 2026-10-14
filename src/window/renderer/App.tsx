@@ -54,11 +54,20 @@ function Setup({ defaultAgent, tell }: { readonly defaultAgent: string; readonly
       <p>Join your team&rsquo;s hub. Whoever runs it has the address and the join token.</p>
       <label>
         Hub address
-        <input name="hub" type="url" placeholder="https://player-two.example.com" required autoFocus />
+        {/* Filled in and fixed when this copy was built for the team's hub. */}
+        <input
+          name="hub"
+          type="url"
+          placeholder="https://player-two.example.com"
+          defaultValue={PLAYER_TWO_HUB_URL}
+          readOnly={PLAYER_TWO_HUB_URL !== ""}
+          required
+          autoFocus={PLAYER_TWO_HUB_URL === ""}
+        />
       </label>
       <label>
         Your name
-        <input name="name" pattern="[a-z0-9][a-z0-9_\-]{0,31}" placeholder="lowercase letters, digits, - and _" required />
+        <input name="name" pattern="[a-z0-9][a-z0-9_\-]{0,31}" placeholder="lowercase letters, digits, - and _" required autoFocus={PLAYER_TWO_HUB_URL !== ""} />
       </label>
       <label>
         Join token

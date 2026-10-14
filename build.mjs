@@ -4,6 +4,11 @@ import { chmod, cp, rm } from "node:fs/promises";
 import { build } from "esbuild";
 
 const shared = { bundle: true, sourcemap: true, logLevel: "info" };
+// A team's own build can carry its hub's address, so the join form asks only for a name and the token.
+const hub = process.env.PLAYER_TWO_HUB_URL ?? "";
+if (hub !== "" && !/^https?:\/\/\S*[^/\s]$/.test(hub)) {
+  throw new Error(`PLAYER_TWO_HUB_URL must be the hub's http or https address with no slash at the end, not ${JSON.stringify(hub)}`);
+}
 
 await rm("dist", { recursive: true, force: true });
 await Promise.all([
@@ -20,7 +25,7 @@ await Promise.all([
     format: "iife",
     jsx: "automatic",
     minify: true,
-    define: { "process.env.NODE_ENV": '"production"' }
+    define: { "process.env.NODE_ENV": '"production"', PLAYER_TWO_HUB_URL: JSON.stringify(hub) }
   })
 ]);
 await Promise.all([cp("src/window/renderer/index.html", "dist/renderer/index.html"), cp("src/window/renderer/styles.css", "dist/renderer/main.css"), chmod("dist/player-two.js", 0o755)]);
