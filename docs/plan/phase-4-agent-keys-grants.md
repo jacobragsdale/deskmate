@@ -36,7 +36,7 @@ A request matches a grant when the grant's author owns the agent, the asker is l
 
 ## A. Agent keys
 
-- [ ] **P4-A1** `src/desk/agentKeys.ts`: `agentKey(home, repo)` loads `~/.config/player-two/agents/<repo>.key`, creating it with mode `0600` in a `0700` folder if missing.
+- [x] **P4-A1** `src/desk/agentKeys.ts`: `agentKey(home, repo)` loads `~/.config/player-two/agents/<repo>.key`, creating it with mode `0600` in a `0700` folder if missing.
 - [ ] **P4-A2** When the session shares a repo for the first time, or finds no `agent.register` of its own for that repo with the current public key, it publishes one to `*`. Replacing the key file and restarting therefore rotates the key.
 - [ ] **P4-A3** The hub: schema version 7 adds `agents (owner, repo, pubkey, seq)`. `agent.register` is structural: only a person may author it, and it sets the key for `author/repo`, the newest winning.
 - [ ] **P4-A4** The hub accepts an author of the form `owner/repo` when the signature verifies against that agent's registered key, the owner could write to `to`, and the kind is one an agent may author: `job.progress`, `job.result`, `job.error`, `job.cancelled`. Anything else from an agent is refused with a `detail` that says agents cannot send it. Phase 5 adds `job.request` to the list.
