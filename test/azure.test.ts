@@ -1,17 +1,123 @@
-/** Azure DevOps: finding a token, with a git credential helper of the test's own. */
+/**
+ * Azure DevOps: finding a token, with a git credential helper of the test's own, and every call against a small fake of its routes in this process.
+ * The fake answers with test/fixtures/azure: Microsoft's own samples for REST 7.1 where its pages give one (Repositories - Get, Pull Requests - Get Pull Requests
+ * and Create, whose pull request also stands for Get Pull Request, which has none), and a build written from the documented Build where Builds - List gives none.
+ */
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { once } from "node:events";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { TestContext } from "node:test";
 
-import { findToken, gitPassword } from "../src/desk/azure.ts";
+import { parseRemote } from "../src/core/remotes.ts";
+import type { RepoRef } from "../src/core/wire.ts";
+import { Azure, findToken, gitPassword } from "../src/desk/azure.ts";
 import { defaultHome } from "../src/desk/client.ts";
 
 const REPO_URL = "https://dev.azure.com/acme/Platform/_git/uploader";
 const OAUTH = "an-oauth-token"; // What Git Credential Manager keeps for Azure DevOps.
+const PAT = "a-personal-access-token";
+const LET_IN = new Set([basic(PAT), `Bearer ${OAUTH}`]); // A personal access token goes in as Basic; an OAuth token only as Bearer.
+const REPO_API = "/acme/platform/_apis/git/repositories/uploader";
+const BUILDS_API = "/acme/platform/_apis/build/builds";
+const REPO_ID = "5febef5a-833d-4e14-b9c0-14cb638f91e6"; // As repository.json gives it.
+
+/** A request the fake was sent. */
+interface Call {
+  readonly method: string;
+  readonly path: string;
+  readonly query: URLSearchParams;
+  readonly authorization: string;
+  readonly body: string;
+}
+
+interface Fake {
+  readonly base: string;
+  readonly calls: Call[];
+}
+
+function basic(secret: string): string {
+  return `Basic ${Buffer.from(`:${secret}`).toString("base64")}`;
+}
+
+function fixture(name: string): string {
+  return readFileSync(join(import.meta.dirname, "fixtures", "azure", name), "utf8");
+}
+
+/** Azure DevOps refusing a request: its own shape for one, with its message. */
+function refusal(status: number, message: string): { readonly status: number; readonly type: string; readonly body: string } {
+  return {
+    status,
+    type: "application/json; charset=utf-8",
+    body: JSON.stringify({ $id: "1", innerException: null, message, typeName: "Microsoft.TeamFoundation.Git.Server.GitException", typeKey: "GitException", errorCode: 0, eventId: 3000 })
+  };
+}
+
+/** What Azure DevOps would answer, for the routes azure.ts calls; null for the repo named "slow", which is never answered. */
+function answer(call: Call): { readonly status: number; readonly type: string; readonly body: string } | null {
+  const json = (name: string, status = 200): { readonly status: number; readonly type: string; readonly body: string } => ({ status, type: "application/json; charset=utf-8", body: fixture(name) });
+  if (call.query.get("api-version") !== "7.1") {
+    return refusal(400, "VS800006: No api-version was supplied for the GET request.");
+  }
+  if (!LET_IN.has(call.authorization)) {
+    return { status: 203, type: "text/html; charset=utf-8", body: fixture("sign-in.html") };
+  }
+  switch (`${call.method} ${call.path}`) {
+    case `GET ${REPO_API}`:
+      return json("repository.json");
+    case `GET ${REPO_API}/pullrequests/20`:
+      return json("pull-request.json");
+    case `GET ${REPO_API}/pullrequests`:
+      return json("pull-requests.json");
+    case `POST ${REPO_API}/pullrequests`:
+      return call.body.includes('"refs/heads/taken"') ? refusal(409, "TF401179: An active pull request for the source and target branch already exists.") : json("created-pull-request.json", 201);
+    case `GET ${BUILDS_API}`:
+      return call.query.get("branchName") === "refs/heads/npaulk/my_work" ? json("builds.json") : { status: 200, type: "application/json", body: JSON.stringify({ count: 0, value: [] }) };
+    case "GET /acme/platform/_apis/git/repositories/slow":
+      return null;
+    default:
+      return refusal(404, "TF401019: The Git repository with name or identifier missing does not exist or you do not have permissions for the operation you are attempting.");
+  }
+}
+
+/** The fake, listening on a port of its own, which keeps every request it is sent. */
+async function fakeAzure(t: TestContext): Promise<Fake> {
+  const calls: Call[] = [];
+  const server = createServer((request, response) => {
+    let body = "";
+    request.setEncoding("utf8").on("data", (chunk: string) => {
+      body += chunk;
+    });
+    request.on("end", () => {
+      const url = new URL(request.url ?? "/", "http://azure.test");
+      const call = { method: request.method ?? "", path: url.pathname, query: url.searchParams, authorization: request.headers.authorization ?? "", body };
+      calls.push(call);
+      const reply = answer(call);
+      if (reply !== null) {
+        response.writeHead(reply.status, { "Content-Type": reply.type }).end(reply.body);
+      }
+    });
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => {
+    server.closeAllConnections(); // The request never answered, among them.
+    server.close();
+  });
+  const address = server.address();
+  assert.ok(address !== null && typeof address === "object");
+  return { base: `http://127.0.0.1:${String(address.port)}`, calls };
+}
+
+function repo(name: string): RepoRef {
+  const remote = parseRemote(`https://dev.azure.com/acme/Platform/_git/${name}`);
+  assert.ok(remote !== null);
+  return remote;
+}
 
 /** A folder for one test, where git's configuration and the identity's folder are moved, so no credential helper of whoever runs the tests is ever asked. */
 function isolate(t: TestContext): string {
@@ -24,6 +130,7 @@ function isolate(t: TestContext): string {
     Reflect.deleteProperty(process.env, variable);
   }
   t.after(() => {
+    Reflect.deleteProperty(process.env, "AZURE_DEVOPS_EXT_PAT");
     rmSync(dir, { recursive: true, force: true });
   });
   return dir;
@@ -87,4 +194,131 @@ await test("a token is looked for in the environment, then in azure.json in the 
   writeFileSync(saved, "a-pat-with-no-json-around-it");
   writeFileSync(join(dir, "gitconfig"), "");
   assert.equal(await findToken(home, REPO_URL), null);
+});
+
+await test("each call is read from the answer Microsoft documents for it, and asks with api-version 7.1 for what the plan names", async (t) => {
+  isolate(t);
+  process.env["AZURE_DEVOPS_EXT_PAT"] = PAT;
+  const fake = await fakeAzure(t);
+  const azure = new Azure(defaultHome(), fake.base);
+  const uploader = repo("uploader");
+
+  assert.deepEqual(await azure.repository(uploader), { ok: true, data: { id: REPO_ID, defaultBranch: "master", web: REPO_URL } });
+  assert.deepEqual(await azure.pullRequest(uploader, 20), {
+    ok: true,
+    data: {
+      id: 20,
+      title: "Updated pull request title",
+      status: "completed",
+      draft: false,
+      source: "npaulk/my_work",
+      target: "new_feature",
+      creator: "Normal Paulk",
+      reviewers: [{ name: "Normal Paulk", vote: 10 }],
+      web: `${REPO_URL}/pullrequest/20`
+    }
+  });
+  const fromBranch = await azure.pullRequestsFor(uploader, "npaulk/my_work");
+  assert.ok(fromBranch.ok);
+  assert.deepEqual(
+    fromBranch.data.map((pr) => [pr.id, pr.status, pr.source, pr.target, pr.web]),
+    [
+      [22, "active", "npaulk/my_work", "new_feature", `${REPO_URL}/pullrequest/22`],
+      [21, "active", "npaulk/known_issues", "new_feature", `${REPO_URL}/pullrequest/21`],
+      [1, "active", "some_branch", "master", `${REPO_URL}/pullrequest/1`]
+    ]
+  );
+  assert.deepEqual(fromBranch.data[2]?.reviewers, [{ name: "[2016_10_31]\\2016_10_31 Team", vote: 0 }]);
+  assert.deepEqual(await azure.latestBuild(uploader, "npaulk/my_work"), {
+    ok: true,
+    data: { id: 391, name: "AnotherRepository-CI", status: "completed", result: "failed", web: "https://dev.azure.com/acme/Platform/_build/results?buildId=391" }
+  });
+  assert.deepEqual(await azure.latestBuild(uploader, "quiet"), { ok: true, data: null });
+  const created = await azure.createPullRequest(uploader, { source: "npaulk/my_work", target: "new_feature", title: "A new feature", description: "Adding a new feature", draft: true });
+  assert.ok(created.ok);
+  assert.deepEqual([created.data.id, created.data.status, created.data.draft, created.data.web], [22, "active", false, `${REPO_URL}/pullrequest/22`]);
+
+  const version = { "api-version": "7.1" };
+  const builds = (branch: string): Record<string, string> => ({
+    repositoryId: REPO_ID,
+    repositoryType: "TfsGit",
+    branchName: `refs/heads/${branch}`,
+    $top: "1",
+    queryOrder: "queueTimeDescending",
+    ...version
+  });
+  assert.deepEqual(
+    fake.calls.map((call) => [call.method, call.path, Object.fromEntries(call.query)]),
+    [
+      ["GET", REPO_API, version],
+      ["GET", `${REPO_API}/pullrequests/20`, version],
+      ["GET", `${REPO_API}/pullrequests`, { "searchCriteria.sourceRefName": "refs/heads/npaulk/my_work", "searchCriteria.status": "all", $top: "5", ...version }],
+      ["GET", REPO_API, version],
+      ["GET", BUILDS_API, builds("npaulk/my_work")],
+      ["GET", REPO_API, version],
+      ["GET", BUILDS_API, builds("quiet")],
+      ["POST", `${REPO_API}/pullrequests`, version]
+    ]
+  );
+  assert.deepEqual(JSON.parse(fake.calls.at(-1)?.body ?? ""), {
+    sourceRefName: "refs/heads/npaulk/my_work",
+    targetRefName: "refs/heads/new_feature",
+    title: "A new feature",
+    description: "Adding a new feature",
+    isDraft: true
+  });
+  assert.ok(fake.calls.every((call) => call.authorization === basic(PAT)));
+});
+
+await test("a sign-in page in place of an answer is not being signed in, and a token from git gets in as Bearer, which is then kept", async (t) => {
+  const dir = isolate(t);
+  const fake = await fakeAzure(t);
+  const uploader = repo("uploader");
+  const azure = new Azure(defaultHome(), fake.base);
+
+  process.env["AZURE_DEVOPS_EXT_PAT"] = "an-expired-pat";
+  assert.deepEqual(await azure.repository(uploader), { ok: false, problem: "not signed in to Azure DevOps: the token from AZURE_DEVOPS_EXT_PAT was not accepted" });
+  assert.equal(fake.calls.length, 1); // A token from the environment is never tried as Bearer.
+
+  Reflect.deleteProperty(process.env, "AZURE_DEVOPS_EXT_PAT");
+  useHelper(dir, `printf 'username=jacob@example.com\\npassword=${OAUTH}\\n'`);
+  assert.equal((await azure.repository(uploader)).ok, true);
+  assert.equal((await azure.pullRequest(uploader, 20)).ok, true);
+  assert.deepEqual(
+    fake.calls.slice(1).map((call) => call.authorization.split(" ")[0]),
+    ["Basic", "Bearer", "Bearer"]
+  );
+
+  writeFileSync(join(dir, "gitconfig"), "");
+  assert.deepEqual(await new Azure(defaultHome(), fake.base).repository(uploader), {
+    ok: false,
+    problem: "no Azure DevOps token: set AZURE_DEVOPS_EXT_PAT, save one on the setup page, or sign in to dev.azure.com with git's credential helper"
+  });
+});
+
+await test("a 404 says which repository or pull request was not found, and any other refusal carries Azure's own words", async (t) => {
+  isolate(t);
+  process.env["AZURE_DEVOPS_EXT_PAT"] = PAT;
+  const fake = await fakeAzure(t);
+  const azure = new Azure(defaultHome(), fake.base);
+  const uploader = repo("uploader");
+
+  assert.deepEqual(await azure.repository(repo("missing")), { ok: false, problem: "Azure DevOps has no repository missing, or the token cannot see it" });
+  assert.deepEqual(await azure.pullRequest(uploader, 999), { ok: false, problem: "Azure DevOps has no pull request 999 in uploader, or the token cannot see it" });
+  assert.deepEqual(await azure.createPullRequest(uploader, { source: "taken", target: "master", title: "Again", description: "", draft: false }), {
+    ok: false,
+    problem: "Azure DevOps answered 409: TF401179: An active pull request for the source and target branch already exists."
+  });
+  const elsewhere = parseRemote("https://github.com/acme/uploader");
+  assert.ok(elsewhere !== null);
+  assert.deepEqual(await azure.repository(elsewhere), { ok: false, problem: "uploader is not on Azure DevOps" });
+});
+
+await test("an answer that does not come in time is given up on", async (t) => {
+  isolate(t);
+  process.env["AZURE_DEVOPS_EXT_PAT"] = PAT;
+  const fake = await fakeAzure(t);
+  const began = Date.now();
+  assert.deepEqual(await new Azure(defaultHome(), fake.base, 0.3).repository(repo("slow")), { ok: false, problem: "Azure DevOps did not answer within 0.3 seconds" });
+  assert.ok(Date.now() - began < 5000, `took ${String(Date.now() - began)} ms`);
 });

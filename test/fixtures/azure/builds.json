@@ -1,0 +1,126 @@
+{
+  "count": 1,
+  "value": [
+    {
+      "_links": {
+        "self": {
+          "href": "https://dev.azure.com/fabrikam/6ce954b1-ce1f-45d1-b94d-e6bf2464ba2c/_apis/build/Builds/391"
+        },
+        "web": {
+          "href": "https://dev.azure.com/fabrikam/6ce954b1-ce1f-45d1-b94d-e6bf2464ba2c/_build/results?buildId=391"
+        },
+        "sourceVersionDisplayUri": {
+          "href": "https://dev.azure.com/fabrikam/6ce954b1-ce1f-45d1-b94d-e6bf2464ba2c/_apis/build/builds/391/sources"
+        },
+        "timeline": {
+          "href": "https://dev.azure.com/fabrikam/6ce954b1-ce1f-45d1-b94d-e6bf2464ba2c/_apis/build/builds/391/Timeline"
+        },
+        "badge": {
+          "href": "https://dev.azure.com/fabrikam/6ce954b1-ce1f-45d1-b94d-e6bf2464ba2c/_apis/build/status/12"
+        }
+      },
+      "properties": {},
+      "tags": [],
+      "validationResults": [],
+      "plans": [
+        {
+          "planId": "2b6e8d64-63f2-4b1e-9f0a-6c1f2c0a7d55"
+        }
+      ],
+      "triggerInfo": {},
+      "id": 391,
+      "buildNumber": "20161101.4",
+      "status": "completed",
+      "result": "failed",
+      "queueTime": "2016-11-01T16:31:02.7313211Z",
+      "startTime": "2016-11-01T16:31:09.6418947Z",
+      "finishTime": "2016-11-01T16:33:41.0583145Z",
+      "url": "https://dev.azure.com/fabrikam/6ce954b1-ce1f-45d1-b94d-e6bf2464ba2c/_apis/build/Builds/391",
+      "definition": {
+        "drafts": [],
+        "id": 12,
+        "name": "AnotherRepository-CI",
+        "url": "https://dev.azure.com/fabrikam/6ce954b1-ce1f-45d1-b94d-e6bf2464ba2c/_apis/build/Definitions/12?revision=3",
+        "uri": "vstfs:///Build/Definition/12",
+        "path": "\\",
+        "type": "build",
+        "queueStatus": "enabled",
+        "revision": 3,
+        "project": {
+          "id": "6ce954b1-ce1f-45d1-b94d-e6bf2464ba2c",
+          "name": "Fabrikam-Fiber-Git",
+          "url": "https://dev.azure.com/fabrikam/_apis/projects/6ce954b1-ce1f-45d1-b94d-e6bf2464ba2c",
+          "state": "wellFormed",
+          "revision": 293012730,
+          "visibility": "private",
+          "lastUpdateTime": "2016-10-31T20:16:30.507Z"
+        }
+      },
+      "buildNumberRevision": 4,
+      "project": {
+        "id": "6ce954b1-ce1f-45d1-b94d-e6bf2464ba2c",
+        "name": "Fabrikam-Fiber-Git",
+        "url": "https://dev.azure.com/fabrikam/_apis/projects/6ce954b1-ce1f-45d1-b94d-e6bf2464ba2c",
+        "state": "wellFormed",
+        "revision": 293012730,
+        "visibility": "private",
+        "lastUpdateTime": "2016-10-31T20:16:30.507Z"
+      },
+      "uri": "vstfs:///Build/Build/391",
+      "sourceBranch": "refs/heads/npaulk/my_work",
+      "sourceVersion": "b60280bc6e62e2f880f1b63c1e24987664d3bda3",
+      "queue": {
+        "id": 8,
+        "name": "Azure Pipelines",
+        "pool": {
+          "id": 9,
+          "name": "Azure Pipelines",
+          "isHosted": true
+        }
+      },
+      "priority": "normal",
+      "reason": "individualCI",
+      "requestedFor": {
+        "displayName": "Normal Paulk",
+        "url": "https://dev.azure.com/fabrikam/_apis/Identities/d6245f20-2af8-44f4-9451-8107cb2767db",
+        "id": "d6245f20-2af8-44f4-9451-8107cb2767db",
+        "uniqueName": "fabrikamfiber16@hotmail.com",
+        "imageUrl": "https://dev.azure.com/fabrikam/_api/_common/identityImage?id=d6245f20-2af8-44f4-9451-8107cb2767db"
+      },
+      "requestedBy": {
+        "displayName": "Microsoft.VisualStudio.Services.TFS",
+        "url": "https://dev.azure.com/fabrikam/_apis/Identities/00000002-0000-8888-8000-000000000000",
+        "id": "00000002-0000-8888-8000-000000000000",
+        "uniqueName": "00000002-0000-8888-8000-000000000000@2c895908-04e0-4952-89fd-54b0046d6288",
+        "imageUrl": "https://dev.azure.com/fabrikam/_api/_common/identityImage?id=00000002-0000-8888-8000-000000000000"
+      },
+      "lastChangedDate": "2016-11-01T16:33:41.24Z",
+      "lastChangedBy": {
+        "displayName": "Microsoft.VisualStudio.Services.TFS",
+        "url": "https://dev.azure.com/fabrikam/_apis/Identities/00000002-0000-8888-8000-000000000000",
+        "id": "00000002-0000-8888-8000-000000000000",
+        "uniqueName": "00000002-0000-8888-8000-000000000000@2c895908-04e0-4952-89fd-54b0046d6288",
+        "imageUrl": "https://dev.azure.com/fabrikam/_api/_common/identityImage?id=00000002-0000-8888-8000-000000000000"
+      },
+      "orchestrationPlan": {
+        "planId": "2b6e8d64-63f2-4b1e-9f0a-6c1f2c0a7d55"
+      },
+      "logs": {
+        "id": 0,
+        "type": "Container",
+        "url": "https://dev.azure.com/fabrikam/6ce954b1-ce1f-45d1-b94d-e6bf2464ba2c/_apis/build/builds/391/logs"
+      },
+      "repository": {
+        "id": "5febef5a-833d-4e14-b9c0-14cb638f91e6",
+        "type": "TfsGit",
+        "name": "AnotherRepository",
+        "url": "https://dev.azure.com/fabrikam/Fabrikam-Fiber-Git/_git/AnotherRepository",
+        "clean": null,
+        "checkoutSubmodules": false
+      },
+      "retainedByRelease": false,
+      "triggeredByBuild": null,
+      "appendCommitMessageToRunName": true
+    }
+  ]
+}
