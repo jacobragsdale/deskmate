@@ -204,7 +204,7 @@ await test("two people, their agents and a channel, through the real hub", { tim
   const asked = await until(jacob.session, "jacob can run it", (view) => messages(view).find((message) => message.requests[0]?.status.kind === "ready"));
   assert.deepEqual(asked.requests, [{ id: asked.id, owner: "jacob", repo: "uploader", mine: true, accepted: null, status: { kind: "ready", before: "", canDecline: true } }]);
   assert.equal(jacob.prompts.length, 0);
-  await until(jacob.session, "the note counts as unread and waiting while jacob looks away", (view) => view.unread === 1 && view.waiting === 1);
+  await until(jacob.session, "the message counts as unread and waiting while jacob looks away", (view) => view.unread === 1 && view.waiting === 1);
   assert.deepEqual(
     jacob.arrivals.map((arrival) => [arrival.title, arrival.forMe, arrival.rings]),
     [["bob tagged your uploader agent", true, true]]
@@ -245,7 +245,7 @@ await test("two people, their agents and a channel, through the real hub", { tim
       replies: []
     }
   );
-  await until(bob.session, "the request under bob's note is settled", (view) => messages(view).every((message) => message.requests.length === 0));
+  await until(bob.session, "the request under bob's message is settled", (view) => messages(view).every((message) => message.requests.length === 0));
   assert.equal(jacob.session.view().busy.unsent, 0);
 
   // Jacob tags his own agent from his own window: it runs at once and posts without a draft.
@@ -301,7 +301,7 @@ await test("two people, their agents and a channel, through the real hub", { tim
   await jacob.session.handle({ do: "send", chat: "#backend", text: "who owns the uploader?" });
   await until(bob.session, "bob can join it", (view) => view.otherChannels.some((channel) => channel.name === "#backend"));
   await bob.session.handle({ do: "joinChannel", name: "#backend" });
-  const channel = await until(bob.session, "bob is in the channel with its earlier note", (view) => (view.current?.chat === "#backend" && messages(view).length === 1 ? view.current : undefined));
+  const channel = await until(bob.session, "bob is in the channel with its earlier message", (view) => (view.current?.chat === "#backend" && messages(view).length === 1 ? view.current : undefined));
   assert.deepEqual([channel.members, channel.joined, channel.pinned], [["bob", "jacob"], true, { name: "uploader", have: 2, mine: true }]);
   assert.deepEqual(
     channel.lines.map((line) => [line.who, line.did, line.repo]),

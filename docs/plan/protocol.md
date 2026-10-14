@@ -183,7 +183,7 @@ From the desk:
 | `{ "t": "hello", "version", "protocol" }` | First, once. The window refuses a protocol it does not know and says which side to update. |
 | `{ "t": "view", "view" }` | Whenever what should be drawn has changed. The whole view each time. |
 | `{ "t": "notice", "notice" }` | Something to tell the user that is not part of the picture. |
-| `{ "t": "arrival", "arrival" }` | A note worth a system notification. |
+| `{ "t": "arrival", "arrival" }` | A message, an answer or a draft worth a system notification. |
 | `{ "t": "ask", "id", "question" }` | The desk needs a yes or no from the user: a clone, applying a patch. The window shows a native dialog. `question` is `{ message, detail, confirm }` in the desk's words; `confirm` is what the button that says yes reads. |
 | `{ "t": "reply", "id", "outcome" }` | The answer to a command. `outcome` is `{ ok: true }` or `{ ok: false, problem }`, and may carry `data`. |
 

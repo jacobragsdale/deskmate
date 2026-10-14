@@ -41,7 +41,7 @@ function open(chat: string): void {
   desk.send({ do: "open", chat }).catch(report);
 }
 
-/** Tell the user about a note with the system's own notification, unless they are already looking at its chat. */
+/** Tell the user about a message or an answer with the system's own notification, unless they are already looking at its chat. */
 function arrived(arrival: Arrival): void {
   const looking = window?.isFocused() === true && current?.kind === "chat" && current.current?.chat === arrival.chat;
   if (looking || !Notification.isSupported()) {
@@ -164,7 +164,7 @@ function createWindow(): void {
     webPreferences: { preload: joinPath(import.meta.dirname, "preload.cjs"), contextIsolation: true, sandbox: true, nodeIntegration: false }
   });
   window = created;
-  // A link in a note opens in the user's browser; the window itself never leaves its own page.
+  // A link in a message opens in the user's browser; the window itself never leaves its own page.
   created.webContents.setWindowOpenHandler(({ url }) => {
     openOutside(url);
     return { action: "deny" };

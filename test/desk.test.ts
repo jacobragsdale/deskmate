@@ -29,7 +29,7 @@ function parse(line: string): DeskLine {
   return deskLineSchema.parse(JSON.parse(line));
 }
 
-await test("the desk by lines: the join form, joining, the chats, a note sent and one received, a question, a line it cannot read, and the end", { timeout: 60_000 }, async (t) => {
+await test("the desk by lines: the join form, joining, the chats, a message sent and one received, a question, a line it cannot read, and the end", { timeout: 60_000 }, async (t) => {
   const hub = await startHub(t, () => Date.now() / 1000);
   const dev = join(hub.dir, "dev");
   process.env["PLAYER_TWO_HOME"] = join(hub.dir, "desk");
@@ -88,16 +88,16 @@ await test("the desk by lines: the join form, joining, the chats, a note sent an
   const joined = await chat("the chat with bob", (view) => view.current?.chat === "bob" && view.team.length === 1);
   assert.deepEqual([joined.me, joined.agent, joined.link, joined.busy], ["alice", "agent -p --output-format text", { state: "connected" }, { working: 0, unsent: 0 }]);
 
-  // A note sent by a command comes back in a later view, and one from bob is announced.
+  // A message sent by a command comes back in a later view, and one from bob is announced.
   say({ t: "command", id: 3, command: { do: "send", chat: "bob", text: "lunch at noon?" } });
   assert.deepEqual(await reply(3), { ok: true });
-  await chat("the note alice sent", (view) => view.current?.messages.at(-1)?.body === "lunch at noon?");
+  await chat("the message alice sent", (view) => view.current?.messages.at(-1)?.body === "lunch at noon?");
   say({ t: "attend", attentive: false });
   await bob.publish("alice", "message", { text: "yes", via: "cli" });
-  assert.deepEqual(await next("bob's note announced", (line) => line.t === "arrival" && line.arrival), { chat: "bob", title: "bob", body: "yes", forMe: false, rings: true });
-  await chat("bob's note unread while alice looks away", (view) => view.unread === 1);
+  assert.deepEqual(await next("bob's message announced", (line) => line.t === "arrival" && line.arrival), { chat: "bob", title: "bob", body: "yes", forMe: false, rings: true });
+  await chat("bob's message unread while alice looks away", (view) => view.unread === 1);
   say({ t: "attend", attentive: true });
-  await chat("bob's note read once she is back", (view) => view.unread === 0 && view.current?.messages.at(-1)?.body === "yes");
+  await chat("bob's message read once she is back", (view) => view.unread === 0 && view.current?.messages.at(-1)?.body === "yes");
 
   // A clone is put to the user first, and a no means nothing is fetched.
   say({ t: "command", id: 4, command: { do: "clone", repo: "uploader" } });

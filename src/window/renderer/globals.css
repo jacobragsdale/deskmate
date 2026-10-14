@@ -115,7 +115,7 @@
 :root {
   color-scheme: light dark; /* Scroll bars and the native controls follow too. */
   --agent: #7a3fc4; /* The left edge and name of an agent's answer. */
-  --tag: #2a5bd7; /* A tag in a note, and links. */
+  --tag: #2a5bd7; /* A tag in a message, and links. */
   --warn: #9a5b00; /* What waits on the user: a request to run, a draft to review. */
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);

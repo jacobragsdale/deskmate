@@ -144,7 +144,7 @@ class Page {
 }
 
 await test(
-  "the window joins, opens a chat, sends a note and reads it back, shows a popover, a dialog and a toast in place, and draws a hostile note as text",
+  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions and edits as text, and pages back, keeping its place",
   { skip: NO_DISPLAY ? "no display: run it under xvfb-run" : false, timeout: 120_000 },
   async (t) => {
     assert.ok(existsSync(join(ROOT, "dist", "main.js")), "dist/ is not built: run `npm run build` first");
@@ -219,12 +219,12 @@ await test(
     await page.click('form button[type="submit"]');
     await page.until("the chat list with bob in it", `[...document.querySelectorAll("nav button")].some((each) => each.textContent.includes("bob"))`);
 
-    // A note sent from the message box comes back from the hub into the thread.
+    // A message sent from the message box comes back from the hub into the chat.
     await page.click("nav button", "bob");
     await page.until("the message box", `document.querySelector('textarea[aria-label="Message bob"]') !== null`);
     await page.type('textarea[aria-label="Message bob"]', "hello from the window");
     await page.press("Enter");
-    await page.until("the note in the thread", `document.querySelector("main").innerText.includes("hello from the window")`);
+    await page.until("the message in the chat", `document.querySelector("main").innerText.includes("hello from the window")`);
 
     // "@" opens the list of agents just above the message box.
     await page.type('textarea[aria-label="Message bob"]', "@");
@@ -251,13 +251,13 @@ await test(
     await page.press("Escape");
     await page.until("the dialog to close", `document.querySelector('[role="dialog"]') === null`);
 
-    // What a teammate writes is drawn as text, in plain notes and in Markdown alike: nothing in it runs or loads.
+    // What a teammate writes is drawn as text, in plain messages and in Markdown alike: nothing in it runs or loads.
     await bob.publish("alice", "message", { text: `<script>window.pwned = 1</script><img src="x" onerror="window.pwned = 2"> plain`, via: "cli" });
     await bob.publish("alice", "message", {
       text: '```\nfenced\n```\n\n<script>window.pwned = 3</script>\n\n<img src=x onerror="window.pwned = 4">\n\n![remote](https://example.com/a.png)',
       via: "cli"
     });
-    await page.until("both notes in the thread", `document.querySelector("main").innerText.includes("plain") && document.querySelector("main").innerText.includes("fenced")`);
+    await page.until("both messages in the chat", `document.querySelector("main").innerText.includes("plain") && document.querySelector("main").innerText.includes("fenced")`);
 
     // A reply from bob shows as its root's count and last reply; alice opens the thread and replies in it.
     const root = (await bob.events({ chat: "alice" })).find((each) => each.event.content.includes("hello from the window"));
