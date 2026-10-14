@@ -3,9 +3,10 @@
 import { spawn } from "node:child_process";
 import { join as joinPath } from "node:path";
 
-import type { Agent } from "../../core/wire.ts";
+import type { Agent, PermissionMode } from "../../core/wire.ts";
 import { AgentCancelledError, defaultHome, PlayerTwoError } from "../client.ts";
 import type { Runner } from "../client.ts";
+import { CURSOR_ONESHOT } from "./presets.ts";
 import type { AgentRunner } from "./runner.ts";
 
 export const AGENT_TIMEOUT = 900; // Seconds an approved agent run may take.
@@ -97,7 +98,29 @@ export const runAgent: Runner = (argv, cwd, cancel) =>
     });
   });
 
-/** A one-shot command as an agent runner: the agent's program and arguments with the prompt added as the last argument. It takes no questions, so it cannot be held to a mode. */
+/**
+ * A one-shot command as an agent runner: the agent's program and arguments with the prompt added as the last argument. It takes no questions, so it cannot be held to a mode,
+ * with one exception: Cursor's command as the preset has it only proposes changes, so it runs read-only as it is, and with --force at full. Any other one-shot command runs only at full.
+ */
 export function oneshotRunner(agent: Agent, exec: Runner = runAgent): AgentRunner {
-  return { restrictable: false, run: (prompt, cwd, _mode, _handlers, cancel) => exec([agent.command, ...agent.args, prompt], cwd, cancel) };
+  const cursor = JSON.stringify([agent.command, ...agent.args]) === JSON.stringify([CURSOR_ONESHOT.command, ...CURSOR_ONESHOT.args]);
+  const cannotHonour = (mode: PermissionMode): string => {
+    if (mode === "full" || (cursor && mode === "read-only")) {
+      return "";
+    }
+    return cursor
+      ? `${agent.label} runs either read-only, when it only proposes changes, or with full access, and nothing between`
+      : `${agent.label} runs as a single command and cannot be limited: it runs only with full access`;
+  };
+  return {
+    restrictable: false,
+    cannotHonour,
+    run: (prompt, cwd, mode, _handlers, cancel) => {
+      const why = cannotHonour(mode);
+      if (why !== "") {
+        return Promise.reject(new PlayerTwoError(why));
+      }
+      return exec([agent.command, ...agent.args, ...(cursor && mode === "full" ? ["--force"] : []), prompt], cwd, cancel);
+    }
+  };
 }

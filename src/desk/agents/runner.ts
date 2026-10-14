@@ -17,6 +17,8 @@ export interface RunHandlers {
 
 export interface AgentRunner {
   readonly restrictable: boolean; // False means modes cannot be enforced on it.
+  /** Why it cannot be held to `mode`, said before a run starts; "" when it can. A run at such a mode is refused before anything starts. */
+  cannotHonour(mode: PermissionMode): string;
   /** Run the agent on `prompt` in `cwd` and resolve with its answer. Aborting `cancel` stops it and everything it started, and rejects with AgentCancelledError. */
   run(prompt: string, cwd: string, mode: PermissionMode, handlers: RunHandlers, cancel: AbortSignal): Promise<string>;
 }

@@ -1,10 +1,16 @@
-/** The agents Player Two knows how to start: Cursor's and Copilot's command lines, each over ACP and as a one-shot command. The join form and the setup page offer them; any other is typed in. */
+/**
+ * The agents Player Two knows how to start: Cursor's and Copilot's command lines, each over ACP and as a one-shot command. The join form and the setup page offer them; any other is typed in.
+ * Nothing here may use what it imports while the module loads: oneshot.ts imports this one back.
+ */
 
 import type { Agent } from "../../core/wire.ts";
 import { splitCommand } from "./oneshot.ts";
 
+/** Cursor's command line run once. Without --force it only proposes changes, which oneshot.ts relies on to run it read-only. */
+export const CURSOR_ONESHOT: Agent = { id: "cursor-oneshot", label: "Cursor one-shot", protocol: "oneshot", command: "agent", args: ["-p", "--output-format", "text"] };
+
 /** What the join form offers first: Cursor, one-shot, as before phase 3. */
-export const DEFAULT_PRESET: Agent = { id: "cursor-oneshot", label: "Cursor one-shot", protocol: "oneshot", command: "agent", args: ["-p", "--output-format", "text"] };
+export const DEFAULT_PRESET = CURSOR_ONESHOT;
 
 export const PRESETS: readonly Agent[] = [
   DEFAULT_PRESET,

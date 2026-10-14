@@ -11,10 +11,11 @@ import { z } from "zod";
 
 import { candidates, ChatLog, continues, rings, STALE } from "../src/core/chat.ts";
 import type { Entry, Message } from "../src/core/chat.ts";
-import { runAgent, splitCommand } from "../src/desk/agents/oneshot.ts";
+import { oneshotRunner, runAgent, splitCommand } from "../src/desk/agents/oneshot.ts";
 import { DEFAULT_PRESET, oneshotAgent } from "../src/desk/agents/presets.ts";
 import { AgentCancelledError, Client, PlayerTwoError, readConfig } from "../src/desk/client.ts";
-import type { Transport } from "../src/desk/client.ts";
+import type { Runner, Transport } from "../src/desk/client.ts";
+import type { RunHandlers } from "../src/desk/agents/runner.ts";
 import { readContent } from "../src/core/kinds.ts";
 import { noteIn, noteLink, noteOf, notesIn } from "../src/core/links.ts";
 import { loadKey, publicHex, signEvent } from "../src/core/sign.ts";
@@ -655,4 +656,35 @@ await test("running an agent returns what it printed, reports a failure, and sto
   }, 100);
   await assert.rejects(run, AgentCancelledError);
   assert.ok(Date.now() - started < 5000);
+});
+
+await test("a one-shot agent runs only at a mode its command can keep to: Cursor's read-only as it is or at full with --force, any other only at full, and nothing starts at another", async () => {
+  const ran: string[][] = [];
+  const exec: Runner = (argv) => {
+    ran.push([...argv]);
+    return Promise.resolve("done");
+  };
+  const never = new AbortController().signal;
+  const handlers: RunHandlers = { activity: () => undefined, permission: () => Promise.resolve("refuse") };
+  const cursor = oneshotRunner(DEFAULT_PRESET, exec);
+  const copilot = oneshotRunner(oneshotAgent("copilot -s --allow-all-tools --no-ask-user -p"), exec);
+  const own = oneshotRunner(oneshotAgent("claude -p"), exec);
+  assert.deepEqual(
+    [cursor, copilot, own].map((runner) => [runner.restrictable, ...MODES.map((mode) => runner.cannotHonour(mode) === "")]),
+    [
+      [false, true, false, false, true],
+      [false, false, false, false, true],
+      [false, false, false, false, true]
+    ]
+  );
+  assert.equal(await cursor.run("hi", process.cwd(), "read-only", handlers, never), "done");
+  assert.equal(await cursor.run("hi", process.cwd(), "full", handlers, never), "done");
+  assert.equal(await own.run("hi", process.cwd(), "full", handlers, never), "done");
+  await assert.rejects(cursor.run("hi", process.cwd(), "auto-edits", handlers, never), /^Error: Cursor one-shot runs either read-only, when it only proposes changes, or with full access/);
+  await assert.rejects(copilot.run("hi", process.cwd(), "read-only", handlers, never), /^Error: Copilot one-shot runs as a single command and cannot be limited/);
+  assert.deepEqual(ran, [
+    ["agent", "-p", "--output-format", "text", "hi"],
+    ["agent", "-p", "--output-format", "text", "--force", "hi"],
+    ["claude", "-p", "hi"]
+  ]);
 });
