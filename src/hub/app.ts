@@ -1,16 +1,18 @@
-/** The hub: keeps everyone's public key, and answers who has joined. Ported from src/deskmate/hub.py route for route: the same paths, the same statuses, the same words. */
+/** The hub: keeps everyone's public key and which repos each has checked out. Ported from src/deskmate/hub.py route for route: the same paths, the same statuses, the same words. */
 
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 
-import type { z } from "zod";
+import { z } from "zod";
 
+import { isUnder, prefixKey } from "../core/remotes.ts";
 import { authClaim, authIsValid } from "../core/sign.ts";
-import { joinSchema } from "../core/wire.ts";
-import { prefixKey } from "../desk/repos.ts";
+import { joinSchema, repoSchema } from "../core/wire.ts";
+import type { RepoRef } from "../core/wire.ts";
 import { Database } from "./db.ts";
 
+const MAX_REPOS = 500; // Most checkouts one person may advertise.
 const MAX_REQUEST = 4_000_000; // Most characters one request's body may hold: several times the longest list of repos or the longest note.
 
 export interface HubSettings {
@@ -21,6 +23,8 @@ export interface HubSettings {
 
 /** Something worth a line in the hub's log: what happened, and the facts of it. */
 export type Log = (event: string, facts: Readonly<Record<string, string | number>>) => void;
+
+const advertsSchema = z.array(repoSchema).max(MAX_REPOS);
 
 /** One request as a route sees it. */
 interface Ask {
@@ -112,6 +116,12 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     return claim.name;
   }
 
+  function shareable(repo: RepoRef): void {
+    if (!isUnder(repo.key, prefix)) {
+      throw new Refusal(422, `${repo.name} is not under ${prefix}, so this hub does not share it`);
+    }
+  }
+
   function join(ask: Ask): Answer {
     const { name, pubkey, token } = jsonBody(joinSchema, ask.body);
     if (!sameSecret(token, settings.joinToken)) {
@@ -125,11 +135,24 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     return [201, { name, pubkey }];
   }
 
+  /** Replace the list of repos the caller has checked out. */
+  function putRepos(ask: Ask): Answer {
+    const mine = jsonBody(advertsSchema, ask.body);
+    mine.forEach(shareable);
+    if (new Set(mine.map((repo) => repo.name)).size !== mine.length) {
+      throw new Refusal(422, "two repos share a name");
+    }
+    db.replaceRepos(ask.me, mine);
+    return [200, mine];
+  }
+
   const routes: readonly Route[] = [
     { method: "GET", path: "/healthz", open: true, answer: () => [200, { ok: true }] },
     { method: "POST", path: "/join", open: true, answer: join },
     { method: "GET", path: "/info", answer: () => [200, { repos: prefix }] },
-    { method: "GET", path: "/users", answer: () => [200, db.users()] }
+    { method: "GET", path: "/users", answer: () => [200, db.users()] },
+    { method: "PUT", path: "/repos", answer: putRepos },
+    { method: "GET", path: "/repos", answer: () => [200, db.repos()] }
   ];
 
   async function answer(request: IncomingMessage): Promise<Answer> {

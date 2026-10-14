@@ -4,8 +4,8 @@ import { DatabaseSync } from "node:sqlite";
 
 import { z } from "zod";
 
-import { personSchema } from "../core/wire.ts";
-import type { Person } from "../core/wire.ts";
+import { personSchema, teamRepoSchema } from "../core/wire.ts";
+import type { Person, Repo, TeamRepo } from "../core/wire.ts";
 
 const SCHEMA_VERSION = 3;
 const BUSY_WAIT = 5; // Seconds to wait for another program that holds the file, such as a backup, before giving up.
@@ -36,6 +36,7 @@ const versionSchema = z.strictObject({ user_version: z.int() });
 const tablesSchema = z.strictObject({ tables: z.int() });
 const pubkeySchema = z.strictObject({ pubkey: z.string() }).optional();
 const peopleSchema = z.array(personSchema);
+const teamReposSchema = z.array(teamRepoSchema);
 
 export class Database {
   private readonly db: DatabaseSync;
@@ -73,5 +74,26 @@ export class Database {
 
   public users(): readonly Person[] {
     return peopleSchema.parse(this.db.prepare("SELECT name, pubkey, seen FROM users ORDER BY name").all());
+  }
+
+  /** Replace the repos one person has checked out, all of them or none. */
+  public replaceRepos(user: string, repos: readonly Repo[]): void {
+    this.db.exec("BEGIN");
+    try {
+      this.db.prepare("DELETE FROM repos WHERE user = ?").run(user);
+      const insert = this.db.prepare("INSERT INTO repos (user, name, key, url, branch) VALUES (?, ?, ?, ?, ?)");
+      for (const repo of repos) {
+        insert.run(user, repo.name, repo.key, repo.url, repo.branch);
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  /** Every repo anyone has checked out, with whose copy it is. */
+  public repos(): readonly TeamRepo[] {
+    return teamReposSchema.parse(this.db.prepare("SELECT name, key, url, branch, user FROM repos ORDER BY name, user").all());
   }
 }
