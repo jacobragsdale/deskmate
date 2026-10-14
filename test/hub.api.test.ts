@@ -354,8 +354,8 @@ await test("a chat pages back with before and limit, catching up pages forward w
   assert.deepEqual(await refused("limit=0"), [422, "invalid limit: Too small: expected number to be >=1"]);
   assert.deepEqual(await refused("limit=201"), [422, "invalid limit: Too big: expected number to be <=200"]);
   assert.deepEqual(await refused("chat=Alice"), [422, "invalid chat: Invalid string: must match pattern /^#?[a-z0-9][a-z0-9_-]{0,31}$/"]);
-  assert.deepEqual(await refused("before=3"), [422, "invalid query: before goes with chat, and after without it"]);
-  assert.deepEqual(await refused("chat=alice&after=3"), [422, "invalid query: before goes with chat, and after without it"]);
+  assert.deepEqual(await refused("before=3"), [422, "invalid query: before or around goes with chat, and after without it"]);
+  assert.deepEqual(await refused("chat=alice&after=3"), [422, "invalid query: before or around goes with chat, and after without it"]);
 });
 
 await test("the stream sends what is visible after S, then each event as it is stored, a comment every 20 seconds, and nothing more of a channel once it is left", { timeout: 10_000 }, async (t) => {

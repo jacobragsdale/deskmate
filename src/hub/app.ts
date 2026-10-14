@@ -52,6 +52,7 @@ const eventsQuerySchema = z.object({
   chat: addressSchema.optional(),
   before: numeric.pipe(z.int()).optional(),
   after: numeric.pipe(z.int()).optional(),
+  around: numeric.pipe(z.int()).optional(),
   limit: numeric.pipe(z.int().min(1).max(MAX_PAGE)).default(PAGE)
 });
 const streamQuerySchema = z.object({ after: numeric.pipe(z.int()).default(0) });
@@ -68,6 +69,7 @@ const searchQuerySchema = z.object({
 /** One request as a route sees it. */
 interface Ask {
   readonly me: string; // Who is asking, proved by their signature; "" on the routes open to anyone.
+  readonly id: string; // The event id the path names; "" on a route that names none.
   readonly query: URLSearchParams;
   readonly body: string; // What the request carried, not yet parsed.
   readonly response: ServerResponse; // For the stream, which writes to it itself.
@@ -77,7 +79,7 @@ type Answer = readonly [status: number, body: unknown];
 
 interface Route {
   readonly method: string;
-  readonly path: string;
+  readonly path: string; // With "{id}" where an event's id goes.
   readonly open?: true; // Answered without asking who is calling.
   readonly answer: (ask: Ask) => Answer | null; // Null when the route has answered by itself.
 }
@@ -317,13 +319,28 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     return [201, { seq }];
   }
 
-  /** One chat's events older than `before`, newest first, for paging back through it; or without a chat, everything the caller can see after `after`, oldest first, for catching up. */
+  /**
+   * One chat's events older than `before`, newest first, for paging back through it; or around `around`, oldest first, for opening it at one event;
+   * or without a chat, everything the caller can see after `after`, oldest first, for catching up.
+   */
   function getEvents(ask: Ask): Answer {
-    const { chat, before, after, limit } = parsed(eventsQuerySchema, Object.fromEntries(ask.query), "query");
-    if (chat === undefined ? before !== undefined : after !== undefined) {
-      throw new Refusal(422, "invalid query: before goes with chat, and after without it");
+    const { chat, before, after, around, limit } = parsed(eventsQuerySchema, Object.fromEntries(ask.query), "query");
+    if (chat === undefined ? before !== undefined || around !== undefined : after !== undefined || (before !== undefined && around !== undefined)) {
+      throw new Refusal(422, "invalid query: before or around goes with chat, and after without it");
     }
-    return [200, chat === undefined ? db.eventsAfter(ask.me, after ?? 0, limit) : db.chatEvents(ask.me, chat, before ?? Number.MAX_SAFE_INTEGER, limit)];
+    if (chat === undefined) {
+      return [200, db.eventsAfter(ask.me, after ?? 0, limit)];
+    }
+    return [200, around === undefined ? db.chatEvents(ask.me, chat, before ?? Number.MAX_SAFE_INTEGER, limit) : db.chatAround(ask.me, chat, around, limit)];
+  }
+
+  /** One event the caller can see, by the id in the path. One they cannot see is answered as one that does not exist, so that asking says nothing about what is in a chat they are not in. */
+  function getEvent(ask: Ask): Answer {
+    const found = db.event(ask.me, ask.id);
+    if (found === null) {
+      throw new Refusal(404, "there is no event with that id that you can see");
+    }
+    return [200, found];
   }
 
   /** The messages and answers the caller can see that hold every word they asked for, best match first, each with a marked stretch of its text. */
@@ -379,11 +396,13 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     { method: "GET", path: "/repos", answer: () => [200, db.repos()] },
     { method: "POST", path: "/events", answer: postEvent },
     { method: "GET", path: "/events", answer: getEvents },
+    { method: "GET", path: "/events/{id}", answer: getEvent },
     { method: "GET", path: "/search", answer: search },
     { method: "GET", path: "/stream", answer: stream },
     { method: "GET", path: "/audit/head", answer: () => [200, db.head()] }, // For comparing with what someone saw before: a log changed since cannot end in the same chain value.
     { method: "GET", path: "/channels", answer: () => [200, db.channels().map(channelInfo)] }
   ];
+  const table = routes.map((route) => ({ route, pattern: new RegExp(`^${route.path.replace("{id}", "([0-9a-f]{64})")}$`) })); // Any other id is no route at all, and answered 404.
 
   /** The digest of the runtime in the downloads folder, from the file beside it. */
   function runtimeDigest(): string {
@@ -437,13 +456,16 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     if (served(path, request, response)) {
       return null; // Answered already, with a file, a page or a script rather than JSON.
     }
-    const there = routes.filter((route) => route.path === path);
-    const hit = there.find((route) => route.method === request.method);
+    const there = table.flatMap(({ route, pattern }) => {
+      const found = pattern.exec(path);
+      return found === null ? [] : [{ route, id: found[1] ?? "" }];
+    });
+    const hit = there.find((candidate) => candidate.route.method === request.method);
     if (hit === undefined) {
       throw there.length === 0 ? new Refusal(404, "Not Found") : new Refusal(405, "Method Not Allowed");
     }
-    const me = hit.open === true ? "" : caller(request);
-    return hit.answer({ me, query: new URLSearchParams(query.join("?")), body: await bodyText(request), response });
+    const me = hit.route.open === true ? "" : caller(request);
+    return hit.route.answer({ me, id: hit.id, query: new URLSearchParams(query.join("?")), body: await bodyText(request), response });
   }
 
   const server = createServer((request, response) => {

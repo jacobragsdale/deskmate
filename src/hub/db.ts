@@ -276,6 +276,21 @@ export class Database {
     );
   }
 
+  /** One chat's events around `around`, oldest first: up to half of `limit` from before it, and the rest from it on, so that a page opened at one event shows what came either side of it. */
+  public chatAround(me: string, chat: string, around: number, limit: number): readonly Delivered[] {
+    const older = Math.floor(limit / 2);
+    const these = `${inChat(chat)} AND ${VISIBLE}`;
+    const before = `SELECT * FROM (SELECT ${EVENT_COLUMNS} FROM events WHERE seq < :around AND ${these} ORDER BY seq DESC LIMIT :older)`;
+    const from = `SELECT * FROM (SELECT ${EVENT_COLUMNS} FROM events WHERE seq >= :around AND ${these} ORDER BY seq LIMIT :newer)`;
+    return eventRowsSchema.parse(this.db.prepare(`${before} UNION ALL ${from} ORDER BY seq`).all({ me, chat, around, older, newer: limit - older }));
+  }
+
+  /** One event `me` can see, by its id; null when there is none, or none they can see, which the caller cannot tell apart. */
+  public event(me: string, id: string): Delivered | null {
+    const row = this.db.prepare(`SELECT ${EVENT_COLUMNS} FROM events WHERE id = :id AND ${VISIBLE}`).get({ me, id });
+    return row === undefined ? null : eventRowSchema.parse(row);
+  }
+
   /**
    * The messages and answers `me` can see that hold every one of `words`, in one chat or in any, best match first, at most `limit` of them; each with a stretch of its text, as last edited, the words found marked with HIT_OPEN and HIT_CLOSE.
    * Each word is quoted, so nothing typed is read as FTS5's own syntax: a word is matched as the tokens it holds, and one that holds none matches nothing.

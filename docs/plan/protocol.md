@@ -162,9 +162,9 @@ The `/notes` routes and the four channel-changing routes go. In their place:
 |---|---|
 | `POST /events` | Accepts one signed event. `201 { seq }`. `409` when the id was already stored. |
 | `GET /events?chat=A&before=S&limit=N` | One chat's events, newest first, older than `seq` S, or the newest without `before`. `limit` up to 200, and 100 when it is not given. For a direct chat, `chat` is the other person; a channel's `#` is sent as `%23`. |
-| `GET /events?after=S&limit=N` | Everything visible to the caller after `seq` S (0 when not given), oldest first. For catching up. `before` goes only with `chat`, and `after` only without it. |
-| `GET /events?chat=A&around=S&limit=N` | Phase 2. A page centred on one event, for opening a search result. |
-| `GET /events/{id}` | Phase 2. One event the caller can see, with its `seq`. |
+| `GET /events?after=S&limit=N` | Everything visible to the caller after `seq` S (0 when not given), oldest first. For catching up. `before` and `around` go only with `chat`, and not together, and `after` only without it. |
+| `GET /events?chat=A&around=S&limit=N` | Phase 2. A page centred on `seq` S, for opening a search result: up to half of N from before S, and the rest from S on, oldest first. `limit` as for `before`. |
+| `GET /events/{id}` | Phase 2. `{ seq, event }` for one event the caller can see. `404` when there is none they can see, whether or not it exists. |
 | `GET /stream?after=S` | A `text/event-stream` that never ends: one `data:` line per event as `{ seq, event }`, and a comment line every 20 seconds so proxies keep it open. An event is sent when the caller can see it as the stream reaches it; one passed over is not sent later, when they can. |
 | `GET /audit/head` | `{ seq, chain }` for the newest event; `{ seq: 0, chain }` with 64 zeros before the first. |
 | `GET /search?q=Q&chat=A&limit=N` | Phase 2. Full-text search over messages and results in chats the caller can see, as last edited, in chat `A` when it is given: `[{ seq, event, snippet }]`, best match first, `limit` up to 50 and 20 when it is not given. A result holds every word of `Q`, at most 8 words, each matched as a word and never as query syntax. `snippet` is a stretch of the text with each word found between the characters U+0002 and U+0003, which the hub keeps out of what it indexes; the client replaces them. |

@@ -289,6 +289,8 @@ await test("the client reads past a field a newer hub adds, but refuses one insi
     ],
     "POST /events": { seq: 7, chain: "new" },
     "GET /events": [{ seq: 7, event, chain: "new" }],
+    [`GET /events/${event.id}`]: { seq: 7, event, chain: "new" },
+    "GET /search": [{ seq: 7, event, snippet: "say \u0002hello\u0003 to…", rank: "new" }],
     "GET /audit/head": { seq: 7, chain: "0".repeat(64), events: "new" }
   });
 
@@ -298,8 +300,22 @@ await test("the client reads past a field a newer hub adds, but refuses one insi
   assert.deepEqual(await client.channels(), [backend, pinned]);
   assert.equal((await client.publish("bob", "message", { text: "hello", via: "cli" })).seq, 7);
   assert.deepEqual(await client.events({ chat: "bob" }), [{ seq: 7, event }]);
+  assert.deepEqual(await client.around({ chat: "bob", around: 7 }), [{ seq: 7, event }]);
+  assert.deepEqual(await client.event(event.id), { seq: 7, event });
+  assert.deepEqual(await client.search({ q: "hello" }), [
+    {
+      seq: 7,
+      event,
+      snippet: [
+        { text: "say ", hit: false },
+        { text: "hello", hit: true },
+        { text: " to…", hit: false }
+      ]
+    }
+  ]);
   assert.deepEqual(await client.head(), { seq: 7, chain: "0".repeat(64) });
   await assert.rejects(clientOf({ "GET /events": [{ seq: 7, event: { ...event, via: "new" } }] }).events({ chat: "bob" }), /Unrecognized key/);
+  await assert.rejects(clientOf({ "GET /search": [{ seq: 7, event: { ...event, via: "new" }, snippet: "" }] }).search({ q: "hello" }), /Unrecognized key/);
 });
 
 await test("the client posts an event whose id it knows at once, reads a chat back newest first, catches up past a page, and follows the stream across a drop", { timeout: 20_000 }, async (t) => {

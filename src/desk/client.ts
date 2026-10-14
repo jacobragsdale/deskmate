@@ -1,4 +1,4 @@
-/** Talking to the hub as one person: identity, signed requests, events and the stream of them, and key pinning. Running an agent is in agents/oneshot.ts. */
+/** Talking to the hub as one person: identity, signed requests, events, searching them and the stream of them, and key pinning. Running an agent is in agents/oneshot.ts. */
 
 import type { KeyObject } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -11,7 +11,20 @@ import { z } from "zod";
 import { contentSchema } from "../core/kinds.ts";
 import type { Content, ContentOf } from "../core/kinds.ts";
 import { authHeader, eventIsAuthentic, loadKey, newKey, privateHex, publicHex, signEvent } from "../core/sign.ts";
-import { channelInfoSchema, configSchema, deliveredSchema, hubInfoSchema, personSchema, receiptSchema, repoSchema, teamRepoSchema, userSchema } from "../core/wire.ts";
+import {
+  channelInfoSchema,
+  configSchema,
+  deliveredSchema,
+  eventSchema,
+  HIT_CLOSE,
+  HIT_OPEN,
+  hubInfoSchema,
+  personSchema,
+  receiptSchema,
+  repoSchema,
+  teamRepoSchema,
+  userSchema
+} from "../core/wire.ts";
 import type { ChannelInfo, Config, Delivered, Event, HubInfo, Person, Repo, TeamRepo } from "../core/wire.ts";
 import { AGENT_CHOICES } from "../shared/ipc.ts";
 
@@ -35,8 +48,33 @@ const auditHeadSchema = z.object({ seq: z.int(), chain: z.string() }).readonly()
 const pinsSchema = z.record(z.string(), z.string());
 const hubErrorSchema = z.object({ detail: z.string() });
 
+/** A search result's snippet cut at the hub's marks into plain stretches and the words the search found. */
+function marked(snippet: string): { readonly text: string; readonly hit: boolean }[] {
+  // Split on a pattern with a group, the found words come between the plain stretches: every second piece is one.
+  return snippet
+    .split(new RegExp(`${HIT_OPEN}(.*?)${HIT_CLOSE}`, "su"))
+    .map((text, index) => ({ text, hit: index % 2 === 1 }))
+    .filter((piece) => piece.text !== "");
+}
+
+/** A search result: a message or an answer, and a stretch of its text as last edited, in pieces, the words found marked. */
+const foundSchema = z.object({ seq: z.int(), event: eventSchema, snippet: z.string().transform(marked) }).readonly();
+const foundListSchema = z.array(foundSchema);
+
+export type Found = z.infer<typeof foundSchema>;
+
 /** A failure the user can act on; shown as it is. */
 export class PlayerTwoError extends Error {}
+
+/** The hub refused a request. `status` is the HTTP status it answered with, for a caller to tell "not there" from any other failure. */
+export class Refused extends PlayerTwoError {
+  public readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
 
 /** The user stopped an agent run. */
 export class AgentCancelledError extends PlayerTwoError {}
@@ -64,7 +102,7 @@ export const http: Transport = async (method, url, headers, body) => {
   }
   if (!response.ok) {
     const detail = detailOf(text);
-    throw new PlayerTwoError(detail === "" ? `the hub answered ${String(response.status)} for ${url}` : detail);
+    throw new Refused(response.status, detail === "" ? `the hub answered ${String(response.status)} for ${url}` : detail);
   }
   return text;
 };
@@ -124,6 +162,39 @@ export class Client {
       params.set("limit", String(query.limit));
     }
     return eventListSchema.parse(parseJson(await this.call("GET", `/events?${params.toString()}`)));
+  }
+
+  /** One chat's page centred on `around`, a seq, oldest first: up to half of `limit` (the hub's page when not given) from before it, and the rest from it on. A channel is named with its "#". */
+  public async around(query: { readonly chat: string; readonly around: number; readonly limit?: number }): Promise<Delivered[]> {
+    const params = new URLSearchParams({ chat: query.chat, around: String(query.around) });
+    if (query.limit !== undefined) {
+      params.set("limit", String(query.limit));
+    }
+    return eventListSchema.parse(parseJson(await this.call("GET", `/events?${params.toString()}`)));
+  }
+
+  /** One event this user can see, by its id, with its seq; null when there is none they can see. Untrusted until `isTrusted` says otherwise, as is every event the hub hands over. */
+  public async event(id: string): Promise<Delivered | null> {
+    try {
+      return deliveredSchema.parse(parseJson(await this.call("GET", `/events/${encodeURIComponent(id)}`)));
+    } catch (error) {
+      if (error instanceof Refused && error.status === 404) {
+        return null; // Never stored, or not for this user: the hub does not say which.
+      }
+      throw error;
+    }
+  }
+
+  /** The messages and answers this user can see that hold every word of `q` (at most 8), in one chat or in all, best match first: at most `limit` (20 when not given, up to 50). */
+  public async search(query: { readonly q: string; readonly chat?: string; readonly limit?: number }): Promise<Found[]> {
+    const params = new URLSearchParams({ q: query.q });
+    if (query.chat !== undefined) {
+      params.set("chat", query.chat);
+    }
+    if (query.limit !== undefined) {
+      params.set("limit", String(query.limit));
+    }
+    return foundListSchema.parse(parseJson(await this.call("GET", `/search?${params.toString()}`)));
   }
 
   /** The newest seq in the hub's log, and its chain value. */
