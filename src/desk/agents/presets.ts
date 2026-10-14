@@ -33,3 +33,15 @@ export function oneshotAgent(commandLine: string): Agent {
     }
   );
 }
+
+// How to sign in to each preset's own service, by program, for when an agent says it must and does not name a command itself.
+// ponytail: Copilot's is from its documentation, not tried here; P3-F3 checks both on the workstation.
+const SIGN_IN = new Map([
+  ["agent", "`agent login`"],
+  ["copilot", "`copilot`, then `/login` in it"]
+]);
+
+/** How the user signs in to an agent's own service, in words for a problem shown to them. */
+export function signInFor(agent: Agent): string {
+  return SIGN_IN.get(agent.command) ?? `${agent.label}'s own sign-in`;
+}

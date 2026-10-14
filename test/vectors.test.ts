@@ -25,7 +25,7 @@ const vectors = z
     remotes: z.array(z.tuple([z.string(), z.strictObject({ key: z.string(), name: z.string(), url: z.string() }).nullable()])),
     prefixes: z.array(z.tuple([z.string(), z.string()])),
     mentions: z.array(z.tuple([z.string(), z.array(z.tuple([z.string(), z.string()]))])),
-    prompts: z.array(z.strictObject({ review: z.boolean(), prompt: z.string() }))
+    prompts: z.array(z.strictObject({ review: z.boolean(), mcp: z.boolean().optional(), prompt: z.string() }))
   })
   .parse(JSON.parse(readFileSync(join(import.meta.dirname, "fixtures", "signing-vectors.json"), "utf8")));
 
@@ -102,7 +102,8 @@ await test("an agent is told what is on record", () => {
   const prompts = [
     agentPrompt(shown(3, "bob", "#backend", ask), "jacob", "uploader", earlier, true),
     agentPrompt(shown(3, "bob", "jacob", ask), "jacob", "uploader", [], false),
-    agentPrompt(shown(3, "jacob", "bob", ask), "jacob", "uploader", [], false)
+    agentPrompt(shown(3, "jacob", "bob", ask), "jacob", "uploader", [], false),
+    agentPrompt(shown(3, "bob", "#backend", ask), "jacob", "uploader", earlier, true, true)
   ];
   assert.deepEqual(
     prompts,

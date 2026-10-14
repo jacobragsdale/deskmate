@@ -452,8 +452,8 @@ export class ChatLog {
   }
 }
 
-/** What the user's agent is told when it is set to work on a message that tags it. */
-export function agentPrompt(message: Message, me: string, repo: string, earlier: readonly Message[], review: boolean): string {
+/** What the user's agent is told when it is set to work on a message that tags it. `mcp` says it runs over ACP, with Player Two's MCP server attached. */
+export function agentPrompt(message: Message, me: string, repo: string, earlier: readonly Message[], review: boolean, mcp = false): string {
   const { author, to } = message.entry.event;
   const asker = author === me ? me : `${author}, a teammate,`;
   const other = author === me ? to : author;
@@ -475,8 +475,10 @@ export function agentPrompt(message: Message, me: string, repo: string, earlier:
     `${asker} tagged you ${where} through Player Two with the request below. ${reply}`,
     "Answer the request directly and concisely. Reply in Markdown.",
     "Never put secrets, tokens or credentials in the reply.",
-    // Every run is a one-shot command until phase 3, which gives runs over ACP the MCP tools instead of these two sentences.
-    "To look at earlier notes in Player Two, you may run `player-two search --json WORDS` and `player-two read --json LINK`.",
+    // A run over ACP has Player Two's MCP server attached, whose tools need no command run, which its mode may not allow; a one-shot command has the command line.
+    mcp
+      ? "To look at earlier notes in Player Two, use the tools of its MCP server, player-two."
+      : "To look at earlier notes in Player Two, you may run `player-two search --json WORDS` and `player-two read --json LINK`.",
     "Cite each note you relied on by its link, which starts with player-two://note/.",
     ...context,
     "",

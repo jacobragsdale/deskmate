@@ -25,6 +25,7 @@
     "package:linux": "electron-builder --linux --publish never"
   },
   "dependencies": {
+    "@agentclientprotocol/sdk": "^1.8.0",
     "@modelcontextprotocol/sdk": "^1.32.1",
     "class-variance-authority": "^0.7.1",
     "cmdk": "^1.1.1",

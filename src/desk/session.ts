@@ -12,6 +12,7 @@ import type { Accepted, Entry, Message, Request } from "../core/chat.ts";
 import { readContent } from "../core/kinds.ts";
 import { notesIn } from "../core/links.ts";
 import type { Content, ContentOf } from "../core/kinds.ts";
+import { acpRunner } from "./agents/acp.ts";
 import { oneshotRunner, runAgent } from "./agents/oneshot.ts";
 import { PRESETS } from "./agents/presets.ts";
 import type { AgentRunner, RunHandlers } from "./agents/runner.ts";
@@ -997,13 +998,11 @@ export class Session {
       throw new PlayerTwoError(`there is no checkout of ${repo} under ${this.dev}`);
     }
     const agent = defaultAgentOf(this.client.config);
-    if (agent.protocol === "acp") {
-      throw new PlayerTwoError(`${agent.label} is spoken to over ACP, which this version cannot do yet: choose a one-shot agent on the Setup page`);
-    }
-    const prompt = agentPrompt(message, this.me, repo, this.chats.earlier(message), !post);
+    const overAcp = agent.protocol === "acp";
+    const prompt = agentPrompt(message, this.me, repo, this.chats.earlier(message), !post, overAcp);
     const run: AgentRun = { entry: message.entry, repo, post, cancel: new AbortController(), startedAt: Date.now(), done: Promise.resolve() };
     this.runs.set(key, run);
-    run.done = this.work(key, run, checkout, oneshotRunner(agent, this.runner), prompt);
+    run.done = this.work(key, run, checkout, overAcp ? acpRunner(agent) : oneshotRunner(agent, this.runner), prompt);
     this.hooks.changed();
   }
 
