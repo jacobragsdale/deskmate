@@ -45,14 +45,3 @@ export function runHub(args: readonly string[], env: NodeJS.ProcessEnv): Server 
   });
   return server;
 }
-
-// Until the `deskmate` command exists (section D of phase 0), this file is how the hub is started: `node src/hub/main.ts`.
-// The command's `hub` then calls runHub, and this goes: bundled into one file, it would start a hub whatever the command was.
-if (import.meta.main) {
-  try {
-    runHub(process.argv.slice(2), process.env);
-  } catch (error) {
-    console.error(`the hub cannot start: ${error instanceof Error ? error.message : String(error)}`);
-    process.exitCode = 1;
-  }
-}

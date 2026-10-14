@@ -1,0 +1,184 @@
+/** The deskmate command: one-shot commands for scripts and agents, and the hub. One program, so one file to ship. */
+
+import { text } from "node:stream/consumers";
+import { parseArgs } from "node:util";
+
+import { z } from "zod";
+
+import { chatOf } from "../core/chat.ts";
+import { isChannel } from "../core/wire.ts";
+import type { Delivered } from "../core/wire.ts";
+import { DEFAULT_AGENT, defaultHome, DeskmateError, http, join, loadClient, POLL_WAIT } from "../desk/client.ts";
+import type { Client, Transport } from "../desk/client.ts";
+import { problemOf } from "../desk/session.ts";
+import { runHub } from "../hub/main.ts";
+
+const INBOX = 20; // Notes `inbox` prints when it is not told where to start.
+
+/** Where the command finds things and where it writes. The defaults are the real ones; a test passes its own. */
+export interface Options {
+  readonly home?: string; // The folder the identity is in.
+  readonly transport?: Transport;
+  readonly now?: () => number; // Unix seconds.
+  readonly stdin?: NodeJS.ReadableStream; // Where `send TO -` reads the note from.
+  readonly out?: (line: string) => void;
+  readonly err?: (line: string) => void;
+}
+
+// An argument is text whatever it stands for, so a number is checked before anything is sent.
+const secondsSchema = z
+  .string()
+  .regex(/^\d+(\.\d+)?$/)
+  .transform(Number);
+const idSchema = z.string().regex(/^\d+$/).transform(Number).pipe(z.int());
+
+function numberOf(schema: z.ZodType<number>, given: string, option: string): number {
+  const result = schema.safeParse(given);
+  if (!result.success) {
+    throw new DeskmateError(`--${option} takes a number, not ${given}`);
+  }
+  return result.data;
+}
+
+/** One note as the terminal shows it. One that failed its signature check is never shown with its text. */
+export function render(delivered: Delivered, trusted: boolean): string {
+  const { id, note } = delivered;
+  if (!trusted) {
+    return `!! note ${String(id)} claims to be from ${note.sender}, but its signature does not match the key first seen for them. Ignored.`;
+  }
+  const when = new Date(note.ts * 1000).toLocaleString("en-GB", { weekday: "short", hour: "2-digit", minute: "2-digit" }); // "Fri 14:05", in this machine's own time.
+  const lines = note.body.split(/\r\n|\r|\n/).map((line) => `│ ${line}`);
+  return [`┌ ${String(id)} · ${note.sender}${note.agent === null ? "" : ` (${note.agent} agent)`}${isChannel(note.to) ? ` in ${note.to}` : ""} · ${when}`, ...lines, "└"].join("\n");
+}
+
+/** The next trusted note from someone else in this chat, if one arrives in time. */
+async function awaitReply(client: Client, chat: string, sent: number, seconds: number): Promise<Delivered | null> {
+  const deadline = performance.now() + seconds * 1000;
+  let after = sent;
+  for (let remaining = seconds; remaining > 0; remaining = (deadline - performance.now()) / 1000) {
+    for (const delivered of await client.notes({ after, wait: Math.min(remaining, POLL_WAIT), mine: false, status: false })) {
+      after = delivered.id;
+      if (chatOf(delivered.note, client.config.name) === chat && (await client.isTrusted(delivered.note))) {
+        return delivered;
+      }
+    }
+  }
+  return null;
+}
+
+async function send(joined: () => Client, args: string[], stdin: NodeJS.ReadableStream, out: (line: string) => void): Promise<void> {
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { wait: { type: "string", default: "0" } } });
+  const [to, ...words] = positionals;
+  const seconds = numberOf(secondsSchema, values.wait, "wait");
+  if (to === undefined || words.length === 0) {
+    throw new DeskmateError("send takes who it is to and the note: deskmate send TO TEXT...");
+  }
+  const client = joined();
+  const sent = await client.send(to, words.length === 1 && words[0] === "-" ? (await text(stdin)).trim() : words.join(" "));
+  out(`→ sent ${String(sent)} to ${to}`);
+  if (seconds > 0) {
+    const reply = await awaitReply(client, to, sent, seconds);
+    out(reply === null ? `nothing new in ${to} yet; check later with: deskmate inbox --after ${String(sent)}` : render(reply, true));
+  }
+}
+
+async function inbox(joined: () => Client, args: string[], out: (line: string) => void): Promise<void> {
+  const { values } = parseArgs({ args, options: { after: { type: "string" }, wait: { type: "string", default: "0" } } });
+  const wait = numberOf(secondsSchema, values.wait, "wait");
+  const after = values.after === undefined ? null : numberOf(idSchema, values.after, "after");
+  const client = joined();
+  const notes = after === null ? await client.notes({ tail: INBOX, mine: false, status: false }) : await client.notes({ after, wait, mine: false, status: false });
+  const shown: string[] = [];
+  for (const delivered of notes) {
+    shown.push(render(delivered, await client.isTrusted(delivered.note)));
+  }
+  out(shown.length === 0 ? "no notes" : shown.join("\n"));
+}
+
+async function channel(joined: () => Client, args: string[], out: (line: string) => void): Promise<void> {
+  const [action = "list", name] = parseArgs({ args, allowPositionals: true }).positionals;
+  if (action !== "list" && action !== "join" && action !== "leave") {
+    throw new DeskmateError(`channel takes list, join or leave, not ${action}`);
+  }
+  const client = joined();
+  if (action === "list") {
+    const channels = await client.channels();
+    const lines = channels.map((each) => `${each.name}${each.members.includes(client.config.name) ? " (joined)" : ""}  ${each.members.join(", ")}`);
+    out(lines.length === 0 ? "no channels yet" : lines.join("\n"));
+    return;
+  }
+  if (name === undefined) {
+    throw new DeskmateError(`which channel? Try: deskmate channel ${action} backend`);
+  }
+  const info = action === "join" ? await client.joinChannel(name) : await client.leaveChannel(name);
+  out(`${action === "join" ? "joined" : "left"} ${info.name}; members: ${info.members.length === 0 ? "none" : info.members.join(", ")}`);
+}
+
+async function register(home: string, transport: Transport, args: string[], out: (line: string) => void): Promise<void> {
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { agent: { type: "string", default: DEFAULT_AGENT } } });
+  const [hub, name, token] = positionals;
+  if (hub === undefined || name === undefined || token === undefined || positionals.length > 3) {
+    throw new DeskmateError("join takes the hub's address, your name and the join token: deskmate join HUB NAME TOKEN");
+  }
+  const config = await join(home, hub, name, token, values.agent, transport);
+  out(`joined ${config.hub} as ${config.name}; your agent command is \`${config.agent}\``);
+}
+
+async function run(argv: readonly string[], options: Options, out: (line: string) => void): Promise<void> {
+  const [command = "", ...args] = argv;
+  const home = options.home ?? defaultHome();
+  const transport = options.transport ?? http;
+  const joined = (): Client => {
+    const client = loadClient(home, transport, options.now ?? (() => Date.now() / 1000));
+    if (client === null) {
+      throw new DeskmateError("not joined yet: run `deskmate join HUB NAME TOKEN`");
+    }
+    return client;
+  };
+  switch (command) {
+    case "hub":
+      runHub(args, process.env); // It keeps the program alive from here, until it is told to stop.
+      break;
+    case "join":
+      await register(home, transport, args, out);
+      break;
+    case "send":
+      await send(joined, args, options.stdin ?? process.stdin, out);
+      break;
+    case "inbox":
+      await inbox(joined, args, out);
+      break;
+    case "channel":
+      await channel(joined, args, out);
+      break;
+    case "who": {
+      parseArgs({ args });
+      const client = joined();
+      out((await client.users()).map((user) => `${user.name}${user.name === client.config.name ? " (you)" : ""}`).join("\n"));
+      break;
+    }
+    case "repos": {
+      parseArgs({ args });
+      const lines = (await joined().repos()).map((repo) => `@${repo.user}/${repo.name}  ${repo.branch}`);
+      out(lines.length === 0 ? "nobody has shared a repo yet; repos under ~/dev are shared once the window has run" : lines.join("\n"));
+      break;
+    }
+    default:
+      throw new DeskmateError(command === "" ? "which command? One of: join, send, inbox, who, repos, channel, hub" : `no such command: ${command}`);
+  }
+}
+
+/** Run one command and resolve with its exit status. */
+export async function main(argv: readonly string[], options: Options = {}): Promise<number> {
+  try {
+    await run(argv, options, options.out ?? console.log);
+    return 0;
+  } catch (error) {
+    (options.err ?? console.error)(`deskmate: ${problemOf(error)}`);
+    return 1;
+  }
+}
+
+if (import.meta.main) {
+  process.exitCode = await main(process.argv.slice(2));
+}
