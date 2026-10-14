@@ -2,6 +2,8 @@
 
 import type { JSX } from "react";
 
+import { ScrollArea } from "@/components/ui/scroll-area";
+
 import type { ChatView, RowView } from "../../shared/ipc.ts";
 import type { Act } from "./App.tsx";
 
@@ -33,25 +35,27 @@ export function Sidebar({ view, act, onJoin }: { readonly view: ChatView; readon
   const people = view.rows.filter((row) => row.here !== null);
   const open = view.current?.chat ?? "";
   return (
-    <nav className="sidebar">
-      <h2>Channels</h2>
-      <ul>
-        {channels.map((row) => (
-          <Row key={row.chat} row={row} open={row.chat === open} act={act} />
-        ))}
-        <li>
-          <button type="button" className="row quiet" onClick={onJoin}>
-            + Join or create
-          </button>
-        </li>
-      </ul>
-      <h2>People</h2>
-      <ul>
-        {people.map((row) => (
-          <Row key={row.chat} row={row} open={row.chat === open} act={act} />
-        ))}
-      </ul>
-      {view.loaded && people.length === 0 && <p className="quiet">nobody else yet</p>}
-    </nav>
+    <ScrollArea className="w-[220px] flex-none border-r bg-sidebar">
+      <nav className="sidebar">
+        <h2>Channels</h2>
+        <ul>
+          {channels.map((row) => (
+            <Row key={row.chat} row={row} open={row.chat === open} act={act} />
+          ))}
+          <li>
+            <button type="button" className="row quiet" onClick={onJoin}>
+              + Join or create
+            </button>
+          </li>
+        </ul>
+        <h2>People</h2>
+        <ul>
+          {people.map((row) => (
+            <Row key={row.chat} row={row} open={row.chat === open} act={act} />
+          ))}
+        </ul>
+        {view.loaded && people.length === 0 && <p className="quiet">nobody else yet</p>}
+      </nav>
+    </ScrollArea>
   );
 }

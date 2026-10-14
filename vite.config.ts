@@ -14,25 +14,30 @@ if (hub !== "" && !/^https?:\/\/\S*[^/\s]$/.test(hub)) {
   throw new Error(`PLAYER_TWO_HUB_URL must be the hub's http or https address with no slash at the end, not ${JSON.stringify(hub)}`);
 }
 
-// Sonner writes its stylesheet into a <style> element as it loads, which the page's content security policy refuses. globals.css imports the same stylesheet from Sonner's own file, so that one call is taken out.
-const SONNER_INSERTS_CSS = /^__insertCSS\(".*"\);$/m;
-const sonnerStylesFromFile: Plugin = {
-  name: "sonner-styles-from-file",
+// Two dependencies write a <style> element as they run, which the page's content security policy refuses: Sonner its whole stylesheet as it loads, and Radix's scroll area a rule that hides the native scroll bars.
+// globals.css loads the same CSS from a file, and this takes the two writes out as they are bundled. The build stops if one is no longer there to take out, so a new version is looked at before it meets the policy.
+const STYLE_ELEMENTS: readonly { readonly file: string; readonly write: RegExp }[] = [
+  { file: "/node_modules/sonner/dist/", write: /^__insertCSS\(".*"\);$/m },
+  { file: "/node_modules/@radix-ui/react-scroll-area/dist/", write: /\/\* @__PURE__ \*\/ jsx\(ScrollAreaViewportStyle, \{ nonce \}\),/ }
+];
+const noStyleElements: Plugin = {
+  name: "no-style-elements",
   transform(code, id) {
-    if (!id.includes("/node_modules/sonner/dist/")) {
+    const found = STYLE_ELEMENTS.find((each) => id.includes(each.file));
+    if (found === undefined) {
       return null;
     }
-    if (!SONNER_INSERTS_CSS.test(code)) {
-      throw new Error(`${id} no longer adds its stylesheet the way vite.config.ts expects: look again at how it does, before its <style> element meets the content security policy`);
+    if (!found.write.test(code)) {
+      throw new Error(`${id} no longer writes its <style> element the way vite.config.ts expects: look at how it does now, before it meets the content security policy`);
     }
-    return { code: code.replace(SONNER_INSERTS_CSS, ""), map: null };
+    return { code: code.replace(found.write, ""), map: null };
   }
 };
 
 export default defineConfig({
   root: renderer,
   base: "./", // The page is opened from a file, so everything it loads is named relative to it.
-  plugins: [react(), tailwindcss(), sonnerStylesFromFile],
+  plugins: [react(), tailwindcss(), noStyleElements],
   // react-style-singleton writes <style> elements, which the page's content security policy refuses; see styleSingleton.ts.
   resolve: { alias: { "@": renderer, "react-style-singleton": join(renderer, "styleSingleton.ts") } },
   define: { PLAYER_TWO_HUB_URL: JSON.stringify(hub) },

@@ -118,12 +118,7 @@ footer.down span:last-child {
 /* ── chat list ── */
 
 .sidebar {
-  width: 220px;
-  flex: none;
-  overflow-y: auto;
   padding: 8px;
-  background: var(--sidebar);
-  border-right: 1px solid var(--border);
 }
 
 .sidebar h2 {
@@ -252,12 +247,6 @@ footer.down span:last-child {
   padding: 6px 16px;
   border-bottom: 1px solid var(--border);
   color: var(--warn);
-}
-
-.thread {
-  flex: 1;
-  overflow-y: auto;
-  padding: 8px 16px 12px;
 }
 
 .rule {

@@ -4,6 +4,8 @@ import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { JSX } from "react";
 import Markdown from "react-markdown";
 
+import { ScrollArea } from "@/components/ui/scroll-area";
+
 import { spans } from "../../core/chat.ts";
 import type { ChatView, CurrentView, MessageView, RequestView } from "../../shared/ipc.ts";
 import type { Act } from "./App.tsx";
@@ -264,27 +266,29 @@ export function Thread({ view, current, act, onPin }: { readonly view: ChatView;
           </button>
         </p>
       )}
-      <div
-        className="thread"
-        ref={scroller}
-        onScroll={(event) => {
+      <ScrollArea
+        className="min-h-0 flex-1"
+        viewportRef={scroller}
+        onViewportScroll={(event) => {
           const box = event.currentTarget;
           atEnd.current = box.scrollHeight - box.scrollTop - box.clientHeight < NEAR_BOTTOM;
         }}
       >
-        {current.messages.length === 0 && <p className="quiet">No notes here yet. Type @ to tag an agent.</p>}
-        {current.messages.map((message, index) => {
-          const before = current.messages[index - 1];
-          const newDay = before === undefined || new Date(before.ts * 1000).toDateString() !== new Date(message.ts * 1000).toDateString();
-          return (
-            <Fragment key={message.id}>
-              {newDay && <p className="rule">{dayLabel(message.ts)}</p>}
-              {message === firstNew && <p className="rule new">new</p>}
-              <Message message={message} me={view.me} act={act} />
-            </Fragment>
-          );
-        })}
-      </div>
+        <div className="px-4 pt-2 pb-3">
+          {current.messages.length === 0 && <p className="quiet">No notes here yet. Type @ to tag an agent.</p>}
+          {current.messages.map((message, index) => {
+            const before = current.messages[index - 1];
+            const newDay = before === undefined || new Date(before.ts * 1000).toDateString() !== new Date(message.ts * 1000).toDateString();
+            return (
+              <Fragment key={message.id}>
+                {newDay && <p className="rule">{dayLabel(message.ts)}</p>}
+                {message === firstNew && <p className="rule new">new</p>}
+                <Message message={message} me={view.me} act={act} />
+              </Fragment>
+            );
+          })}
+        </div>
+      </ScrollArea>
     </>
   );
 }

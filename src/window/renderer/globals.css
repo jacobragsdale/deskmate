@@ -6,6 +6,20 @@
 @import "sonner/dist/styles.css"; /* Sonner's own, which it would otherwise write into a <style> element; see vite.config.ts. */
 @import "./styles.css" layer(legacy);
 
+/* Radix's scroll area hides its viewport's native scroll bars with a <style> element of its own, which vite.config.ts takes out; this is the same rule. */
+[data-radix-scroll-area-viewport] {
+  scrollbar-width: none;
+}
+
+[data-radix-scroll-area-viewport]::-webkit-scrollbar {
+  display: none;
+}
+
+/* Radix lays the content out as a table so it can tell when it grows sideways. The window scrolls only up and down, and as a table one long line of code would widen the whole thread instead of scrolling in its own box. */
+[data-radix-scroll-area-viewport] > div {
+  display: block !important;
+}
+
 /* From shadcn/tailwind.css (shadcn 4.21.4): the variants and the one utility the components in components/ui are written with, copied so the shadcn command need not be a dependency. */
 @custom-variant data-open {
   &:where([data-state="open"]),
