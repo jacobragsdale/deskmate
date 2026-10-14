@@ -385,6 +385,12 @@ export class ChatLog {
     return chat === undefined ? null : (this.folded(chat).messages.get(id) ?? null);
   }
 
+  /** The request an answer is to, as it stands now, when it is in the answer's own chat, as the fold places answers; null for a message, and for an answer whose request is elsewhere or not loaded. */
+  public answered(answer: Message): Message | null {
+    const chat = this.where.get(answer.entry.event.id);
+    return answer.answers === null || chat === undefined ? null : (this.folded(chat).messages.get(answer.answers) ?? null);
+  }
+
   /** The seq of a chat's oldest event here, and of its newest; null when there are none. */
   public bounds(chat: string): { readonly oldest: number; readonly newest: number } | null {
     const events = this.chats.get(chat) ?? [];

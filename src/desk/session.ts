@@ -377,7 +377,7 @@ export class Session {
 
   private replyView(message: Message, previous: Message | null, now: number): ReplyView {
     const { seq, event } = message.entry;
-    const answered = message.answers === null ? null : this.chats.message(message.answers);
+    const answered = this.chats.answered(message);
     const accepted = this.acceptedFor(message, now);
     return {
       id: event.id,
@@ -456,9 +456,9 @@ export class Session {
     return this.chats.items(chat).flatMap((item) => (item.kind === "line" ? [{ seq: item.entry.seq, ts: item.entry.event.ts, who: item.entry.event.author, did: item.did, repo: item.repo }] : []));
   }
 
-  /** What an answer's run was let go ahead with: from the job it answers, when its request is here. */
+  /** What an answer's run was let go ahead with: from the job it answers, when its request is loaded in the answer's own chat. */
   private acceptedFor(message: Message, now: number): Accepted | null {
-    const request = message.answers === null ? null : this.chats.message(message.answers);
+    const request = this.chats.answered(message);
     const job = request === null ? undefined : this.chats.requests(request, now).find((each) => each.owner === message.entry.event.author && each.repo === message.agent);
     return job?.accepted ?? null;
   }

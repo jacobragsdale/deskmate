@@ -441,6 +441,35 @@ const patient: Runner = (argv, _cwd, cancel) =>
       })
     : Promise.resolve("done");
 
+await test("an answer quotes its request, and says where it ran, only from a request in its own chat", { timeout: 30_000 }, async (t) => {
+  const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+  const [alice, bob] = [await hub.join("alice"), await hub.join("bob")];
+  await alice.publish("#side", "channel.join", {});
+  await bob.publish("#side", "channel.join", {});
+  const elsewhere = (await bob.publish("#side", "message", { text: "@alice/uploader asked in the channel", via: "cli" })).event.id;
+  const here = (await bob.publish("alice", "message", { text: "@alice/uploader asked here", via: "cli" })).event.id;
+  const accepted = { repo: "uploader", branch: "main", commit: COMMIT, dirty: false, delivery: "post", mode: "full", by: "owner" } as const;
+  await alice.publish("#side", "job.accepted", accepted, [elsewhere]);
+  await alice.publish("bob", "job.accepted", accepted, [here]);
+  // Both answers are sent to bob; the first names a request in another chat.
+  await alice.publish("bob", "job.result", { repo: "uploader", branch: "main", text: "answer to #side", reviewed: false }, [elsewhere]);
+  await alice.publish("bob", "job.result", { repo: "uploader", branch: "main", text: "answer to alice", reviewed: false }, [here]);
+  const { session } = deskOf(t, bob, join(hub.dir, "dev"));
+  await until(session, "everything loaded", (view) => view.loaded);
+  await session.handle({ do: "open", chat: "alice" });
+  const answers = await until(session, "both answers", (view) => {
+    const found = messages(view).filter((message) => message.agent === "uploader");
+    return found.length === 2 && found;
+  });
+  assert.deepEqual(
+    answers.map((answer) => [answer.body, answer.quote, answer.commit]),
+    [
+      ["answer to #side", "", ""],
+      ["answer to alice", "bob: @alice/uploader asked here", COMMIT]
+    ]
+  );
+});
+
 await test("a request its asker deletes leaves its owner a run they can still see and stop, and a draft they can still throw away", { timeout: 30_000 }, async (t) => {
   const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
   const alice = await hub.join("alice");
