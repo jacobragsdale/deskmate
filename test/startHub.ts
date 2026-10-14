@@ -18,6 +18,7 @@ export interface Hub {
   readonly url: string;
   readonly dir: string; // Holds the hub's database and a home folder for each person who joins.
   readonly join: (name: string) => Promise<Client>; // Join under a name and return a client for that identity.
+  readonly drop: () => void; // Cut every connection open to the hub, as a proxy that gives up on them would.
 }
 
 /** A hub of its own for one test, listening on a port the system picked. A test of something that reads the real clock, as the desk does, passes that clock as `now`; one of what a teammate installs passes the folder it serves. */
@@ -45,6 +46,9 @@ export async function startHub(t: TestContext, now: () => number = () => NOW, do
       const client = loadClient(join(dir, name), http, now);
       assert.ok(client !== null);
       return client;
+    },
+    drop: () => {
+      server.closeAllConnections();
     }
   };
 }

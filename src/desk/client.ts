@@ -1,32 +1,39 @@
-/** Talking to the hub as one person: identity, signed requests and key pinning. Running an agent is in agents/oneshot.ts. */
+/** Talking to the hub as one person: identity, signed requests, events and the stream of them, and key pinning. Running an agent is in agents/oneshot.ts. */
 
 import type { KeyObject } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join as joinPath } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { z } from "zod";
 
-import { authHeader, loadKey, newKey, noteIsAuthentic, privateHex, publicHex, signNote } from "../core/sign.ts";
+import { contentSchema } from "../core/kinds.ts";
+import type { Content } from "../core/kinds.ts";
+import { authHeader, loadKey, newKey, noteIsAuthentic, privateHex, publicHex, signEvent, signNote } from "../core/sign.ts";
 import {
   channelInfoSchema,
   configSchema,
   deliveredNoteSchema,
+  deliveredSchema,
   hubInfoSchema,
   nameSchema,
   noteReceiptSchema,
   personSchema,
+  receiptSchema,
   repoRefSchema,
   repoSchema,
   teamRepoSchema,
   userSchema
 } from "../core/wire.ts";
-import type { ChannelInfo, Config, DeliveredNote, HubInfo, Kind, Note, Person, Repo, RepoRef, TeamRepo } from "../core/wire.ts";
+import type { ChannelInfo, Config, Delivered, DeliveredNote, HubInfo, Kind, Note, Person, Repo, RepoRef, TeamRepo } from "../core/wire.ts";
 import { AGENT_CHOICES } from "../shared/ipc.ts";
 
 export const DEFAULT_AGENT: string = AGENT_CHOICES[0].command; // Cursor, as the join form offers it first.
 export const POLL_WAIT = 25; // Seconds one long-poll stays open; under the hub's limit and common proxy timeouts.
 const CALL_TIMEOUT = 10;
+const CATCH_UP_PAGE = 200; // Events one catching-up request asks for: the most the hub gives at once.
+const STREAM_RETRY = 30; // Most seconds between two tries at opening the stream again.
 const JSON_BODY = { "Content-Type": "application/json" };
 
 /** Makes one HTTP request and resolves with the response body. Rejects with a PlayerTwoError the user can act on. */
@@ -38,7 +45,8 @@ const peopleSchema = z.array(personSchema);
 const reposSchema = z.array(repoSchema);
 const teamReposSchema = z.array(teamRepoSchema);
 const channelsSchema = z.array(channelInfoSchema);
-const deliveredListSchema = z.array(deliveredNoteSchema);
+const noteListSchema = z.array(deliveredNoteSchema);
+const eventListSchema = z.array(deliveredSchema);
 const pinsSchema = z.record(z.string(), z.string());
 const hubErrorSchema = z.object({ detail: z.string() });
 
@@ -150,7 +158,75 @@ export class Client {
   ): Promise<DeliveredNote[]> {
     const wait = options.wait ?? 0;
     const query = `/notes?after=${String(options.after ?? 0)}&wait=${wait.toFixed(1)}&mine=${String(options.mine ?? true)}&status=${String(options.status ?? true)}${options.tail === undefined ? "" : `&tail=${String(options.tail)}`}`;
-    return deliveredListSchema.parse(parseJson(await this.call("GET", query, null, wait + CALL_TIMEOUT, options.signal)));
+    return noteListSchema.parse(parseJson(await this.call("GET", query, null, wait + CALL_TIMEOUT, options.signal)));
+  }
+
+  /** Sign an event and hand it to the hub. Its id is known once it is signed; resolves with the event and the place the hub gave it. */
+  public async publish<K extends Content["kind"]>(to: string, kind: K, content: Extract<Content, { readonly kind: K }>["content"], refs: readonly string[] = []): Promise<Delivered> {
+    const said = contentSchema.parse({ kind, content }); // What is signed is what this version reads the kind as, so every reader of the kind can read it.
+    const event = signEvent(this.key, { author: this.config.name, to, kind, content: JSON.stringify(said.content), ts: Math.floor(this.now()), refs });
+    const { seq } = receiptSchema.parse(parseJson(await this.call("POST", "/events", JSON.stringify(event))));
+    return { seq, event };
+  }
+
+  /** One chat's events, newest first: the newest `limit` of them (the hub's page when not given), or those older than `before`. A channel is named with its "#". */
+  public async events(query: { readonly chat: string; readonly before?: number; readonly limit?: number }): Promise<Delivered[]> {
+    const params = new URLSearchParams({ chat: query.chat });
+    if (query.before !== undefined) {
+      params.set("before", String(query.before));
+    }
+    if (query.limit !== undefined) {
+      params.set("limit", String(query.limit));
+    }
+    return eventListSchema.parse(parseJson(await this.call("GET", `/events?${params.toString()}`)));
+  }
+
+  /** Everything this user can see after `after`, oldest first, a page at a time until there is no more. */
+  public async catchUp(after: number): Promise<Delivered[]> {
+    const found: Delivered[] = [];
+    for (;;) {
+      const page = eventListSchema.parse(parseJson(await this.call("GET", `/events?after=${String(found.at(-1)?.seq ?? after)}&limit=${String(CATCH_UP_PAGE)}`)));
+      found.push(...page);
+      if (page.length < CATCH_UP_PAGE) {
+        return found;
+      }
+    }
+  }
+
+  /**
+   * Follow the hub until `signal` is aborted: hand `onEvents` what this user can see after `after`, then each event as the hub stores it, a batch for each piece of the response read.
+   * When the stream drops it is opened again from the last seq handed over, after a second, then twice as long each time it fails, up to STREAM_RETRY.
+   * It does not go through the transport, whose time limit would cut a response that is meant never to end.
+   */
+  public async stream(after: number, onEvents: (batch: readonly Delivered[]) => Promise<void>, signal: AbortSignal): Promise<void> {
+    let last = after;
+    let wait = 1;
+    while (!signal.aborted) {
+      try {
+        const path = `/stream?after=${String(last)}`;
+        const response = await fetch(this.config.hub + path, { headers: this.headers("GET", path, null), signal });
+        if (!response.ok || response.body === null) {
+          throw new PlayerTwoError(detailOf(await response.text()));
+        }
+        wait = 1;
+        const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+        let held = ""; // The start of a line whose end has not arrived yet.
+        for (let read = await reader.read(); !read.done; read = await reader.read()) {
+          const lines = (held + read.value).split("\n");
+          held = lines.pop() ?? "";
+          // Each event is one "data:" line; anything else is the comment that keeps proxies from closing an idle stream.
+          const batch = lines.filter((line) => line.startsWith("data: ")).map((line) => deliveredSchema.parse(parseJson(line.slice("data: ".length))));
+          if (batch.length > 0) {
+            await onEvents(batch);
+            last = batch.at(-1)?.seq ?? last;
+          }
+        }
+      } catch {
+        // Dropped, refused or unreadable: opened again below, from what was last handed over.
+      }
+      await delay(wait * 1000, undefined, { signal }).catch(() => undefined);
+      wait = Math.min(wait * 2, STREAM_RETRY);
+    }
   }
 
   /** Check a note against the key first seen for its sender, so a hub that later swaps a key cannot forge notes. */
@@ -166,9 +242,12 @@ export class Client {
     return pubkey !== undefined && noteIsAuthentic(note, pubkey);
   }
 
+  private headers(method: string, path: string, body: string | null): Readonly<Record<string, string>> {
+    return { Authorization: authHeader(this.key, this.config.name, Math.floor(this.now()), method, path), ...(body === null ? {} : JSON_BODY) };
+  }
+
   private call(method: string, path: string, body: string | null = null, timeoutSeconds = CALL_TIMEOUT, signal?: AbortSignal): Promise<string> {
-    const headers = { Authorization: authHeader(this.key, this.config.name, Math.floor(this.now()), method, path), ...(body === null ? {} : JSON_BODY) };
-    return this.transport(method, this.config.hub + path, headers, body, timeoutSeconds, signal);
+    return this.transport(method, this.config.hub + path, this.headers(method, path, body), body, timeoutSeconds, signal);
   }
 }
 

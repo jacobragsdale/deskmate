@@ -2,6 +2,9 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
+
+import { z } from "zod";
 
 import { candidates, ChatLog, STALE } from "../src/core/chat.ts";
 import type { Entry } from "../src/core/chat.ts";
@@ -12,7 +15,8 @@ import { readContent } from "../src/core/kinds.ts";
 import { loadKey, publicHex, signEvent, signNote } from "../src/core/sign.ts";
 import { Session } from "../src/desk/session.ts";
 import { eventSchema, fitBody, MAX_BODY, MAX_CONTENT, MAX_PATCH, PROTOCOL } from "../src/core/wire.ts";
-import type { Kind, TeamRepo } from "../src/core/wire.ts";
+import type { Delivered, Kind, TeamRepo } from "../src/core/wire.ts";
+import { startHub } from "./startHub.ts";
 
 const NOW = 1_800_000_000;
 const key = loadKey("11".repeat(32));
@@ -92,6 +96,58 @@ await test("the client reads past a field a newer hub adds, but refuses one insi
   assert.equal(await client.send("bob", "hello"), 7);
   assert.deepEqual(await client.notes(), [{ id: 7, note }]);
   await assert.rejects(clientOf({ "GET /notes": [{ id: 7, note: { ...note, via: "new" } }] }).notes(), /Unrecognized key/);
+});
+
+await test("the client posts an event whose id it knows at once, reads a chat back newest first, catches up past a page, and follows the stream across a drop", { timeout: 20_000 }, async (t) => {
+  const hub = await startHub(t);
+  const alice = await hub.join("alice");
+  const bob = await hub.join("bob");
+  const text = (delivered: Delivered): string => {
+    const said = readContent(delivered.event);
+    return said.kind === "message" ? said.content.text : delivered.event.kind;
+  };
+
+  const hello = await alice.publish("bob", "message", { text: "hello", via: "cli" });
+  const reply = await bob.publish("alice", "message", { text: "hi", via: "cli" }, [hello.event.id]);
+  assert.deepEqual([hello.seq, hello.event.author, reply.event.refs], [1, "alice", [hello.event.id]]);
+  assert.deepEqual(await bob.events({ chat: "alice" }), [reply, hello]);
+  assert.deepEqual(await bob.events({ chat: "alice", before: reply.seq, limit: 1 }), [hello]);
+  await assert.rejects(alice.publish("bob", "message", { text: "", via: "cli" }), z.ZodError); // Nothing is signed that its kind does not hold.
+
+  for (let count = 0; count < 200; count += 1) {
+    await alice.publish("bob", "reaction", { emoji: "👍", on: count % 2 === 0 }, [hello.event.id]);
+  }
+  const caught = await bob.catchUp(1);
+  assert.deepEqual([caught.length, caught[0]?.seq, caught.at(-1)?.seq], [201, 2, 202]);
+
+  // The stream sends what is there, and once the hub has cut it, it opens again from the last seq it handed over: what was sent in between arrives, and nothing twice.
+  const heard: Delivered[] = [];
+  const stop = new AbortController();
+  const following = bob.stream(
+    200,
+    (batch) => {
+      heard.push(...batch);
+      return Promise.resolve();
+    },
+    stop.signal
+  );
+  const until = async (count: number): Promise<void> => {
+    for (let tries = 0; heard.length < count && tries < 200; tries += 1) {
+      await delay(25);
+    }
+  };
+  await until(2);
+  hub.drop();
+  await delay(50);
+  const late = await alice.publish("bob", "message", { text: "while you were away", via: "cli" });
+  await until(3);
+  stop.abort();
+  await following;
+  assert.deepEqual(
+    heard.map((each) => each.seq),
+    [201, 202, late.seq]
+  );
+  assert.equal(text(heard[2] ?? late), "while you were away");
 });
 
 await test("a hub on another protocol is not followed: the session says which side to update, and asks again only once a minute", async (t) => {
