@@ -7,9 +7,12 @@ import type { IpcMainInvokeEvent } from "electron";
 
 import { problemOf } from "../../core/text.ts";
 import { commandSchema } from "../../shared/ipc.ts";
-import type { Arrival, Check, Outcome, Question, View } from "../../shared/ipc.ts";
+import type { Arrival, Check, DistroChoice, Outcome, Question, View } from "../../shared/ipc.ts";
 import { DeskProcess, localLaunch, windowChecks, wslLaunch } from "./deskProcess.ts";
 import { distroSchema, loadSettings, saveSettings } from "./settings.ts";
+import { listDistros } from "./wsl.ts";
+
+const START_WAIT = 120_000; // Milliseconds the setup page waits for a desk it started afresh: WSL can take half a minute to start, and the runtime is unpacked first.
 
 let window: BrowserWindow | null = null;
 let current: View | null = null; // What the desk last said to draw; null until it has said anything.
@@ -94,9 +97,26 @@ ipcMain.handle("command", async (event, raw: unknown): Promise<Outcome> => {
   return command.success ? desk.send(command.data) : { ok: false, problem: problemOf(command.error) };
 });
 
+/** Stop the desk and start it again, then wait until it has said hello or been given up on, or for START_WAIT. */
+async function startAfresh(): Promise<void> {
+  await desk.restart();
+  let timer: NodeJS.Timeout | undefined;
+  await Promise.race([
+    desk.started(),
+    new Promise((resolve) => {
+      timer = setTimeout(resolve, START_WAIT);
+    })
+  ]);
+  clearTimeout(timer);
+}
+
 // The setup check. On Windows the window's own part comes first, and only once it passes is there a desk to ask for the rest.
-ipcMain.handle("doctor", async (event): Promise<Check[]> => {
+ipcMain.handle("doctor", async (event, again: unknown): Promise<Check[]> => {
   fromWindow(event);
+  // "Check again" starts afresh a desk that is not up, so that what the user fixed is tried. One that is up is left alone, and its agents with it.
+  if (again === true && !desk.saidHello) {
+    await startAfresh();
+  }
   const own = process.platform === "win32" ? await windowChecks(loadSettings(app.getPath("userData")).distro, process.resourcesPath, desk.saidHello) : [];
   if (own.some((check) => check.status === "fail")) {
     return own;
@@ -105,7 +125,7 @@ ipcMain.handle("doctor", async (event): Promise<Check[]> => {
   return [...own, ...(asked.ok ? (asked.data ?? []) : [{ id: "desk", title: "The desk answers", status: "fail" as const, detail: asked.problem, fix: "" }])];
 });
 
-// Run the desk in another WSL distribution from now on, or with null in the default one. For the setup page, which task P0-I5 adds to the preload's calls.
+// Run the desk in another WSL distribution from now on, or with null in the default one, for the setup page's picker.
 ipcMain.handle("distro", async (event, raw: unknown): Promise<Outcome> => {
   fromWindow(event);
   const distro = distroSchema.safeParse(raw);
@@ -113,8 +133,18 @@ ipcMain.handle("distro", async (event, raw: unknown): Promise<Outcome> => {
     return { ok: false, problem: problemOf(distro.error) };
   }
   saveSettings(app.getPath("userData"), { distro: distro.data });
-  await desk.restart();
+  await startAfresh();
   return { ok: true };
+});
+
+// The distributions to choose from on the setup page, and the one chosen. Off Windows there is no choice to make.
+ipcMain.handle("distros", async (event): Promise<DistroChoice | null> => {
+  fromWindow(event);
+  if (process.platform !== "win32") {
+    return null;
+  }
+  const listed = await listDistros();
+  return { chosen: loadSettings(app.getPath("userData")).distro, names: listed.ok ? listed.value.map((each) => each.name) : [] };
 });
 
 function openOutside(url: string): void {
@@ -130,7 +160,7 @@ function createWindow(): void {
     minWidth: 560,
     minHeight: 360,
     title: "Player Two",
-    // The window shows text written by teammates and their agents, so it gets no Node, no Electron, and nothing but the preload's four calls.
+    // The window shows text written by teammates and their agents, so it gets no Node, no Electron, and nothing but the preload's few calls.
     webPreferences: { preload: joinPath(import.meta.dirname, "preload.cjs"), contextIsolation: true, sandbox: true, nodeIntegration: false }
   });
   window = created;

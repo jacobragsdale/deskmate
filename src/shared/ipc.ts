@@ -186,10 +186,18 @@ export type Question = z.infer<typeof questionSchema>;
 export type DeskLine = z.infer<typeof deskLineSchema>;
 export type WindowLine = z.infer<typeof windowLineSchema>;
 
+/** On Windows, the WSL distributions the setup page offers and the one chosen, null for whichever WSL uses by default. */
+export const distroChoiceSchema = z.strictObject({ chosen: z.string().nullable(), names: z.array(z.string()).readonly() }).readonly();
+
+export type DistroChoice = z.infer<typeof distroChoiceSchema>;
+
 /** The narrow set of calls the preload script gives the window. */
 export interface Bridge {
   readonly view: () => Promise<unknown>;
   readonly command: (command: Command) => Promise<unknown>;
   readonly onView: (listener: (view: unknown) => void) => () => void;
   readonly onNotice: (listener: (notice: unknown) => void) => () => void;
+  readonly doctor: (again: boolean) => Promise<unknown>; // The setup check. With `again`, a desk that is not up is first started afresh.
+  readonly distros: () => Promise<unknown>; // A DistroChoice on Windows, and null anywhere else.
+  readonly distro: (name: string | null) => Promise<unknown>; // Run the desk in this distribution from now on.
 }

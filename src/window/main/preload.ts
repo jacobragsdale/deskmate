@@ -1,4 +1,4 @@
-/** The only door between the window and the main process: four calls, no Node, no Electron. */
+/** The only door between the window and the main process: a few calls, no Node, no Electron. */
 
 import { contextBridge, ipcRenderer } from "electron";
 
@@ -16,6 +16,14 @@ function subscribe(channel: string): (listener: (payload: unknown) => void) => (
   };
 }
 
-const bridge: Bridge = { view: () => ipcRenderer.invoke("view"), command: (command) => ipcRenderer.invoke("command", command), onView: subscribe("view"), onNotice: subscribe("notice") };
+const bridge: Bridge = {
+  view: () => ipcRenderer.invoke("view"),
+  command: (command) => ipcRenderer.invoke("command", command),
+  onView: subscribe("view"),
+  onNotice: subscribe("notice"),
+  doctor: (again) => ipcRenderer.invoke("doctor", again),
+  distros: () => ipcRenderer.invoke("distros"),
+  distro: (name) => ipcRenderer.invoke("distro", name)
+};
 
 contextBridge.exposeInMainWorld("playerTwo", bridge);

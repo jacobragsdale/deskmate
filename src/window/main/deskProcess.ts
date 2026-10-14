@@ -142,6 +142,7 @@ export class DeskProcess {
   private readonly handlers: Handlers;
   private readonly restartDelay: number;
   private readonly waiting = new Map<number, (outcome: Outcome) => void>(); // Commands the desk has not answered yet, by id.
+  private readonly starting = new Set<(greeted: boolean) => void>(); // Those waiting to hear whether the desk now starting has said hello or been given up on.
   private child: ChildProcessWithoutNullStreams | null = null;
   private startAgain: NodeJS.Timeout | undefined; // The timer that starts a desk that went away unasked again.
   private wanted = true; // False once the window has stopped the desk or refused it: a desk that goes after that is not started again.
@@ -171,11 +172,11 @@ export class DeskProcess {
         if (launch.ok) {
           this.spawn(launch.value);
         } else {
-          this.handlers.view({ kind: "stopped", problem: launch.problem });
+          this.stopped(launch.problem);
         }
       },
       (error: unknown) => {
-        this.handlers.view({ kind: "stopped", problem: problemOf(error) });
+        this.stopped(problemOf(error));
       }
     );
   }
@@ -183,6 +184,15 @@ export class DeskProcess {
   /** Whether the desk now running has said hello, for the setup check. */
   public get saidHello(): boolean {
     return this.greeted;
+  }
+
+  /** Resolves with true once the desk now starting has said hello, or with false once it has been given up on or stopped. At once when it already has. */
+  public started(): Promise<boolean> {
+    return this.greeted
+      ? Promise.resolve(true)
+      : new Promise((resolve) => {
+          this.starting.add(resolve);
+        });
   }
 
   /** Have the desk do something. Resolves with its reply, or with a problem when the desk went before it gave one. */
@@ -279,11 +289,13 @@ export class DeskProcess {
     switch (line.t) {
       case "hello":
         this.greeted = line.protocol === PROTOCOL;
-        if (!this.greeted) {
+        if (this.greeted) {
+          this.settle(true);
+        } else {
           this.wanted = false;
           this.child?.kill();
           const stale = line.protocol > PROTOCOL ? "window" : "desk";
-          this.handlers.view({ kind: "stopped", problem: `the desk speaks protocol ${String(line.protocol)} and this window speaks protocol ${String(PROTOCOL)}: update the ${stale}` });
+          this.stopped(`the desk speaks protocol ${String(line.protocol)} and this window speaks protocol ${String(PROTOCOL)}: update the ${stale}`);
         }
         break;
       case "view":
@@ -306,14 +318,29 @@ export class DeskProcess {
     }
   }
 
+  /** Show the user that the desk will not start, and tell whoever is waiting on it. */
+  private stopped(problem: string): void {
+    this.handlers.view({ kind: "stopped", problem });
+    this.settle(false);
+  }
+
+  private settle(greeted: boolean): void {
+    for (const resolve of this.starting) {
+      resolve(greeted);
+    }
+    this.starting.clear();
+  }
+
   /** The desk's process has ended. Unless the window ended it, start it again a few times, each after a longer wait, and then say why it will not stay up. */
   private gone(code: number | null): void {
     this.child = null;
+    this.greeted = false;
     for (const settle of this.waiting.values()) {
       settle({ ok: false, problem: "the desk stopped before it answered" });
     }
     this.waiting.clear();
     if (!this.wanted) {
+      this.settle(false);
       return;
     }
     if (this.restarts < RESTARTS) {
@@ -327,6 +354,6 @@ export class DeskProcess {
       return;
     }
     const said = this.tail.trim();
-    this.handlers.view({ kind: "stopped", problem: `the desk keeps stopping${code === null ? "" : ` with status ${String(code)}`}${said === "" ? "" : `. The last it said:\n${said}`}` });
+    this.stopped(`the desk keeps stopping${code === null ? "" : ` with status ${String(code)}`}${said === "" ? "" : `. The last it said:\n${said}`}`);
   }
 }

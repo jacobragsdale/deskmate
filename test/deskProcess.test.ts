@@ -84,6 +84,7 @@ async function until<T>(what: string, find: () => T | undefined | false): Promis
 await test("the real desk is started, each command gets its own reply, and stopping it ends it", { timeout: 30_000 }, async (t) => {
   const { desk, views, notices } = hold(t, (dir) => ready({ command: process.execPath, args: [COMMAND, "desk"], env: { ...process.env, PLAYER_TWO_HOME: dir } }));
 
+  assert.equal(await desk.started(), true); // What the setup page waits on after starting the desk afresh.
   await until("the join form", () => views.length > 0);
   assert.equal(desk.saidHello, true);
   desk.attend(false);
@@ -154,6 +155,7 @@ await test("a desk started afresh while it was still being made ready is started
   const { desk, views, starts } = hold(t, slow);
 
   await desk.restart();
+  assert.equal(await desk.started(), true);
   await until("the join form", () => views.length > 0);
   await new Promise((resolve) => {
     setTimeout(resolve, 300); // Long enough for the first start's desk to have come up too, had it been let.
@@ -174,6 +176,7 @@ await test("a desk that speaks another protocol is refused and not started again
     )
   );
   const missing = hold(t, () => ready({ command: join(import.meta.dirname, "no-such-program"), args: [], env: {} }));
+  assert.deepEqual(await Promise.all([newer.desk.started(), missing.desk.started()]), [false, false]); // Neither will say hello: one is refused, the other given up on.
 
   await until("the newer desk refused", () => newer.views.length > 0);
   await until("the missing desk given up on", () => missing.views.length > 0);

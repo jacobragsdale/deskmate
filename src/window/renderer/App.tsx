@@ -1,12 +1,13 @@
-/** The window: a join form until this machine has joined a hub, then chats on the left and the open chat on the right. */
+/** The window: a join form until this machine has joined a hub, then chats on the left and the open chat on the right; the setup page when something is not right. */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { JSX, SyntheticEvent } from "react";
 
 import { AGENT_CHOICES, noticeSchema, outcomeSchema, viewSchema } from "../../shared/ipc.ts";
-import type { ChatView, Command, Notice, View } from "../../shared/ipc.ts";
+import type { ChatView, Check, Command, Notice, View } from "../../shared/ipc.ts";
 import { Composer } from "./Composer.tsx";
 import { JoinChannel, PickRepo } from "./dialogs.tsx";
+import { runSetupCheck, SetupPage } from "./SetupPage.tsx";
 import { Sidebar } from "./Sidebar.tsx";
 import { Thread } from "./Thread.tsx";
 
@@ -104,7 +105,7 @@ function Setup({ defaultAgent, tell }: { readonly defaultAgent: string; readonly
   );
 }
 
-function Chat({ view, act, tell }: { readonly view: ChatView; readonly act: Act; readonly tell: (notice: Notice) => void }): JSX.Element {
+function Chat({ view, act, tell, onSetup }: { readonly view: ChatView; readonly act: Act; readonly tell: (notice: Notice) => void; readonly onSetup: () => void }): JSX.Element {
   const [dialog, setDialog] = useState<"" | "join" | "pin">("");
   const [sidebar, setSidebar] = useState(true);
   const current = view.current;
@@ -171,7 +172,12 @@ function Chat({ view, act, tell }: { readonly view: ChatView; readonly act: Act;
           <span>
             {view.me} on {view.hub} · {view.agent} · {view.myRepos.length} {view.myRepos.length === 1 ? "repo" : "repos"} in {view.dev}
           </span>
-          <span>{link}</span>
+          <span>
+            {link} ·{" "}
+            <button type="button" className="link" onClick={onSetup}>
+              Setup
+            </button>
+          </span>
         </footer>
       </main>
       {dialog === "join" && (
@@ -204,6 +210,9 @@ function Chat({ view, act, tell }: { readonly view: ChatView; readonly act: Act;
 export function App(): JSX.Element {
   const [view, setView] = useState<View | null>(null);
   const [toasts, setToasts] = useState<readonly Toast[]>([]);
+  const [setup, setSetup] = useState<{ readonly initial: readonly Check[] | null } | null>(null); // The setup page while it is open, with the list it opened on if there was one.
+  const checkedAtLaunch = useRef(false);
+  const up = view !== null && view.kind !== "stopped";
 
   const tell = useCallback((notice: Notice): void => {
     const id = Date.now() + Math.random();
@@ -244,13 +253,47 @@ export function App(): JSX.Element {
     };
   }, [tell]);
 
+  // Once, when the desk is first up: a check that fails opens the setup page by itself. A desk that will not start shows it anyway.
+  useEffect(() => {
+    if (up && !checkedAtLaunch.current) {
+      checkedAtLaunch.current = true;
+      runSetupCheck(false)
+        .then((checks) => {
+          if (checks.some((check) => check.status === "fail")) {
+            setSetup({ initial: checks });
+          }
+        })
+        .catch(console.error);
+    }
+  }, [up]);
+
   let page = <p className="empty">Loading…</p>;
-  if (view?.kind === "setup") {
+  if (view?.kind === "stopped") {
+    page = <SetupPage problem={view.problem} initial={null} onClose={null} tell={tell} />;
+  } else if (setup !== null) {
+    page = (
+      <SetupPage
+        problem=""
+        initial={setup.initial}
+        onClose={() => {
+          setSetup(null);
+        }}
+        tell={tell}
+      />
+    );
+  } else if (view?.kind === "setup") {
     page = <Setup defaultAgent={view.defaultAgent} tell={tell} />;
   } else if (view?.kind === "chat") {
-    page = <Chat view={view} act={act} tell={tell} />;
-  } else if (view?.kind === "stopped") {
-    page = <p className="empty stopped">Player Two cannot go on: {view.problem}</p>;
+    page = (
+      <Chat
+        view={view}
+        act={act}
+        tell={tell}
+        onSetup={() => {
+          setSetup({ initial: null });
+        }}
+      />
+    );
   }
   return (
     <>
