@@ -18,11 +18,11 @@ repos:
       - id: ruff-format
 
   - repo: https://github.com/astral-sh/uv-pre-commit
-    rev: 0.12.7   # keep in sync with the uv version the repo is built with
+    rev: 0.12.7 # keep in sync with the uv version the repo is built with
     hooks:
-      - id: uv-lock   # fails the commit if pyproject.toml changed without uv.lock
+      - id: uv-lock # fails the commit if pyproject.toml changed without uv.lock
 
   - repo: https://github.com/astral-sh/ty-pre-commit
-    rev: v0.0.86   # keep in sync with the pinned ty dev dependency
+    rev: v0.0.86 # keep in sync with the pinned ty dev dependency
     hooks:
       - id: ty

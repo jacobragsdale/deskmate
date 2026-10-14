@@ -118,7 +118,7 @@ function messages(view: ChatView): readonly MessageView[] {
 await test("two people, their agents and a channel, through the real hub", { skip: haveUv ? false : "uv is not installed", timeout: 60_000 }, async () => {
   const port = await freePort();
   const hub = `http://127.0.0.1:${String(port)}`;
-  const server = spawn("uv", ["run", "--project", join(import.meta.dirname, "..", ".."), "deskmate", "hub", "--port", String(port)], {
+  const server = spawn("uv", ["run", "--project", join(import.meta.dirname, ".."), "deskmate", "hub", "--port", String(port)], {
     env: { ...process.env, DESKMATE_JOIN_TOKEN: TOKEN, DESKMATE_DB: join(root, "hub.db"), DESKMATE_REPOS: "https://dev.azure.com/acme/" },
     stdio: "ignore",
     detached: true

@@ -24,7 +24,7 @@ Read first: [`README.md`](README.md) for the working rules, and [`protocol.md`](
 
 No behaviour changes in this section. The Python hub stays and the tests keep running against it.
 
-- [ ] **P0-A1** Move the package to the repository root with `git mv`: `app/package.json`, `package-lock.json`, `tsconfig.json`, `eslint.config.mjs`, `prettier.config.mjs`, `build.mjs`, `.prettierignore`. Fold `app/.gitignore` into the root `.gitignore`. Move `app/test` to `test`. Remove the empty `app/`.
+- [x] **P0-A1** Move the package to the repository root with `git mv`: `app/package.json`, `package-lock.json`, `tsconfig.json`, `eslint.config.mjs`, `prettier.config.mjs`, `build.mjs`, `.prettierignore`. Fold `app/.gitignore` into the root `.gitignore`. Move `app/test` to `test`. Remove the empty `app/`.
 - [ ] **P0-A2** Move the sources to their homes. Fix every import.
 
   | From | To |
@@ -229,3 +229,9 @@ The window's look moves from one hand-written stylesheet to Tailwind and shadcn/
 5. `npm start` on Linux or macOS opens the window, which starts its desk as a separate process.
 
 Report then, with the workstation tasks still open listed for the person.
+
+## Notes
+
+- **P0-A1 to P0-A4: section A cannot be green after each task as it is split.** Moving `test` (A1) breaks the scenario test until its path to the Python project is fixed (A4), and moving the sources (A2) breaks the build until `build.mjs` points at them (A3). Rule 2 wants every commit green, so the work was regrouped: A1 moved all of `app/` up one level, `app/src/*` into `src/` included, which is what leaves `app/` empty, and fixed the scenario test's path in the same commit. A2 moves the sources from there to their homes and points `build.mjs` at them. A3 is the name, `engines` and `.nvmrc`. A4 is left with nothing to change but its box.
+- **P0-A1: from the root, `npm run format:check` reads 15 files it never saw from `app/`.** Fourteen are Markdown, where Prettier would re-pad every table in the plan and the README. `*.md` went into `.prettierignore` instead, so the formatter covers what it covered before. The fifteenth, `.pre-commit-config.yaml`, was formatted: three comments lost a space.
+- **P0-A1: `tests/test_app_vectors.py` named the fixture by its old path.** It now points at `test/fixtures/python-vectors.json`.

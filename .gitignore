@@ -9,6 +9,10 @@ wheels/
 # Virtual environments
 .venv
 
+# Node
+node_modules/
+dist/
+
 # Local configuration and hub data
 .env
 .env.*

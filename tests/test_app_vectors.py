@@ -12,7 +12,7 @@ from deskmate.chat import Entry, agent_prompt, mentions
 from deskmate.repos import parse_remote, prefix_key
 from deskmate.wire import Kind
 
-VECTORS = Path(__file__).parent.parent / "app" / "test" / "fixtures" / "python-vectors.json"
+VECTORS = Path(__file__).parent.parent / "test" / "fixtures" / "python-vectors.json"
 PRIVATE_KEY = "11" * 32
 TS = 1_800_000_000
 
