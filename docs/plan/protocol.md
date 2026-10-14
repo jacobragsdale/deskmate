@@ -159,8 +159,8 @@ The `/notes` routes and the four channel-changing routes go. In their place:
 | Route | Does |
 |---|---|
 | `POST /events` | Accepts one signed event. `201 { seq }`. `409` when the id was already stored. |
-| `GET /events?chat=A&before=S&limit=N` | One chat's events, newest first, older than `seq` S. `limit` up to 200. For a direct chat, `chat` is the other person. |
-| `GET /events?after=S&limit=N` | Everything visible to the caller after `seq` S, oldest first. For catching up. |
+| `GET /events?chat=A&before=S&limit=N` | One chat's events, newest first, older than `seq` S, or the newest without `before`. `limit` up to 200, and 100 when it is not given. For a direct chat, `chat` is the other person; a channel's `#` is sent as `%23`. |
+| `GET /events?after=S&limit=N` | Everything visible to the caller after `seq` S (0 when not given), oldest first. For catching up. `before` goes only with `chat`, and `after` only without it. |
 | `GET /events?chat=A&around=S&limit=N` | Phase 2. A page centred on one event, for opening a search result. |
 | `GET /events/{id}` | Phase 2. One event the caller can see, with its `seq`. |
 | `GET /stream?after=S` | A `text/event-stream` that never ends: one `data:` line per event as `{ seq, event }`, and a comment line every 20 seconds so proxies keep it open. |

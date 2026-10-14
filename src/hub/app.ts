@@ -14,12 +14,14 @@ import { readContent } from "../core/kinds.ts";
 import { isUnder, prefixKey, unquote } from "../core/remotes.ts";
 import { authClaim, authIsValid, eventId, eventIsAuthentic, isFresh, noteIsAuthentic } from "../core/sign.ts";
 import { VERSION } from "../core/version.ts";
-import { eventSchema, isChannel, joinSchema, nameSchema, noteSchema, PROTOCOL, repoRefSchema, repoSchema } from "../core/wire.ts";
+import { addressSchema, eventSchema, isChannel, joinSchema, nameSchema, noteSchema, PROTOCOL, repoRefSchema, repoSchema } from "../core/wire.ts";
 import type { ChannelInfo, Event, RepoRef } from "../core/wire.ts";
 import { Database } from "./db.ts";
 
 const MAX_WAIT = 30; // Longest a client may hold one long-poll open, in seconds.
 const HISTORY = 500; // Most notes one `tail` request may ask for.
+const PAGE = 100; // Events one read gets when it does not say how many.
+const MAX_PAGE = 200; // Most events one read may ask for.
 const MAX_REPOS = 500; // Most checkouts one person may advertise.
 const MAX_REQUEST = 4_000_000; // Most characters one request's body may hold: several times the longest list of repos or the longest note.
 const RUNTIME = "wsl-runtime.tar.gz"; // The Linux runtime in the downloads folder, with its digest beside it in the same name and ".sha256".
@@ -45,6 +47,12 @@ const numeric = z
   .regex(/^\d+(\.\d+)?$/)
   .transform(Number);
 const flag = z.stringbool({ truthy: ["1", "on", "t", "true", "y", "yes"], falsy: ["0", "off", "f", "false", "n", "no"] });
+const eventsQuerySchema = z.object({
+  chat: addressSchema.optional(),
+  before: numeric.pipe(z.int()).optional(),
+  after: numeric.pipe(z.int()).optional(),
+  limit: numeric.pipe(z.int().min(1).max(MAX_PAGE)).default(PAGE)
+});
 const notesQuerySchema = z.object({
   after: numeric.pipe(z.int()).default(0),
   wait: numeric.pipe(z.number().max(MAX_WAIT)).default(0),
@@ -354,6 +362,15 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     return [201, { seq }];
   }
 
+  /** One chat's events older than `before`, newest first, for paging back through it; or without a chat, everything the caller can see after `after`, oldest first, for catching up. */
+  function getEvents(ask: Ask): Answer {
+    const { chat, before, after, limit } = parsed(eventsQuerySchema, Object.fromEntries(ask.query), "query");
+    if (chat === undefined ? before !== undefined : after !== undefined) {
+      throw new Refusal(422, "invalid query: before goes with chat, and after without it");
+    }
+    return [200, chat === undefined ? db.eventsAfter(ask.me, after ?? 0, limit) : db.chatEvents(ask.me, chat, before ?? Number.MAX_SAFE_INTEGER, limit)];
+  }
+
   /**
    * Notes the caller can see with an id above `after`, oldest first: sent to them, to a channel they are in, or (unless `mine` is false) sent by them.
    * `wait` holds the request open until one arrives; `tail` returns only the newest few; `status` false leaves out agent status reports.
@@ -413,6 +430,7 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     { method: "POST", path: "/notes", open: true, answer: postNote }, // A note carries its own signature, so it needs no header.
     { method: "GET", path: "/notes", answer: getNotes },
     { method: "POST", path: "/events", answer: postEvent },
+    { method: "GET", path: "/events", answer: getEvents },
     { method: "GET", path: "/channels", answer: () => [200, db.channels().map(channelInfo)] },
     { method: "POST", path: "/channels/{name}/join", answer: joinChannel },
     { method: "POST", path: "/channels/{name}/leave", answer: leaveChannel },

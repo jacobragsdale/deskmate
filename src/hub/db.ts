@@ -5,14 +5,18 @@ import { DatabaseSync } from "node:sqlite";
 
 import { z } from "zod";
 
-import { deliveredNoteSchema, personSchema, teamRepoSchema } from "../core/wire.ts";
-import type { DeliveredNote, Event, Note, Person, Repo, RepoRef, TeamRepo } from "../core/wire.ts";
+import { deliveredNoteSchema, deliveredSchema, isChannel, personSchema, teamRepoSchema } from "../core/wire.ts";
+import type { Delivered, DeliveredNote, Event, Note, Person, Repo, RepoRef, TeamRepo } from "../core/wire.ts";
 
 const SCHEMA_VERSION = 5; // 3 was the notes alone, from the Python hub to 0.4.
 const PAGE = 100; // Most notes one request gets when it does not ask for the newest few.
 const CONSTRAINT = 19; // SQLite's code for a broken constraint: the low byte of the fuller code a failed statement reports.
 const BUSY_WAIT = 5; // Seconds to wait for another program that holds the file, such as a backup, before giving up.
 const FIRST_CHAIN = "0".repeat(64); // The chain value before the first event.
+
+// What a caller, :me, can see: events to them, by them, to everyone, and to the channels they are in now. Every read of events goes through this one rule.
+const VISIBLE = "(recipient = :me OR author = :me OR recipient = '*' OR recipient IN (SELECT channel FROM members WHERE user = :me))";
+const EVENT_COLUMNS = 'seq, id, author, recipient AS "to", kind, content, ts, refs, nonce, sig';
 
 const SCHEMA = `
 PRAGMA journal_mode = WAL;
@@ -62,6 +66,16 @@ const channelsSchema = z.array(z.strictObject({ channel: z.string() }));
 const pinSchema = z.strictObject({ name: z.string(), key: z.string(), url: z.string(), branch: z.string().nullable() }).optional();
 const deliveredListSchema = z.array(deliveredNoteSchema);
 const foundSchema = z.strictObject({ found: z.literal(1) }).optional();
+const eventRowsSchema = z.array(
+  z
+    .strictObject({ seq: z.int(), id: z.string(), author: z.string(), to: z.string(), kind: z.string(), content: z.string(), ts: z.int(), refs: z.string(), nonce: z.string(), sig: z.string() })
+    .transform(({ seq, refs, ...event }) => ({ seq, event: { ...event, refs: parseJson(refs) } }))
+    .pipe(deliveredSchema)
+);
+
+function parseJson(text: string): unknown {
+  return JSON.parse(text);
+}
 const headSchema = z.strictObject({ seq: z.int(), chain: z.string() }).optional();
 
 /** The chain value of an event: the sha256 of the one before it and the event's id, written one after the other in hex. Each depends on every event before it, so none can be changed or taken out without changing every value after it. */
@@ -191,6 +205,19 @@ export class Database {
       refer.run(ref, seq);
     }
     return seq;
+  }
+
+  /** Everything `me` can see after `after`, oldest first, at most `limit` of it. */
+  public eventsAfter(me: string, after: number, limit: number): readonly Delivered[] {
+    return eventRowsSchema.parse(this.db.prepare(`SELECT ${EVENT_COLUMNS} FROM events WHERE seq > :after AND ${VISIBLE} ORDER BY seq LIMIT :limit`).all({ me, after, limit }));
+  }
+
+  /** One chat's events before `before`, newest first, at most `limit` of them: a channel's, or those between `me` and one other person, either way. */
+  public chatEvents(me: string, chat: string, before: number, limit: number): readonly Delivered[] {
+    const inChat = isChannel(chat) ? "recipient = :chat" : "((author = :me AND recipient = :chat) OR (author = :chat AND recipient = :me))";
+    return eventRowsSchema.parse(
+      this.db.prepare(`SELECT ${EVENT_COLUMNS} FROM events WHERE seq < :before AND ${inChat} AND ${VISIBLE} ORDER BY seq DESC LIMIT :limit`).all({ me, chat, before, limit })
+    );
   }
 
   /** Keep a note and return the id it was given. Null when this exact note is already kept: a signature is stored once, which is what stops a replay. */

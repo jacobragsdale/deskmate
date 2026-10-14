@@ -13,8 +13,9 @@ import { z } from "zod";
 
 import { authHeader, loadKey, signEvent, signNote } from "../src/core/sign.ts";
 import { VERSION } from "../src/core/version.ts";
-import { MAX_SKEW, receiptSchema } from "../src/core/wire.ts";
-import type { Event, Note, Repo } from "../src/core/wire.ts";
+import { readContent } from "../src/core/kinds.ts";
+import { deliveredSchema, MAX_SKEW, receiptSchema } from "../src/core/wire.ts";
+import type { Delivered, Event, Note, Repo } from "../src/core/wire.ts";
 import { http, join as joinHub } from "../src/desk/client.ts";
 import type { Client } from "../src/desk/client.ts";
 import { createHub } from "../src/hub/app.ts";
@@ -58,6 +59,29 @@ async function post(hub: Hub, poster: string, event: unknown): Promise<readonly 
   const response = await fetch(`${hub.url}/events`, { method: "POST", headers: { ...signedBy(hub, poster, "POST", "/events"), "Content-Type": "application/json" }, body: JSON.stringify(event) });
   const body: unknown = await response.json();
   return [response.status, response.ok ? receiptSchema.parse(body).seq : refusalSchema.parse(body).detail];
+}
+
+/** What `reader` gets from GET /events with this query. */
+async function read(hub: Hub, reader: string, query: string): Promise<Delivered[]> {
+  const path = `/events?${query}`;
+  const response = await fetch(hub.url + path, { headers: signedBy(hub, reader, "GET", path) });
+  assert.equal(response.status, 200, path);
+  return z.array(deliveredSchema).parse(await response.json());
+}
+
+/** The same, each event as its text when it is a message and its kind when it is not. */
+async function said(hub: Hub, reader: string, query = "after=0"): Promise<string[]> {
+  return (await read(hub, reader, query)).map(({ event }) => {
+    const content = readContent(event);
+    return content.kind === "message" ? content.content.text : event.kind;
+  });
+}
+
+/** Post a message as its author, for a test that is about something else, and return its seq. */
+async function say(hub: Hub, author: string, to: string, text: string): Promise<number> {
+  const [status, seq] = await post(hub, author, signed(hub, author, to, "message", { text, via: "cli" }));
+  assert.ok(status === 201 && typeof seq === "number", String(seq));
+  return seq;
 }
 
 async function bodies(client: Client, mine = true): Promise<string[]> {
@@ -154,6 +178,75 @@ await test("joining, leaving and pinning are events the hub acts on, and one it 
   assert.deepEqual(await post(hub, "bob", signed(hub, "bob", "#backend", "channel.leave")), [403, "join #backend before posting to it"]);
   assert.deepEqual(await channel(), { name: "#backend", members: ["alice"], repo: null, branch: null });
   assert.deepEqual(await post(hub, "alice", signed(hub, "alice", "#backend", "message", { text: "still here", via: "cli" })), [201, 6]); // Nothing refused was stored.
+});
+
+await test("a direct event reaches the two people in it and nobody else, and a chat with one person holds both directions", async (t) => {
+  const hub = await startHub(t);
+  for (const name of ["alice", "bob", "carol", "dave"]) {
+    await hub.join(name);
+  }
+  await say(hub, "alice", "bob", "hi bob");
+  await say(hub, "bob", "alice", "hi alice");
+  const later = signed(hub, "carol", "bob", "some.later.kind", "not even JSON");
+  await post(hub, "carol", later);
+
+  assert.deepEqual(await said(hub, "bob"), ["hi bob", "hi alice", "some.later.kind"]);
+  assert.deepEqual(await said(hub, "alice"), ["hi bob", "hi alice"]);
+  assert.deepEqual(await said(hub, "carol"), ["some.later.kind"]);
+  assert.deepEqual(await said(hub, "dave"), []);
+  assert.deepEqual(await said(hub, "bob", "chat=alice"), ["hi alice", "hi bob"]); // Newest first.
+  assert.deepEqual(await said(hub, "alice", "chat=bob"), ["hi alice", "hi bob"]);
+  assert.deepEqual(await said(hub, "carol", "chat=alice"), []);
+  assert.deepEqual(await read(hub, "bob", "chat=carol"), [{ seq: 3, event: later }]); // A kind the hub has never heard of comes back exactly as it was signed.
+});
+
+await test("a channel's events reach its members only: leaving stops them, and joining shows what was said before", async (t) => {
+  const hub = await startHub(t);
+  for (const name of ["alice", "bob", "carol"]) {
+    await hub.join(name);
+  }
+  await post(hub, "alice", signed(hub, "alice", "#backend", "channel.join"));
+  await say(hub, "alice", "#backend", "before bob");
+
+  assert.deepEqual(await said(hub, "bob"), []);
+  assert.deepEqual(await said(hub, "bob", "chat=%23backend"), []);
+
+  await post(hub, "bob", signed(hub, "bob", "#backend", "channel.join"));
+  await say(hub, "alice", "#backend", "with bob");
+
+  assert.deepEqual(await said(hub, "bob", "chat=%23backend"), ["with bob", "channel.join", "before bob", "channel.join"]);
+  assert.deepEqual(await said(hub, "bob", "after=3"), ["with bob"]);
+
+  await post(hub, "bob", signed(hub, "bob", "#backend", "channel.leave"));
+  await say(hub, "alice", "#backend", "after bob");
+
+  assert.deepEqual(await said(hub, "bob"), ["channel.join", "channel.leave"]); // What he wrote himself, and nothing more of the channel's.
+  assert.deepEqual(await said(hub, "bob", "chat=%23backend"), ["channel.leave", "channel.join"]);
+  assert.deepEqual(await said(hub, "alice", "chat=%23backend&limit=2"), ["after bob", "channel.leave"]);
+  assert.deepEqual(await said(hub, "carol"), []);
+});
+
+await test("a chat pages back with before and limit, catching up pages forward with after, and a query out of either form is refused", async (t) => {
+  const hub = await startHub(t);
+  await hub.join("alice");
+  await hub.join("bob");
+  for (const text of ["one", "two", "three", "four", "five"]) {
+    await say(hub, "alice", "bob", text);
+  }
+  const refused = async (query: string): Promise<readonly [number, string]> => {
+    const path = `/events?${query}`;
+    return refusal(hub, "GET", path, { headers: signedBy(hub, "bob", "GET", path) });
+  };
+
+  assert.deepEqual(await said(hub, "bob", "chat=alice&limit=2"), ["five", "four"]);
+  assert.deepEqual(await said(hub, "bob", "chat=alice&before=4&limit=2"), ["three", "two"]);
+  assert.deepEqual(await said(hub, "bob", "after=2&limit=2"), ["three", "four"]);
+  assert.deepEqual(await said(hub, "bob", ""), ["one", "two", "three", "four", "five"]);
+  assert.deepEqual(await refused("limit=0"), [422, "invalid limit: Too small: expected number to be >=1"]);
+  assert.deepEqual(await refused("limit=201"), [422, "invalid limit: Too big: expected number to be <=200"]);
+  assert.deepEqual(await refused("chat=Alice"), [422, "invalid chat: Invalid string: must match pattern /^#?[a-z0-9][a-z0-9_-]{0,31}$/"]);
+  assert.deepEqual(await refused("before=3"), [422, "invalid query: before goes with chat, and after without it"]);
+  assert.deepEqual(await refused("chat=alice&after=3"), [422, "invalid query: before goes with chat, and after without it"]);
 });
 
 await test("joining again with the same key is allowed", async (t) => {
