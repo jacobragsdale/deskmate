@@ -1,0 +1,58 @@
+# On a version tag: build the Linux runtime on Linux, where its scripts keep the mode that lets them run, then the Windows installer around it on Windows.
+# The installer is not signed here: the team signs it with its own certificate.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: node scripts/build-runtime.ts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wsl-runtime
+          path: |
+            dist/wsl-runtime.tar.gz
+            dist/wsl-runtime.tar.gz.sha256
+          if-no-files-found: error
+
+  windows:
+    needs: runtime
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+        env:
+          PLAYER_TWO_HUB_URL: ${{ vars.PLAYER_TWO_HUB_URL }} # A repository variable bakes the team's hub into the join form; unset, the form asks for it.
+      # After the build, which empties dist/, so the archive is not lost.
+      - uses: actions/download-artifact@v4
+        with:
+          name: wsl-runtime
+          path: dist
+      - run: npm run package:win
+      - uses: actions/upload-artifact@v4
+        with:
+          name: player-two-${{ github.ref_name }}
+          path: |
+            release/player-two-setup.exe
+            dist/wsl-runtime.tar.gz
+            dist/wsl-runtime.tar.gz.sha256
+          if-no-files-found: error
