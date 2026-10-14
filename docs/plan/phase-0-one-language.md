@@ -76,7 +76,7 @@ These change the wire, so the Python client stops working here. That is expected
 One program with subcommands, built to one file, `dist/deskmate.js`. It is what the Docker image runs as the hub, what agents call, and what the window starts as the desk.
 
 - [x] **P0-D1** `src/cli/main.ts` with `node:util`'s `parseArgs`: `join`, `send`, `inbox`, `who`, `repos`, `channel [list|join|leave]`, `hub`, with the arguments and the wording of the README's Commands table. `send TEXT` of `-` reads standard input. `--wait` behaves as documented.
-- [ ] **P0-D2** Exit codes as documented: `0`, `1` after a message on standard error, `2` for a usage error.
+- [x] **P0-D2** Exit codes as documented: `0`, `1` after a message on standard error, `2` for a usage error.
 - [ ] **P0-D3** Every reading command takes `--json` and then prints one JSON value and nothing else: `inbox` and `send --wait` print notes as the hub delivered them plus `trusted`; `who`, `repos` and `channel` print arrays.
 - [ ] **P0-D4** `test/cli.test.ts`: port the cases in `tests/test_cli.py` (drop the two about the terminal interface), calling `main(argv, { home, transport })` in-process against the in-process hub.
 - [ ] **P0-D5** `build.mjs` bundles `src/cli/main.ts` to `dist/deskmate.js` with a `#!/usr/bin/env node` line, and `package.json` gets `"bin": { "deskmate": "dist/deskmate.js" }`.

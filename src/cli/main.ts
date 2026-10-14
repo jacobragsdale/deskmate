@@ -15,6 +15,26 @@ import { runHub } from "../hub/main.ts";
 
 const INBOX = 20; // Notes `inbox` prints when it is not told where to start.
 
+const USAGE = `usage: deskmate COMMAND
+
+  join HUB NAME TOKEN [--agent AGENT]   register your name and a new key with a hub
+  send TO TEXT... [--wait SECONDS]      send a note to a name or a channel such as '#backend'; a TEXT of - reads it from standard input
+  inbox [--after ID] [--wait SECONDS]   print the notes other people sent you or your channels
+  who                                   list everyone who has joined
+  repos                                 list every agent as @person/repo with the branch it is on
+  channel [join NAME | leave NAME]      list the channels, or join or leave one
+  hub [--host HOST] [--port PORT]       run the hub; it reads DESKMATE_JOIN_TOKEN, DESKMATE_DB and DESKMATE_REPOS
+
+A command exits with 0 on success, 1 after printing a failure, and 2 when it was not given what it takes.`;
+
+/** The command was not given what it takes. The usage is printed, and the exit status says so. */
+class UsageError extends Error {}
+
+/** Whether a failure is the command line's fault: one of ours, or one parseArgs raises for an option it does not know or a word it did not expect. */
+function isUsage(error: unknown): error is Error {
+  return error instanceof UsageError || (error instanceof TypeError && "code" in error && typeof error.code === "string" && error.code.startsWith("ERR_PARSE_ARGS_"));
+}
+
 /** Where the command finds things and where it writes. The defaults are the real ones; a test passes its own. */
 export interface Options {
   readonly home?: string; // The folder the identity is in.
@@ -35,7 +55,7 @@ const idSchema = z.string().regex(/^\d+$/).transform(Number).pipe(z.int());
 function numberOf(schema: z.ZodType<number>, given: string, option: string): number {
   const result = schema.safeParse(given);
   if (!result.success) {
-    throw new DeskmateError(`--${option} takes a number, not ${given}`);
+    throw new UsageError(`--${option} takes a number, not ${given}`);
   }
   return result.data;
 }
@@ -71,7 +91,7 @@ async function send(joined: () => Client, args: string[], stdin: NodeJS.Readable
   const [to, ...words] = positionals;
   const seconds = numberOf(secondsSchema, values.wait, "wait");
   if (to === undefined || words.length === 0) {
-    throw new DeskmateError("send takes who it is to and the note: deskmate send TO TEXT...");
+    throw new UsageError("send takes who it is to and the note");
   }
   const client = joined();
   const sent = await client.send(to, words.length === 1 && words[0] === "-" ? (await text(stdin)).trim() : words.join(" "));
@@ -98,7 +118,7 @@ async function inbox(joined: () => Client, args: string[], out: (line: string) =
 async function channel(joined: () => Client, args: string[], out: (line: string) => void): Promise<void> {
   const [action = "list", name] = parseArgs({ args, allowPositionals: true }).positionals;
   if (action !== "list" && action !== "join" && action !== "leave") {
-    throw new DeskmateError(`channel takes list, join or leave, not ${action}`);
+    throw new UsageError(`channel takes list, join or leave, not ${action}`);
   }
   const client = joined();
   if (action === "list") {
@@ -118,7 +138,7 @@ async function register(home: string, transport: Transport, args: string[], out:
   const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { agent: { type: "string", default: DEFAULT_AGENT } } });
   const [hub, name, token] = positionals;
   if (hub === undefined || name === undefined || token === undefined || positionals.length > 3) {
-    throw new DeskmateError("join takes the hub's address, your name and the join token: deskmate join HUB NAME TOKEN");
+    throw new UsageError("join takes the hub's address, your name and the join token");
   }
   const config = await join(home, hub, name, token, values.agent, transport);
   out(`joined ${config.hub} as ${config.name}; your agent command is \`${config.agent}\``);
@@ -164,17 +184,27 @@ async function run(argv: readonly string[], options: Options, out: (line: string
       break;
     }
     default:
-      throw new DeskmateError(command === "" ? "which command? One of: join, send, inbox, who, repos, channel, hub" : `no such command: ${command}`);
+      throw new UsageError(command === "" ? "which command?" : `no such command: ${command}`);
   }
 }
 
-/** Run one command and resolve with its exit status. */
+/** Run one command and resolve with its exit status: 0 when it worked, 1 after saying on standard error what went wrong, 2 when the command line itself was wrong. */
 export async function main(argv: readonly string[], options: Options = {}): Promise<number> {
+  const out = options.out ?? console.log;
+  const err = options.err ?? console.error;
+  if (argv[0] === "--help" || argv[0] === "-h") {
+    out(USAGE);
+    return 0;
+  }
   try {
-    await run(argv, options, options.out ?? console.log);
+    await run(argv, options, out);
     return 0;
   } catch (error) {
-    (options.err ?? console.error)(`deskmate: ${problemOf(error)}`);
+    if (isUsage(error)) {
+      err(`deskmate: ${error.message}\n\n${USAGE}`);
+      return 2;
+    }
+    err(`deskmate: ${problemOf(error)}`);
     return 1;
   }
 }
