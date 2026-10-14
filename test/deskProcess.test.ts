@@ -92,7 +92,7 @@ await test("the real desk is started, each command gets its own reply, and stopp
   ]);
   await desk.stop();
 
-  assert.deepEqual(views, [{ kind: "setup", defaultAgent: "claude -p" }]);
+  assert.deepEqual(views, [{ kind: "setup", defaultAgent: "agent -p --output-format text" }]);
   assert.deepEqual([first.ok, second], [false, { ok: false, problem: "join a hub first" }]);
   assert.match(first.ok ? "" : first.problem, /^invalid hub: /);
   assert.deepEqual(await desk.send({ do: "open", chat: "bob" }), { ok: false, problem: "the desk is not running" });
@@ -217,7 +217,7 @@ await test("on Windows the runtime the app carries is installed into the distrib
   assert.deepEqual(await wslLaunch(null, resources), { ok: true, value: { command: join(wsl.windir, "System32", "wsl.exe"), args: ["--exec", launcher], env: { ...process.env, WSL_UTF8: "1" } } });
   const { desk, views } = hold(t, () => wslLaunch("Ubuntu", resources));
   await until("the join form", () => views.length > 0);
-  assert.deepEqual(views, [{ kind: "setup", defaultAgent: "claude -p" }]);
+  assert.deepEqual(views, [{ kind: "setup", defaultAgent: "agent -p --output-format text" }]);
   assert.deepEqual(await desk.send({ do: "open", chat: "bob" }), { ok: false, problem: "join a hub first" });
   assert.ok(existsSync(launcher));
 });

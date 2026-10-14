@@ -59,7 +59,11 @@ await test("an untrusted note is never rendered with its body", () => {
 
 await test("main joins sends and lists notes", async (t) => {
   const hub = await startHub(t);
-  assert.deepEqual(await playerTwo(hub, "alice", ["join", hub.url, "alice", TOKEN]), { status: 0, out: `joined ${hub.url} as alice; your agent command is \`claude -p\``, err: "" });
+  assert.deepEqual(await playerTwo(hub, "alice", ["join", hub.url, "alice", TOKEN]), {
+    status: 0,
+    out: `joined ${hub.url} as alice; your agent command is \`agent -p --output-format text\``,
+    err: ""
+  });
   assert.equal((await playerTwo(hub, "bob", ["join", `${hub.url}/`, "bob", TOKEN, "--agent", "agent -p"])).out, `joined ${hub.url} as bob; your agent command is \`agent -p\``);
   assert.deepEqual(await playerTwo(hub, "alice", ["send", "bob", "lunch", "at", "noon?"]), { status: 0, out: "→ sent 1 to bob", err: "" });
 

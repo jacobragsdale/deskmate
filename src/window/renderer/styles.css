@@ -54,6 +54,7 @@ body {
 
 button,
 input,
+select,
 textarea {
   font: inherit;
   color: inherit;
@@ -555,7 +556,8 @@ dialog form input {
   font-weight: 600;
 }
 
-.setup input {
+.setup input,
+.setup select {
   font-weight: 400;
 }
 

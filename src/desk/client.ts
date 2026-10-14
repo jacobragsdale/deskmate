@@ -10,8 +10,9 @@ import { z } from "zod";
 import { authHeader, loadKey, newKey, noteIsAuthentic, privateHex, publicHex, signNote } from "../core/sign.ts";
 import { channelInfoSchema, configSchema, deliveredSchema, hubInfoSchema, nameSchema, personSchema, receiptSchema, repoRefSchema, repoSchema, teamRepoSchema, userSchema } from "../core/wire.ts";
 import type { ChannelInfo, Config, Delivered, HubInfo, Kind, Note, Person, Repo, RepoRef, TeamRepo } from "../core/wire.ts";
+import { AGENT_CHOICES } from "../shared/ipc.ts";
 
-export const DEFAULT_AGENT = "claude -p";
+export const DEFAULT_AGENT: string = AGENT_CHOICES[0].command; // Cursor, as the join form offers it first.
 export const POLL_WAIT = 25; // Seconds one long-poll stays open; under the hub's limit and common proxy timeouts.
 const CALL_TIMEOUT = 10;
 const JSON_BODY = { "Content-Type": "application/json" };

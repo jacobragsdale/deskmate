@@ -4,6 +4,12 @@ import { z } from "zod";
 
 import { teamRepoSchema } from "../core/wire.ts";
 
+/** The agents the join form offers, as the one-shot commands the prompt is added to as the last argument. The first is the default; any other is typed in as "Other". */
+export const AGENT_CHOICES = [
+  { label: "Cursor", command: "agent -p --output-format text" },
+  { label: "Copilot", command: "copilot -s --allow-all-tools --no-ask-user -p" }
+] as const;
+
 /** Where one tagged agent stands, already worked out for the reader: `mine` says whether it is their own agent. */
 const requestSchema = z
   .strictObject({

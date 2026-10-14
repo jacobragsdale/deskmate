@@ -69,7 +69,7 @@ await test("the desk by lines: the join form, joining, the chats, a note sent an
 
   // It says which version and protocol it is before anything else, then shows the join form, and until someone has joined it does nothing but join.
   assert.deepEqual(await next("hello", (line) => line), { t: "hello", version: VERSION, protocol: PROTOCOL });
-  assert.deepEqual(await next("the join form", (line) => line), { t: "view", view: { kind: "setup", defaultAgent: "claude -p" } });
+  assert.deepEqual(await next("the join form", (line) => line), { t: "view", view: { kind: "setup", defaultAgent: "agent -p --output-format text" } });
   assert.equal(process.env["PATH"]?.split(":")[0], join(hub.dir, "tools")); // By then it has the PATH of the user's own shell, which is what its agents and git are found on.
   say({ t: "command", id: 1, command: { do: "open", chat: "bob" } });
   assert.deepEqual(await reply(1), { ok: false, problem: "join a hub first" });
@@ -78,7 +78,7 @@ await test("the desk by lines: the join form, joining, the chats, a note sent an
   say({ t: "command", id: 2, command: { do: "join", hub: hub.url, name: "alice", token: TOKEN, agent: "" } });
   assert.deepEqual(await reply(2), { ok: true });
   const joined = await chat("the chat with bob", (view) => view.current?.chat === "bob" && view.team.length === 1);
-  assert.deepEqual([joined.me, joined.agent, joined.link, joined.busy], ["alice", "claude -p", { state: "connected" }, { working: 0, unsent: 0 }]);
+  assert.deepEqual([joined.me, joined.agent, joined.link, joined.busy], ["alice", "agent -p --output-format text", { state: "connected" }, { working: 0, unsent: 0 }]);
 
   // A note sent by a command comes back in a later view, and one from bob is announced.
   say({ t: "command", id: 3, command: { do: "send", chat: "bob", text: "lunch at noon?" } });
@@ -141,6 +141,6 @@ await test("the built command run as `player-two desk` says hello, shows the joi
   assert.ok(Date.now() - told < 3000, `took ${String(Date.now() - told)} ms to exit`);
   assert.deepEqual(lines.map(parse), [
     { t: "hello", version: VERSION, protocol: PROTOCOL },
-    { t: "view", view: { kind: "setup", defaultAgent: "claude -p" } }
+    { t: "view", view: { kind: "setup", defaultAgent: "agent -p --output-format text" } }
   ]);
 });

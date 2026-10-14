@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { JSX, SyntheticEvent } from "react";
 
-import { noticeSchema, outcomeSchema, viewSchema } from "../../shared/ipc.ts";
+import { AGENT_CHOICES, noticeSchema, outcomeSchema, viewSchema } from "../../shared/ipc.ts";
 import type { ChatView, Command, Notice, View } from "../../shared/ipc.ts";
 import { Composer } from "./Composer.tsx";
 import { JoinChannel, PickRepo } from "./dialogs.tsx";
@@ -32,6 +32,8 @@ const submit: Submit = async (command) => {
 
 function Setup({ defaultAgent, tell }: { readonly defaultAgent: string; readonly tell: (notice: Notice) => void }): JSX.Element {
   const [busy, setBusy] = useState(false);
+  // The command of the agent picked from those offered, or "" for one typed in under "Other".
+  const [agent, setAgent] = useState<string>(AGENT_CHOICES.find((choice) => choice.command === defaultAgent)?.command ?? "");
   const join = (event: SyntheticEvent<HTMLFormElement>): void => {
     event.preventDefault();
     const field = (name: string): string => {
@@ -39,7 +41,7 @@ function Setup({ defaultAgent, tell }: { readonly defaultAgent: string; readonly
       return typeof value === "string" ? value : "";
     };
     setBusy(true);
-    submit({ do: "join", hub: field("hub"), name: field("name"), token: field("token"), agent: field("agent") })
+    submit({ do: "join", hub: field("hub"), name: field("name"), token: field("token"), agent: agent === "" ? field("agent") : agent })
       .then((problem) => {
         setBusy(false);
         if (problem !== "") {
@@ -74,9 +76,27 @@ function Setup({ defaultAgent, tell }: { readonly defaultAgent: string; readonly
         <input name="token" type="password" required />
       </label>
       <label>
-        Agent command
-        <input name="agent" defaultValue={defaultAgent} required />
+        Your agent
+        <select
+          value={agent}
+          onChange={(event) => {
+            setAgent(event.currentTarget.value);
+          }}
+        >
+          {AGENT_CHOICES.map((choice) => (
+            <option key={choice.label} value={choice.command}>
+              {choice.label}
+            </option>
+          ))}
+          <option value="">Other</option>
+        </select>
       </label>
+      {agent === "" && (
+        <label>
+          Agent command
+          <input name="agent" placeholder="run in the repo's folder, with the prompt added as its last argument" required autoFocus />
+        </label>
+      )}
       <button type="submit" disabled={busy}>
         {busy ? "Joining…" : "Join"}
       </button>
