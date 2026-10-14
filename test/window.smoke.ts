@@ -284,6 +284,28 @@ await test(
     assert.ok(String(await page.eval(`document.querySelector("main").innerText`)).includes("<script>window.pwned = 1</script>"));
     assert.ok(String(await page.eval(`document.querySelector('[aria-label="Thread"]').innerText`)).includes(`<img src=x onerror="window.pwned = 5"> in a thread`));
 
+    // Alice edits her message from its menu; bob edits one of his into HTML again and deletes another. Each edit says so, and the delete leaves "message deleted".
+    await page.eval(`${hello}.querySelector('button[aria-label="More"]').focus()`);
+    await page.press("Enter");
+    await page.until("the message's menu", `document.querySelector('[role="menuitem"]') !== null`);
+    await page.click('[role="menuitem"]', "Edit");
+    await page.until("the edit box", `document.querySelector('textarea[aria-label="Edit message"]') !== null`);
+    await page.type('textarea[aria-label="Edit message"]', "hello from the window, and again");
+    await page.press("Enter");
+    await page.until("her edit", `${hello}?.innerText.includes("hello from the window, and again (edited)") === true`); // While she edits, its text is in the box, where innerText does not look.
+    const sent = await bob.events({ chat: "alice" });
+    const plain = sent.find((each) => each.event.content.includes(" plain"));
+    const fenced = sent.find((each) => each.event.content.includes("fenced"));
+    assert.ok(plain !== undefined && fenced !== undefined);
+    await bob.publish("alice", "message.edit", { text: `<img src=x onerror="window.pwned = 7"> rewritten` }, [fenced.event.id]);
+    await bob.publish("alice", "message.delete", {}, [plain.event.id]);
+    await page.until(
+      "bob's edit and delete",
+      `document.querySelector("main").innerText.includes('<img src=x onerror="window.pwned = 7"> rewritten (edited)') && document.querySelector("main").innerText.includes("message deleted")`
+    );
+    assert.equal(await page.eval(`document.querySelectorAll("main script, main img").length`), 0);
+    assert.equal(await page.eval("window.pwned"), undefined);
+
     assert.deepEqual(page.problems, []);
   }
 );

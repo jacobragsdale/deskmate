@@ -1,12 +1,13 @@
-/** One message in the open chat and what hangs off it: its reactions, where each agent it tags stands, and its thread, with a box to reply in. Everything in it that someone else wrote is drawn as text. */
+/** One message in the open chat and what hangs off it: its author's edit and delete, its reactions, where each agent it tags stands, and its thread, with a box to reply in. Everything in it that someone else wrote is drawn as text. */
 
 import { cn } from "cn";
-import { Loader2Icon, ReplyIcon, SmilePlusIcon } from "lucide-react";
+import { EllipsisIcon, Loader2Icon, PencilIcon, ReplyIcon, SmilePlusIcon, Trash2Icon } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { JSX, SyntheticEvent } from "react";
 import Markdown from "react-markdown";
 
 import { Button } from "@/components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
@@ -176,7 +177,15 @@ function RequestLine({ request, act }: { readonly request: RequestView; readonly
   }
 }
 
+/** "(edited)", after the text of a message its author has changed. */
+function Edited({ message }: { readonly message: ReplyView }): JSX.Element | null {
+  return message.edited ? <span className="text-xs text-muted-foreground"> (edited)</span> : null;
+}
+
 function Body({ message }: { readonly message: ReplyView }): JSX.Element {
+  if (message.deleted) {
+    return <p className="text-muted-foreground italic">message deleted</p>;
+  }
   if (message.agent !== null || message.body.includes("```")) {
     // Markdown from an agent is drawn as elements, never as HTML: raw tags in it stay text. Images are not fetched: a remote one would tell its host who read the message.
     return (
@@ -197,6 +206,7 @@ function Body({ message }: { readonly message: ReplyView }): JSX.Element {
         >
           {message.body}
         </Markdown>
+        <Edited message={message} />
       </div>
     );
   }
@@ -208,7 +218,54 @@ function Body({ message }: { readonly message: ReplyView }): JSX.Element {
           {span.text}
         </span>
       ))}
+      <Edited message={message} />
     </p>
+  );
+}
+
+/** One of the user's own messages being changed, in place of its text. Enter saves and Esc gives up; the agents it tagged stay those it was sent with. */
+function EditBox({ message, act, onDone }: { readonly message: ReplyView; readonly act: Act; readonly onDone: () => void }): JSX.Element {
+  const [text, setText] = useState(message.body);
+  const save = (): void => {
+    const said = text.trim();
+    if (said === message.body.trim()) {
+      onDone();
+    } else if (said !== "") {
+      act({ do: "edit", id: message.id, text: said }, (ok) => {
+        if (ok) {
+          onDone();
+        }
+      });
+    }
+  };
+  return (
+    <div className="my-1">
+      <Textarea
+        autoFocus
+        className="min-h-0 resize-none field-sizing-fixed"
+        aria-label="Edit message"
+        rows={Math.min(8, text.split("\n").length)}
+        value={text}
+        onFocus={(event) => {
+          event.currentTarget.setSelectionRange(text.length, text.length);
+        }}
+        onChange={(event) => {
+          setText(event.target.value);
+        }}
+        onKeyDown={(event) => {
+          if (event.nativeEvent.isComposing) {
+            return;
+          }
+          if (event.key === "Enter" && !event.shiftKey) {
+            event.preventDefault();
+            save();
+          } else if (event.key === "Escape") {
+            onDone();
+          }
+        }}
+      />
+      <p className="mt-0.5 text-xs text-muted-foreground">Enter saves · Esc cancels · the agents it tagged stay as they were</p>
+    </div>
   );
 }
 
@@ -242,10 +299,43 @@ function AnyEmoji({ react }: { readonly react: (emoji: string) => void }): JSX.E
   );
 }
 
-/** What the user can do to a message, shown while the pointer is over it or the keyboard is in it: react, and for a message at the top of the chat, reply. */
-function Actions({ react, onReply }: { readonly react: (emoji: string) => void; readonly onReply: (() => void) | null }): JSX.Element {
+/** What only a message's author can do to it. */
+interface Own {
+  readonly edit: () => void;
+  readonly remove: () => void;
+}
+
+/** The menu of what only the author can do. It gives the focus back to nobody when it closes, so that the edit box keeps it. */
+function OwnMenu({ own }: { readonly own: Own }): JSX.Element {
   return (
-    <div className="invisible absolute top-0 right-0 flex gap-0.5 rounded-md border bg-background p-0.5 shadow-xs group-focus-within:visible group-hover:visible has-[[aria-expanded=true]]:visible">
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button size="icon-xs" variant="ghost" type="button" aria-label="More" title="More">
+          <EllipsisIcon />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="end"
+        className="w-auto"
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+        }}
+      >
+        <DropdownMenuItem onSelect={own.edit}>
+          <PencilIcon /> Edit
+        </DropdownMenuItem>
+        <DropdownMenuItem variant="destructive" onSelect={own.remove}>
+          <Trash2Icon /> Delete
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/** What the user can do to a message, shown while the pointer is over it or the keyboard is in it: react, reply to one at the top of the chat, and edit or delete their own. */
+function Actions({ react, onReply, own }: { readonly react: (emoji: string) => void; readonly onReply: (() => void) | null; readonly own: Own | null }): JSX.Element {
+  return (
+    <div className="absolute top-0 right-0 flex gap-0.5 rounded-md border bg-background p-0.5 opacity-0 shadow-xs group-hover:opacity-100 focus-within:opacity-100 has-[[aria-expanded=true]]:opacity-100">
       {COMMON.map((emoji) => (
         <Button
           key={emoji}
@@ -266,6 +356,7 @@ function Actions({ react, onReply }: { readonly react: (emoji: string) => void; 
           <ReplyIcon />
         </Button>
       )}
+      {own !== null && <OwnMenu own={own} />}
     </div>
   );
 }
@@ -305,7 +396,20 @@ function Reactions({ message, me, react }: { readonly message: ReplyView; readon
 
 /** One message or answer. `onReply` opens its thread; null for a reply, which is in its thread already. */
 function Said({ message, me, act, onReply }: { readonly message: ReplyView; readonly me: string; readonly act: Act; readonly onReply: (() => void) | null }): JSX.Element {
+  const [editing, setEditing] = useState(false);
   const when = new Date(message.ts * 1000);
+  // Only the author's own word counts for an edit or a delete, and never on an agent's answer, so nobody else is offered either.
+  const own: Own | null =
+    message.sender === me && message.agent === null && !message.deleted
+      ? {
+          edit: () => {
+            setEditing(true);
+          },
+          remove: () => {
+            act({ do: "delete", id: message.id });
+          }
+        }
+      : null;
   // Using an emoji the user has already used on this message takes it back.
   const react = (emoji: string): void => {
     act({ do: "react", id: message.id, emoji, on: !message.reactions.some((each) => each.emoji === emoji && each.people.includes(me)) });
@@ -334,12 +438,22 @@ function Said({ message, me, act, onReply }: { readonly message: ReplyView; read
         </header>
       )}
       {message.quote !== "" && <p className="my-0.5 truncate border-l-3 pl-2 text-muted-foreground">{message.quote}</p>}
-      <Body message={message} />
+      {editing ? (
+        <EditBox
+          message={message}
+          act={act}
+          onDone={() => {
+            setEditing(false);
+          }}
+        />
+      ) : (
+        <Body message={message} />
+      )}
       <Reactions message={message} me={me} react={react} />
       {message.requests.map((request) => (
         <RequestLine key={`${request.owner}/${request.repo}`} request={request} act={act} />
       ))}
-      {!message.deleted && <Actions react={react} onReply={onReply} />}
+      {!message.deleted && !editing && <Actions react={react} onReply={onReply} own={own} />}
     </article>
   );
 }
