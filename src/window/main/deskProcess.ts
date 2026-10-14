@@ -3,6 +3,7 @@
 import { spawn } from "node:child_process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
+import { join as joinPath } from "node:path";
 import { createInterface } from "node:readline";
 
 import { PROTOCOL } from "../../core/wire.ts";
@@ -19,6 +20,11 @@ export interface Launch {
   readonly command: string;
   readonly args: readonly string[];
   readonly env: NodeJS.ProcessEnv;
+}
+
+/** The desk where the window and the repos are on one machine, which is Linux, macOS, and development inside WSL: the built command beside this file, run by Electron itself as plain Node. */
+export function localLaunch(): Launch {
+  return { command: process.execPath, args: [joinPath(import.meta.dirname, "player-two.js"), "desk"], env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } };
 }
 
 /** What the desk says that is not the answer to a command. */
