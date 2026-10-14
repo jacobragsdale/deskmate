@@ -3,12 +3,20 @@
 import { useEffect, useRef, useState } from "react";
 import type { JSX, KeyboardEvent } from "react";
 
+import { Command, CommandItem, CommandList } from "@/components/ui/command";
+import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
+
 import { candidates } from "../../core/chat.ts";
 import type { Candidate } from "../../core/chat.ts";
 import type { ChatView, CurrentView, Notice } from "../../shared/ipc.ts";
 import type { Act, Submit } from "./App.tsx";
 
 const TAG_BEING_TYPED = /(?:^|\s)@([\w./-]*)$/;
+
+/** What names one row of the list of agents, for React and for the list's own idea of which row is highlighted. */
+function rowOf(pick: Candidate): string {
+  return `${pick.owner}/${pick.repo}/${String(pick.clone)}`;
+}
 
 interface Props {
   readonly view: ChatView;
@@ -168,49 +176,68 @@ export function Composer({ view, current, act, submit, tell }: Props): JSX.Eleme
   return (
     <div className="composer">
       <Review key={`${chat} ${String(current.drafts[0]?.noteId ?? 0)} ${current.drafts[0]?.repo ?? ""}`} current={current} act={act} submit={submit} tell={tell} />
-      {picks.rows.length > 0 && (
-        <ul className="picker" role="listbox" aria-label="Agents">
-          {picks.rows.map((pick, index) => (
-            <li
-              key={`${pick.owner}/${pick.repo}/${String(pick.clone)}`}
-              role="option"
-              aria-selected={index === highlighted}
-              className={index === highlighted ? "picked" : undefined}
-              onMouseDown={(event) => {
-                event.preventDefault(); // Keep the caret in the message box.
-                take(pick);
-              }}
-            >
-              {pick.clone ? (
-                <span className="quiet">
-                  ⇣ clone {pick.repo} into {view.dev}
-                </span>
-              ) : (
-                <>
-                  @{pick.owner}/{pick.repo} <span className="quiet">{pick.branch}</span>
-                </>
-              )}
-            </li>
-          ))}
-          {picks.more > 0 && <li className="quiet">{picks.more} more · keep typing</li>}
-        </ul>
-      )}
-      <textarea
-        ref={box}
-        aria-label={`Message ${chat}`}
-        placeholder={`Message ${chat} · @ tags an agent · Enter sends, Shift+Enter starts a new line`}
-        rows={Math.min(8, text.split("\n").length)}
-        value={text}
-        onChange={(event) => {
-          setText(event.target.value);
-          setCaret(event.target.selectionStart);
-          setPicked(0);
-        }}
-        onSelect={(event) => {
-          setCaret(event.currentTarget.selectionStart);
-        }}
-        onKeyDown={onKeyDown}
-      />
+      <Popover open={picks.rows.length > 0}>
+        <PopoverAnchor asChild>
+          <textarea
+            ref={box}
+            aria-label={`Message ${chat}`}
+            placeholder={`Message ${chat} · @ tags an agent · Enter sends, Shift+Enter starts a new line`}
+            rows={Math.min(8, text.split("\n").length)}
+            value={text}
+            onChange={(event) => {
+              setText(event.target.value);
+              setCaret(event.target.selectionStart);
+              setPicked(0);
+            }}
+            onSelect={(event) => {
+              setCaret(event.currentTarget.selectionStart);
+            }}
+            onKeyDown={onKeyDown}
+          />
+        </PopoverAnchor>
+        {/* The message box keeps the focus and its keys move, take and close; the list only shows the rows and which one they are on. */}
+        <PopoverContent
+          side="top"
+          align="start"
+          className="w-80 p-0"
+          onOpenAutoFocus={(event) => {
+            event.preventDefault();
+          }}
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+          }}
+        >
+          <Command shouldFilter={false} disablePointerSelection value={picks.rows[highlighted] === undefined ? "" : rowOf(picks.rows[highlighted])}>
+            <CommandList label="Agents">
+              {picks.rows.map((pick) => (
+                <CommandItem
+                  key={rowOf(pick)}
+                  value={rowOf(pick)}
+                  onMouseDown={(event) => {
+                    event.preventDefault(); // Keep the caret in the message box.
+                  }}
+                  onSelect={() => {
+                    take(pick);
+                  }}
+                >
+                  <span className="truncate">
+                    {pick.clone ? (
+                      <span className="text-muted-foreground">
+                        ⇣ clone {pick.repo} into {view.dev}
+                      </span>
+                    ) : (
+                      <>
+                        @{pick.owner}/{pick.repo} <span className="text-muted-foreground">{pick.branch}</span>
+                      </>
+                    )}
+                  </span>
+                </CommandItem>
+              ))}
+              {picks.more > 0 && <div className="px-2 py-1.5 text-muted-foreground">{picks.more} more · keep typing</div>}
+            </CommandList>
+          </Command>
+        </PopoverContent>
+      </Popover>
     </div>
   );
 }

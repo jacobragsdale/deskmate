@@ -136,8 +136,7 @@ footer.down span:last-child {
 }
 
 .sidebar ul,
-.choices,
-.picker {
+.choices {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -446,32 +445,6 @@ footer.down span:last-child {
 
 .review .actions {
   margin-top: 6px;
-}
-
-.picker {
-  position: absolute;
-  bottom: 100%;
-  left: 16px;
-  min-width: 280px;
-  max-width: calc(100% - 32px);
-  padding: 4px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--background);
-  box-shadow: 0 4px 16px rgb(0 0 0 / 20%);
-}
-
-.picker li {
-  padding: 3px 8px;
-  border-radius: 4px;
-  cursor: pointer;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.picker li.picked {
-  background: var(--accent);
 }
 
 /* ── the dialogs' lists, the join form, notices ── */
