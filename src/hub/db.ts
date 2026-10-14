@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 
 import { personSchema, teamRepoSchema } from "../core/wire.ts";
-import type { Person, Repo, TeamRepo } from "../core/wire.ts";
+import type { Note, Person, Repo, TeamRepo } from "../core/wire.ts";
 
 const SCHEMA_VERSION = 3;
 const BUSY_WAIT = 5; // Seconds to wait for another program that holds the file, such as a backup, before giving up.
@@ -37,6 +37,7 @@ const tablesSchema = z.strictObject({ tables: z.int() });
 const pubkeySchema = z.strictObject({ pubkey: z.string() }).optional();
 const peopleSchema = z.array(personSchema);
 const teamReposSchema = z.array(teamRepoSchema);
+const membersSchema = z.array(z.strictObject({ user: z.string() }));
 
 export class Database {
   private readonly db: DatabaseSync;
@@ -95,5 +96,18 @@ export class Database {
   /** Every repo anyone has checked out, with whose copy it is. */
   public repos(): readonly TeamRepo[] {
     return teamReposSchema.parse(this.db.prepare("SELECT name, key, url, branch, user FROM repos ORDER BY name, user").all());
+  }
+
+  /** Who is in a channel, by name. */
+  public members(channel: string): readonly string[] {
+    return membersSchema.parse(this.db.prepare("SELECT user FROM members WHERE channel = ? ORDER BY user").all(channel)).map((row) => row.user);
+  }
+
+  /** Keep a note and return the id it was given. Null when this exact note is already kept: a signature is stored once, which is what stops a replay. */
+  public addNote(note: Note): number | null {
+    const added = this.db
+      .prepare("INSERT OR IGNORE INTO notes (sender, recipient, kind, body, ts, agent, re, sig) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(note.sender, note.to, note.kind, note.body, note.ts, note.agent, note.re, note.sig);
+    return Number(added.changes) === 0 ? null : Number(added.lastInsertRowid);
   }
 }

@@ -1,4 +1,4 @@
-/** The hub: keeps everyone's public key and which repos each has checked out. Ported from src/deskmate/hub.py route for route: the same paths, the same statuses, the same words. */
+/** The hub: keeps everyone's public key and which repos each has checked out, and takes in signed notes. Ported from src/deskmate/hub.py route for route: the same paths, the same statuses, the same words. */
 
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
@@ -7,8 +7,8 @@ import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { z } from "zod";
 
 import { isUnder, prefixKey } from "../core/remotes.ts";
-import { authClaim, authIsValid } from "../core/sign.ts";
-import { joinSchema, repoSchema } from "../core/wire.ts";
+import { authClaim, authIsValid, isFresh, noteIsAuthentic } from "../core/sign.ts";
+import { isChannel, joinSchema, noteSchema, repoSchema } from "../core/wire.ts";
 import type { RepoRef } from "../core/wire.ts";
 import { Database } from "./db.ts";
 
@@ -146,13 +146,38 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     return [200, mine];
   }
 
+  function postNote(ask: Ask): Answer {
+    const note = jsonBody(noteSchema, ask.body);
+    const pubkey = db.pubkeyOf(note.sender);
+    if (pubkey === null || !noteIsAuthentic(note, pubkey)) {
+      throw new Refusal(401, "note is not signed by its sender");
+    }
+    if (!isFresh(note.ts, now())) {
+      throw new Refusal(400, "note timestamp is more than 5 minutes off the hub clock; check your system time");
+    }
+    if (isChannel(note.to)) {
+      if (!db.members(note.to).includes(note.sender)) {
+        throw new Refusal(403, `join ${note.to} before posting to it`);
+      }
+    } else if (db.pubkeyOf(note.to) === null) {
+      throw new Refusal(404, `nobody named '${note.to}' has joined`);
+    }
+    const id = db.addNote(note);
+    if (id === null) {
+      throw new Refusal(409, "this exact note was already delivered");
+    }
+    log("note queued", { note_id: id, sender: note.sender, recipient: note.to, kind: note.kind });
+    return [201, { id }];
+  }
+
   const routes: readonly Route[] = [
     { method: "GET", path: "/healthz", open: true, answer: () => [200, { ok: true }] },
     { method: "POST", path: "/join", open: true, answer: join },
     { method: "GET", path: "/info", answer: () => [200, { repos: prefix }] },
     { method: "GET", path: "/users", answer: () => [200, db.users()] },
     { method: "PUT", path: "/repos", answer: putRepos },
-    { method: "GET", path: "/repos", answer: () => [200, db.repos()] }
+    { method: "GET", path: "/repos", answer: () => [200, db.repos()] },
+    { method: "POST", path: "/notes", open: true, answer: postNote } // A note carries its own signature, so it needs no header.
   ];
 
   async function answer(request: IncomingMessage): Promise<Answer> {
