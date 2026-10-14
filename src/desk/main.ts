@@ -6,7 +6,7 @@ import { problemOf } from "../core/text.ts";
 import { VERSION } from "../core/version.ts";
 import { PROTOCOL } from "../core/wire.ts";
 import { readLine, windowLineSchema } from "../shared/ipc.ts";
-import type { Check, Command, DeskLine, Question, View } from "../shared/ipc.ts";
+import type { Command, DeskLine, Outcome, Question, View } from "../shared/ipc.ts";
 import { DEFAULT_AGENT, defaultDev, defaultHome, http, join, loadClient, PlayerTwoError } from "./client.ts";
 import { runChecks, WITHOUT_IDENTITY } from "./doctor.ts";
 import { Session } from "./session.ts";
@@ -98,23 +98,28 @@ class Desk {
     }
   }
 
-  /** Do what the window asked. Only the setup check answers with something: its list, which goes in the reply. */
-  private async handle(command: Command): Promise<readonly Check[] | null> {
+  /** Do what the window asked, and say that it was done. Only two answer with more: the setup check with its list, and a search with what it found. */
+  private async handle(command: Command): Promise<Extract<Outcome, { readonly ok: true }>> {
     if (command.do === "doctor") {
       const checks = await runChecks(this.home, defaultDev());
-      return this.session === null ? checks.filter((check) => WITHOUT_IDENTITY.has(check.id)) : checks; // Before anyone has joined, nothing that needs an identity is worth showing.
+      return { ok: true, data: this.session === null ? checks.filter((check) => WITHOUT_IDENTITY.has(check.id)) : checks }; // Before anyone has joined, nothing that needs an identity is worth showing.
     }
-    if (command.do !== "join") {
+    if (command.do === "join") {
       if (this.session === null) {
-        throw new PlayerTwoError("join a hub first");
+        await join(this.home, command.hub.trim(), command.name.trim(), command.token.trim(), command.agent.trim() === "" ? DEFAULT_AGENT : command.agent.trim(), http);
+        this.start();
+        this.changed();
       }
-      await this.session.handle(command);
-    } else if (this.session === null) {
-      await join(this.home, command.hub.trim(), command.name.trim(), command.token.trim(), command.agent.trim() === "" ? DEFAULT_AGENT : command.agent.trim(), http);
-      this.start();
-      this.changed();
+      return { ok: true };
     }
-    return null;
+    if (this.session === null) {
+      throw new PlayerTwoError("join a hub first");
+    }
+    if (command.do === "search") {
+      return { ok: true, found: await this.session.search(command.q) };
+    }
+    await this.session.handle(command);
+    return { ok: true };
   }
 
   private accept(text: string): void {
@@ -127,8 +132,8 @@ class Desk {
       case "command":
         // Not awaited: a command may wait on the user, and the lines that carry their answer come in behind it.
         this.handle(line.command).then(
-          (data) => {
-            this.write({ t: "reply", id: line.id, outcome: data === null ? { ok: true } : { ok: true, data } });
+          (outcome) => {
+            this.write({ t: "reply", id: line.id, outcome });
           },
           (error: unknown) => {
             this.write({ t: "reply", id: line.id, outcome: { ok: false, problem: problemOf(error) } });

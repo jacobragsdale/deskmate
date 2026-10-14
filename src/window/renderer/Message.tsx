@@ -16,7 +16,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { spans } from "../../core/chat.ts";
 import { noteLink, noteOf, notesIn } from "../../core/links.ts";
 import { oneLine } from "../../core/text.ts";
-import type { MessageView, ReplyView, RequestView } from "../../shared/ipc.ts";
+import type { CurrentView, MessageView, ReplyView, RequestView } from "../../shared/ipc.ts";
 import type { Act } from "./App.tsx";
 
 const LINE = "my-1 text-muted-foreground"; // Where a tagged agent stands, under the message.
@@ -235,8 +235,11 @@ function Edited({ message }: { readonly message: ReplyView }): JSX.Element | nul
   return message.edited ? <span className="text-xs text-muted-foreground"> (edited)</span> : null;
 }
 
-/** A link to a note, drawn as a chip of text: who wrote the note and its first words once the desk has looked it up, or that the reader cannot see it. Nothing in it is followed or run. */
-function NoteChip({ id, notes }: { readonly id: string; readonly notes: ReplyView["notes"] }): JSX.Element {
+/**
+ * A link to a note, drawn as a chip of text: who wrote the note and its first words once the desk has looked it up, or that the reader cannot see it.
+ * Clicking it has the desk open the note; nothing in it is followed as an address or run.
+ */
+function NoteChip({ id, notes, act }: { readonly id: string; readonly notes: ReplyView["notes"]; readonly act: Act }): JSX.Element {
   const note = notes.find((each) => each.id === id);
   let label = "a note…"; // Still being looked up.
   if (note?.state === "seen") {
@@ -245,9 +248,17 @@ function NoteChip({ id, notes }: { readonly id: string; readonly notes: ReplyVie
     label = "a note you cannot see";
   }
   return (
-    <span className="mx-0.5 inline-block max-w-80 truncate rounded-md border bg-muted px-1.5 align-bottom text-xs" title={noteLink(id)} data-note={id}>
+    <button
+      type="button"
+      className="mx-0.5 inline-block max-w-80 cursor-pointer truncate rounded-md border bg-muted px-1.5 align-bottom text-xs hover:bg-accent"
+      title={noteLink(id)}
+      data-note={id}
+      onClick={() => {
+        act({ do: "openNote", id });
+      }}
+    >
       {label}
-    </span>
+    </button>
   );
 }
 
@@ -280,7 +291,7 @@ function linkNotes(): (tree: MarkdownNode) => void {
   return visit;
 }
 
-function Body({ message }: { readonly message: ReplyView }): JSX.Element {
+function Body({ message, act }: { readonly message: ReplyView; readonly act: Act }): JSX.Element {
   if (message.deleted) {
     return <p className="text-muted-foreground italic">message deleted</p>;
   }
@@ -300,7 +311,7 @@ function Body({ message }: { readonly message: ReplyView }): JSX.Element {
                   {children}
                 </a>
               ) : (
-                <NoteChip id={note} notes={message.notes} />
+                <NoteChip id={note} notes={message.notes} act={act} />
               );
             },
             img: ({ alt, src }) => (
@@ -329,7 +340,7 @@ function Body({ message }: { readonly message: ReplyView }): JSX.Element {
             ))}
           </Fragment>
         ) : (
-          <NoteChip key={at} id={piece.note} notes={message.notes} />
+          <NoteChip key={at} id={piece.note} notes={message.notes} act={act} />
         )
       )}
       <Edited message={message} />
@@ -537,8 +548,20 @@ function Header({ message, me }: { readonly message: ReplyView; readonly me: str
   );
 }
 
-/** One message or answer. `onReply` opens its thread; null for a reply, which is in its thread already. */
-function Said({ message, me, act, onReply }: { readonly message: ReplyView; readonly me: string; readonly act: Act; readonly onReply: (() => void) | null }): JSX.Element {
+/** One message or answer. `onReply` opens its thread; null for a reply, which is in its thread already. `focused` highlights the one the user opened a link to. */
+function Said({
+  message,
+  me,
+  act,
+  onReply,
+  focused
+}: {
+  readonly message: ReplyView;
+  readonly me: string;
+  readonly act: Act;
+  readonly onReply: (() => void) | null;
+  readonly focused: boolean;
+}): JSX.Element {
   const [editing, setEditing] = useState(false);
   // Only the author's own word counts for an edit or a delete, and never on an agent's answer, so nobody else is offered either.
   const own: Own | null =
@@ -560,7 +583,11 @@ function Said({ message, me, act, onReply }: { readonly message: ReplyView; read
     return <p className="my-2 text-destructive">✗ a message claiming to be from {message.sender} failed its signature check and is hidden</p>;
   }
   return (
-    <article className={cn("group relative", message.agent !== null && "mt-1 border-l-3 border-agent pl-2.5")}>
+    <article
+      data-id={message.id}
+      data-focused={focused}
+      className={cn("group relative", message.agent !== null && "mt-1 border-l-3 border-agent pl-2.5", focused && "rounded-md bg-tag/10 ring-1 ring-tag/40")}
+    >
       {message.header && <Header message={message} me={me} />}
       {message.quote !== "" && <p className="my-0.5 truncate border-l-3 pl-2 text-muted-foreground">{message.quote}</p>}
       {editing ? (
@@ -572,7 +599,7 @@ function Said({ message, me, act, onReply }: { readonly message: ReplyView; read
           }}
         />
       ) : (
-        <Body message={message} />
+        <Body message={message} act={act} />
       )}
       <Reactions message={message} me={me} react={react} />
       {message.requests.map((request) => (
@@ -624,9 +651,18 @@ function ReplyBox({ root, act, onClose }: { readonly root: string; readonly act:
   );
 }
 
-/** A message at the top of the chat, and under it its thread: how many replies and the last one while it is closed, and every reply with a box to add one while it is open. */
-export function Message({ message, me, act }: { readonly message: MessageView; readonly me: string; readonly act: Act }): JSX.Element {
+/**
+ * A message at the top of the chat, and under it its thread: how many replies and the last one while it is closed, and every reply with a box to add one while it is open.
+ * `focus` is the message the user opened a link to, which is highlighted; when it is a reply here, the thread opens.
+ */
+export function Message({ message, me, act, focus }: { readonly message: MessageView; readonly me: string; readonly act: Act; readonly focus: CurrentView["focus"] }): JSX.Element {
   const [open, setOpen] = useState(false);
+  const [opened, setOpened] = useState(0); // The `nth` of the last link to a reply here, which opened the thread.
+  // In this render, so that the reply is there for the chat to scroll to when it looks for it.
+  if (focus !== null && focus.nth !== opened && message.replies.some((reply) => reply.id === focus.id)) {
+    setOpened(focus.nth);
+    setOpen(true);
+  }
   const last = message.replies.at(-1);
   const close = (): void => {
     setOpen(false);
@@ -637,6 +673,7 @@ export function Message({ message, me, act }: { readonly message: MessageView; r
         message={message}
         me={me}
         act={act}
+        focused={focus?.id === message.id}
         onReply={
           message.trusted
             ? () => {
@@ -667,7 +704,7 @@ export function Message({ message, me, act }: { readonly message: MessageView; r
       {open && (
         <section className="my-1 ml-3 border-l-2 pl-3" aria-label="Thread">
           {message.replies.map((reply) => (
-            <Said key={reply.id} message={reply} me={me} act={act} onReply={null} />
+            <Said key={reply.id} message={reply} me={me} act={act} onReply={null} focused={focus?.id === reply.id} />
           ))}
           <ReplyBox root={message.id} act={act} onClose={close} />
           <Button variant="link" size="xs" className="h-auto p-0 text-muted-foreground" type="button" onClick={close}>

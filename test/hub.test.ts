@@ -439,6 +439,51 @@ await test("a link to a note shows who wrote it and its first words, from what i
   ]);
 });
 
+await test("opening a link to a note opens its chat with the page around it loaded and no hole after it, and points at it; one the reader cannot see opens nothing", { timeout: 30_000 }, async (t) => {
+  const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+  const [alice, bob, carol] = [await hub.join("alice"), await hub.join("bob"), await hub.join("carol")];
+  const said = async (text: string): Promise<string> => (await alice.publish("bob", "message", { text, via: "cli" })).event.id;
+  const counted = (word: string, count: number): string[] => Array.from({ length: count }, (_, at) => `${word} ${String(at + 1)}`);
+  for (const text of counted("before", 30)) {
+    await said(text);
+  }
+  const note = await said("the note");
+  for (const text of counted("after", 100)) {
+    await said(text);
+  }
+  await carol.publish("bob", "message", { text: "hello from carol", via: "cli" });
+  await carol.publish("#private", "channel.join", {});
+  const hidden = (await carol.publish("#private", "message", { text: "only for carol", via: "cli" })).event.id;
+  await bob.publish("#left", "channel.join", {});
+  const left = (await bob.publish("#left", "message", { text: "bob said this, then left", via: "cli" })).event.id; // The hub shows bob his own, but the channel is not in his list.
+  await bob.publish("#left", "channel.leave", {});
+  const { session } = deskOf(t, bob, join(hub.dir, "dev"));
+  await until(session, "everything loaded", (view) => view.loaded);
+  await session.handle({ do: "open", chat: "carol" });
+
+  // The note is 100 messages back in another chat, behind its newest page: the page around it is loaded, and so is everything between it and that page.
+  await session.handle({ do: "openNote", id: note });
+  const opened = session.view().current;
+  assert.deepEqual(
+    [opened?.chat, opened?.focus, opened?.hasOlder, opened?.messages.map((message) => message.body)],
+    ["alice", { id: note, nth: 1 }, true, [...counted("before", 30).slice(5), "the note", ...counted("after", 100)]]
+  );
+  await session.handle({ do: "older" });
+  assert.deepEqual([session.view().current?.messages.length, session.view().current?.hasOlder], [131, false]);
+
+  // Opened again from another chat, it is loaded already, and the window is pointed at it again. Opening another chat takes the focus away.
+  await session.handle({ do: "open", chat: "carol" });
+  assert.equal(session.view().current?.focus, null);
+  await session.handle({ do: "openNote", id: note });
+  assert.deepEqual([session.view().current?.chat, session.view().current?.focus], ["alice", { id: note, nth: 2 }]);
+
+  // A note in a channel bob is not in, one in a channel he left, and one never stored, open nothing.
+  for (const id of [hidden, left, "0".repeat(64)]) {
+    await assert.rejects(session.handle({ do: "openNote", id }), /that link is to a note you cannot see/);
+  }
+  assert.deepEqual([session.view().current?.chat, session.view().current?.focus], ["alice", { id: note, nth: 2 }]);
+});
+
 /** An agent that answers "done" at once, unless its prompt ends "take your time": then it works until its owner stops it. */
 const patient: Runner = (argv, _cwd, cancel) =>
   argv.at(-1)?.endsWith("take your time") === true

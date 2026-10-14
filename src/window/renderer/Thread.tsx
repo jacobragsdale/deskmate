@@ -88,6 +88,18 @@ export function Thread({ view, current, act, onPin }: { readonly view: ChatView;
     }
   }, [current]);
 
+  // Bring the message the user opened a link to into view, once each time one is opened, after the chat has been opened at its end above. It may come a view after its focus.
+  const focused = useRef(0);
+  useLayoutEffect(() => {
+    const { focus } = current;
+    const target = focus === null || focus.nth === focused.current ? null : scroller.current?.querySelector(`[data-id="${CSS.escape(focus.id)}"]`);
+    if (focus !== null && target !== null && target !== undefined) {
+      target.scrollIntoView({ block: "center" });
+      focused.current = focus.nth;
+      atEnd.current = false;
+    }
+  }, [current]);
+
   const { pinned, members } = current;
   const firstNew = current.newAfter === null ? undefined : current.messages.find((message) => message.seq > (current.newAfter ?? 0) && message.sender !== view.me);
   return (
@@ -174,7 +186,7 @@ export function Thread({ view, current, act, onPin }: { readonly view: ChatView;
               <Fragment key={"did" in item ? `line ${String(item.seq)}` : item.id}>
                 {newDay && <p className={RULE}>{dayLabel(item.ts)}</p>}
                 {item === firstNew && <p className={cn(RULE, "text-destructive before:border-destructive after:border-destructive")}>new</p>}
-                <div data-seq={item.seq}>{"did" in item ? <Line line={item} me={view.me} /> : <Message message={item} me={view.me} act={act} />}</div>
+                <div data-seq={item.seq}>{"did" in item ? <Line line={item} me={view.me} /> : <Message message={item} me={view.me} act={act} focus={current.focus} />}</div>
               </Fragment>
             );
           })}

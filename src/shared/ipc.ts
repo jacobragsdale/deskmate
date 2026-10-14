@@ -95,7 +95,10 @@ const currentSchema = z
     messages: z.array(messageSchema).readonly(),
     lines: z.array(lineSchema).readonly(),
     drafts: z.array(z.strictObject({ id: z.string(), repo: z.string(), asker: z.string(), text: z.string() }).readonly()).readonly(), // Answers waiting for review, oldest first, each with its request's id.
-    running: z.boolean() // Whether one of the user's agents is at work here.
+    running: z.boolean(), // Whether one of the user's agents is at work here.
+    // The message or answer the user last opened a link to, for the window to scroll to and highlight; null once another chat is opened.
+    // `nth` counts the links opened, so the same one opened again is scrolled to again.
+    focus: z.strictObject({ id: z.string(), nth: z.int() }).readonly().nullable()
   })
   .readonly();
 
@@ -153,15 +156,28 @@ export const commandSchema = z.discriminatedUnion("do", [
   z.strictObject({ do: z.literal("unpin"), chat }),
   z.strictObject({ do: z.literal("clone"), repo }),
   z.strictObject({ do: z.literal("older") }), // Load the page before the oldest event shown in the open chat.
+  z.strictObject({ do: z.literal("search"), q: z.string().min(1).max(500) }), // Search every chat the user can see. The reply's `found` is what the hub found.
+  z.strictObject({ do: z.literal("openNote"), id }), // Open the chat a message or an answer is in, with it loaded, and set the view's `focus` on it.
   z.strictObject({ do: z.literal("doctor") }) // Run the setup check. The reply's data is the list.
 ]);
+
+/** A message or an answer a search found: where it is, who wrote it, and a stretch of its text as last edited, in pieces, the words found marked. All of it is drawn as text. */
+const hitSchema = z
+  .strictObject({
+    id: z.string(),
+    chat: z.string(),
+    sender: z.string(),
+    agent: z.string().nullable(), // The repo of the agent whose answer it is; null for a message a person typed.
+    snippet: z.array(z.strictObject({ text: z.string(), hit: z.boolean() }).readonly()).readonly()
+  })
+  .readonly();
 
 /** One item of the setup check: what was looked at, how it stands, what was found, and the command or instruction that fixes it ("" when there is nothing to do). Nothing runs a fix: the user copies it. */
 export const checkSchema = z.strictObject({ id: z.string(), title: z.string(), status: z.enum(["ok", "warn", "fail", "skip"]), detail: z.string(), fix: z.string() }).readonly();
 
 /** How a command ended. A problem is worded for the user. */
 export const outcomeSchema = z.discriminatedUnion("ok", [
-  z.strictObject({ ok: z.literal(true), data: z.array(checkSchema).readonly().optional() }), // Data only for the setup check: its list.
+  z.strictObject({ ok: z.literal(true), data: z.array(checkSchema).readonly().optional(), found: z.array(hitSchema).readonly().optional() }), // Data only for the setup check, its list; found only for a search.
   z.strictObject({ ok: z.literal(false), problem: z.string() })
 ]);
 
@@ -218,6 +234,7 @@ export type CurrentView = z.infer<typeof currentSchema>;
 export type View = z.infer<typeof viewSchema>;
 export type ChatView = Extract<View, { kind: "chat" }>;
 export type Check = z.infer<typeof checkSchema>;
+export type Hit = z.infer<typeof hitSchema>;
 export type Command = z.infer<typeof commandSchema>;
 export type Outcome = z.infer<typeof outcomeSchema>;
 export type Notice = z.infer<typeof noticeSchema>;

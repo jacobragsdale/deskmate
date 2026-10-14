@@ -6,15 +6,15 @@ import { join as joinPath } from "node:path";
 
 import { z } from "zod";
 
-import type { Arrival, ChatView, Command, CurrentView, LineView, MessageView, NoteView, Notice, ReplyView, RequestView, RowView } from "../shared/ipc.ts";
+import type { Arrival, ChatView, Command, CurrentView, Hit, LineView, MessageView, NoteView, Notice, ReplyView, RequestView, RowView } from "../shared/ipc.ts";
 import { agentPrompt, ChatLog, chatOf, continues, mentions, ONLINE, refOf, rings } from "../core/chat.ts";
 import type { Accepted, Entry, Message, Request } from "../core/chat.ts";
 import { readContent } from "../core/kinds.ts";
 import { notesIn } from "../core/links.ts";
 import type { Content, ContentOf } from "../core/kinds.ts";
 import { runAgent, splitCommand } from "./agents/oneshot.ts";
-import { AgentCancelledError, PlayerTwoError } from "./client.ts";
-import type { Client, Runner } from "./client.ts";
+import { AgentCancelledError, PlayerTwoError, Refused } from "./client.ts";
+import type { Client, Found, Runner } from "./client.ts";
 import * as repos from "./repos.ts";
 import type { Checkout, Head } from "./repos.ts";
 import { cloneFolder } from "../core/remotes.ts";
@@ -62,7 +62,7 @@ interface AgentRun {
   done: Promise<void>; // Settles once the agent's process is gone and the chat has been told how it ended.
 }
 
-type ChatCommand = Exclude<Command, { do: "join" | "doctor" }>;
+type ChatCommand = Exclude<Command, { do: "join" | "doctor" | "search" }>;
 type MessageDo = "send" | "reply" | "react" | "edit" | "delete";
 type JobDo = "sendDraft" | "discardDraft" | "run" | "stop" | "stopAll" | "decline" | "withdraw";
 
@@ -138,6 +138,8 @@ export class Session {
   private advertised: string | null = null; // What the hub was last told about the user's repos.
   private current = ""; // The open chat; "" until one exists.
   private newAfter: number | null = null;
+  private focus: CurrentView["focus"] = null; // The message the user last opened a link to, while its chat stays open.
+  private notesOpened = 0;
   private connected = false;
   private problem = "";
   private loaded = false;
@@ -205,6 +207,9 @@ export class Session {
           break;
         case "older":
           await this.older();
+          break;
+        case "openNote":
+          await this.openNote(command.id);
           break;
         case "joinChannel":
           await this.joinChannel(command.name);
@@ -345,7 +350,8 @@ export class Session {
       messages: this.messages(chat, now),
       lines: this.lines(chat),
       drafts: (this.drafts.get(chat) ?? []).map((draft) => ({ id: draft.entry.event.id, repo: draft.repo, asker: draft.entry.event.author, text: draft.text })),
-      running: [...this.runs.values()].some((run) => chatOf(run.entry.event, this.me) === chat)
+      running: [...this.runs.values()].some((run) => chatOf(run.entry.event, this.me) === chat),
+      focus: this.focus
     };
   }
 
@@ -615,6 +621,28 @@ export class Session {
     this.paged.set(chat, found.length === PAGE);
   }
 
+  /**
+   * Load the page of a chat centred on `seq`, then what lies between it and what was loaded already, so that the chat shows no hole.
+   * ponytail: the hole is loaded whole, a page at a time; a link far back in a long chat costs a request for each PAGE events after it. Keep a chat as separate stretches if that grows slow.
+   */
+  private async pageAround(chat: string, seq: number): Promise<void> {
+    if (!this.paged.has(chat)) {
+      await this.page(chat);
+    }
+    const loaded = this.chats.bounds(chat);
+    const found = await this.client.around({ chat, around: seq, limit: PAGE });
+    this.take(await this.trust(found), false);
+    if ((found[0]?.seq ?? Infinity) < (loaded?.oldest ?? Infinity)) {
+      this.paged.set(chat, found.filter((each) => each.seq < seq).length === Math.floor(PAGE / 2)); // The hub gives up to half the page from before `seq`: fewer means there is nothing before.
+    }
+    const reached = found.at(-1)?.seq ?? seq;
+    for (let before = loaded?.oldest; before !== undefined && before > reached;) {
+      const page = await this.client.events({ chat, before, limit: PAGE });
+      this.take(await this.trust(page), false);
+      before = page.length === PAGE ? page.at(-1)?.seq : undefined;
+    }
+  }
+
   /** The page before the oldest event loaded in the open chat. */
   private async older(): Promise<void> {
     const oldest = this.chats.bounds(this.current)?.oldest;
@@ -713,6 +741,7 @@ export class Session {
     const mark = this.read[chat];
     this.newAfter = mark !== undefined && this.chats.unread(chat, mark) > 0 ? mark : null; // A chat never opened has no "left off".
     this.current = chat;
+    this.focus = null;
     this.markRead();
     this.hooks.changed();
   }
@@ -758,6 +787,46 @@ export class Session {
       throw new PlayerTwoError("only your own messages can be edited or deleted");
     }
     return message;
+  }
+
+  /**
+   * Open the chat a message or an answer is in, with the page around it loaded, and set the view's focus on it for the window to scroll to and highlight.
+   * One not loaded here is asked of the hub. One the hub will not show the user, one whose signature fails, one in a chat not in their list, and an event that is not a message or an answer, open nothing.
+   */
+  private async openNote(id: string): Promise<void> {
+    if (this.chats.message(id) === null) {
+      const found = await this.client.event(id);
+      const chat = found === null ? "" : chatOf(found.event, this.me);
+      if (found !== null && this.rows().some((row) => row.chat === chat) && (await this.client.isTrusted(found.event))) {
+        await this.pageAround(chat, found.seq);
+      }
+    }
+    const message = this.chats.message(id);
+    if (message === null) {
+      throw new PlayerTwoError("that link is to a note you cannot see");
+    }
+    this.open(chatOf(message.entry.event, this.me));
+    this.notesOpened += 1;
+    this.focus = { id, nth: this.notesOpened };
+    this.hooks.changed();
+  }
+
+  /** What the hub finds for `q` in every chat the user can see, best match first, for the window's search. One whose signature fails is left out, as its text never reaches the window. */
+  public async search(q: string): Promise<Hit[]> {
+    let found: Found[];
+    try {
+      found = await this.client.search({ q });
+    } catch (error) {
+      throw error instanceof Refused && error.status === 422 ? new PlayerTwoError("a search holds one to eight words") : error;
+    }
+    const hits: Hit[] = [];
+    for (const { event, snippet } of found) {
+      const said = readContent(event);
+      if (await this.client.isTrusted(event)) {
+        hits.push({ id: event.id, chat: chatOf(event, this.me), sender: event.author, agent: said.kind === "job.result" ? said.content.repo : null, snippet });
+      }
+    }
+    return hits;
   }
 
   /** Take back a request the user made of someone's agent, while it is still waiting. */
