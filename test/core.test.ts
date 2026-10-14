@@ -20,7 +20,9 @@ import { noteIn, noteLink, noteOf, notesIn } from "../src/core/links.ts";
 import { loadKey, publicHex, signEvent } from "../src/core/sign.ts";
 import * as repos from "../src/desk/repos.ts";
 import { Session } from "../src/desk/session.ts";
-import { commandLineOf, eventSchema, fitText, MAX_CONTENT, MAX_PATCH, PROTOCOL } from "../src/core/wire.ts";
+import { commandLineOf, eventSchema, fitText, MAX_CONTENT, MAX_PATCH, MODES, PROTOCOL } from "../src/core/wire.ts";
+import { atMost, decide } from "../src/desk/permissions.ts";
+import type { Action, Decision } from "../src/desk/permissions.ts";
 import type { Delivered, TeamRepo } from "../src/core/wire.ts";
 import { startHub } from "./startHub.ts";
 
@@ -526,6 +528,32 @@ await test("a config.json that still names one agent command loads as one one-sh
     writeFileSync(file, JSON.stringify(wrong));
     assert.throws(() => readConfig(home), z.ZodError, JSON.stringify(wrong));
   }
+});
+
+await test("a mode allows, asks about or refuses each kind of action as the protocol reference's table says, and the modes are ordered read-only to full", () => {
+  // One column per mode, in the order of MODES: read-only, supervised, auto-edits, full.
+  const table: readonly (readonly [Action, readonly Decision[]])[] = [
+    ["read", ["allow", "allow", "allow", "allow"]],
+    ["search", ["allow", "allow", "allow", "allow"]],
+    ["think", ["allow", "allow", "allow", "allow"]],
+    ["edit", ["refuse", "ask", "allow", "allow"]],
+    ["delete", ["refuse", "ask", "ask", "allow"]],
+    ["move", ["refuse", "ask", "ask", "allow"]],
+    ["execute", ["refuse", "ask", "ask", "allow"]],
+    ["fetch", ["refuse", "ask", "ask", "allow"]],
+    ["other", ["refuse", "ask", "ask", "allow"]]
+  ];
+  for (const [action, row] of table) {
+    assert.deepEqual(
+      MODES.map((mode) => decide(mode, action)),
+      row,
+      action
+    );
+  }
+  assert.deepEqual(
+    MODES.map((a) => MODES.map((b) => atMost(a, b))),
+    MODES.map((_a, i) => MODES.map((_b, j) => i <= j))
+  );
 });
 
 await test("an event's envelope holds exactly the signed fields, a kind of dotted lowercase words, and content up to its kind's limit", () => {
