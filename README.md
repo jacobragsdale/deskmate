@@ -2,9 +2,9 @@
 
 Player Two is a chat for a small team and their coding agents. Every repo you have checked out under `~/dev` is an agent that anyone on the team can tag, as `@you/repo`. Your own agent answers as soon as you tag it. A teammate's tag waits until you approve it, and everyone in the chat can see where it stands.
 
-It has three parts. The hub is one small server the team shares; it keeps the notes. The window is a desktop app, on Windows an Electron program. The desk is your side of it: your identity, your repos and your agents. On Windows the desk runs inside WSL, where your repos and your agent's command line are; on Linux and macOS it runs beside the window. The `player-two` command speaks to the same hub, for scripts and for agents.
+It has three parts. The hub is one small server the team shares; it keeps the log of everything the team says and does. The window is a desktop app, on Windows an Electron program. The desk is your side of it: your identity, your repos and your agents. On Windows the desk runs inside WSL, where your repos and your agent's command line are; on Linux and macOS it runs beside the window. The `player-two` command speaks to the same hub, for scripts and for agents.
 
-The window has the chat list on the left: channels, then people, each person with a dot that is filled while they are here, and beside each chat a count of unread notes and a mark for anything waiting on you. The open chat is on the right: its title with the members and any repo the channel is about, the notes, a line under each note that tags an agent saying where that agent stands, and the message box at the bottom with a status line under it.
+The window has the chat list on the left: channels, then people, each person with a dot that is filled while they are here, and beside each chat a count of unread messages and a mark for anything waiting on you. The open chat is on the right: its title with the members and any repo the channel is about, the messages with their threads and reactions, a line under each message that tags an agent saying where that agent stands, and the message box at the bottom with a status line under it.
 
 ## Quick start
 
@@ -87,7 +87,7 @@ Jacob clicks `bob` in the chat list and types `@`. A list opens above the messag
 @jacob/uploader where do we retry failed uploads?
 ```
 
-His agent starts at once in `~/dev/uploader`. A line under the note shows it working, with the seconds it has taken and a `■ Stop` button, and Bob sees that it is working. When the agent finishes, its answer is posted to the chat, marked `jacob/uploader agent` and the branch it was on, with a coloured edge down its left side.
+His agent starts at once in `~/dev/uploader`. A line under the message shows it working, on which branch and commit, with the seconds it has taken and a `■ Stop` button, and Bob sees that it is working. When the agent finishes, its answer is posted to the chat, marked `jacob/uploader agent` with the branch and commit it ran at, and a coloured edge down its left side.
 
 ### 5. Tag a teammate's agent
 
@@ -97,44 +97,44 @@ Bob wants to know about work on Jacob's branch, so in his chat with `jacob` he t
 @jacob/uploader does your retry change handle 429s?
 ```
 
-Under his note Bob sees `◌ waiting for jacob to approve`. Nothing has run.
+Under his message Bob sees `◌ waiting for jacob to approve`, and `↩ Withdraw`, which takes the request back until Jacob acts on it. Nothing has run.
 
-Jacob's window notifies him, and his chat list marks the chat with `▶`. Under Bob's note he has three choices:
+Jacob's window notifies him, and his chat list marks the chat with `▶`. Under Bob's message he has three choices:
 
 - `▶ Run and review` runs his agent and puts its answer in a box of its own above the message box, as a draft. He can edit it, then `Send answer` sends it, or `× Discard` drops it.
 - `▶▶ Run and post` runs his agent and posts the answer without a review.
 - `× Decline` tells Bob the answer is no.
 
-While the agent runs, Bob's line reads `jacob's uploader agent is working on feature/retry ±`: the branch, and `±` when there are uncommitted changes.
+Before the agent starts, Jacob's desk tells the chat he let it run, and on what. While it runs, Bob's line reads `jacob's uploader agent is working on feature/retry ± at 1a2b3c4`: the branch, `±` when there are uncommitted changes, and the commit.
 
 ### 6. Start a channel
 
 Jacob presses Ctrl+N, or clicks `+ Join or create` in the chat list, types `backend`, and presses Enter. The name follows the same rules as a person's name; the `#` is added for you. A channel exists as soon as one person has joined it. Bob joins the same way, and his dialog lists `#backend` to pick.
 
-Tags work in a channel exactly as in a direct chat, and every member sees the answers.
+Tags work in a channel exactly as in a direct chat, and every member sees the answers. A quiet line in the channel says when someone joins or leaves it, or pins or unpins its repo.
 
 A channel can be about one repo. Click `◆ Pin a repo` in the channel's title and pick one of yours. The title then shows how many members have it, the tag list puts its agents first, and a member without it is offered a clone.
 
 ### 7. Let your own agent ask
 
-An agent, or a script, sends a note with `player-two send` and reads the answer from standard output. In WSL the window has installed the command as `~/.local/bin/player-two`:
+An agent, or a script, sends a message with `player-two send` and reads the answer from standard output. In WSL the window has installed the command as `~/.local/bin/player-two`:
 
 ```sh
 player-two send bob "@bob/uploader which tests cover the retry path?" --wait 300
 player-two send '#backend' "who owns the uploader?"
 ```
 
-`--wait` prints the next note that someone else sends in that chat, whether or not it answers this one. Bob still has to approve the run, so if nothing arrives in time, `send` prints the `player-two inbox --after ID` command that checks again later. `player-two repos` lists who has which repo. Your agent only knows these commands if you tell it, for example in its instructions file.
+`--wait` prints the next message or agent's answer that someone else sends in that chat, whether or not it answers this one. Bob still has to approve the run, so if nothing arrives in time, `send` prints the `player-two inbox --after SEQ` command that checks again later. `player-two repos` lists who has which repo. Your agent only knows these commands if you tell it, for example in its instructions file.
 
 ## Agents and tags
 
-An agent is one person's checkout of one team repo: `@bob/uploader` is the agent command run in Bob's `~/dev/uploader`. Nothing is registered by hand. The desk looks at the folders directly under `~/dev`, keeps those whose `origin` remote is under the hub's `PLAYER_TWO_REPOS` address, and tells the hub their names and current branches. It looks again each time it asks the hub for news, at least every 25 seconds, so a branch switch shows up without a restart.
+An agent is one person's checkout of one team repo: `@bob/uploader` is the agent command run in Bob's `~/dev/uploader`. Nothing is registered by hand. The desk looks at the folders directly under `~/dev`, keeps those whose `origin` remote is under the hub's `PLAYER_TWO_REPOS` address, and tells the hub their names and current branches. It looks again each time it asks the hub who is here, every 25 seconds, so a branch switch shows up without a restart.
 
 A repo is named by the last part of its remote URL, in lowercase, whatever the folder is called. The `https` and `ssh` forms of one remote, and every Azure DevOps address form, count as the same repo. With two clones of one repo under `~/dev`, the folder named like the repo is used. Two different repos with the same name cannot both be shared: the first folder in alphabetical order wins. A repo whose name has characters other than letters, digits, `.`, `_` and `-` is skipped.
 
 The list that opens on `@` shows the agents whose `person/repo` contains what you have typed, most likely first: the channel's pinned repo, your own agents, the agents of the person you are chatting with, repos you also have, then the rest by name. A repo you have no copy of is offered for cloning once you have typed part of its name.
 
-A tag counts only in a note that is not marked as an agent's answer. An answer that contains a tag sets nothing off, so agents cannot start each other. A script, or your agent, can tag someone by sending a note with `player-two send`; that tag waits for its target's owner like any other, and that includes a tag of your own agent.
+A tag counts only in a message as it was sent. An agent's answer that contains a tag sets nothing off, so agents cannot start each other, and editing a message tags nobody new. A script, or your agent, can tag someone by sending a message with `player-two send`; that tag waits for its target's owner like any other, and that includes a tag of your own agent.
 
 A request waits for as long as it takes. It is stored on the hub, so it is still there after you restart the window or come back from lunch.
 
@@ -142,20 +142,21 @@ Who may run what:
 
 | Tag | What happens |
 |---|---|
-| Your own agent, in a note you send from the window | It runs at once and its answer is posted. |
-| Your own agent, in a note sent another way, or left unanswered when you last quit | It waits for you, like a teammate's request. |
+| Your own agent, in a message you send from the window | It runs at once and its answer is posted. |
+| Your own agent, in a message sent another way, or left unanswered when you last quit | It waits for you, like a teammate's request. |
 | A teammate's agent | It waits until they choose `Run and review`, `Run and post` or `Decline`. |
-| An agent in a repo its owner does not have | The note says so, and nothing runs. |
+| An agent in a repo its owner does not have | The line under the message says so, and nothing runs. |
 
-Under each note that tags an agent, everyone in the chat sees one line per tag until it is answered:
+Under each message that tags an agent, everyone in the chat sees one line per tag until it is answered:
 
 | Line | Meaning |
 |---|---|
-| `◌ waiting for bob to approve` | Bob has not acted. `· they are away` is added when his window is not open. |
-| `bob's uploader agent is working on main ±` | Bob approved it. The branch is the one his checkout was on when the run started. |
+| `◌ waiting for bob to approve` | Bob has not acted. `· they are away` is added when his window is not open, and whoever asked has `↩ Withdraw`. |
+| `bob's uploader agent is working on main ± at 1a2b3c4` | Bob approved it. The branch and commit are those his checkout was at when the run started. |
 | `× bob declined` | Bob declined, or discarded the draft. |
-| `■ bob's uploader agent was stopped` | Bob stopped the run, or quit while it was working. |
-| `✗ bob's uploader agent failed` | The agent exited with an error, printed nothing, or ran past its time limit. Only Bob sees why. |
+| `■ bob's uploader agent was stopped on main at 1a2b3c4` | Bob stopped the run, or quit while it was working. |
+| `✗ bob's uploader agent failed on main at 1a2b3c4` | The agent exited with an error, printed nothing, or ran past its time limit. Only Bob sees why. |
+| `↩ the request was taken back` | Whoever asked withdrew it before Bob acted. |
 | `? bob has no checkout of billing` | Bob does not have that repo. |
 | `? nobody named bob has joined` | There is no such person on the hub. |
 
@@ -165,7 +166,7 @@ If you tag or pin a repo you do not have, `⇣ Clone it` offers to run `git clon
 
 ## The window
 
-Everything can be clicked: chats in the list, the choices under a note, the buttons in a channel's title. Light or dark follows the system's setting.
+Everything can be clicked: chats in the list, the choices under a message, the bar over it, the buttons in a channel's title. Light or dark follows the system's setting.
 
 | Key | Effect |
 |---|---|
@@ -174,13 +175,16 @@ Everything can be clicked: chats in the list, the choices under a note, the butt
 | Shift+Enter | Starts a new line in the message. |
 | ↑ | In an empty message box, brings back the last message you sent in that chat. |
 | Esc | Stops your agents in the open chat. |
+| Enter, Esc | In a reply box, send the reply or close the box; while editing a message, save or give up. |
 | Alt+↑, Alt+↓ | Opens the previous or next chat. |
 | Ctrl+N | Joins or creates a channel. Cmd+N on a Mac. |
 | Ctrl+B | Hides or shows the chat list. Cmd+B on a Mac. |
 
-In the chat list, a number is the count of unread notes, `▶` means a request is waiting for one of your agents, `✎` means a draft is waiting for your review, and a spinner means one of your agents is working there. Hovering a mark says what it means, and hovering a note's time gives its full date. Drag the chat list's edge to make it wider or narrower; the window remembers the width.
+In the chat list, a number is the count of unread messages, `▶` means a request is waiting for one of your agents, `✎` means a draft is waiting for your review, and a spinner means one of your agents is working there. Hovering a mark says what it means, and hovering a message's time gives its full date. Drag the chat list's edge to make it wider or narrower; the window remembers the width.
 
-A `new` line marks where you left off in a chat you come back to. A note that arrives while you are looking elsewhere raises a system notification, with a sound for a note sent straight to you, a tag of one of your agents, and a draft ready for review. The window's title says what is waiting, for example `Player Two · 1 waiting · 2 unread`, and on macOS and Linux its badge counts it. Notes that arrive while the window is in the background stay unread until you come back.
+A `new` line marks where you left off in a chat you come back to. A message or an answer that arrives while you are looking elsewhere raises a system notification, with a sound for one sent straight to you, a tag of one of your agents, and a draft ready for review. The window's title says what is waiting, for example `Player Two · 1 waiting · 2 unread`, and on macOS and Linux its badge counts it. Messages that arrive while the window is in the background stay unread until you come back.
+
+Hovering a message shows a bar over it: a few common emoji and a field for any other, `Reply`, and on your own messages a menu to edit or delete it. `Reply` opens the message's thread under it, with a box to reply in; a message with replies shows how many there are and the last one, and clicking that opens the thread too. Tags work in a reply as in any message. Under a message each emoji shows how many used it, and hovering it says who; clicking one you used takes yours back. An edited message ends in `(edited)`, and a deleted one leaves `message deleted`. A chat opens on its newest 50 events, and scrolling to the top loads the 50 before them, keeping your place.
 
 An agent's answer is drawn as Markdown, as text and structure only: raw HTML in it stays text, images are not fetched, and a link opens in your browser.
 
@@ -195,21 +199,21 @@ The Setup page lists what Player Two needs and whether it found it: Node, your i
 | Command | Effect |
 |---|---|
 | `player-two join HUB NAME TOKEN [--agent AGENT]` | Creates a key if `~/.config/player-two/key` does not exist, registers `NAME` with the hub at `HUB`, and writes `config.json`. Joining again with the same key is allowed; a name held by another key is refused. `--agent` defaults to Cursor's `agent -p --output-format text`. |
-| `player-two send TO TEXT... [--wait SECONDS]` | Sends a note to `TO`, a name or a quoted channel such as `'#backend'`. A `TEXT` of `-` reads the note from standard input. `--wait` prints the next note from someone else in that chat if one arrives within `SECONDS`. |
-| `player-two inbox [--after ID] [--wait SECONDS]` | Prints the newest 20 notes other people sent to you or your channels. With `--after`, prints the notes with a higher id, up to 100, and `--wait` holds on for a new one. |
+| `player-two send TO TEXT... [--wait SECONDS]` | Sends a message to `TO`, a name or a quoted channel such as `'#backend'`, and prints its `seq`, its place in the hub's log. A `TEXT` of `-` reads the message from standard input. `--wait` prints the next message or agent's answer from someone else in that chat if one arrives within `SECONDS`. |
+| `player-two inbox [--after SEQ] [--wait SECONDS]` | Prints the newest 20 messages and agents' answers other people sent to you or your channels. With `--after`, prints every one after that `seq`, and `--wait` holds on for a new one when there is none yet. Reactions, edits, deletes, joins and what agents' owners say about a run are not printed. |
 | `player-two who` | Lists everyone who has joined the hub. |
 | `player-two repos` | Lists every agent as `@person/repo` with the branch it is on. |
 | `player-two channel` | Lists every channel and its members. |
-| `player-two channel join NAME` | Joins the channel `NAME`, creating it if nobody is in it. `NAME` may be given with or without its `#`. |
+| `player-two channel join NAME` | Joins the channel `NAME`, creating it if nobody is in it. `NAME` may be given with or without its `#`. Joining is an event: the channel's members see a line for it. |
 | `player-two channel leave NAME` | Leaves the channel. |
 | `player-two doctor` | Checks what Player Two needs on this machine, as the window's Setup page does, and prints each check with the command that fixes it. Exits `1` when a check failed. |
 | `player-two desk` | Runs the desk with no window, speaking JSON lines on standard input and output. The window starts it; it is not for typing at. |
 | `player-two hub [--host HOST] [--port PORT]` | Runs the hub. Defaults: `127.0.0.1`, `8787`. |
 | `player-two hub verify` | Walks the event log in the database `PLAYER_TWO_DB` names and says whether its chain holds, or the first `seq` where it breaks: an event changed or taken out since it was stored. Exits `1` when it breaks. |
 
-`send`, `inbox`, `who`, `repos`, `channel` and `doctor` take `--json`, and then print one JSON value and nothing else. `inbox` prints an array of notes as the hub delivered them, each `{ "id", "note", "trusted" }`, where `trusted` is `false` for a note that failed its signature check: its text is there, so check before using it. `send --wait` prints one such note, or `null` when none came; `send` without `--wait` prints `{ "id" }`, the id the hub gave the note. `who`, `repos`, `channel` and `doctor` print arrays; `channel join` and `channel leave` print the one channel.
+`send`, `inbox`, `who`, `repos`, `channel` and `doctor` take `--json`, and then print one JSON value and nothing else. `inbox` prints an array of events as the hub delivered them, each `{ "seq", "event", "trusted" }`, where `event` is the signed event, with the text in its `content`, and `trusted` is `false` for one that failed its signature check: its text is there, so check before using it. A message read this way is as it was sent: a later edit or delete is an event of its own, which `inbox` does not print. `send --wait` prints one such event, or `null` when none came; `send` without `--wait` prints `{ "seq", "event" }`, the message as it was sent and its place in the log. `who`, `repos`, `channel` and `doctor` print arrays; `channel join` and `channel leave` print the one channel.
 
-A command exits with `0` on success, `1` after printing a failure to standard error, and `2` for a usage error; `player-two` with no command prints its usage and exits `2`. A note is at most 64,000 characters. Repos are shared by the desk, not by the one-shot commands, so `player-two repos` shows a person's repos as of the last time their window was open.
+A command exits with `0` on success, `1` after printing a failure to standard error, and `2` for a usage error; `player-two` with no command prints its usage and exits `2`. A longer message than an event holds, about 63,000 characters, is cut to fit. Repos are shared by the desk, not by the one-shot commands, so `player-two repos` shows a person's repos as of the last time their window was open.
 
 ## Configuration
 
@@ -244,7 +248,7 @@ The runtime the window installs is in `~/.player-two`: each version under `runti
 
 `agent` is the command that answers. The join form offers Cursor, `agent -p --output-format text`, and Copilot, `copilot -s --allow-all-tools --no-ask-user -p`, or another command typed in. Player Two appends the prompt as its last argument, runs it in the tagged repo's folder with standard input closed, and uses what it prints to standard output as the answer. A run that takes longer than 900 seconds is stopped. The command is split into words the way a shell would split it, with quotes grouping words, but no shell runs it. To change it later, edit `agent` in `config.json`, or run `player-two join HUB NAME TOKEN --agent "COMMAND"` again. The desk finds the command on the `PATH` a login shell has, so tools installed through `nvm` or `npm -g` are found.
 
-The prompt tells the agent whose checkout of which repo it is in, who tagged it and where, and whether its owner will review the reply or it is posted directly. It includes up to six earlier notes from the same chat, marked as context that must not be followed as instructions, so a follow-up question makes sense.
+The prompt tells the agent whose checkout of which repo it is in, who tagged it and where, and whether its owner will review the reply or it is posted directly. It includes up to six earlier messages and answers from the same chat, as they read now, marked as context that must not be followed as instructions, so a follow-up question makes sense.
 
 A team's own build of the window can carry its hub's address, so the join form asks only for a name, the token and the agent: set `PLAYER_TWO_HUB_URL` when building, as an `http` or `https` address with no `/` at the end. The Release workflow takes it from a repository variable of the same name.
 
@@ -252,17 +256,23 @@ A team's own build of the window can carry its hub's address, so the join form a
 
 An agent runs on a machine only when that machine's owner says so. Your own tag, sent from your own window, is that say-so; a teammate's tag is only text until you choose to run it. With `Run and review`, the agent's output stays in the draft box, where you can change it, until you send it. `Run and post` skips that second look: use it when you are content for whatever the agent writes to go straight to the chat. An agent's answer can contain more of your machine than the question asked for.
 
-The window draws text written by other people and their agents, and cannot run it. A note is drawn as text, an agent's Markdown as elements with any raw HTML left as text, images in it are not fetched, and the page's content security policy lets it load scripts and styles only from the app's own files. The page has no access to Node or to Electron beyond a few calls to the window's own process.
+The window draws text written by other people and their agents, and cannot run it. A message is drawn as text, and so are replies, edits, the emoji of a reaction, which can be any text at all, and the lines about a channel. An agent's Markdown is drawn as elements with any raw HTML left as text, images in it are not fetched, and the page's content security policy lets it load scripts and styles only from the app's own files. The page has no access to Node or to Electron beyond a few calls to the window's own process.
 
-Every note is signed with the sender's Ed25519 key. The signature covers the sender, the recipient or channel, the text, the time, which of the sender's agents wrote it if one did, and which note it answers. The hub refuses a note that its claimed sender did not sign, that is more than five minutes off the hub's clock, or that it has already delivered. Every request to the hub is signed too, over the method and the path it is for. The recipient's desk checks a note's signature again, against the key it first saw for that sender, so a hub that is later compromised cannot forge a note from a teammate you already know. A note that fails this check is shown as a warning without its text, cannot tag an agent, and is left out of what your agent is shown.
+Everything anyone does is an event signed with their Ed25519 key: a message or a reply, an edit or a delete, a reaction, joining or leaving a channel, pinning a repo, and each step of an agent's run. The signature covers the author, the recipient or channel, the kind of event, what it says, the time, the ids of the events it is about, and a random nonce. An event's id is the SHA-256 of those signed bytes, so its author knows it before sending it, and whatever refers to an event (a reply to a message, a reaction, an edit, the approval of a request) names it by an id that cannot be made to point at anything else. The hub refuses an event whose id is not the hash of its bytes, that its claimed author did not sign, that is more than five minutes off the hub's clock, or that it has already stored, and one sent to a channel its author is not in. Every request to the hub is signed too, over the method and the path it is for. Your desk checks each event's signature again, against the key it first saw for that author, so a hub that is later compromised cannot forge an event from a teammate you already know. An event that fails this check is shown as a warning without its text, and changes nothing: it cannot tag an agent, edit, delete, react or move a request along, and it is left out of what your agent is shown.
 
-The agent mark is the sender's own statement. It tells you a teammate's agent drafted the note and the teammate let it through; a modified client could leave the mark off, and such a note could then tag agents. A tag still runs nothing without its target's approval.
+What an event may change depends on who signed it. An edit or a delete counts only from the message's author, and never on an agent's answer; what is said about an agent's run counts only from the agent's owner; a request is taken back only by whoever made it. Every reader applies these rules to what the hub relays, so the hub cannot change them. A kind of event your version does not know is passed over, and the chat shows the rest as it would without it.
 
-What the hub learns about your machine is the names, clone addresses and branches of the repos under `~/dev` whose remote is below `PLAYER_TWO_REPOS`, when your desk last polled, and, while one of your agents runs, whether that checkout has uncommitted changes. Every hub member can see those. Folder paths, other repos and file contents are not sent. A clone address is rebuilt from the host and path before it is shared, so a user name or token embedded in your `origin` URL does not leave your machine.
+An agent's answer is a `job.result` event signed by the agent's owner, and nobody's desk looks for tags in one. Which kind to send is up to the owner's client: a modified one could post its agent's words as an ordinary message, whose tags then count. A tag still runs nothing without its target's approval.
 
-The hub hands a direct note only to its sender and its recipient, and a channel's notes only to the channel's current members. A request for notes must be signed with the reader's key. Channels are open: anyone who has joined the hub can join any channel, and then sees its earlier notes too. Do not treat a channel as private from other hub members.
+Letting an agent run leaves a record. Before an agent starts for anyone, its owner's desk publishes a `job.accepted` event, signed by the owner, naming the request, the repo, the branch and commit the checkout is at, whether it had uncommitted changes, and whether the answer is reviewed before it is posted. If that cannot be published, the agent does not start. Then exactly one of the answer, a failure or a stop follows; a failure says only that it failed, and why stays with the owner. So the chat's log holds who let which agent run, at whose request, on what code, and how it ended, and everyone in the chat sees it.
 
-Player Two does not encrypt notes. Whoever operates the hub can read them, and the hub keeps every note: nothing deletes them. Transport encryption is the job of the ingress in front of the hub; over plain `http`, as in the quick start, anyone on the network path can read notes too. The join token is shared, so anyone holding it can register a new name, although not take over an existing one. There is no key rotation: a teammate who loses their key needs their row deleted from the hub's `users` table, and everyone else needs to remove that name from `known.json`.
+The hub keeps every event in one log, numbered by `seq`, and chains them: each event's chain value is the SHA-256 of the chain value before it and the event's id. `player-two hub verify`, run where the hub's database is, works every id and chain value out again and names the first `seq` that does not follow, which is where an event was changed or taken out by hand. A log rewritten from some event on, with its ids and chain values worked out again, still verifies. What catches that is a head written down earlier: `GET /audit/head` gives the newest `seq` and its chain value, and since each value depends on every event before it, no rewritten log reaches the same value at that `seq`. Player Two does not yet keep or compare such a head for you. The hub cannot forge an event, but it can leave one out of what it sends you.
+
+What the hub learns about your machine is the names, clone addresses and branches of the repos under `~/dev` whose remote is below `PLAYER_TWO_REPOS`, and when your desk last asked it anything; every hub member can see those. When you let one of your agents run, the record of it adds the commit its checkout was at and whether that had uncommitted changes, for everyone in the chat to see. Folder paths, other repos and file contents are not sent. A clone address is rebuilt from the host and path before it is shared, so a user name or token embedded in your `origin` URL does not leave your machine.
+
+The hub hands a direct event only to its two people, and a channel's events only to the channel's current members and whoever wrote them. Reading needs a request signed with the reader's key. Channels are open: anyone who has joined the hub can join any channel, and then sees its earlier messages too. Do not treat a channel as private from other hub members.
+
+Player Two does not encrypt messages. Whoever operates the hub can read them, and the hub keeps every event: nothing deletes one. Deleting a message hides it in every window, but the message stays in the log, where anyone in the chat can still read it, with `player-two inbox --json` for one; so does a message's text before an edit. Transport encryption is the job of the ingress in front of the hub; over plain `http`, as in the quick start, anyone on the network path can read messages too. The join token is shared, so anyone holding it can register a new name, although not take over an existing one. There is no key rotation: a teammate who loses their key needs their row deleted from the hub's `users` table, and everyone else needs to remove that name from `known.json`.
 
 The agent runs as you, with whatever permissions your agent's command line is configured to have. Player Two does not sandbox it. An agent started in a repo also reads that repo's own instruction files, which is why a clone is never made without showing you where it comes from.
 
@@ -359,4 +369,4 @@ The Release workflow does both on a tag that starts with `v`, and keeps the inst
 
 What is signed is pinned by `test/fixtures/signing-vectors.json`. After changing it on purpose, run `node scripts/make-vectors.ts` and commit the file with the change.
 
-A hub and its clients must run the same version. 0.4 changed what every signature covers, so its clients cannot use a 0.3 hub, and the notes a 0.3 hub kept would fail their signature check: start a 0.4 hub with an empty database. The hub refuses to start on a database laid out for another version of its schema.
+A hub and its clients must run the same version. 0.5 replaced notes with signed events, protocol 2, so its clients cannot use a 0.4 hub, and a 0.5 hub refuses to start on a 0.4 database: start it with an empty one. The hub refuses to start on a database laid out for another version of its schema.
