@@ -18,6 +18,7 @@ import { VERSION } from "../src/core/version.ts";
 import { deliveredSchema, MAX_SKEW, receiptSchema } from "../src/core/wire.ts";
 import type { Delivered, Event, Repo } from "../src/core/wire.ts";
 import { http, join as joinHub } from "../src/desk/client.ts";
+import type { Client } from "../src/desk/client.ts";
 import { createHub } from "../src/hub/app.ts";
 import { Database } from "../src/hub/db.ts";
 import { NOW, startHub, TEAM_REPOS, TOKEN } from "./startHub.ts";
@@ -356,6 +357,132 @@ await test("a chat pages back with before and limit, catching up pages forward w
   assert.deepEqual(await refused("chat=Alice"), [422, "invalid chat: Invalid string: must match pattern /^#?[a-z0-9][a-z0-9_-]{0,31}$/"]);
   assert.deepEqual(await refused("before=3"), [422, "invalid query: before or around goes with chat, and after without it"]);
   assert.deepEqual(await refused("chat=alice&after=3"), [422, "invalid query: before or around goes with chat, and after without it"]);
+});
+
+/** What a search finds, each result as its seq and its snippet written out with the found words in brackets. */
+async function found(client: Client, q: string, chat?: string): Promise<(readonly [number, string])[]> {
+  return (await client.search(chat === undefined ? { q } : { q, chat })).map(({ seq, snippet }) => [seq, snippet.map((piece) => (piece.hit ? `[${piece.text}]` : piece.text)).join("")]);
+}
+
+await test("a word said in a channel is found by its members and not by anyone else, best match first, and in one chat when asked", async (t) => {
+  const hub = await startHub(t);
+  const [alice, bob, carol] = [await hub.join("alice"), await hub.join("bob"), await hub.join("carol")];
+  for (const name of ["alice", "bob"]) {
+    await post(hub, name, signed(hub, name, "#backend", "channel.join"));
+  }
+  const inChannel = await say(hub, "alice", "#backend", "the retry queue lives in queue.py");
+  const direct = await say(hub, "alice", "bob", "retry, retry and retry again");
+  await say(hub, "carol", "alice", "nothing to see here");
+
+  assert.deepEqual(await found(bob, "retry"), [
+    [direct, "[retry], [retry] and [retry] again"],
+    [inChannel, "the [retry] queue lives in queue.py"]
+  ]);
+  assert.deepEqual(await found(bob, "retry", "#backend"), [[inChannel, "the [retry] queue lives in queue.py"]]);
+  assert.deepEqual(await found(bob, "queue retry"), [[inChannel, "the [retry] [queue] lives in [queue].py"]]); // Every word, in any order.
+  assert.deepEqual(await found(carol, "retry"), []);
+  assert.deepEqual(await found(alice, "retry", "carol"), []);
+  assert.deepEqual((await alice.search({ q: "retry", limit: 1 })).length, 1);
+});
+
+await test("an edited message is found by its new words only, and a deleted one not at all", async (t) => {
+  const hub = await startHub(t);
+  const bob = await hub.join("bob");
+  await hub.join("alice");
+  const edited = signed(hub, "alice", "bob", "message", { text: "deploy on friday", via: "cli" });
+  const deleted = signed(hub, "alice", "bob", "message", { text: "deploy the secret key", via: "cli" });
+  for (const event of [
+    edited,
+    deleted,
+    signed(hub, "alice", "bob", "message.edit", { text: "deploy on monday" }, { refs: [edited.id] }),
+    signed(hub, "alice", "bob", "message.delete", {}, { refs: [deleted.id] })
+  ]) {
+    await post(hub, "alice", event);
+  }
+
+  assert.deepEqual(await found(bob, "monday"), [[1, "deploy on [monday]"]]);
+  assert.deepEqual(await found(bob, "friday"), []);
+  assert.deepEqual(await found(bob, "secret"), []);
+  assert.deepEqual(await found(bob, "deploy"), [[1, "[deploy] on monday"]]);
+});
+
+await test("whatever is typed is read as words and never as query syntax: a search finds something or nothing, and too many words are refused", async (t) => {
+  const hub = await startHub(t);
+  const bob = await hub.join("bob");
+  await hub.join("alice");
+  await say(hub, "alice", "bob", 'the "quotes" and odd:syntax, NEAR the retry* queue ^ here');
+  const hostile = [
+    '"quotes" AND -odd:syntax',
+    '"',
+    '""',
+    '"""',
+    "'",
+    "*",
+    "ret*",
+    "NEAR(retry queue)",
+    "NEAR(retry queue, 2)",
+    "^retry",
+    "text:retry",
+    "{text}: retry",
+    "search:retry",
+    "rank:1",
+    "retry OR nothing",
+    "NOT retry",
+    "AND",
+    ")(",
+    "-",
+    "+retry",
+    "retry\u0000queue",
+    "🎉",
+    "🎉 retry",
+    "x".repeat(5000),
+    "'; DROP TABLE events; --"
+  ];
+  const statuses: Record<string, number> = {};
+  for (const q of hostile) {
+    const path = `/search?${new URLSearchParams({ q }).toString()}`;
+    const response = await fetch(hub.url + path, { headers: signedBy(hub, "bob", "GET", path) });
+    statuses[q] = response.status;
+    assert.ok(Array.isArray(await response.json()), q);
+  }
+
+  assert.deepEqual(Object.values(statuses), Array<number>(hostile.length).fill(200), JSON.stringify(statuses));
+  assert.equal((await bob.search({ q: '"quotes" AND -odd:syntax' })).length, 1); // Every word is in the message: quotes, and, odd, syntax.
+  assert.equal((await bob.search({ q: "retry\u0000queue" })).length, 1);
+  assert.deepEqual(await found(bob, "NEAR(retry queue)"), []); // NEAR is a word like any other, and the message holds "near".
+  assert.equal((await bob.search({ q: "near retry queue" })).length, 1);
+  await assert.rejects(bob.search({ q: "one two three four five six seven eight nine" }), /invalid q: Too big: expected array to have <=8 items/);
+  await assert.rejects(bob.search({ q: " \u0000 " }), /invalid q: Too small/);
+  await assert.rejects(bob.search({ q: "retry", limit: 51 }), /invalid limit/);
+  assert.equal((await bob.events({ chat: "alice" })).length, 1); // And the table is still there.
+});
+
+await test("one event is read by its id by whoever can see it, and a chat opens at a seq with events on both sides of it", async (t) => {
+  const hub = await startHub(t);
+  const [alice, bob, carol] = [await hub.join("alice"), await hub.join("bob"), await hub.join("carol")];
+  for (let n = 1; n <= 9; n += 1) {
+    await say(hub, "alice", "bob", String(n));
+  }
+  const fifth = (await bob.events({ chat: "alice", before: 6, limit: 1 }))[0];
+  assert.ok(fifth !== undefined);
+  const page = async (around: number, limit?: number): Promise<number[]> =>
+    (await bob.around(limit === undefined ? { chat: "alice", around } : { chat: "alice", around, limit })).map((delivered) => delivered.seq);
+
+  assert.deepEqual(await bob.event(fifth.event.id), fifth);
+  assert.deepEqual(await alice.event(fifth.event.id), fifth);
+  assert.equal(await carol.event(fifth.event.id), null); // Not hers to see, and answered as if it were not there.
+  assert.equal(await bob.event("0f".repeat(32)), null);
+  assert.equal(await bob.event("not an id"), null);
+  assert.deepEqual(await page(5, 4), [3, 4, 5, 6]);
+  assert.deepEqual(await page(5, 5), [3, 4, 5, 6, 7]);
+  assert.deepEqual(await page(2, 4), [1, 2, 3]);
+  assert.deepEqual(await page(9, 4), [7, 8, 9]);
+  assert.deepEqual(await page(5), [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  assert.deepEqual(await carol.around({ chat: "alice", around: 5 }), []);
+  const path = "/events?around=5";
+  assert.deepEqual(await refusal(hub, "GET", path, { headers: signedBy(hub, "bob", "GET", path) }), [422, "invalid query: before or around goes with chat, and after without it"]);
+  const both = "/events?chat=alice&around=5&before=5";
+  assert.deepEqual(await refusal(hub, "GET", both, { headers: signedBy(hub, "bob", "GET", both) }), [422, "invalid query: before or around goes with chat, and after without it"]);
 });
 
 await test("the stream sends what is visible after S, then each event as it is stored, a comment every 20 seconds, and nothing more of a channel once it is left", { timeout: 10_000 }, async (t) => {
