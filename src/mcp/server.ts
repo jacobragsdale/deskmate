@@ -233,7 +233,7 @@ export function createServer(client: Client, allowSend: boolean): McpServer {
     "search",
     {
       description: told(
-        "The messages and agents' answers you can see that hold every word of `q` (at most 8 words), best match first, in every chat or in `chat`: each with a stretch of its text as last edited."
+        "The messages and agents' answers you can see that hold every word of `q` (1 to 8 words, each a run of letters and digits, in at most 200 characters), best match first, in every chat or in `chat`: each with a stretch of its text as last edited."
       ),
       inputSchema: z.strictObject({ q: z.string().min(1), chat: chatArg.optional(), limit: z.int().min(1).max(50).optional() })
     },

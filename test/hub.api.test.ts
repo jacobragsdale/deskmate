@@ -407,7 +407,7 @@ await test("an edited message is found by its new words only, and a deleted one 
   assert.deepEqual(await found(bob, "deploy"), [[1, "[deploy] on monday"]]);
 });
 
-await test("whatever is typed is read as words and never as query syntax: a search finds something or nothing, and too many words are refused", async (t) => {
+await test("whatever is typed is read as words and never as query syntax: a search finds something or nothing, and too many words or characters are refused", async (t) => {
   const hub = await startHub(t);
   const bob = await hub.join("bob");
   await hub.join("alice");
@@ -439,21 +439,31 @@ await test("whatever is typed is read as words and never as query syntax: a sear
     "x".repeat(5000),
     "'; DROP TABLE events; --"
   ];
+  const refused = new Set(['"', '""', '"""', "'", "*", ")(", "-", "🎉", "x".repeat(5000)]); // No letter or digit, so no words; or too long.
   const statuses: Record<string, number> = {};
   for (const q of hostile) {
     const path = `/search?${new URLSearchParams({ q }).toString()}`;
     const response = await fetch(hub.url + path, { headers: signedBy(hub, "bob", "GET", path) });
     statuses[q] = response.status;
-    assert.ok(Array.isArray(await response.json()), q);
+    assert.equal(Array.isArray(await response.json()), !refused.has(q), q);
   }
 
-  assert.deepEqual(Object.values(statuses), Array<number>(hostile.length).fill(200), JSON.stringify(statuses));
+  assert.deepEqual(
+    Object.values(statuses),
+    hostile.map((q) => (refused.has(q) ? 422 : 200)),
+    JSON.stringify(statuses)
+  );
   assert.equal((await bob.search({ q: '"quotes" AND -odd:syntax' })).length, 1); // Every word is in the message: quotes, and, odd, syntax.
   assert.equal((await bob.search({ q: "retry\u0000queue" })).length, 1);
-  assert.deepEqual(await found(bob, "NEAR(retry queue)"), []); // NEAR is a word like any other, and the message holds "near".
-  assert.equal((await bob.search({ q: "near retry queue" })).length, 1);
-  await assert.rejects(bob.search({ q: "one two three four five six seven eight nine" }), /invalid q: Too big: expected array to have <=8 items/);
-  await assert.rejects(bob.search({ q: " \u0000 " }), /invalid q: Too small/);
+  assert.equal((await bob.search({ q: "NEAR(retry queue)" })).length, 1); // NEAR is a word like any other, and the message holds "near".
+  // A word is a run of letters and digits, as the tokenizer reads it: one joined to the next by punctuation is two words, and counts as two.
+  const tooMuch = /invalid q: a search holds 1 to 8 words, in at most 200 characters/;
+  await assert.rejects(bob.search({ q: "one two three four five six seven eight nine" }), tooMuch);
+  await assert.rejects(bob.search({ q: Array<string>(9).fill("the").join(".") }), tooMuch);
+  assert.equal((await bob.search({ q: Array<string>(8).fill("the").join(".") })).length, 1);
+  await assert.rejects(bob.search({ q: " \u0000 " }), tooMuch);
+  await assert.rejects(bob.search({ q: `retry ${"x".repeat(195)}` }), tooMuch);
+  assert.deepEqual(await bob.search({ q: `retry ${"x".repeat(194)}` }), []);
   await assert.rejects(bob.search({ q: "retry", limit: 51 }), /invalid limit/);
   assert.equal((await bob.events({ chat: "alice" })).length, 1); // And the table is still there.
 });

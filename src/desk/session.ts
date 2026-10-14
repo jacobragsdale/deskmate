@@ -835,7 +835,7 @@ export class Session {
     try {
       found = await this.client.search({ q });
     } catch (error) {
-      throw error instanceof Refused && error.status === 422 ? new PlayerTwoError("a search holds one to eight words") : error;
+      throw error instanceof Refused && error.status === 422 ? new PlayerTwoError("a search holds 1 to 8 words, in at most 200 characters") : error;
     }
     const hits: Hit[] = [];
     for (const { event, snippet } of found) {

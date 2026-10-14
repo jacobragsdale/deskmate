@@ -23,6 +23,8 @@ const MAX_PAGE = 200; // Most events one read may ask for.
 const HITS = 20; // Search results one search gets when it does not say how many.
 const MAX_HITS = 50; // Most search results one search may ask for.
 const MAX_WORDS = 8; // Most words one search may hold: each is matched against every message that holds it, and the hub does nothing else meanwhile.
+const MAX_QUERY = 200; // Most characters one search may be: far more than eight words take, and no more to split.
+const TOO_MUCH = `a search holds 1 to ${String(MAX_WORDS)} words, in at most ${String(MAX_QUERY)} characters`;
 const PING = 20; // Seconds between the comment lines that keep an open stream from looking idle to a proxy.
 const MAX_REPOS = 500; // Most checkouts one person may advertise.
 const MAX_REQUEST = 4_000_000; // Most characters one request's body may hold: several times the longest list of repos or the longest event.
@@ -57,11 +59,12 @@ const eventsQuerySchema = z.object({
 });
 const streamQuerySchema = z.object({ after: numeric.pipe(z.int()).default(0) });
 const searchQuerySchema = z.object({
-  // Words are what lies between spaces and control characters: a NUL would end FTS5's reading of the query.
+  // A word is a run of letters and digits, which is what FTS5's tokenizer makes one token of, so the limit counts what a search costs: "the.the.the" is three words, not one.
   q: z
     .string()
-    .transform((q) => q.split(/[\s\p{Cc}]+/u).filter((word) => word !== ""))
-    .pipe(z.array(z.string()).min(1).max(MAX_WORDS)),
+    .max(MAX_QUERY, TOO_MUCH)
+    .transform((q) => q.split(/[^\p{L}\p{N}]+/u).filter((word) => word !== ""))
+    .pipe(z.array(z.string()).min(1, TOO_MUCH).max(MAX_WORDS, TOO_MUCH)),
   chat: addressSchema.optional(),
   limit: numeric.pipe(z.int().min(1).max(MAX_HITS)).default(HITS)
 });

@@ -319,7 +319,7 @@ export class Database {
 
   /**
    * The messages and answers `me` can see that hold every one of `words`, in one chat or in any, best match first, at most `limit` of them; each with a stretch of its text, as last edited, the words found marked with HIT_OPEN and HIT_CLOSE.
-   * Each word is quoted, so nothing typed is read as FTS5's own syntax: a word is matched as the tokens it holds, and one that holds none matches nothing.
+   * Each word is quoted, so nothing typed is read as FTS5's own syntax: a word is matched as the tokens it holds, and one that holds none matches nothing. GET /search hands over words of one token each.
    * ponytail: FTS5 does the work of every word against every row that holds it, synchronously; GET /search allows a few words. Move searching off the hub's one thread if the log grows past what that takes.
    */
   public search(me: string, words: readonly string[], chat: string | null, limit: number): readonly (Delivered & { readonly snippet: string })[] {
