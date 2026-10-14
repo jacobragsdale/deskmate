@@ -51,7 +51,7 @@ Shape:
 | `src/hub/app.ts` | `createHub(settings, now)` returning a `node:http` server. A small table of routes; no web framework. |
 | `src/hub/main.ts` | Reads settings from the environment with a zod schema, starts the server, logs `key=value` lines. |
 
-- [ ] **P0-B1** `db.ts`. The schema from `hub.py`, `PRAGMA journal_mode = WAL`, and the refusal to open a database whose `user_version` is not this version's. Check `node:sqlite` loads without a warning on Node 26; if it warns, say so in Notes and use `better-sqlite3`.
+- [x] **P0-B1** `db.ts`. The schema from `hub.py`, `PRAGMA journal_mode = WAL`, and the refusal to open a database whose `user_version` is not this version's. Check `node:sqlite` loads without a warning on Node 26; if it warns, say so in Notes and use `better-sqlite3`.
 - [ ] **P0-B2** `app.ts`: `GET /healthz`, `POST /join`, `GET /info`, `GET /users`, and the `caller` check on the `Authorization` header that also records when the caller was last seen. Bodies and parameters are parsed with the schemas in `src/core/wire.ts`. A failed parse answers `422` with a `detail` naming the field.
 - [ ] **P0-B3** `PUT /repos` and `GET /repos`, with the "under the hub's `DESKMATE_REPOS`" rule. That rule is `prefixKey` and `isUnder` in `src/desk/repos.ts`; move the half of that file that only parses text (`parseRemote`, `prefixKey`, `isUnder` and what they call) to `src/core/remotes.ts`, so the hub can import it without the half that reads the disk.
 - [ ] **P0-B4** `POST /notes`: signature, freshness, the `UNIQUE` signature as replay protection, membership for a channel, existence for a person.
