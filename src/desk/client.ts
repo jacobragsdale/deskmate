@@ -10,7 +10,7 @@ import { z } from "zod";
 
 import { contentSchema } from "../core/kinds.ts";
 import type { Content } from "../core/kinds.ts";
-import { authHeader, loadKey, newKey, noteIsAuthentic, privateHex, publicHex, signEvent, signNote } from "../core/sign.ts";
+import { authHeader, eventIsAuthentic, loadKey, newKey, noteIsAuthentic, privateHex, publicHex, signEvent, signNote } from "../core/sign.ts";
 import {
   channelInfoSchema,
   configSchema,
@@ -26,7 +26,7 @@ import {
   teamRepoSchema,
   userSchema
 } from "../core/wire.ts";
-import type { ChannelInfo, Config, Delivered, DeliveredNote, HubInfo, Kind, Note, Person, Repo, RepoRef, TeamRepo } from "../core/wire.ts";
+import type { ChannelInfo, Config, Delivered, DeliveredNote, Event, HubInfo, Kind, Note, Person, Repo, RepoRef, TeamRepo } from "../core/wire.ts";
 import { AGENT_CHOICES } from "../shared/ipc.ts";
 
 export const DEFAULT_AGENT: string = AGENT_CHOICES[0].command; // Cursor, as the join form offers it first.
@@ -229,17 +229,21 @@ export class Client {
     }
   }
 
-  /** Check a note against the key first seen for its sender, so a hub that later swaps a key cannot forge notes. */
-  public async isTrusted(note: Note): Promise<boolean> {
+  /** Check an event against the key first seen for its author, so a hub that later swaps a key cannot forge one. A note, until the command reads events, is checked the same way. */
+  public async isTrusted(signed: Event | Note): Promise<boolean> {
+    const author = "author" in signed ? signed.author : signed.sender;
     const pinFile = joinPath(this.home, "known.json");
     let pins = existsSync(pinFile) ? pinsSchema.parse(parseJson(readFileSync(pinFile, "utf8"))) : {};
-    if (pins[note.sender] === undefined) {
+    if (pins[author] === undefined) {
       const fromHub = Object.fromEntries((await this.users()).map((user) => [user.name, user.pubkey]));
       pins = { ...fromHub, ...pins }; // Keys already pinned win over what the hub says now.
       writeFileSync(pinFile, JSON.stringify(pins, null, 1));
     }
-    const pubkey = pins[note.sender];
-    return pubkey !== undefined && noteIsAuthentic(note, pubkey);
+    const pubkey = pins[author];
+    if (pubkey === undefined) {
+      return false;
+    }
+    return "author" in signed ? eventIsAuthentic(signed, pubkey) : noteIsAuthentic(signed, pubkey);
   }
 
   private headers(method: string, path: string, body: string | null): Readonly<Record<string, string>> {

@@ -60,8 +60,11 @@ export const repoSchema = z.strictObject({ name: repoNameSchema, key: repoKeySch
 
 export const teamRepoSchema = z.object({ name: repoNameSchema, key: repoKeySchema, url: repoUrlSchema, branch: branchSchema, user: nameSchema }).readonly();
 
+/** A repo as the hub reports it: read with z.object like the rest of an answer, so a field a later hub adds to it (phase 6 adds to a pin) is passed over. */
+const reportedRepoSchema = z.object({ name: repoNameSchema, key: repoKeySchema, url: repoUrlSchema }).readonly();
+
 /** `repo` is the repo the channel is about, if one is pinned, and `branch` the branch the pin names, if it names one. */
-export const channelInfoSchema = z.object({ name: channelSchema, members: z.array(nameSchema).readonly(), repo: repoRefSchema.nullable(), branch: branchSchema.nullable() }).readonly();
+export const channelInfoSchema = z.object({ name: channelSchema, members: z.array(nameSchema).readonly(), repo: reportedRepoSchema.nullable(), branch: branchSchema.nullable() }).readonly();
 
 /** A message signed by its sender. The hub relays it unchanged, so every recipient can verify it too. */
 export const noteSchema = z

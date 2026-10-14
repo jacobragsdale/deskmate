@@ -1,6 +1,8 @@
 /** The parts of the client that have logic of their own: tag states, the tag list, an event's envelope and what each kind says, reading what the hub answers, a hub on another protocol, splitting the agent command, and running it. */
 
 import assert from "node:assert/strict";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -80,11 +82,16 @@ await test("the client reads past a field a newer hub adds, but refuses one insi
   const info = { version: "9.0.0", protocol: 1, repos: "dev.azure.com/acme", now: NOW };
   const bob = { name: "bob", pubkey: publicHex(key), seen: NOW };
   const backend = { name: "#backend", members: ["bob"], repo: null, branch: null };
+  const uploader = { name: "uploader", key: "dev.azure.com/acme/platform/uploader", url: "https://dev.azure.com/acme/Platform/_git/uploader" };
+  const pinned = { name: "#uploads", members: ["bob"], repo: uploader, branch: null };
   const client = clientOf({
     "GET /info": { ...info, hubKey: "new" },
     "GET /users": [{ ...bob, role: "new" }],
     "GET /repos": [{ ...repo("bob", "uploader"), commit: "new" }],
-    "GET /channels": [{ ...backend, topic: "new" }],
+    "GET /channels": [
+      { ...backend, topic: "new" },
+      { ...pinned, repo: { ...uploader, commit: "new" } }
+    ],
     "POST /notes": { id: 7, seq: 7 },
     "GET /notes": [{ id: 7, note, seq: 7 }]
   });
@@ -92,7 +99,7 @@ await test("the client reads past a field a newer hub adds, but refuses one insi
   assert.deepEqual(await client.info(), info);
   assert.deepEqual(await client.users(), [bob]);
   assert.deepEqual(await client.repos(), [repo("bob", "uploader")]);
-  assert.deepEqual(await client.channels(), [backend]);
+  assert.deepEqual(await client.channels(), [backend, pinned]);
   assert.equal(await client.send("bob", "hello"), 7);
   assert.deepEqual(await client.notes(), [{ id: 7, note }]);
   await assert.rejects(clientOf({ "GET /notes": [{ id: 7, note: { ...note, via: "new" } }] }).notes(), /Unrecognized key/);
@@ -148,6 +155,18 @@ await test("the client posts an event whose id it knows at once, reads a chat ba
     [201, 202, late.seq]
   );
   assert.equal(text(heard[2] ?? late), "while you were away");
+});
+
+await test("an event is trusted when it holds under the key first seen for its author, and not once a byte of it changes or the hub swaps the key", async (t) => {
+  const hub = await startHub(t);
+  const alice = await hub.join("alice");
+  const bob = await hub.join("bob");
+  const { event } = await alice.publish("bob", "message", { text: "hello", via: "cli" });
+
+  assert.ok(await bob.isTrusted(event));
+  assert.ok(!(await bob.isTrusted({ ...event, content: JSON.stringify({ text: "hullo", via: "cli" }) })));
+  writeFileSync(join(hub.dir, "bob", "known.json"), JSON.stringify({ alice: publicHex(key) })); // Bob first saw alice under another key: what the hub says now does not count.
+  assert.ok(!(await bob.isTrusted(event)));
 });
 
 await test("a hub on another protocol is not followed: the session says which side to update, and asks again only once a minute", async (t) => {
