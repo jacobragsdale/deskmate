@@ -145,6 +145,7 @@ export const commandSchema = z.discriminatedUnion("do", [
   z.strictObject({ do: z.literal("discardDraft"), chat, id, repo }),
   z.strictObject({ do: z.literal("run"), id, repo, post: z.boolean() }),
   z.strictObject({ do: z.literal("stop"), id, repo }),
+  z.strictObject({ do: z.literal("stopAll"), chat }), // Stop every agent of the user's at work on a request in this chat, in a thread or not.
   z.strictObject({ do: z.literal("decline"), id, repo }),
   z.strictObject({ do: z.literal("joinChannel"), name: z.string().max(40) }),
   z.strictObject({ do: z.literal("leaveChannel"), chat }),

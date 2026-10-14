@@ -537,6 +537,33 @@ await test(
   }
 );
 
+await test("Esc's stopAll stops every run of the user's in the chat, a request in a thread as any other, and none elsewhere", { timeout: 30_000 }, async (t) => {
+  const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+  const [alice, carol] = [await hub.join("alice"), await hub.join("carol")];
+  const dev = join(hub.dir, "dev-bob");
+  checkout(dev, "uploader");
+  const bob = deskOf(t, await hub.join("bob"), dev, { describe: () => Promise.resolve({ branch: "main", commit: COMMIT, dirty: false }), runner: patient });
+  const root = (await alice.publish("bob", "message", { text: "@bob/uploader take your time", via: "cli" })).event.id;
+  const reply = (await alice.publish("bob", "message", { text: "@bob/uploader and this, take your time", via: "cli" }, [root])).event.id;
+  const elsewhere = (await carol.publish("bob", "message", { text: "@bob/uploader take your time", via: "cli" })).event.id;
+  await until(bob.session, "all three requests", (view) => view.waiting === 3);
+  for (const id of [root, reply, elsewhere]) {
+    await bob.session.handle({ do: "run", id, repo: "uploader", post: true });
+  }
+  await until(bob.session, "all three running", (view) => view.busy.working === 3);
+
+  await bob.session.handle({ do: "stopAll", chat: "alice" });
+  await until(bob.session, "alice's two stopped", (view) => view.busy.working === 1);
+  await pause(200);
+  assert.deepEqual(
+    bob.session.view().rows.map((row) => [row.chat, row.mark]),
+    [
+      ["alice", ""],
+      ["carol", "working"]
+    ]
+  );
+});
+
 await test(
   "an agent whose run cannot be told to the chat does not start: not when git cannot say where its checkout stands, nor when the hub cannot be reached to record it",
   { timeout: 30_000 },

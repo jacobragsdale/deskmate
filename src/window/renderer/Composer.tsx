@@ -138,16 +138,6 @@ export function Composer({ view, current, act, submit, tell }: Props): JSX.Eleme
       .catch(console.error);
   };
 
-  const stopAgents = (): void => {
-    for (const message of current.messages) {
-      for (const request of message.requests) {
-        if (request.status.kind === "running") {
-          act({ do: "stop", id: request.id, repo: request.repo });
-        }
-      }
-    }
-  };
-
   /** A key while the list of agents is open: move in it, take from it, or close it. */
   const onPickerKey = (key: string): void => {
     if (key === "Escape") {
@@ -174,7 +164,7 @@ export function Composer({ view, current, act, submit, tell }: Props): JSX.Eleme
       event.preventDefault();
       setText(recalled);
     } else if (event.key === "Escape" && current.running) {
-      stopAgents();
+      act({ do: "stopAll", chat }); // Every run of the user's here, on a reply as on any other message: the desk knows which they are.
     }
   };
 

@@ -64,10 +64,10 @@ interface AgentRun {
 
 type ChatCommand = Exclude<Command, { do: "join" | "doctor" }>;
 type MessageDo = "send" | "reply" | "react" | "edit" | "delete";
-type JobDo = "sendDraft" | "discardDraft" | "run" | "stop" | "decline" | "withdraw";
+type JobDo = "sendDraft" | "discardDraft" | "run" | "stop" | "stopAll" | "decline" | "withdraw";
 
 const MESSAGE_DOS: ReadonlySet<string> = new Set<MessageDo>(["send", "reply", "react", "edit", "delete"]);
-const JOB_DOS: ReadonlySet<string> = new Set<JobDo>(["sendDraft", "discardDraft", "run", "stop", "decline", "withdraw"]);
+const JOB_DOS: ReadonlySet<string> = new Set<JobDo>(["sendDraft", "discardDraft", "run", "stop", "stopAll", "decline", "withdraw"]);
 
 function isAboutMessages(command: ChatCommand): command is Extract<ChatCommand, { readonly do: MessageDo }> {
   return MESSAGE_DOS.has(command.do);
@@ -268,6 +268,11 @@ export class Session {
         break;
       case "stop":
         this.runs.get(runKey(command.id, command.repo))?.cancel.abort();
+        break;
+      case "stopAll":
+        for (const run of [...this.runs.values()].filter((each) => chatOf(each.entry.event, this.me) === command.chat)) {
+          run.cancel.abort();
+        }
         break;
       case "decline":
         await this.decline(command.id, command.repo);

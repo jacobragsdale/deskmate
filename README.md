@@ -174,7 +174,7 @@ Everything can be clicked: chats in the list, the choices under a message, the b
 | Enter | Sends the message. |
 | Shift+Enter | Starts a new line in the message. |
 | ↑ | In an empty message box, brings back the last message you sent in that chat. |
-| Esc | Stops your agents in the open chat. |
+| Esc | In the message box, stops every agent of yours at work in the open chat, on a reply as on any other message. |
 | Enter, Esc | In a reply box, send the reply or close the box; while editing a message, save or give up. |
 | Alt+↑, Alt+↓ | Opens the previous or next chat. |
 | Ctrl+N | Joins or creates a channel. Cmd+N on a Mac. |
