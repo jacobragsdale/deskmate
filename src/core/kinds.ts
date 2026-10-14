@@ -2,7 +2,7 @@
 
 import { z } from "zod";
 
-import { branchSchema, NAME, permissionModeSchema, REPO_NAME, repoNameSchema, repoRefSchema } from "./wire.ts";
+import { branchSchema, NAME, nameSchema, permissionModeSchema, REPO_NAME, repoNameSchema, repoRefSchema } from "./wire.ts";
 import type { Event } from "./wire.ts";
 
 // Content travels as a string and the signature covers the string, so reading it with z.object, which passes over a field it does not know, changes nothing that was signed.
@@ -13,6 +13,8 @@ const repo = repoNameSchema; // The repo of the agent a job is for. The agent's 
 
 /** What an agent at work is doing, in the only words job.progress may carry: never a path, a command or anything the agent wrote. */
 export const SUMMARIES = ["thinking", "reading", "editing files", "running a command", "waiting for approval"] as const;
+
+export const MAX_GRANT = 30 * 86_400; // Most seconds a grant may last after its event's time.
 
 /** The content of each kind this version knows, tagged with the kind. */
 export const contentSchema = z
@@ -43,9 +45,30 @@ export const contentSchema = z
     z.object({ kind: z.literal("job.result"), content: z.object({ repo, branch: branchSchema, text, reviewed: z.boolean() }).readonly() }),
     z.object({ kind: z.literal("job.error"), content: z.object({ repo }).readonly() }), // Only the fact: why stays with the owner.
     z.object({ kind: z.literal("job.cancelled"), content: z.object({ repo }).readonly() }),
-    z.object({ kind: z.literal("job.withdrawn"), content: z.object({ agent: z.string().regex(new RegExp(`^${NAME}/${REPO_NAME}$`)) }).readonly() })
+    z.object({ kind: z.literal("job.withdrawn"), content: z.object({ agent: z.string().regex(new RegExp(`^${NAME}/${REPO_NAME}$`)) }).readonly() }),
+    // A standing yes from an agent's owner. It is read with its event's time, which bounds how long it may last; src/core/grants.ts says when it applies.
+    z
+      .object({
+        kind: z.literal("grant"),
+        content: z
+          .object({
+            agent: z.string().regex(new RegExp(`^${NAME}/${REPO_NAME}$`)), // One of its author's agents, or it grants nothing.
+            askers: z.array(z.union([nameSchema, z.literal("*")])).readonly(), // Names, or "*" for anyone on the hub.
+            mode: permissionModeSchema,
+            delivery: z.enum(["review", "post"]),
+            expires: z.int(), // Unix seconds.
+            runsPerDay: z.int().min(1).max(1000)
+          })
+          .readonly(),
+        ts: z.int()
+      })
+      .refine(({ content, ts }) => content.expires <= ts + MAX_GRANT, { message: "a grant lasts at most 30 days", path: ["content", "expires"] }),
+    z.object({ kind: z.literal("grant.revoke"), content: nothing }) // refs[0] is the grant. Counts only from the grant's author.
   ])
   .readonly();
+
+/** The kinds that may be sent to everyone, "*". */
+export const PUBLIC_KINDS: ReadonlySet<string> = new Set(["grant", "grant.revoke"]);
 
 export type Content = z.infer<typeof contentSchema>;
 export type Summary = (typeof SUMMARIES)[number];
@@ -65,6 +88,6 @@ export function readContent(event: Event): Content | { readonly kind: "unknown" 
   } catch {
     return { kind: "unknown" };
   }
-  const read = contentSchema.safeParse({ kind: event.kind, content });
+  const read = contentSchema.safeParse({ kind: event.kind, content, ts: event.ts });
   return read.success ? read.data : { kind: "unknown" };
 }

@@ -109,7 +109,7 @@ The hub gives each stored event a sequence number, `seq`, and a chain value: `ch
 | `job.cancelled` | 1 | the request | `{ repo }` | The owner stopped it. |
 | `job.withdrawn` | 1 | the request | `{ agent }` | Counts only from the asker. |
 | `agent.register` | 4 | | `{ repo, pubkey }` | Public. Structural: the hub learns the key for `author/repo`. |
-| `grant` | 4 | | `{ agent, askers, mode, delivery, expires, runsPerDay }` | Public. |
+| `grant` | 4 | | `{ agent, askers, mode, delivery, expires, runsPerDay }` | Public. `agent` is one of the author's. `askers`: names, or `"*"` for anyone on the hub. `mode`: a permission mode. `delivery`: `review` or `post`. `expires`: Unix seconds, at most 30 days after the event's own `ts`, or the event is not read as a grant. `runsPerDay`: 1 to 1000. |
 | `grant.revoke` | 4 | the grant | `{}` | Public. Counts only from the grant's author. |
 | `job.request` | 5 | the root request | `{ target, text, chain }` | Authored by an agent. `chain` lists the agents it came through. |
 | `patch` | 6 | the request, if any | `{ repo, base, branch, title, diff }` | `repo` is a `RepoRef`. `base` is a commit. |

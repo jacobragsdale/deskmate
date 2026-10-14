@@ -47,7 +47,7 @@ A request matches a grant when the grant's author owns the agent, the asker is l
 
 ## B. Grants
 
-- [ ] **P4-B1** `grant` and `grant.revoke` in `src/core/kinds.ts`, public kinds. The schema refuses an `expires` more than 30 days after the event's `ts`.
+- [x] **P4-B1** `grant` and `grant.revoke` in `src/core/kinds.ts`, public kinds. The schema refuses an `expires` more than 30 days after the event's `ts`.
 - [ ] **P4-B2** `src/core/grants.ts`, pure: `liveGrant(grants, revocations, accepted, { agent, asker, now })` returns the matching grant or nothing. When several match, the one with the lowest mode wins. Tests for each condition: wrong asker, `*`, revoked, expired, the daily count reached, and the count freeing up after 24 hours.
 - [ ] **P4-B3** The session keeps grants and revocations from the log (they are public, so `catchUp` brings them). When a request for one of my agents arrives and a grant matches, it accepts with `by: { grant: id }`, the grant's mode and its delivery, with no command from the window. If the agent cannot honour the grant's mode it does nothing and the request waits for a click as before, with one notice saying why.
 - [ ] **P4-B4** A request sent by the command, by MCP or by a workflow can run under a grant like any other. A request for my own agent never needs one.
@@ -73,3 +73,7 @@ A request matches a grant when the grant's author owns the agent, the asker is l
 1. Every task is ticked except the one marked **(workstation)**, and the checks are green.
 2. In the scenario, bob's request under a read-only grant is answered with nobody at jacob's keyboard, a write attempt in that run is refused, and a revoked grant stops the next request.
 3. No result in the hub's log is signed by a person unless that person's session sent it after review. A test checks the authors.
+
+## Notes
+
+- **P4-B1: the 30-day limit needs the event's time, and what is left for the hub and the publisher.** The `grant` member of `contentSchema` is read from `{ kind, content, ts }`, and `readContent` passes the event's `ts`, so a grant lasting longer than `MAX_GRANT` is read as unknown by every reader. `Client.publish` in `src/desk/client.ts` still parses `{ kind, content }`, so publishing a grant fails there until the task that first publishes one (P4-B5) parses it with the `ts` it signs with. `PUBLIC_KINDS` in `src/core/kinds.ts` names the kinds that may be sent to `*`. The hub does not read it yet: `mayWrite` in `src/hub/app.ts` refuses `to: "*"` for every kind, so a grant cannot be posted until it accepts `*` for exactly these kinds (and `agent.register`, which P4-A3 adds to the set); and `ChatLog.add` in `src/core/chat.ts` still passes over every event to `*`, which suits P4-B3, where the session keeps grants apart from the chats. Both were left because this was built on a branch that did not touch the hub or the chat fold.
