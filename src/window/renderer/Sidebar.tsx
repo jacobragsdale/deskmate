@@ -2,7 +2,7 @@
 
 import type { JSX } from "react";
 
-import type { ChatView, RowView } from "../shared/ipc.ts";
+import type { ChatView, RowView } from "../../shared/ipc.ts";
 import type { Act } from "./App.tsx";
 
 const MARKS = { "": "", working: "", draft: "✎", asked: "▶" } as const;

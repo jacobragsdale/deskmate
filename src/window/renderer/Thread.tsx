@@ -4,8 +4,8 @@ import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { JSX } from "react";
 import Markdown from "react-markdown";
 
-import { spans } from "../core/chat.ts";
-import type { ChatView, CurrentView, MessageView, RequestView } from "../shared/ipc.ts";
+import { spans } from "../../core/chat.ts";
+import type { ChatView, CurrentView, MessageView, RequestView } from "../../shared/ipc.ts";
 import type { Act } from "./App.tsx";
 
 const NEAR_BOTTOM = 80; // Pixels from the end within which new notes keep the view pinned to the end.

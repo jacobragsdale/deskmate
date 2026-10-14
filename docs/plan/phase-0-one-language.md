@@ -25,7 +25,7 @@ Read first: [`README.md`](README.md) for the working rules, and [`protocol.md`](
 No behaviour changes in this section. The Python hub stays and the tests keep running against it.
 
 - [x] **P0-A1** Move the package to the repository root with `git mv`: `app/package.json`, `package-lock.json`, `tsconfig.json`, `eslint.config.mjs`, `prettier.config.mjs`, `build.mjs`, `.prettierignore`. Fold `app/.gitignore` into the root `.gitignore`. Move `app/test` to `test`. Remove the empty `app/`.
-- [ ] **P0-A2** Move the sources to their homes. Fix every import.
+- [x] **P0-A2** Move the sources to their homes. Fix every import.
 
   | From | To |
   |---|---|

@@ -5,11 +5,11 @@ import { join as joinPath } from "node:path";
 import { app, BrowserWindow, dialog, ipcMain, Notification, shell } from "electron";
 import type { IpcMainInvokeEvent } from "electron";
 
-import { DEFAULT_AGENT, defaultDev, defaultHome, DeskmateError, http, join, loadClient } from "../core/client.ts";
-import { problemOf, Session } from "../core/session.ts";
-import type { Arrival, Hooks } from "../core/session.ts";
-import { commandSchema } from "../shared/ipc.ts";
-import type { Notice, Outcome, View } from "../shared/ipc.ts";
+import { DEFAULT_AGENT, defaultDev, defaultHome, DeskmateError, http, join, loadClient } from "../../desk/client.ts";
+import { problemOf, Session } from "../../desk/session.ts";
+import type { Arrival, Hooks } from "../../desk/session.ts";
+import { commandSchema } from "../../shared/ipc.ts";
+import type { Notice, Outcome, View } from "../../shared/ipc.ts";
 
 const home = defaultHome();
 let session: Session | null = null;

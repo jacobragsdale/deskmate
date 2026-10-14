@@ -3,9 +3,9 @@
 import { useEffect, useRef, useState } from "react";
 import type { JSX, KeyboardEvent } from "react";
 
-import { candidates } from "../core/chat.ts";
-import type { Candidate } from "../core/chat.ts";
-import type { ChatView, CurrentView, Notice } from "../shared/ipc.ts";
+import { candidates } from "../../core/chat.ts";
+import type { Candidate } from "../../core/chat.ts";
+import type { ChatView, CurrentView, Notice } from "../../shared/ipc.ts";
 import type { Act, Submit } from "./App.tsx";
 
 const TAG_BEING_TYPED = /(?:^|\s)@([\w./-]*)$/;

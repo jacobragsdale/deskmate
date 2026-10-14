@@ -5,7 +5,8 @@ import { test } from "node:test";
 
 import { candidates, ChatLog, STALE } from "../src/core/chat.ts";
 import type { Entry } from "../src/core/chat.ts";
-import { AgentCancelledError, DeskmateError, runAgent, splitCommand } from "../src/core/client.ts";
+import { runAgent, splitCommand } from "../src/desk/agents/oneshot.ts";
+import { AgentCancelledError, DeskmateError } from "../src/desk/client.ts";
 import { loadKey, signNote } from "../src/core/sign.ts";
 import { fitBody, MAX_BODY } from "../src/core/wire.ts";
 import type { Kind, TeamRepo } from "../src/core/wire.ts";

@@ -4,8 +4,8 @@ import { execFile } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
-import { byCodeUnit } from "./text.ts";
-import { REPO_NAME } from "./wire.ts";
+import { byCodeUnit } from "../core/text.ts";
+import { REPO_NAME } from "../core/wire.ts";
 
 const CLONE_TIMEOUT = 600; // Seconds a clone may take.
 const STATUS_TIMEOUT = 20;

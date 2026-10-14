@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useState } from "react";
 import type { JSX, SyntheticEvent } from "react";
 
-import { noticeSchema, outcomeSchema, viewSchema } from "../shared/ipc.ts";
-import type { ChatView, Command, Notice, View } from "../shared/ipc.ts";
+import { noticeSchema, outcomeSchema, viewSchema } from "../../shared/ipc.ts";
+import type { ChatView, Command, Notice, View } from "../../shared/ipc.ts";
 import { Composer } from "./Composer.tsx";
 import { JoinChannel, PickRepo } from "./dialogs.tsx";
 import { Sidebar } from "./Sidebar.tsx";

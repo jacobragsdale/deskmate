@@ -9,7 +9,7 @@ import { z } from "zod";
 
 import { agentPrompt, mentions } from "../src/core/chat.ts";
 import type { Entry } from "../src/core/chat.ts";
-import { parseRemote, prefixKey } from "../src/core/repos.ts";
+import { parseRemote, prefixKey } from "../src/desk/repos.ts";
 import { authHeader, loadKey, noteIsAuthentic, privateHex, publicHex, signNote } from "../src/core/sign.ts";
 import { noteSchema } from "../src/core/wire.ts";
 

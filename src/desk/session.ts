@@ -7,15 +7,16 @@ import { join as joinPath } from "node:path";
 import { z } from "zod";
 
 import type { ChatView, Command, CurrentView, MessageView, Notice, RequestView, RowView } from "../shared/ipc.ts";
-import { agentPrompt, ChatLog, chatOf, continues, mentions, ONLINE, refOf, rings } from "./chat.ts";
-import type { Entry, Request } from "./chat.ts";
-import { AgentCancelledError, DeskmateError, POLL_WAIT, runAgent, splitCommand } from "./client.ts";
+import { agentPrompt, ChatLog, chatOf, continues, mentions, ONLINE, refOf, rings } from "../core/chat.ts";
+import type { Entry, Request } from "../core/chat.ts";
+import { runAgent, splitCommand } from "./agents/oneshot.ts";
+import { AgentCancelledError, DeskmateError, POLL_WAIT } from "./client.ts";
 import type { Client, Runner } from "./client.ts";
 import * as repos from "./repos.ts";
 import type { Checkout } from "./repos.ts";
-import { oneLine } from "./text.ts";
-import { fitBody, isChannel, nameSchema } from "./wire.ts";
-import type { ChannelInfo, Person, RepoRef, TeamRepo } from "./wire.ts";
+import { oneLine } from "../core/text.ts";
+import { fitBody, isChannel, nameSchema } from "../core/wire.ts";
+import type { ChannelInfo, Person, RepoRef, TeamRepo } from "../core/wire.ts";
 
 const HISTORY = 300; // Notes loaded when the session starts or a channel is joined.
 const RETRY_DELAY = 5; // Seconds to wait before asking a hub that did not answer again.

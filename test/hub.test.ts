@@ -8,9 +8,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 
-import { AgentCancelledError, http, join as joinHub, loadClient } from "../src/core/client.ts";
-import { Session } from "../src/core/session.ts";
-import type { Arrival } from "../src/core/session.ts";
+import { AgentCancelledError, http, join as joinHub, loadClient } from "../src/desk/client.ts";
+import { Session } from "../src/desk/session.ts";
+import type { Arrival } from "../src/desk/session.ts";
 import type { ChatView, MessageView, Notice } from "../src/shared/ipc.ts";
 
 const TOKEN = "a-join-token-for-tests";

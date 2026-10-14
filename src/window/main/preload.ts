@@ -2,7 +2,7 @@
 
 import { contextBridge, ipcRenderer } from "electron";
 
-import type { Bridge } from "../shared/ipc.ts";
+import type { Bridge } from "../../shared/ipc.ts";
 
 function subscribe(channel: string): (listener: (payload: unknown) => void) => () => void {
   return (listener) => {
