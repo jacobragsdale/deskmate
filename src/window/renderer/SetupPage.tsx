@@ -5,6 +5,9 @@ import type { JSX } from "react";
 
 import { z } from "zod";
 
+import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
+
 import { checkSchema, distroChoiceSchema, outcomeSchema } from "../../shared/ipc.ts";
 import type { Check, DistroChoice, Notice } from "../../shared/ipc.ts";
 
@@ -94,7 +97,7 @@ export function SetupPage({ problem, initial, onClose, tell }: Props): JSX.Eleme
       <h1>Setup</h1>
       {problem !== "" && <p className="stopped">Player Two cannot start its desk: {problem}</p>}
       {distros !== null && (
-        <label>
+        <Label className="flex-col items-start gap-1.5">
           Linux distribution
           <select
             value={distros.chosen ?? ""}
@@ -110,7 +113,7 @@ export function SetupPage({ problem, initial, onClose, tell }: Props): JSX.Eleme
               </option>
             ))}
           </select>
-        </label>
+        </Label>
       )}
       {checks === null ? (
         <p className="empty">Checking…</p>
@@ -127,14 +130,16 @@ export function SetupPage({ problem, initial, onClose, tell }: Props): JSX.Eleme
                 {item.fix !== "" && (
                   <p className="fix">
                     <code>{item.fix}</code>
-                    <button
+                    <Button
                       type="button"
+                      size="xs"
+                      variant="outline"
                       onClick={() => {
                         copy(item.fix);
                       }}
                     >
                       Copy
-                    </button>
+                    </Button>
                   </p>
                 )}
               </div>
@@ -143,20 +148,19 @@ export function SetupPage({ problem, initial, onClose, tell }: Props): JSX.Eleme
         </ul>
       )}
       <p className="actions">
-        <button
+        <Button
           type="button"
-          className="primary"
           disabled={busy}
           onClick={() => {
             check(true);
           }}
         >
           {busy ? "Checking…" : "Check again"}
-        </button>
+        </Button>
         {onClose !== null && (
-          <button type="button" onClick={onClose}>
+          <Button type="button" variant="outline" onClick={onClose}>
             Back
-          </button>
+          </Button>
         )}
       </p>
     </div>

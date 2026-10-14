@@ -5,6 +5,9 @@ import type { JSX, SyntheticEvent } from "react";
 import { useDefaultLayout } from "react-resizable-panels";
 import { toast } from "sonner";
 
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Toaster } from "@/components/ui/sonner";
 
@@ -17,6 +20,7 @@ import { Sidebar } from "./Sidebar.tsx";
 import { Thread } from "./Thread.tsx";
 
 const NOTICE_SECONDS = 7;
+const FIELD = "flex-col items-stretch gap-1.5"; // A label above its field.
 
 /** Sends a command and resolves with "" when it worked, or with the problem in words for the user. */
 export type Submit = (command: Command) => Promise<string>;
@@ -63,13 +67,14 @@ function Setup({ defaultAgent, tell }: { readonly defaultAgent: string; readonly
       .catch(console.error);
   };
   return (
-    <form className="setup" onSubmit={join}>
-      <h1>Player Two</h1>
-      <p>Join your team&rsquo;s hub. Whoever runs it has the address and the join token.</p>
-      <label>
+    <form className="mx-auto flex w-90 flex-col gap-3 pt-[10vh]" onSubmit={join}>
+      <h1 className="text-2xl font-bold">Player Two</h1>
+      <p className="text-muted-foreground">Join your team&rsquo;s hub. Whoever runs it has the address and the join token.</p>
+      <Label className={FIELD}>
         Hub address
         {/* Filled in and fixed when this copy was built for the team's hub. */}
-        <input
+        <Input
+          className="font-normal"
           name="hub"
           type="url"
           placeholder="https://player-two.example.com"
@@ -78,16 +83,16 @@ function Setup({ defaultAgent, tell }: { readonly defaultAgent: string; readonly
           required
           autoFocus={PLAYER_TWO_HUB_URL === ""}
         />
-      </label>
-      <label>
+      </Label>
+      <Label className={FIELD}>
         Your name
-        <input name="name" pattern="[a-z0-9][a-z0-9_\-]{0,31}" placeholder="lowercase letters, digits, - and _" required autoFocus={PLAYER_TWO_HUB_URL !== ""} />
-      </label>
-      <label>
+        <Input className="font-normal" name="name" pattern="[a-z0-9][a-z0-9_\-]{0,31}" placeholder="lowercase letters, digits, - and _" required autoFocus={PLAYER_TWO_HUB_URL !== ""} />
+      </Label>
+      <Label className={FIELD}>
         Join token
-        <input name="token" type="password" required />
-      </label>
-      <label>
+        <Input className="font-normal" name="token" type="password" required />
+      </Label>
+      <Label className={FIELD}>
         Your agent
         <select
           value={agent}
@@ -102,16 +107,16 @@ function Setup({ defaultAgent, tell }: { readonly defaultAgent: string; readonly
           ))}
           <option value="">Other</option>
         </select>
-      </label>
+      </Label>
       {agent === "" && (
-        <label>
+        <Label className={FIELD}>
           Agent command
-          <input name="agent" placeholder="run in the repo's folder, with the prompt added as its last argument" required autoFocus />
-        </label>
+          <Input className="font-normal" name="agent" placeholder="run in the repo's folder, with the prompt added as its last argument" required autoFocus />
+        </Label>
       )}
-      <button type="submit" disabled={busy}>
+      <Button type="submit" className="self-start" disabled={busy}>
         {busy ? "Joining…" : "Join"}
-      </button>
+      </Button>
     </form>
   );
 }
@@ -193,9 +198,9 @@ function Chat({ view, act, tell, onSetup }: { readonly view: ChatView; readonly 
             </span>
             <span>
               {link} ·{" "}
-              <button type="button" className="link" onClick={onSetup}>
+              <Button type="button" variant="link" size="xs" className="h-auto p-0" onClick={onSetup}>
                 Setup
-              </button>
+              </Button>
             </span>
           </footer>
         </main>

@@ -1,7 +1,9 @@
 /** The chat list: joined channels, then people, with what is waiting in each. */
 
+import { cn } from "cn";
 import type { JSX } from "react";
 
+import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
 import type { ChatView, RowView } from "../../shared/ipc.ts";
@@ -9,23 +11,25 @@ import type { Act } from "./App.tsx";
 
 const MARKS = { "": "", working: "", draft: "✎", asked: "▶" } as const;
 const MARK_TITLES = { "": "", working: "your agent is working here", draft: "a draft is waiting for your review", asked: "a request is waiting for your agent" } as const;
+const ROW = "h-auto w-full justify-start gap-1.5 px-2 py-1 font-normal"; // A line of the list, the open chat's in bold on a shade.
 
 function Row({ row, open, act }: { readonly row: RowView; readonly open: boolean; readonly act: Act }): JSX.Element {
   return (
     <li>
-      <button
+      <Button
         type="button"
-        className={open ? "row open" : "row"}
+        variant="ghost"
+        className={cn(ROW, "aria-[current=true]:bg-muted aria-[current=true]:font-semibold")}
         aria-current={open}
         onClick={() => {
           act({ do: "open", chat: row.chat });
         }}
       >
         {row.here !== null && <span className={row.here ? "dot here" : "dot"} title={row.here ? "here now" : "away"} />}
-        <span className={row.unread > 0 ? "name unread" : "name"}>{row.chat}</span>
+        <span className={cn("flex-1 truncate text-left", row.unread > 0 && "font-bold")}>{row.chat}</span>
         {row.mark === "working" ? <span className="spinner" title={MARK_TITLES.working} /> : row.mark !== "" && <span title={MARK_TITLES[row.mark]}>{MARKS[row.mark]}</span>}
         {row.unread > 0 && <span className="count">{row.unread}</span>}
-      </button>
+      </Button>
     </li>
   );
 }
@@ -43,9 +47,9 @@ export function Sidebar({ view, act, onJoin }: { readonly view: ChatView; readon
             <Row key={row.chat} row={row} open={row.chat === open} act={act} />
           ))}
           <li>
-            <button type="button" className="row quiet" onClick={onJoin}>
+            <Button type="button" variant="ghost" className={cn(ROW, "text-muted-foreground")} onClick={onJoin}>
               + Join or create
-            </button>
+            </Button>
           </li>
         </ul>
         <h2>People</h2>

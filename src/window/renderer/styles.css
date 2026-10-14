@@ -11,56 +11,6 @@ body,
   margin: 0;
 }
 
-button,
-input,
-select,
-textarea {
-  font: inherit;
-  color: inherit;
-}
-
-button {
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 2px 8px;
-  cursor: pointer;
-}
-
-button:hover:not(:disabled) {
-  background: var(--accent);
-}
-
-button:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-button.primary {
-  background: var(--primary);
-  border-color: var(--primary);
-  color: var(--primary-foreground);
-}
-
-button.primary:hover:not(:disabled) {
-  background: var(--primary);
-  filter: brightness(1.1);
-}
-
-input,
-select,
-textarea {
-  background: var(--background);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 6px 8px;
-}
-
-:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: 1px;
-}
-
 .quiet {
   color: var(--muted-foreground);
 }
@@ -127,32 +77,6 @@ footer.down span:last-child {
 
 .sidebar p {
   margin: 4px 8px;
-}
-
-.row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  padding: 4px 8px;
-  border: none;
-  text-align: left;
-}
-
-.row.open {
-  background: var(--accent);
-  font-weight: 600;
-}
-
-.row .name {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.row .name.unread {
-  font-weight: 700;
 }
 
 .count {
@@ -320,10 +244,6 @@ footer.down span:last-child {
   color: var(--warn);
 }
 
-.request button {
-  color: var(--foreground);
-}
-
 .markdown {
   overflow-wrap: anywhere;
 }
@@ -402,12 +322,6 @@ footer.down span:last-child {
   border-top: 1px solid var(--border);
 }
 
-.composer textarea {
-  display: block;
-  width: 100%;
-  resize: none;
-}
-
 .review {
   margin-bottom: 8px;
   padding: 8px 10px;
@@ -424,7 +338,7 @@ footer.down span:last-child {
   margin-top: 6px;
 }
 
-/* ── the dialogs' lists, the join form ── */
+/* ── the dialogs' lists ── */
 
 .choices {
   margin-top: 8px;
@@ -432,64 +346,7 @@ footer.down span:last-child {
   overflow-y: auto;
 }
 
-.choices button {
-  width: 100%;
-  border: none;
-  text-align: left;
-  padding: 4px 8px;
-}
-
-.setup {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  width: 360px;
-  margin: 10vh auto 0;
-}
-
-.setup h1,
-.setup-page h1 {
-  font-size: 1.5em;
-  font-weight: 700;
-}
-
-.setup h1 {
-  margin: 0;
-}
-
-.setup p {
-  margin: 0;
-  color: var(--muted-foreground);
-}
-
-.setup label {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-weight: 600;
-}
-
-.setup input,
-.setup select {
-  font-weight: 400;
-}
-
-.setup button {
-  align-self: flex-start;
-  padding: 6px 16px;
-  background: var(--primary);
-  border-color: var(--primary);
-  color: var(--primary-foreground);
-}
-
 /* ── the setup page ── */
-
-button.link {
-  border: none;
-  padding: 0;
-  color: var(--tag);
-  text-decoration: underline;
-}
 
 .setup-page {
   display: flex;
@@ -500,30 +357,14 @@ button.link {
   padding: 6vh max(16px, calc((100% - 720px) / 2));
 }
 
-.setup-page h1,
-.setup-page .actions {
-  margin: 0;
-}
-
-.setup-page label {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-weight: 600;
-}
-
-.setup-page select {
-  align-self: flex-start;
-  font-weight: 400;
+.setup-page h1 {
+  font-size: 1.5em;
+  font-weight: 700;
 }
 
 .setup-page .actions {
   display: flex;
   gap: 8px;
-}
-
-.setup-page .actions button {
-  padding: 6px 16px;
 }
 
 .checks {

@@ -3,8 +3,10 @@
 import { useEffect, useRef, useState } from "react";
 import type { JSX, KeyboardEvent } from "react";
 
+import { Button } from "@/components/ui/button";
 import { Command, CommandItem, CommandList } from "@/components/ui/command";
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
+import { Textarea } from "@/components/ui/textarea";
 
 import { candidates } from "../../core/chat.ts";
 import type { Candidate } from "../../core/chat.ts";
@@ -52,7 +54,8 @@ function Review({ current, submit, tell, act }: Omit<Props, "view">): JSX.Elemen
         ✎ Your {draft.repo} agent&rsquo;s answer for {draft.asker}. Nothing is sent until you send it.
         {current.drafts.length > 1 && ` ${String(current.drafts.length - 1)} more waiting.`}
       </p>
-      <textarea
+      <Textarea
+        className="field-sizing-fixed"
         aria-label="Draft answer"
         value={text}
         rows={8}
@@ -61,17 +64,19 @@ function Review({ current, submit, tell, act }: Omit<Props, "view">): JSX.Elemen
         }}
       />
       <div className="actions">
-        <button type="button" className="primary" disabled={sending || text.trim() === ""} onClick={send}>
+        <Button type="button" size="sm" disabled={sending || text.trim() === ""} onClick={send}>
           Send answer
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
+          size="sm"
+          variant="outline"
           onClick={() => {
             act({ do: "discardDraft", ...target });
           }}
         >
           × Discard
-        </button>
+        </Button>
       </div>
     </section>
   );
@@ -178,8 +183,9 @@ export function Composer({ view, current, act, submit, tell }: Props): JSX.Eleme
       <Review key={`${chat} ${String(current.drafts[0]?.noteId ?? 0)} ${current.drafts[0]?.repo ?? ""}`} current={current} act={act} submit={submit} tell={tell} />
       <Popover open={picks.rows.length > 0}>
         <PopoverAnchor asChild>
-          <textarea
+          <Textarea
             ref={box}
+            className="min-h-0 resize-none field-sizing-fixed"
             aria-label={`Message ${chat}`}
             placeholder={`Message ${chat} · @ tags an agent · Enter sends, Shift+Enter starts a new line`}
             rows={Math.min(8, text.split("\n").length)}

@@ -4,6 +4,7 @@ import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { JSX } from "react";
 import Markdown from "react-markdown";
 
+import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
 import { spans } from "../../core/chat.ts";
@@ -46,28 +47,34 @@ function RequestLine({ request, act }: { readonly request: RequestView; readonly
       return (
         <p className="request">
           <span className="spinner" /> {who} is working{on(status.branch)} · <Elapsed since={status.startedAt} /> ·{" "}
-          <button
+          <Button
+            size="xs"
+            variant="outline"
+            className="text-foreground"
             type="button"
             onClick={() => {
               act({ do: "stop", noteId, repo });
             }}
           >
             ■ Stop
-          </button>
+          </Button>
         </p>
       );
     case "noCheckout":
       return (
         <p className="request mine">
           ? you have no checkout of {repo} ·{" "}
-          <button
+          <Button
+            size="xs"
+            variant="outline"
+            className="text-foreground"
             type="button"
             onClick={() => {
               act({ do: "clone", repo });
             }}
           >
             ⇣ Clone it
-          </button>
+          </Button>
         </p>
       );
     case "ready":
@@ -75,33 +82,42 @@ function RequestLine({ request, act }: { readonly request: RequestView; readonly
         <p className="request mine">
           ◆ {{ "": "", declined: "you declined · ", failed: "it failed · ", stopped: "stopped · ", interrupted: "interrupted · " }[status.before]}
           {who} ·{" "}
-          <button
+          <Button
+            size="xs"
+            variant="outline"
+            className="text-foreground"
             type="button"
             onClick={() => {
               act({ do: "run", noteId, repo, post: false });
             }}
           >
             ▶ Run and review
-          </button>{" "}
-          <button
+          </Button>{" "}
+          <Button
+            size="xs"
+            variant="outline"
+            className="text-foreground"
             type="button"
             onClick={() => {
               act({ do: "run", noteId, repo, post: true });
             }}
           >
             ▶▶ Run and post
-          </button>
+          </Button>
           {status.canDecline && (
             <>
               {" "}
-              <button
+              <Button
+                size="xs"
+                variant="outline"
+                className="text-foreground"
                 type="button"
                 onClick={() => {
                   act({ do: "decline", noteId, repo });
                 }}
               >
                 × Decline
-              </button>
+              </Button>
             </>
           )}
         </p>
@@ -229,41 +245,50 @@ export function Thread({ view, current, act, onPin }: { readonly view: ChatView;
         {current.joined && (
           <span className="actions">
             {pinned === null ? (
-              <button type="button" onClick={onPin}>
+              <Button size="xs" variant="outline" className="text-foreground" type="button" onClick={onPin}>
                 ◆ Pin a repo
-              </button>
+              </Button>
             ) : (
-              <button
+              <Button
+                size="xs"
+                variant="outline"
+                className="text-foreground"
                 type="button"
                 onClick={() => {
                   act({ do: "unpin", chat: current.chat });
                 }}
               >
                 ◆ Unpin {pinned.name}
-              </button>
+              </Button>
             )}
-            <button
+            <Button
+              size="xs"
+              variant="outline"
+              className="text-foreground"
               type="button"
               onClick={() => {
                 act({ do: "leaveChannel", chat: current.chat });
               }}
             >
               × Leave
-            </button>
+            </Button>
           </span>
         )}
       </header>
       {pinned !== null && !pinned.mine && view.loaded && (
         <p className="banner">
           ◆ This channel is about {pinned.name}, which you have no checkout of ·{" "}
-          <button
+          <Button
+            size="xs"
+            variant="outline"
+            className="text-foreground"
             type="button"
             onClick={() => {
               act({ do: "clone", repo: pinned.name });
             }}
           >
             ⇣ Clone it
-          </button>
+          </Button>
         </p>
       )}
       <ScrollArea

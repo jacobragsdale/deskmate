@@ -2,7 +2,11 @@
 
 import type { JSX, ReactNode, SyntheticEvent } from "react";
 
+import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+
+const CHOICE = "h-auto w-full justify-start px-2 py-1 font-normal"; // One of the answers listed under the question.
 
 /** A modal dialog, open for as long as it is drawn, that reports "" when it is dismissed with Esc, its close button or a click outside it. */
 function Modal({ title, onDismiss, children }: { readonly title: string; readonly onDismiss: () => void; readonly children: ReactNode }): JSX.Element {
@@ -40,7 +44,7 @@ export function JoinChannel({ others, onDone }: { readonly others: readonly { re
       }}
     >
       <form className="flex gap-1.5" onSubmit={join}>
-        <input
+        <Input
           className="flex-1"
           name="name"
           aria-label="Channel name"
@@ -50,22 +54,22 @@ export function JoinChannel({ others, onDone }: { readonly others: readonly { re
           required
           autoFocus
         />
-        <button type="submit" className="primary">
-          Join
-        </button>
+        <Button type="submit">Join</Button>
       </form>
       {others.length > 0 && (
         <ul className="choices">
           {others.map((channel) => (
             <li key={channel.name}>
-              <button
+              <Button
                 type="button"
+                variant="ghost"
+                className={CHOICE}
                 onClick={() => {
                   onDone(channel.name);
                 }}
               >
-                {channel.name} <span className="quiet">{channel.members.join(", ")}</span>
-              </button>
+                {channel.name} <span className="truncate text-muted-foreground">{channel.members.join(", ")}</span>
+              </Button>
             </li>
           ))}
         </ul>
@@ -86,14 +90,16 @@ export function PickRepo({ title, repos, onDone }: { readonly title: string; rea
       <ul className="choices">
         {repos.map((repo) => (
           <li key={repo}>
-            <button
+            <Button
               type="button"
+              variant="ghost"
+              className={CHOICE}
               onClick={() => {
                 onDone(repo);
               }}
             >
               {repo}
-            </button>
+            </Button>
           </li>
         ))}
       </ul>
