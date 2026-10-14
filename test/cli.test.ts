@@ -386,3 +386,37 @@ await test("ask tags the agent in the direct chat with its owner, waits for that
 
   assert.deepEqual(await asking, { status: 0, out: "in queue.py", err: "" });
 });
+
+await test("status prints the hub, your name, the repos you share and the requests waiting for your agents", async (t) => {
+  const hub = await startHub(t);
+  const [alice, bob] = [await hub.join("alice"), await hub.join("bob")];
+  assert.equal((await playerTwo(hub, "bob", ["status"])).out, `hub: ${hub.url}\nname: bob\nrepos: none yet; repos under ~/dev are shared once the window has run\nwaiting for your agents: nothing`);
+  await bob.advertise([{ name: "uploader", key: "dev.azure.com/acme/platform/uploader", url: "https://dev.azure.com/acme/Platform/_git/uploader", branch: "main" }]);
+  for (const who of [alice, bob]) {
+    await who.publish("#backend", "channel.join", {});
+  }
+  const fromAlice = await alice.publish("bob", "message", { text: "@bob/uploader where do we retry?", via: "cli" });
+  const answered = await alice.publish("#backend", "message", { text: "@bob/uploader and the tests?", via: "cli" });
+  await answer(bob, "#backend", answered.event.id, "in test_queue.py");
+  const fromBob = await bob.publish("#backend", "message", { text: "@bob/uploader from my own command line", via: "cli" }); // His own tag sent this way waits for his click too.
+  await alice.publish("#backend", "message", { text: "@alice/uploader not his", via: "cli" });
+
+  const words = await playerTwo(hub, "bob", ["status"]);
+  assert.match(
+    words.out,
+    new RegExp(
+      `^hub: ${hub.url}\nname: bob\nrepos: uploader \\(main\\)\nwaiting for your agents: 2\n┌ ${String(fromBob.seq)} · bob in #backend · ${WHEN}\n.*\n└ ${noteLink(fromBob.event.id)}\n┌ ${String(fromAlice.seq)} · alice · ${WHEN}\n.*\n└ ${noteLink(fromAlice.event.id)}$`
+    )
+  );
+  const json = z
+    .strictObject({ hub: z.string(), name: z.string(), repos: z.array(z.unknown()), waiting: z.array(z.object({ agent: z.string(), link: z.string(), trusted: z.boolean() })) })
+    .parse(printed(await playerTwo(hub, "bob", ["status", "--json"])));
+  assert.deepEqual([json.hub, json.name, json.repos], [hub.url, "bob", await bob.repos()]);
+  assert.deepEqual(
+    json.waiting.map((each) => [each.agent, each.link, each.trusted]),
+    [
+      ["bob/uploader", noteLink(fromBob.event.id), true],
+      ["bob/uploader", noteLink(fromAlice.event.id), true]
+    ]
+  );
+});

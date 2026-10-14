@@ -16,7 +16,7 @@ import { DEFAULT_AGENT, defaultDev, defaultHome, http, join, loadClient, PlayerT
 import type { Client, Transport } from "../desk/client.ts";
 import { runChecks } from "../desk/doctor.ts";
 import { runDesk } from "../desk/main.ts";
-import { agentOf, ask, readNote, trust } from "../desk/notes.ts";
+import { agentOf, ask, glance, readNote, trust } from "../desk/notes.ts";
 import type { Agent, Asked } from "../desk/notes.ts";
 import { runHub, verifyHub } from "../hub/main.ts";
 import type { Check } from "../shared/ipc.ts";
@@ -34,13 +34,14 @@ const USAGE = `usage: player-two COMMAND
   read NOTE [--thread]                  print one note, given as its link or id, as it reads now, where each agent it tags stands, their answers, and with --thread its replies
   ask @PERSON/REPO TEXT... [--in CHANNEL] [--wait SECONDS]
                                         ask an agent, in the direct chat with its owner or in a channel, and print its answer once its owner has let it run; --wait defaults to 900
+  status                                print the hub, your name, the repos you share and the requests waiting for your agents
   channel [join NAME | leave NAME]      list the channels, or join or leave one
   hub [--host HOST] [--port PORT]       run the hub; it reads PLAYER_TWO_JOIN_TOKEN, PLAYER_TWO_DB, PLAYER_TWO_REPOS and, if set, PLAYER_TWO_DOWNLOADS
   hub verify                            check that no event in the log in PLAYER_TWO_DB was changed or taken out since it was stored
   desk                                  run your side with no window, for the window to start: it speaks JSON lines on standard input and output
   doctor                                check what Player Two needs on this machine, and say how to fix what is missing
 
-send, inbox, who, repos, channel, search, read, ask and doctor take --json, and then print one JSON value and nothing else.
+send, inbox, who, repos, channel, search, read, ask, status and doctor take --json, and then print one JSON value and nothing else.
 A command exits with 0 on success, 1 after printing a failure, and 2 when it was not given what it takes.
 ask also exits with 3 when the owner declined, 4 when the run failed, was stopped or was withdrawn, and 5 when nothing final came in time.`;
 
@@ -266,6 +267,25 @@ async function read(joined: () => Client, args: string[], out: (line: string) =>
   show(out, values.json, found, words.join("\n"));
 }
 
+/** Print the hub, the user's name, the repos they share, and the requests waiting for their agents in what the window would load of each chat. */
+async function status(joined: () => Client, args: string[], out: (line: string) => void): Promise<void> {
+  const { json } = parseArgs({ args, options: { json: { type: "boolean", default: false } } }).values;
+  const client = joined();
+  const me = client.config.name;
+  const [{ log, rows }, team] = await Promise.all([glance(client), client.repos()]);
+  const mine = team.filter((repo) => repo.user === me);
+  const waiting = rows.flatMap((row) => log.waitingForMe(row.chat, client.now()));
+  const found = { hub: client.config.hub, name: me, repos: mine, waiting: waiting.map((request) => ({ agent: `${request.owner}/${request.repo}`, ...shown(request.message.entry, request.message) })) };
+  const words = [
+    `hub: ${client.config.hub}`,
+    `name: ${me}`,
+    `repos: ${mine.length === 0 ? "none yet; repos under ~/dev are shared once the window has run" : mine.map((repo) => `${repo.name} (${repo.branch})`).join(", ")}`,
+    `waiting for your agents: ${waiting.length === 0 ? "nothing" : String(waiting.length)}`,
+    ...waiting.map((request) => cited(client, request.message.entry, request.message))
+  ];
+  show(out, json, found, words.join("\n"));
+}
+
 /** A channel, given with or without its "#"; null when that is no channel's name. */
 function channelNamed(name: string): string | null {
   const channel = channelSchema.safeParse(name.startsWith("#") ? name : `#${name}`);
@@ -404,7 +424,8 @@ const AS_USER = new Map<string, (joined: () => Client, args: string[], out: (lin
   ["repos", repos],
   ["search", search],
   ["read", read],
-  ["ask", askAgent]
+  ["ask", askAgent],
+  ["status", status]
 ]);
 
 async function run(argv: readonly string[], options: Options, out: (line: string) => void): Promise<void> {

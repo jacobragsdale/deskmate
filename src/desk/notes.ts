@@ -4,12 +4,13 @@
  */
 
 import { ChatLog, chatOf } from "../core/chat.ts";
-import type { Entry, Message, Request, State } from "../core/chat.ts";
+import type { Entry, Message, Request, Row, State } from "../core/chat.ts";
 import { fitText, NAME, REPO_NAME } from "../core/wire.ts";
 import type { Delivered } from "../core/wire.ts";
 import type { Client } from "./client.ts";
 
 const PAGE = 200; // The most events the hub gives at once.
+const GLANCE = 50; // Events of each chat a glance folds: what the window loads of each when it starts, so the two count alike.
 const FINAL: ReadonlySet<State> = new Set(["answered", "declined", "failed", "stopped", "withdrawn"]); // Where an ask stops waiting. The owner may run a declined, failed or stopped request again, but the one who asked has had their answer.
 const AGENT = new RegExp(`^@?(${NAME})/(${REPO_NAME})$`, "u"); // An agent named as @person/repo, the "@" optional.
 
@@ -85,6 +86,16 @@ export async function readNote(client: Client, id: string): Promise<Note | null>
     jobs: message === null ? [] : log.requests(message, client.now()),
     answers: messagesIn(log, chat).filter((each) => each.answers === id)
   };
+}
+
+/** Every chat this user has, as the window lists them, each folded from its newest events, with what is unread after the read marks given. */
+export async function glance(client: Client, read: Readonly<Record<string, number>> = {}): Promise<{ readonly log: ChatLog; readonly rows: readonly Row[] }> {
+  const [people, channels] = await Promise.all([client.users(), client.channels()]);
+  const names = people.map((person) => person.name);
+  const log = new ChatLog(client.config.name);
+  const pages = await Promise.all(log.rows(channels, names, {}).map((row) => client.events({ chat: row.chat, limit: GLANCE })));
+  log.add(await trust(client, pages.flat()));
+  return { log, rows: log.rows(channels, names, read) };
 }
 
 /** How an ask ended: `answered`, with the answer; another final state; or `waiting` or `working` when nothing final came in time. */
