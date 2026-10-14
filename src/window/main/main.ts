@@ -7,9 +7,9 @@ import type { IpcMainInvokeEvent } from "electron";
 
 import { DEFAULT_AGENT, defaultDev, defaultHome, http, join, loadClient, PlayerTwoError } from "../../desk/client.ts";
 import { problemOf, Session } from "../../desk/session.ts";
-import type { Arrival, Hooks } from "../../desk/session.ts";
+import type { Hooks } from "../../desk/session.ts";
 import { commandSchema } from "../../shared/ipc.ts";
-import type { Notice, Outcome, View } from "../../shared/ipc.ts";
+import type { Arrival, Notice, Outcome, View } from "../../shared/ipc.ts";
 
 const home = defaultHome();
 let session: Session | null = null;
@@ -171,7 +171,7 @@ function createWindow(): void {
     session?.attend(false);
   });
   created.on("close", (event) => {
-    const { working, unsent } = session?.busy() ?? { working: 0, unsent: 0 };
+    const { working, unsent } = session?.view().busy ?? { working: 0, unsent: 0 };
     const losing = [...(working > 0 ? [`${String(working)} agent${working > 1 ? "s" : ""} still working`] : []), ...(unsent > 0 ? [`${String(unsent)} draft${unsent > 1 ? "s" : ""} not sent`] : [])];
     const stay =
       losing.length > 0 &&

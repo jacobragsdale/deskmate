@@ -1,4 +1,4 @@
-/** What crosses between the main process and the window: the state the window draws, and the commands it may send back. */
+/** What crosses between the desk and the window: the state the window draws, the commands it may send back, and every line of the protocol the two processes speak. */
 
 import { z } from "zod";
 
@@ -66,6 +66,7 @@ const currentSchema = z
 
 export const viewSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("setup"), defaultAgent: z.string() }).readonly(), // Nobody has joined a hub from this machine yet.
+  z.strictObject({ kind: z.literal("stopped"), problem: z.string() }).readonly(), // The desk has gone and will not start again. The window makes this one itself: there is no desk to send it.
   z
     .strictObject({
       kind: z.literal("chat"),
@@ -85,6 +86,7 @@ export const viewSchema = z.discriminatedUnion("kind", [
       team: z.array(teamRepoSchema).readonly(),
       myRepos: z.array(z.string()).readonly(),
       otherChannels: z.array(z.strictObject({ name: z.string(), members: z.array(z.string()).readonly() }).readonly()).readonly(), // Channels the user could join.
+      busy: z.strictObject({ working: z.int(), unsent: z.int() }).readonly(), // What quitting now would lose: agents at work and drafts not sent. Here so the window can warn without asking first.
       current: currentSchema.nullable()
     })
     .readonly()
@@ -93,7 +95,7 @@ export const viewSchema = z.discriminatedUnion("kind", [
 const chat = z.string().min(1).max(40);
 const repo = z.string().min(1).max(64);
 
-/** Everything the window may ask the main process to do. Parsed there before anything acts on it. */
+/** Everything the window may ask the desk to do. Parsed on both sides of the line before anything acts on it. */
 export const commandSchema = z.discriminatedUnion("do", [
   z.strictObject({ do: z.literal("join"), hub: z.string().max(500), name: z.string().max(40), token: z.string().max(500), agent: z.string().max(500) }),
   z.strictObject({ do: z.literal("open"), chat }),
@@ -116,6 +118,37 @@ export const outcomeSchema = z.discriminatedUnion("ok", [z.strictObject({ ok: z.
 /** Something to tell the user that is not part of the picture: a failure, or that a long job has started or finished. */
 export const noticeSchema = z.strictObject({ title: z.string(), body: z.string(), severity: z.enum(["info", "error"]) }).readonly();
 
+/** A note from someone else, or a draft ready for review: something the user may want to be told about while they are looking elsewhere. */
+export const arrivalSchema = z
+  .strictObject({
+    chat: z.string(),
+    title: z.string(),
+    body: z.string(),
+    forMe: z.boolean(), // It tags one of the user's agents, or is their agent's draft: worth showing even when the chat is open.
+    rings: z.boolean() // Channel chatter shows as unread without a sound.
+  })
+  .readonly();
+
+/** A yes or no the desk needs from the user before it goes on, in the desk's words. `confirm` is what the button that says yes reads. */
+export const questionSchema = z.strictObject({ message: z.string(), detail: z.string(), confirm: z.string() }).readonly();
+
+/** Every line the desk writes to the window, one JSON object each. */
+export const deskLineSchema = z.discriminatedUnion("t", [
+  z.object({ t: z.literal("hello"), version: z.string(), protocol: z.int() }), // First, once. Not strict, so a window can still read the protocol of a desk that says more, and tell the user which side to update.
+  z.strictObject({ t: z.literal("view"), view: viewSchema }), // The whole of what should be drawn, whenever it has changed.
+  z.strictObject({ t: z.literal("notice"), notice: noticeSchema }),
+  z.strictObject({ t: z.literal("arrival"), arrival: arrivalSchema }),
+  z.strictObject({ t: z.literal("ask"), id: z.int(), question: questionSchema }), // Answered by an `answer` line with the same id.
+  z.strictObject({ t: z.literal("reply"), id: z.int(), outcome: outcomeSchema }) // How the command with that id ended. Every command gets exactly one.
+]);
+
+/** Every line the window writes to the desk. */
+export const windowLineSchema = z.discriminatedUnion("t", [
+  z.strictObject({ t: z.literal("command"), id: z.int(), command: commandSchema }),
+  z.strictObject({ t: z.literal("answer"), id: z.int(), ok: z.boolean() }),
+  z.strictObject({ t: z.literal("attend"), attentive: z.boolean() }) // Whether the user is looking at the window.
+]);
+
 export type RequestView = z.infer<typeof requestSchema>;
 export type MessageView = z.infer<typeof messageSchema>;
 export type RowView = z.infer<typeof rowSchema>;
@@ -125,6 +158,10 @@ export type ChatView = Extract<View, { kind: "chat" }>;
 export type Command = z.infer<typeof commandSchema>;
 export type Outcome = z.infer<typeof outcomeSchema>;
 export type Notice = z.infer<typeof noticeSchema>;
+export type Arrival = z.infer<typeof arrivalSchema>;
+export type Question = z.infer<typeof questionSchema>;
+export type DeskLine = z.infer<typeof deskLineSchema>;
+export type WindowLine = z.infer<typeof windowLineSchema>;
 
 /** The narrow set of calls the preload script gives the window. */
 export interface Bridge {

@@ -8,9 +8,8 @@ import { after, test } from "node:test";
 
 import { AgentCancelledError, http, join as joinHub, loadClient } from "../src/desk/client.ts";
 import { Session } from "../src/desk/session.ts";
-import type { Arrival } from "../src/desk/session.ts";
 import { createHub } from "../src/hub/app.ts";
-import type { ChatView, MessageView, Notice } from "../src/shared/ipc.ts";
+import type { Arrival, ChatView, MessageView, Notice } from "../src/shared/ipc.ts";
 
 const TOKEN = "a-join-token-for-tests";
 const root = mkdtempSync(join(tmpdir(), "player-two-app-"));
@@ -166,7 +165,7 @@ await test("two people, their agents and a channel, through the real hub", { tim
     }
   );
   await until(bob.session, "the request under bob's note is settled", (view) => messages(view).every((message) => message.requests.length === 0));
-  assert.equal(jacob.session.busy().unsent, 0);
+  assert.equal(jacob.session.view().busy.unsent, 0);
 
   // Jacob tags his own agent from his own window: it runs at once and posts without a draft.
   await jacob.session.handle({ do: "send", chat: "bob", text: "@jacob/uploader and the tests?" });
@@ -191,11 +190,11 @@ await test("two people, their agents and a channel, through the real hub", { tim
   await until(bob.session, "bob sees it working, on the branch it reported", (view) =>
     messages(view).some((message) => message.requests[0]?.status.kind === "working" && message.requests[0].status.branch === "main ±")
   );
-  assert.equal(jacob.session.busy().working, 1);
+  assert.equal(jacob.session.view().busy.working, 1);
   await jacob.session.handle({ do: "stop", noteId: slow.id, repo: "uploader" });
   await until(bob.session, "bob sees it stopped", (view) => messages(view).some((message) => message.requests[0]?.status.kind === "stopped"));
   await until(jacob.session, "jacob can run it again", (view) => messages(view).some((message) => message.requests[0]?.status.kind === "ready" && message.requests[0].status.before === "stopped"));
-  assert.deepEqual(jacob.session.busy(), { working: 0, unsent: 0 });
+  assert.deepEqual(jacob.session.view().busy, { working: 0, unsent: 0 });
 
   // A channel, pinned to a repo: both are members and both have it.
   await jacob.session.handle({ do: "joinChannel", name: "backend" });

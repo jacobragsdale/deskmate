@@ -6,7 +6,7 @@ import { join as joinPath } from "node:path";
 
 import { z } from "zod";
 
-import type { ChatView, Command, CurrentView, MessageView, Notice, RequestView, RowView } from "../shared/ipc.ts";
+import type { Arrival, ChatView, Command, CurrentView, MessageView, Notice, RequestView, RowView } from "../shared/ipc.ts";
 import { agentPrompt, ChatLog, chatOf, continues, mentions, ONLINE, refOf, rings } from "../core/chat.ts";
 import type { Entry, Request } from "../core/chat.ts";
 import { runAgent, splitCommand } from "./agents/oneshot.ts";
@@ -25,15 +25,6 @@ const STOP_WAIT = 3; // Seconds to give stopped agents to go before the session 
 
 /** What the session remembers between runs, in app-state.json. */
 const savedSchema = z.strictObject({ read: z.record(z.string(), z.int()), chat: z.string().nullable() });
-
-/** A note from someone else, or a draft ready for review: something the user may want to be told about while they are looking elsewhere. */
-export interface Arrival {
-  readonly chat: string;
-  readonly title: string;
-  readonly body: string;
-  readonly forMe: boolean; // It tags one of the user's agents, or is their agent's draft: worth showing even when the chat is open.
-  readonly rings: boolean; // Channel chatter shows as unread without a sound.
-}
 
 export interface Hooks {
   readonly changed: () => void; // What `view()` returns is different now.
@@ -164,11 +155,6 @@ export class Session {
     await Promise.race([Promise.all([this.polling, ...runs.map((run) => run.done)]), sleep(STOP_WAIT)]);
   }
 
-  /** What would be lost by quitting now. */
-  public busy(): { readonly working: number; readonly unsent: number } {
-    return { working: this.runs.size, unsent: [...this.drafts.values()].reduce((sum, drafts) => sum + drafts.length, 0) };
-  }
-
   public isOpen(chat: string): boolean {
     return this.current === chat;
   }
@@ -264,6 +250,7 @@ export class Session {
       team: this.team,
       myRepos: [...this.checkouts.keys()],
       otherChannels: this.channels.filter((channel) => !channel.members.includes(this.me)).map((channel) => ({ name: channel.name, members: channel.members })),
+      busy: { working: this.runs.size, unsent: [...this.drafts.values()].reduce((sum, drafts) => sum + drafts.length, 0) },
       current: this.current === "" ? null : this.currentView(now)
     };
   }

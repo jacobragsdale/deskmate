@@ -182,7 +182,7 @@ From the desk:
 | `{ "t": "view", "view" }` | Whenever what should be drawn has changed. The whole view each time. |
 | `{ "t": "notice", "notice" }` | Something to tell the user that is not part of the picture. |
 | `{ "t": "arrival", "arrival" }` | A note worth a system notification. |
-| `{ "t": "ask", "id", "question" }` | The desk needs a yes or no from the user: a clone, applying a patch. The window shows a native dialog. |
+| `{ "t": "ask", "id", "question" }` | The desk needs a yes or no from the user: a clone, applying a patch. The window shows a native dialog. `question` is `{ message, detail, confirm }` in the desk's words; `confirm` is what the button that says yes reads. |
 | `{ "t": "reply", "id", "outcome" }` | The answer to a command. `outcome` is `{ ok: true }` or `{ ok: false, problem }`, and may carry `data`. |
 
 From the window:
