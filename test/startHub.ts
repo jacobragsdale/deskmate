@@ -1,4 +1,4 @@
-/** A hub for one test: the real one, started in the test's own process on a clock that stands still. */
+/** A hub for one test: the real one, started in the test's own process, on a clock that stands still unless the test brings its own. */
 
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -20,10 +20,10 @@ export interface Hub {
   readonly join: (name: string) => Promise<Client>; // Join under a name and return a client for that identity.
 }
 
-/** A hub of its own for one test, listening on a port the system picked. */
-export async function startHub(t: TestContext): Promise<Hub> {
+/** A hub of its own for one test, listening on a port the system picked. A test of something that reads the real clock, as the desk does, passes that clock as `now`. */
+export async function startHub(t: TestContext, now: () => number = () => NOW): Promise<Hub> {
   const dir = mkdtempSync(join(tmpdir(), "player-two-hub-"));
-  const server = createHub({ joinToken: TOKEN, db: join(dir, "hub.db"), repos: TEAM_REPOS }, () => NOW);
+  const server = createHub({ joinToken: TOKEN, db: join(dir, "hub.db"), repos: TEAM_REPOS }, now);
   await new Promise<void>((resolve) => {
     server.listen(0, "127.0.0.1", resolve);
   });
@@ -42,7 +42,7 @@ export async function startHub(t: TestContext): Promise<Hub> {
     dir,
     join: async (name) => {
       await joinHub(join(dir, name), url, name, TOKEN, "fake-agent", http);
-      const client = loadClient(join(dir, name), http, () => NOW);
+      const client = loadClient(join(dir, name), http, now);
       assert.ok(client !== null);
       return client;
     }
