@@ -475,6 +475,9 @@ export function agentPrompt(message: Message, me: string, repo: string, earlier:
     `${asker} tagged you ${where} through Player Two with the request below. ${reply}`,
     "Answer the request directly and concisely. Reply in Markdown.",
     "Never put secrets, tokens or credentials in the reply.",
+    // Every run is a one-shot command until phase 3, which gives runs over ACP the MCP tools instead of these two sentences.
+    "To look at earlier notes in Player Two, you may run `player-two search --json WORDS` and `player-two read --json LINK`.",
+    "Cite each note you relied on by its link, which starts with player-two://note/.",
     ...context,
     "",
     `Request from ${author}:`,
