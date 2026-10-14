@@ -14,6 +14,7 @@ import { AgentCancelledError, PlayerTwoError, POLL_WAIT } from "./client.ts";
 import type { Client, Runner } from "./client.ts";
 import * as repos from "./repos.ts";
 import type { Checkout } from "./repos.ts";
+import { cloneFolder } from "../core/remotes.ts";
 import { oneLine, problemOf } from "../core/text.ts";
 import { fitBody, isChannel, nameSchema, PROTOCOL } from "../core/wire.ts";
 import type { ChannelInfo, Person, RepoRef, TeamRepo } from "../core/wire.ts";
@@ -614,7 +615,11 @@ export class Session {
     if (ref === undefined) {
       throw new PlayerTwoError(`nobody on this hub has ${repo}, so there is nowhere to clone it from`);
     }
-    const destination = joinPath(this.dev, decodeURIComponent(ref.url.replace(/\/+$/, "").split("/").at(-1) ?? repo));
+    const folder = cloneFolder(ref.url);
+    if (folder === null) {
+      throw new PlayerTwoError(`${ref.url} does not end in a folder name to clone ${repo} into`);
+    }
+    const destination = joinPath(this.dev, folder);
     if (!(await this.hooks.confirmClone(ref.url, destination))) {
       return;
     }

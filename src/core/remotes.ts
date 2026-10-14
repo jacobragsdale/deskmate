@@ -19,6 +19,12 @@ interface Located {
   readonly segments: readonly string[];
 }
 
+/** The folder a clone of `url` goes in, inside the repos folder: the URL's last part, decoded. Null when that is not one plain folder name: a teammate advertises the URL, and "%2F.." must not reach outside the repos folder. */
+export function cloneFolder(url: string): string | null {
+  const folder = unquote(url.replace(/\/+$/, "").split("/").at(-1) ?? "");
+  return folder === "" || folder === "." || folder === ".." || /[/\\]/.test(folder) || folder.includes("\0") ? null : folder;
+}
+
 /** Percent-decode what can be decoded and leave the rest alone, a stray "%" included. */
 export function unquote(text: string): string {
   return text.replace(/(?:%[0-9a-fA-F]{2})+/g, (run) => {
