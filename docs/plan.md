@@ -1,153 +1,77 @@
-# Plan: one TypeScript codebase, and seven things borrowed from Buzz
+# Plan: one TypeScript codebase, and what we are borrowing
 
-Agreed on 2026-10-13. This is the order of work from where the repository stands today to a desktop app that does what the terminal interface does and then goes well past it. Each phase ends in something that runs and has a check that proves it.
+Agreed on 2026-10-13. This page is the overview and the record of decisions. The work itself, task by task, is in [`plan/`](plan/README.md): start there to build.
+
+## What deskmate keeps as its own
+
+An agent is a person's checkout of a repo, and nothing runs on a machine unless its owner said so. Every phase must leave that true.
 
 ## Decisions
 
 | Decision | Choice | Why |
 |---|---|---|
-| Client | TypeScript only. The Python interface and `deskmate` command are deleted. | One implementation of the wire format instead of two that must move together. |
+| Client | TypeScript only. The Python interface and command are deleted. | One implementation of the wire format instead of two that must move together. |
 | Hub | Ported to Node and TypeScript. | It then shares its schemas and signing code with the client. It is about 300 lines, and phase 1 rewrites its core anyway. |
-| Desktop app | Electron, React, shadcn/ui. | Already built and working without shadcn; the styling moves in phase 0. |
-| Where it runs | On each person's cloud workstation: Windows 11, with the repos and the agent CLI inside WSL2 Ubuntu. | The window is a Windows app; everything that touches `~/dev` runs in WSL. No split between a laptop and a remote machine. |
-| Windows and WSL | Two processes: the window, and a headless "desk" that holds the session. The window starts the desk with `wsl.exe` and they exchange JSON lines over standard input and output. | Scanning, cloning and running agents all happen in Linux, where the checkouts are, at native speed and with process groups that can be stopped. The window stays a real Windows app, with Windows notifications, a tray icon and start at login. No network port is opened. |
-| Agents | Cursor's CLI and GitHub Copilot's CLI, both installed inside WSL. Both speak ACP over standard input and output: `agent acp` and `copilot --acp --stdio`. | They are what the team uses. Copilot's ACP mode is a public preview and may change. Cursor's model calls leave the network, so its endpoints must be allowed through the proxy. |
-| Hub deployment | One Docker container on AKS, one replica, the SQLite file on an Azure Disk volume. | The manifest in `deploy/k8s.yaml` already has this shape. A file share is not safe for SQLite. |
-| Agents that outlive the machine | Not doing. | Workstations are cloud machines that are already always on. |
-| Storage | One SQLite file on the hub, as now. | Right for a team. No Postgres, Redis or object store. |
+| Desktop app | Electron, React, shadcn/ui. | The app exists and works; the styling moves in phase 0. |
+| Where it runs | On each person's cloud workstation: Windows 11, with the repos and the agent CLI inside WSL2 Ubuntu. | The window is a Windows app; everything that touches `~/dev` runs in WSL. |
+| Windows and WSL | Two processes: the window, and a headless "desk" that holds the session. The window starts the desk with `wsl.exe` and they exchange JSON lines over standard input and output. | Scanning, cloning and running agents happen in Linux, where the checkouts are. The window stays a real Windows app. No network port is opened. |
+| Agents | Cursor's command line and GitHub Copilot's, both inside WSL, driven over ACP: `agent acp` and `copilot --acp --stdio`. | They are what the team uses. |
+| Cursor's SDK | Not used, anywhere. | It does not work behind the team's proxy. Cursor is driven only through its command line. |
+| Hub deployment | One Docker container on AKS, one replica, the SQLite file on an Azure Disk volume. | The manifest already has this shape. A file share is not safe for SQLite. |
+| Source control | Azure DevOps, through its REST API, called from each person's desk with their own token. | The team's repos live there. The hub never holds a token. |
+| Storage | One SQLite file on the hub. | Right for a team. No Postgres, Redis or object store. |
 
-What deskmate keeps as its own: an agent is a person's checkout of a repo, and nothing runs on a machine unless its owner said so. Every phase below must leave that true.
+## The phases
 
-## Where the repository stands
+| Phase | What it delivers | File |
+|---|---|---|
+| 0. One language | Node hub, TypeScript command, desk and window split, WSL, the setup check, shadcn, a Windows installer, Python deleted | [`phase-0-one-language.md`](plan/phase-0-one-language.md) |
+| 1. Event log | Every action is a signed event with a kind; jobs; approvals become signed records; threads, reactions, edits; paging | [`phase-1-event-log.md`](plan/phase-1-event-log.md) |
+| 2. Search, command, MCP | Full-text search, Cmd+K, note links, `deskmate ask`, an MCP server for agents in the editor | [`phase-2-search-cli-mcp.md`](plan/phase-2-search-cli-mcp.md) |
+| 3. ACP and permissions | Agents over ACP, permission modes, a live activity feed, permission cards | [`phase-3-acp-permissions.md`](plan/phase-3-acp-permissions.md) |
+| 4. Agent keys and grants | Agents sign their own answers; expiring standing approvals; tray and start at login | [`phase-4-agent-keys-grants.md`](plan/phase-4-agent-keys-grants.md) |
+| 5. Delegation | Agents can ask agents, with an owner or a grant at every hop | [`phase-5-delegation.md`](plan/phase-5-delegation.md) |
+| 6. Branch rooms and Azure DevOps | A room per branch; patches you apply after a confirmation; pull requests and builds | [`phase-6-branch-rooms-azure-devops.md`](plan/phase-6-branch-rooms-azure-devops.md) |
+| 7. Workflows | YAML triggers from messages, reactions, schedules and webhooks, gated by the normal approval queue | [`phase-7-workflows.md`](plan/phase-7-workflows.md) |
 
-- `src/deskmate`, `tests`: the Python hub, command and terminal interface, version 0.3.0. All of it goes in phase 0.
-- `app/`: the Electron app, on the `electron-app` branch and not yet committed. `app/src/core` is the TypeScript client; `app/test/hub.test.ts` runs two sessions against the real hub through tag, approve, review, send, decline, stop and channels.
-- That end-to-end test is the acceptance test for the hub port: it must pass unchanged against the Node hub.
-- The session already runs without a window (`app/src/core/session.ts`), and what it exchanges with the window is already two schemas in `app/src/shared/ipc.ts`. The desk is that session behind a different pipe.
-- Nothing has been run on Windows or in WSL yet. Everything so far was built and checked on macOS.
+[`plan/protocol.md`](plan/protocol.md) is the reference for the event format, the hub's API, the desk's protocol and the permission modes. [`plan/workstation-checklist.md`](plan/workstation-checklist.md) lists what only a Windows workstation can prove.
 
-## Phase 0: one language
+## Where each borrowed idea went
 
-Goal: Python leaves the repository and nothing a user can do today is lost.
+| Idea | From | Phase |
+|---|---|---|
+| The Linux runtime carried inside the Windows installer | T3 Code | 0 |
+| A setup check that gives the fixing command | T3 Code | 0 |
+| One signed event log, and a job lifecycle | Buzz | 1 |
+| Search with receipts, a command built for agents | Buzz | 2 |
+| An MCP server for agents the app did not start | T3 Code | 2 |
+| Agents over ACP, a verb-object-outcome activity feed | Buzz | 3 |
+| Named permission modes, and a ceiling on runs started for others | T3 Code | 3 |
+| Agent keys with owner attestation | Buzz | 4 |
+| Delegation between agents | Buzz | 5 |
+| Branch as room, patches as messages | Buzz | 6 |
+| Azure DevOps pull requests and builds | T3 Code | 6 |
+| YAML workflows | Buzz | 7 |
 
-1. Commit the app on `electron-app` and merge it.
-2. Port the hub to Node: the same routes, the same SQLite schema, `async` handlers in place of one thread per waiting client. Use Node's built-in `node:sqlite` if it is stable in the Node version we pin, otherwise `better-sqlite3`. Port the cases in `tests/test_hub.py`.
-3. Rebuild the command line in TypeScript on `app/src/core`: `send`, `inbox`, `who`, `repos`, `channel`, `hub`. Every command takes `--json` and keeps the exit codes the README documents. Agents use `deskmate send --wait`, so this cannot be skipped.
-4. Reshape the repository into one package with the hub, the desk, the command and the window as entry points of one build. Swap the Dockerfile for the Node hub, push the image to the team's registry, and keep the manifest's single replica, `Recreate` strategy and disk-backed volume.
-5. Split the desk from the window. The desk is a headless Node program that owns the identity, the session, the repo scan and the agent runs; it reads commands and writes views as JSON lines. The window starts it as a child process: directly on Linux and macOS, and through `wsl.exe` on Windows, in the default distribution unless a setting names another. Stopping the window stops the desk, and the desk stops its agents. Three lessons taken from T3 Code's WSL support:
-   - Call `wsl.exe` by its full path under `System32`, and feed any script to `sh -s` on standard input. `wsl.exe` re-escapes arguments and mangles quotes.
-   - Check first that WSL and the distribution answer, and say which one failed in words the user can act on.
-   - Stay on standard input and output. T3 Code reaches its WSL server over the loopback address and records that Windows can take thirty seconds or more to start forwarding it.
-6. Move the window's styling to shadcn/ui: Vite and Tailwind replace the hand-written stylesheet; shadcn's Dialog, Command, ScrollArea, Tooltip and Sonner replace the native `<dialog>`, the tag list and the home-made toasts. The window keeps its content security policy; check that Radix's positioning works under it before relaxing anything.
-7. Package one Windows installer that carries the Linux half inside it, as T3 Code does: an archive of the desk, the `deskmate` command and their own Node, with its SHA-256. On first launch, and after each update, the window unpacks it into the chosen distribution under a folder named by that digest and links `deskmate` onto the `PATH` there, where agents can call it. Ubuntu then needs nothing installed by hand. The identity in `~/.config/deskmate` lives in WSL only.
-   - Build and sign the installer ourselves, with the hub's address baked in so a first launch asks only for a name and the join token.
-   - The hub serves the installer, so nothing is fetched from outside the network.
-   - The join form offers Cursor and Copilot as the agent, in place of today's `claude -p` default. Confirm each one's one-shot flags on a workstation.
-8. Keep the development loop inside WSL: `npm start` there runs the Linux build of the window under WSLg and starts the desk directly, so day-to-day work needs no Windows build.
-9. Fix what the review found, while the hub is open:
-   - `/info` reports a version, and clients ignore fields they do not know, so an update on one side stops breaking the other.
-   - The auth header signs the method and path as well as the name and time.
-   - Notes can be read one chat at a time, and backwards, so a busy channel no longer empties everyone's direct chats.
-10. Delete `src/deskmate`, `tests`, `pyproject.toml`, `uv.lock` and the Python pre-commit hooks. Keep `python-vectors.json` as a frozen record of the signing format.
+## Changed since the first version of this plan
 
-Done when: the two-session test passes against the Node hub, and the repository holds no Python. On a Windows workstation, the installed window starts its desk in WSL, shows the repos under WSL's `~/dev`, runs an agent there and stops it, and raises a Windows notification for a tagged note.
-
-## Phase 1: one signed event log
-
-Borrowed from Buzz: every action is a signed event with a kind, in one log.
-
-1. Replace the note, whose kind is `note` or `status`, with an event: author, chat, kind, content, time, what it refers to, signature. Kinds are dotted names such as `message`, `message.edit`, `reaction`, `run.approved`, `channel.pin`. The signing stays Ed25519 over the same fixed-position JSON array.
-2. The hub checks the envelope, the signature and membership, and nothing else. It stores and relays kinds it does not know, and clients skip them. Later phases then add kinds without breaking older clients.
-3. Status notes with `working\nmain` in the body become `run.*` events with fields. An approval becomes a signed record: who let which agent run, for whom, in which repo, on which branch and commit.
-4. The hub pushes events over one streaming response in place of long-polling (raise the ingress's read timeout and turn off its buffering for that route, or clients drop every minute), and chains each stored event to the hash of the one before it, so the log shows if it has been altered.
-5. The chat state in `app/src/core/chat.ts` becomes a fold over events.
-6. In the window: threads, reactions, editing and deleting your own messages, and a line when someone joins, leaves or pins a repo.
-
-This phase starts a fresh database, as 0.2 and 0.3 did. It should be the last that has to.
-
-Done when: the two-session test passes on events, and a client built before a new kind existed shows the rest of the chat without an error.
-
-## Phase 2: search and a command built for agents
-
-Borrowed from Buzz: answers with receipts, and a command an agent can script.
-
-1. Full-text search on the hub with SQLite's FTS5, limited to chats the caller is in.
-2. Cmd+K in the window; `deskmate search "…" --json` on the command line.
-3. Links to a note, `deskmate://note/ID`, that the window opens and the command accepts.
-4. `deskmate ask @bob/uploader "…"` waits for that agent's answer and nothing else.
-5. The prompt tells an agent it may search the chat's history and should cite the notes it used.
-
-Done when: an agent asked "have we seen this before?" answers with links to earlier notes that open in the window.
-
-## Phase 3: agents over ACP, with a live activity feed
-
-Borrowed from Buzz: the Agent Client Protocol in place of a command that prints once, and a feed that reads as verb, object, outcome.
-
-1. Add a second way to run an agent beside the one-shot command: an ACP session over standard input and output, using the protocol's TypeScript SDK. Cursor starts with `agent acp` and Copilot with `copilot --acp --stdio`; any other ACP agent is a command and its arguments. An agent that does not speak ACP keeps the one-shot path.
-2. Show the owner what their agent is doing as it happens: one row per action that updates in place, failures loud and reads quiet, "waiting" and "timed out" shown rather than silence, raw detail one click away.
-3. The feed stays on the owner's machine. Teammates see coarse `run.progress` events only, because what an agent reads on the way may not be fit to share.
-4. A permission request from the agent becomes a card for the owner: allow once, allow for this run, or deny. For a run a teammate asked for, reading is allowed by default and writing or running commands asks first.
-5. A follow-up in the same thread continues the same session rather than starting cold with six earlier notes pasted in.
-6. Stop sends ACP's cancel and then kills the process group. The agent always runs in Linux, so this is the same on every machine.
-
-Done when: a real run with Claude Code shows its steps as they happen, an attempted write in a teammate's request raises a card, and Stop ends it within a second.
-
-## Phase 4: agent keys and standing grants
-
-Borrowed from Buzz: an agent has its own key, and its owner signs what it may do. Needs phase 3, which is what makes "read-only" enforceable.
-
-1. Each checkout's agent gets its own key. Its answers are signed with it, so "an agent wrote this" stops being the sender's own claim.
-2. An owner signs a grant: which agent, who may ask, read-only or full, reviewed or posted directly, and when it expires. Expiry is required, with a ceiling of thirty days.
-3. A request that matches a live grant runs without a click and says so: "ran under jacob's grant, until Friday". Revoking is one event and takes effect at once.
-4. A "My agents" page: what I share, which grants are live, revoke, hold a repo back.
-5. With a grant an agent can answer while the window is closed, so the window stays in the Windows tray with its desk running, and starts at login.
-
-Done when: bob's request under a read-only grant is answered with nobody at jacob's keyboard, a write attempt in that run is refused, and a revoked grant stops the next request.
-
-## Phase 5: jobs and gated delegation
-
-Borrowed from Buzz: an explicit job lifecycle and delegation trees. Deskmate's addition is a person, or a grant, at every hop.
-
-1. `job.*` events replace the informal run states: requested, accepted or declined, progress, then result, error or cancelled. The asker can withdraw a request.
-2. An agent may tag another agent. That creates a child job that carries its chain: who asked first, and through which agents.
-3. Every hop needs its own owner's approval or a matching grant. A chain has a depth limit and a fan-out limit, and a job that would revisit an agent already in its chain is refused.
-4. The window shows the tree under the note that started it.
-
-Done when: "does this API change break the client?" asked of one agent fans out to two teammates' checkouts, each approved by its owner, and comes back as one answer with the tree visible.
-
-## Phase 6: branch rooms and patches
-
-Borrowed from Buzz: the branch is the room, and a patch is a message. No git hosting: the team's existing forge stays.
-
-1. A channel can be about a repo and a branch. Its header shows who is on that branch and whose copy has uncommitted changes.
-2. An agent's answer can carry a patch. Asked to make a change, the agent works in a throwaway git worktree, so its owner's working tree is not touched.
-3. The recipient sees the diff and can apply it to their own checkout after a dialog that names the branch and the files. It is checked with `git apply --check` first and never applied without that click. Git runs in the desk, so it is WSL's git and WSL's credentials.
-4. Approve and request-changes are signed events in the same room.
-
-Done when: jacob asks bob's agent for a change, bob approves the run, jacob reads the diff in the chat and applies it, and neither person left the window.
-
-## Phase 7: workflows
-
-Borrowed from Buzz: YAML automation triggered by messages, reactions, schedules and webhooks. Buzz's approval gates are not finished; here they are the existing approval queue.
-
-1. Workflows live in a repo under `.deskmate/workflows/`, or on a channel.
-2. Triggers: a message, a reaction, a schedule, a webhook with a secret.
-3. Actions: post a message, tag an agent, ask a named person to approve, call a webhook.
-4. The hub runs triggers and posts events under its own key. It never runs an agent: tagging one creates a job that waits for its owner or a grant, like any other.
-
-Done when: a failing CI run posts to the branch's channel and tags the branch owner's agent, which runs after their thumbs-up and posts what broke.
+- Reading one chat's history a page at a time moved from phase 0 to phase 1, where the store it reads from is rebuilt. Doing it in phase 0 would have meant writing it twice.
+- The job lifecycle is defined once, in phase 1. Phase 5 adds only delegation.
 
 ## Not doing
 
-- Remote agents and replaceable agent bodies.
+- Remote agents and replaceable agent bodies: the workstations are cloud machines that are already always on.
+- Queueing and steering messages to a running agent.
 - Git hosting, issues and a forge.
 - Nostr compatibility, several teams on one hub, voice, pooled GPU compute, a mobile app.
 
-## To confirm on a workstation
+## Not decided
 
-Nothing here has run on Windows or in WSL yet. Before phase 0 is called done, check on a real workstation:
+Raised from T3 Code and neither accepted nor declined. Do not build these without asking:
 
-1. The window starts its desk through `wsl.exe` in Ubuntu, and stopping an agent there ends its whole process group.
-2. Cursor's and Copilot's command lines, installed and signed in inside WSL, answer a one-shot prompt from a checkout. Note the exact flags.
-3. Both answer an ACP `initialize` when started as above, and each sends a permission request before it writes a file. Phase 3 depends on this. T3 Code moved its Cursor support from ACP to Cursor's SDK, which has no approval callback, so Cursor's ACP path deserves an early look.
-4. Windows shows the window's notifications and tray icon.
+- Showing only what one run changed, with a way to revert it.
+- Links that open a draft and never run anything.
+- Quoting part of an answer, with a comment, in a follow-up.
+- Folding consecutive tool calls into one line in the activity feed.
+- What teammates' requests cost the owner's quota.
+- Recording real agent sessions and replaying them in tests.

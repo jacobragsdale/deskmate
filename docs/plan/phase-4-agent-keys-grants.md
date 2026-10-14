@@ -1,0 +1,75 @@
+# Phase 4: agent keys and standing grants
+
+Goal: an owner can say once, in a signed and expiring record, "bob may ask my uploader agent, read-only", and from then on bob's requests run without a click. And what an agent says is signed by the agent, so a reviewed answer and an unreviewed one are different things cryptographically, not by a flag.
+
+Depends on: phase 3. A grant names a permission mode, and phase 3 is what makes a mode enforceable.
+
+Borrowed from Buzz: an agent has its own key, and its owner signs what it may do.
+
+## The design
+
+**Agent keys.** Each checkout's agent has an Ed25519 key of its own, kept beside the owner's. The owner announces it with an `agent.register` event. From then on, an event whose author is `jacob/uploader` is checked against that key.
+
+**Who signs what.**
+
+| Event | Signed by | Because |
+|---|---|---|
+| `job.accepted`, `job.declined` | The owner | It is the owner's decision, made by hand or by a grant on their desk. |
+| `job.result` posted directly | The agent | Nobody read it first. `reviewed: false`. |
+| `job.result` the owner reviewed and sent | The owner | They read it and pressed send. `reviewed: true`. |
+| `job.progress`, `job.error`, `job.cancelled` | The agent | The run's own reports. |
+
+**Grants.** A `grant` event from the owner, to everyone:
+
+```ts
+{ agent: "jacob/uploader",
+  askers: ["bob"],          // names, or "*" for anyone on the hub
+  mode: "read-only",        // a permission mode
+  delivery: "review" | "post",
+  expires: 1800604800,      // Unix seconds; at most 30 days after the event's own time
+  runsPerDay: 20 }          // 1 to 1000
+```
+
+A request matches a grant when the grant's author owns the agent, the asker is listed, the grant is not revoked, the time is before `expires`, and fewer than `runsPerDay` jobs were accepted under it in the last 24 hours. The count comes from `job.accepted` events in the log, so it survives a restart. The owner's desk decides; the hub does not enforce grants.
+
+**The honest edge.** The agent runs as the owner's operating-system user, so it could read the owner's key file if it went looking. Agent keys make the honest path attributable; they are not a wall between an agent and its owner. The README must say so.
+
+## A. Agent keys
+
+- [ ] **P4-A1** `src/desk/agentKeys.ts`: `agentKey(home, repo)` loads `~/.config/deskmate/agents/<repo>.key`, creating it with mode `0600` in a `0700` folder if missing.
+- [ ] **P4-A2** When the session shares a repo for the first time, or finds no `agent.register` of its own for that repo with the current public key, it publishes one to `*`. Replacing the key file and restarting therefore rotates the key.
+- [ ] **P4-A3** The hub: schema version 7 adds `agents (owner, repo, pubkey, seq)`. `agent.register` is structural: only a person may author it, and it sets the key for `author/repo`, the newest winning.
+- [ ] **P4-A4** The hub accepts an author of the form `owner/repo` when the signature verifies against that agent's registered key, the owner could write to `to`, and the kind is one an agent may author: `job.progress`, `job.result`, `job.error`, `job.cancelled`. Anything else from an agent is refused with a `detail` that says agents cannot send it. Phase 5 adds `job.request` to the list.
+- [ ] **P4-A5** The auth header may be signed by an agent: the name is `owner/repo`. Reads then see what the owner sees. Update `caller` in the hub and the header's pattern.
+- [ ] **P4-A6** Clients learn agent keys from `agent.register` events signed by an owner whose key they have pinned, and check agent-authored events against them. An agent-authored event with no known registration is untrusted. In `src/core/chat.ts`, a `job.*` event from `owner/repo` counts exactly as one from `owner` does, for that repo only.
+- [ ] **P4-A7** The session signs as in the table above. During a run the agent's process gets `DESKMATE_AGENT=owner/repo` and `DESKMATE_AGENT_KEY_FILE`; the `deskmate` command and `deskmate mcp` sign with that key when both are set, so anything the agent does through them is the agent's, not the owner's.
+- [ ] **P4-A8** Tests: an event signed with the wrong agent key is refused; an agent cannot author a `message`; a reviewed result verifies against the owner's key and an unreviewed one against the agent's; after a rotation the old key is refused and the new one accepted; a client that has never seen the owner treats the agent's events as untrusted.
+
+## B. Grants
+
+- [ ] **P4-B1** `grant` and `grant.revoke` in `src/core/kinds.ts`, public kinds. The schema refuses an `expires` more than 30 days after the event's `ts`.
+- [ ] **P4-B2** `src/core/grants.ts`, pure: `liveGrant(grants, revocations, accepted, { agent, asker, now })` returns the matching grant or nothing. When several match, the one with the lowest mode wins. Tests for each condition: wrong asker, `*`, revoked, expired, the daily count reached, and the count freeing up after 24 hours.
+- [ ] **P4-B3** The session keeps grants and revocations from the log (they are public, so `catchUp` brings them). When a request for one of my agents arrives and a grant matches, it accepts with `by: { grant: id }`, the grant's mode and its delivery, with no command from the window. If the agent cannot honour the grant's mode it does nothing and the request waits for a click as before, with one notice saying why.
+- [ ] **P4-B4** A request sent by the command, by MCP or by a workflow can run under a grant like any other. A request for my own agent never needs one.
+- [ ] **P4-B5** Commands `grant` and `revoke` in `src/shared/ipc.ts`.
+- [ ] **P4-B6** Tests in the two-session scenario: jacob grants bob `read-only` with review on `uploader`; bob's next request is accepted with nobody touching jacob's session and a draft appears for jacob; with `delivery: "post"` the answer is posted, signed by the agent; a write attempt in that run is refused; jacob revokes and the next request waits; a grant for carol does nothing for bob; advancing the clock past `expires` ends it.
+
+## C. The window
+
+- [ ] **P4-C1** A "My agents" page: one row per shared repo with its branch and which agent runs it; the live grants on it with asker, mode, delivery, expiry and how many runs today; "Revoke" on each; "New grant", a dialog with the asker (a teammate or everyone), the mode (only those the agent can honour), the delivery, the expiry (a day, a week, 30 days) and the daily limit. `full` with "post directly" for everyone asks for a second confirmation that says what it means.
+- [ ] **P4-C2** "Hold back" on a repo: it stops being advertised and its agent stops answering. The list of held repos is kept in `config.json`.
+- [ ] **P4-C3** For everyone in the chat, a request that ran under a grant says so: "ran under jacob's grant, read-only, until Friday".
+- [ ] **P4-C4** A result signed by an agent shows "not reviewed"; one signed by its owner shows nothing extra. Replace the old `reviewed` wording wherever it appears.
+- [ ] **P4-C5** With a live grant, an agent may need to answer while nobody is looking. The window gets a tray icon; closing the window hides it to the tray while any grant of mine is live, with a one-time notice saying so; "Quit" in the tray menu quits for real, with the existing warning about running agents. A setting, on by default once the first grant is made, starts the window at login, hidden.
+- [ ] **P4-C6** **(workstation)** The tray icon, hiding on close and start at login behave on Windows 11, and the desk in WSL keeps answering with the window hidden.
+
+## D. The setup check and the README
+
+- [ ] **P4-D1** A check `agent-keys`: each shared repo has a key file with mode `0600` and a registration on the hub that matches it.
+- [ ] **P4-D2** The README's "What deskmate protects" section gains the table of who signs what, how a grant is matched, that the hub does not enforce grants, and the honest edge above.
+
+## Done when
+
+1. Every task is ticked except the one marked **(workstation)**, and the checks are green.
+2. In the scenario, bob's request under a read-only grant is answered with nobody at jacob's keyboard, a write attempt in that run is refused, and a revoked grant stops the next request.
+3. No result in the hub's log is signed by a person unless that person's session sent it after review. A test checks the authors.
