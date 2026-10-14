@@ -472,6 +472,43 @@ await test("a request its asker deletes leaves its owner a run they can still se
 });
 
 await test(
+  "every run its owner lets go ends once in the chat: a draft not sent by the time the desk quits is declined, and a run stopped before it was accepted is never accepted or started",
+  { timeout: 30_000 },
+  async (t) => {
+    const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+    const alice = await hub.join("alice");
+    const dev = join(hub.dir, "dev-bob");
+    checkout(dev, "uploader");
+    const described = Promise.withResolvers<undefined>(); // Holds git's answer for the second run, so it can be stopped meanwhile.
+    const heads = [Promise.resolve(), described.promise];
+    const bob = deskOf(t, await hub.join("bob"), dev, { describe: () => (heads.shift() ?? Promise.resolve()).then(() => ({ branch: "main", commit: COMMIT, dirty: false })) });
+    const job = async (id: string): Promise<string[]> =>
+      (await alice.events({ chat: "bob" }))
+        .filter((delivered) => delivered.event.refs[0] === id)
+        .map((delivered) => delivered.event.kind)
+        .reverse(); // Oldest first.
+
+    const drafted = (await alice.publish("bob", "message", { text: "@bob/uploader draft this", via: "cli" })).event.id;
+    await until(bob.session, "the first request", () => shownTo(bob.session, drafted)?.requests[0]?.status.kind === "ready");
+    await bob.session.handle({ do: "run", id: drafted, repo: "uploader", post: false });
+    await until(bob.session, "its draft", (view) => view.busy.unsent === 1);
+
+    const stopped = (await alice.publish("bob", "message", { text: "@bob/uploader never mind", via: "cli" })).event.id;
+    await until(bob.session, "the second request", () => shownTo(bob.session, stopped)?.requests[0]?.status.kind === "ready");
+    await bob.session.handle({ do: "run", id: stopped, repo: "uploader", post: true });
+    await until(bob.session, "it running", () => shownTo(bob.session, stopped)?.requests[0]?.status.kind === "running");
+    await bob.session.handle({ do: "stop", id: stopped, repo: "uploader" });
+    described.resolve(undefined);
+    await until(bob.session, "it ready again", () => shownTo(bob.session, stopped)?.requests[0]?.status.kind === "ready");
+    assert.deepEqual([bob.ran.length, bob.notices], [1, [{ title: "", body: "Stopped your uploader agent before it started.", severity: "info" }]]);
+    assert.deepEqual(await job(stopped), []);
+
+    await bob.session.stop();
+    assert.deepEqual(await job(drafted), ["job.accepted", "job.declined"]);
+  }
+);
+
+await test(
   "an agent whose run cannot be told to the chat does not start: not when git cannot say where its checkout stands, nor when the hub cannot be reached to record it",
   { timeout: 30_000 },
   async (t) => {

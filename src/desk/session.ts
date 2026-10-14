@@ -164,15 +164,21 @@ export class Session {
     this.following = this.follow();
   }
 
-  /** Stop following the hub and stop every agent still working, waiting briefly so each is gone and the chat has been told. */
+  /**
+   * Stop following the hub, stop every agent still working, and throw away every draft not sent, waiting briefly so each agent is gone and the chat has been told how each run ended.
+   * A draft is lost with the desk, so its job ends as throwing it away ends it: declined.
+   */
   public async stop(): Promise<void> {
     this.stopping.abort();
     const runs = [...this.runs.values()];
     for (const run of runs) {
       run.cancel.abort();
     }
+    const unsent = [...this.drafts.values()].flat();
+    this.drafts.clear();
+    const declined = unsent.map((draft) => this.decline(draft.entry.event.id, draft.repo));
     const settled = new AbortController();
-    await Promise.race([Promise.all([this.following, this.streaming, ...runs.map((run) => run.done)]), sleep(STOP_WAIT, settled.signal)]);
+    await Promise.race([Promise.all([this.following, this.streaming, ...runs.map((run) => run.done), ...declined]), sleep(STOP_WAIT, settled.signal)]);
     settled.abort(); // Take the timer down with it, so a desk that has stopped is free to exit at once.
   }
 
@@ -905,25 +911,34 @@ export class Session {
     const { entry, repo } = run;
     const chat = chatOf(entry.event, this.me);
     const request = [entry.event.id];
+    const stopped = (): boolean => run.cancel.signal.aborted; // Asked afresh each time: the user may stop it while this waits.
     let head: Head;
     try {
       head = await this.describe(checkout);
+      if (stopped()) {
+        throw new AgentCancelledError(`Stopped your ${repo} agent before it started.`); // While git was asked where the checkout stands: nothing ran, so the chat hears nothing.
+      }
       await this.client.publish(chat, "job.accepted", { repo, ...head, delivery: run.post ? "post" : "review", mode: "full", by: "owner" }, request);
     } catch (error) {
-      this.hooks.notice({ title: `your ${repo} agent did not start`, body: problemOf(error), severity: "error" });
+      this.hooks.notice(
+        error instanceof AgentCancelledError ? { title: "", body: error.message, severity: "info" } : { title: `your ${repo} agent did not start`, body: problemOf(error), severity: "error" }
+      );
       this.runs.delete(key);
       this.hooks.changed();
       return;
     }
     let ending = "";
     try {
+      if (stopped()) {
+        throw new AgentCancelledError("stopped"); // While the chat was being told: it ends as stopped, without the agent being started only to be killed.
+      }
       const text = fitText(await this.runner(argv, checkout.path, run.cancel.signal));
       if (text === "") {
         ending = "the agent returned nothing";
       } else if (run.post) {
         await this.postAnswer(chat, { text, entry, repo, branch: head.branch });
       } else {
-        this.queueDraft(chat, { text, entry, repo, branch: head.branch });
+        await this.keepDraft(chat, { text, entry, repo, branch: head.branch });
       }
     } catch (error) {
       ending = error instanceof AgentCancelledError ? "stopped" : problemOf(error);
@@ -945,11 +960,16 @@ export class Session {
     } catch (error) {
       // An answer that could not be posted is kept as a draft, so the agent's work is not lost.
       this.hooks.notice({ title: `your ${draft.repo} agent's answer was not posted; it is kept as a draft`, body: problemOf(error), severity: "error" });
-      this.queueDraft(chat, draft);
+      await this.keepDraft(chat, draft);
     }
   }
 
-  private queueDraft(chat: string, draft: Draft): void {
+  /** Hold an answer for its owner to review; or, when the desk is quitting and nobody will, throw it away, so the chat still hears how the run ended. */
+  private async keepDraft(chat: string, draft: Draft): Promise<void> {
+    if (this.stopping.signal.aborted) {
+      await this.decline(draft.entry.event.id, draft.repo);
+      return;
+    }
     this.drafts.set(chat, [...(this.drafts.get(chat) ?? []), draft]);
     this.hooks.arrived({ chat, title: `Your ${draft.repo} agent's draft is ready to review`, body: oneLine(draft.text, 120), forMe: true, rings: true });
   }

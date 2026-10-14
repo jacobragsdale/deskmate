@@ -195,7 +195,7 @@ From the window:
 | `{ "t": "answer", "id", "ok" }` | The answer to an `ask`. |
 | `{ "t": "attend", "attentive" }` | The window gained or lost focus. |
 
-Closing the desk's standard input means quit: the desk stops its agents, tells the chat, and exits within three seconds. If it has not, the window kills it.
+Closing the desk's standard input means quit: the desk stops its agents, declines every draft not sent (as throwing one away does), tells the chat, and exits within three seconds. If it has not, the window kills it.
 
 The desk never opens a network port.
 
