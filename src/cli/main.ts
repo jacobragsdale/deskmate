@@ -6,9 +6,9 @@ import { parseArgs } from "node:util";
 import { z } from "zod";
 
 import { chatOf } from "../core/chat.ts";
-import type { Entry } from "../core/chat.ts";
+import type { Entry, Message } from "../core/chat.ts";
 import { readContent } from "../core/kinds.ts";
-import { noteLink } from "../core/links.ts";
+import { noteLink, noteOf } from "../core/links.ts";
 import { problemOf } from "../core/text.ts";
 import { channelSchema, fitText, isChannel } from "../core/wire.ts";
 import type { ChannelInfo, Delivered, Event } from "../core/wire.ts";
@@ -16,7 +16,7 @@ import { DEFAULT_AGENT, defaultDev, defaultHome, http, join, loadClient, PlayerT
 import type { Client, Transport } from "../desk/client.ts";
 import { runChecks } from "../desk/doctor.ts";
 import { runDesk } from "../desk/main.ts";
-import { trust } from "../desk/notes.ts";
+import { readNote, trust } from "../desk/notes.ts";
 import { runHub, verifyHub } from "../hub/main.ts";
 import type { Check } from "../shared/ipc.ts";
 
@@ -30,13 +30,14 @@ const USAGE = `usage: player-two COMMAND
   who                                   list everyone who has joined
   repos                                 list every agent as @person/repo with the branch it is on
   search WORDS... [--in CHAT]           find the messages and answers that hold every word, in every chat or in one, each with its link
+  read NOTE [--thread]                  print one note, given as its link or id, as it reads now, where each agent it tags stands, their answers, and with --thread its replies
   channel [join NAME | leave NAME]      list the channels, or join or leave one
   hub [--host HOST] [--port PORT]       run the hub; it reads PLAYER_TWO_JOIN_TOKEN, PLAYER_TWO_DB, PLAYER_TWO_REPOS and, if set, PLAYER_TWO_DOWNLOADS
   hub verify                            check that no event in the log in PLAYER_TWO_DB was changed or taken out since it was stored
   desk                                  run your side with no window, for the window to start: it speaks JSON lines on standard input and output
   doctor                                check what Player Two needs on this machine, and say how to fix what is missing
 
-send, inbox, who, repos, channel, search and doctor take --json, and then print one JSON value and nothing else.
+send, inbox, who, repos, channel, search, read and doctor take --json, and then print one JSON value and nothing else.
 A command exits with 0 on success, 1 after printing a failure, and 2 when it was not given what it takes.`;
 
 /** The command was not given what it takes. The usage is printed, and the exit status says so. */
@@ -212,6 +213,45 @@ async function search(joined: () => Client, args: string[], out: (line: string) 
   show(out, values.json, matches, words.length === 0 ? "nothing found" : words.join("\n"));
 }
 
+/** A note as `read --json` prints it: as the hub delivered it and whether it is trusted, its link, and its text as last edited, null when it is not a message or an answer or its signature fails. */
+function shown(entry: Entry, message: Message | null): Entry & { readonly link: string; readonly text: string | null; readonly edited: boolean; readonly deleted: boolean } {
+  return { ...entry, link: noteLink(entry.event.id), text: message?.text ?? null, edited: message?.edited ?? false, deleted: message?.deleted ?? false };
+}
+
+/** A note as `read` shows it in words: what it says now, edits applied. */
+function cited(client: Client, entry: Entry, message: Message | null): string {
+  let text = saying(entry.event)?.text ?? `(${entry.event.kind})`;
+  if (message !== null) {
+    text = message.deleted ? "(message deleted)" : `${message.text}${message.edited ? "\n(edited)" : ""}`;
+  }
+  return render(entry, entry.trusted, { me: client.config.name, text });
+}
+
+/** Print one note as it reads now, where each agent it tags stands, and their answers; with --thread, the replies under it too. */
+async function read(joined: () => Client, args: string[], out: (line: string) => void): Promise<void> {
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { thread: { type: "boolean", default: false }, json: { type: "boolean", default: false } } });
+  const [given = ""] = positionals;
+  const id = noteOf(given) ?? noteOf(noteLink(given));
+  if (id === null || positionals.length > 1) {
+    throw new UsageError("read takes one note, as its player-two://note/ link or its id");
+  }
+  const client = joined();
+  const note = await readNote(client, id);
+  if (note === null) {
+    throw new PlayerTwoError("there is no note with that id that you can see");
+  }
+  const { entry, message, jobs, answers } = note;
+  const replies = values.thread ? (message?.replies ?? []) : [];
+  const found = {
+    ...shown(entry, message),
+    jobs: jobs.map((job) => ({ agent: `${job.owner}/${job.repo}`, state: job.state })),
+    answers: answers.map((answer) => shown(answer.entry, answer)),
+    ...(values.thread ? { replies: replies.map((reply) => shown(reply.entry, reply)) } : {})
+  };
+  const words = [cited(client, entry, message), ...jobs.map((job) => `@${job.owner}/${job.repo}: ${job.state}`), ...[...answers, ...replies].map((each) => cited(client, each.entry, each))];
+  show(out, values.json, found, words.join("\n"));
+}
+
 /** Join or leave a channel, given with or without its "#", unless the user is already in it or already out of it, and return it as the hub then reports it. */
 async function joinOrLeave(client: Client, action: "join" | "leave", name: string): Promise<ChannelInfo> {
   const channel = channelSchema.safeParse(name.startsWith("#") ? name : `#${name}`);
@@ -296,7 +336,8 @@ const AS_USER = new Map<string, (joined: () => Client, args: string[], out: (lin
   ["channel", channel],
   ["who", who],
   ["repos", repos],
-  ["search", search]
+  ["search", search],
+  ["read", read]
 ]);
 
 async function run(argv: readonly string[], options: Options, out: (line: string) => void): Promise<void> {

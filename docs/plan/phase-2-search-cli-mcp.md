@@ -26,7 +26,7 @@ Borrowed from Buzz: answers with receipts, and a command an agent can script. Bo
 Every command below takes `--json`. Add each to the README's Commands table.
 
 - [x] **P2-C1** `player-two search QUERY [--in CHAT]` prints matches with author, time, chat and link.
-- [ ] **P2-C2** `player-two read ID-or-LINK` prints one note, and with `--thread` its replies.
+- [x] **P2-C2** `player-two read ID-or-LINK` prints one note, and with `--thread` its replies.
 - [ ] **P2-C3** `player-two ask @OWNER/REPO TEXT... [--in CHAT] [--wait SECONDS]`: publishes a `message` tagging that agent, in the direct chat with its owner unless `--in` names a channel, then waits for that one job to end. `--wait` defaults to 900. It prints the result's text, or with `--json` the `job.result` event.
 
   | Exit | Meaning |

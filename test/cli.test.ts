@@ -15,6 +15,7 @@ import { loadKey, signEvent } from "../src/core/sign.ts";
 import { eventSchema } from "../src/core/wire.ts";
 import type { Delivered } from "../src/core/wire.ts";
 import { http } from "../src/desk/client.ts";
+import type { Client } from "../src/desk/client.ts";
 import { checkSchema } from "../src/shared/ipc.ts";
 import { NOW, startHub, TOKEN } from "./startHub.ts";
 import type { Hub } from "./startHub.ts";
@@ -306,4 +307,57 @@ await test("search prints each match with its author, chat, time, a stretch of i
   );
   assert.equal((await playerTwo(hub, "bob", ["search", "nothing", "like", "this"])).out, "nothing found");
   assert.equal((await playerTwo(hub, "bob", ["search"])).status, 2);
+});
+
+/** Bob's agent, as bob's desk would report it: let go ahead on main, then its answer. */
+async function answer(bob: Client, chat: string, request: string, text: string): Promise<Delivered> {
+  await bob.publish(chat, "job.accepted", { repo: "uploader", branch: "main", commit: "c0ffee".padEnd(40, "0"), dirty: false, delivery: "post", mode: "full", by: "owner" }, [request]);
+  return bob.publish(chat, "job.result", { repo: "uploader", branch: "main", text, reviewed: false }, [request]);
+}
+
+await test("read prints one note as it reads now, where each agent it tags stands and their answers, and with --thread its replies", async (t) => {
+  const hub = await startHub(t);
+  const [alice, bob] = [await hub.join("alice"), await hub.join("bob"), await hub.join("carol")];
+  for (const who of [alice, bob]) {
+    await who.publish("#backend", "channel.join", {});
+  }
+  const asked = await alice.publish("#backend", "message", { text: "@bob/uploader where do we retry?", via: "cli" });
+  const request = asked.event.id;
+  await alice.publish("#backend", "message.edit", { text: "@bob/uploader where do we retry 429s?" }, [request]);
+  const answered = await answer(bob, "#backend", request, "in queue.py");
+  const reply = await bob.publish("#backend", "message", { text: "and in the tests", via: "cli" }, [request]);
+  const gone = await bob.publish("#backend", "message", { text: "never mind", via: "cli" }, [request]);
+  await bob.publish("#backend", "message.delete", {}, [gone.event.id]);
+
+  const words = await playerTwo(hub, "alice", ["read", noteLink(request)]);
+  assert.equal(words.status, 0, words.err);
+  assert.match(
+    words.out,
+    new RegExp(
+      `^┌ ${String(asked.seq)} · alice in #backend · ${WHEN}\n│ @bob/uploader where do we retry 429s\\?\n│ \\(edited\\)\n└ ${noteLink(request)}\n@bob/uploader: answered\n┌ ${String(answered.seq)} · bob \\(uploader agent\\) in #backend · ${WHEN}\n│ in queue\\.py\n└ ${noteLink(answered.event.id)}$`
+    )
+  );
+  const thread = await playerTwo(hub, "alice", ["read", request, "--thread"]);
+  assert.match(thread.out, new RegExp(`│ and in the tests\n└ ${noteLink(reply.event.id)}\n┌ ${String(gone.seq)} · bob in #backend · ${WHEN}\n│ \\(message deleted\\)\n└ ${noteLink(gone.event.id)}$`));
+
+  const noteSchema = z.strictObject({ ...printedSchema.shape, link: z.string(), text: z.string().nullable(), edited: z.boolean(), deleted: z.boolean() });
+  const json = z
+    .strictObject({ ...noteSchema.shape, jobs: z.array(z.strictObject({ agent: z.string(), state: z.string() })), answers: z.array(noteSchema), replies: z.array(noteSchema) })
+    .parse(printed(await playerTwo(hub, "alice", ["read", request, "--thread", "--json"])));
+  assert.deepEqual([json.seq, json.event, json.trusted, json.text, json.edited], [asked.seq, asked.event, true, "@bob/uploader where do we retry 429s?", true]);
+  assert.deepEqual(json.jobs, [{ agent: "bob/uploader", state: "answered" }]);
+  assert.deepEqual(
+    [...json.answers, ...json.replies].map((each) => [each.link, each.text, each.deleted]),
+    [
+      [noteLink(answered.event.id), "in queue.py", false],
+      [noteLink(reply.event.id), "and in the tests", false],
+      [noteLink(gone.event.id), "", true]
+    ]
+  );
+  assert.equal("replies" in z.record(z.string(), z.unknown()).parse(printed(await playerTwo(hub, "alice", ["read", request, "--json"]))), false); // Replies only when asked for.
+
+  assert.deepEqual(await playerTwo(hub, "carol", ["read", request]), { status: 1, out: "", err: "player-two: there is no note with that id that you can see" });
+  for (const argv of [["read"], ["read", "player-two://note/xyz"], ["read", request, request]]) {
+    assert.equal((await playerTwo(hub, "alice", argv)).status, 2, argv.join(" "));
+  }
 });
