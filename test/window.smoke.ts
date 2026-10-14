@@ -107,9 +107,19 @@ class Page {
     throw new Error(`waited 20 seconds for ${what}: ${String(await this.eval("document.body.innerText"))}`);
   }
 
-  /** Where the first element `selector` finds is on the screen. */
+  /** Where the first element `selector` finds is on the screen, once it has stopped moving: a slow machine is still sliding it in after any fixed pause. */
   public async rect(selector: string): Promise<Rect> {
-    return rectSchema.parse(await this.eval(`document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect().toJSON()`));
+    const read = async (): Promise<Rect> => rectSchema.parse(await this.eval(`document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect().toJSON()`));
+    let last = await read();
+    for (let tries = 0; tries < 50; tries += 1) {
+      await pause(100);
+      const now = await read();
+      if (JSON.stringify(now) === JSON.stringify(last)) {
+        return now;
+      }
+      last = now;
+    }
+    throw new Error(`${selector} was still moving after 5 seconds: ${JSON.stringify(last)}`);
   }
 
   public async click(selector: string, text = ""): Promise<void> {
@@ -195,10 +205,12 @@ await test(
     await page.type('input[name="token"]', "not-the-join-token");
     await page.click('form button[type="submit"]');
     await page.until("the toast saying it could not join", `[...document.querySelectorAll("[data-sonner-toast]")].some((each) => each.textContent.includes("could not join"))`);
-    await pause(600); // Past its sliding in.
     const toast = await page.rect("[data-sonner-toast]");
     const viewport = z.object({ width: z.number(), height: z.number() }).parse(await page.eval("({ width: innerWidth, height: innerHeight })"));
-    assert.ok(toast.height > 0 && toast.bottom <= viewport.height && toast.right <= viewport.width && toast.left > viewport.width / 2, `the toast is out of place: ${JSON.stringify(toast)}`);
+    assert.ok(
+      toast.height > 0 && toast.bottom <= viewport.height && toast.right <= viewport.width && toast.left > viewport.width / 2,
+      `the toast is out of place: ${JSON.stringify(toast)} in ${JSON.stringify(viewport)}`
+    );
 
     await page.type('input[name="token"]', TOKEN);
     await page.click('form button[type="submit"]');
@@ -228,7 +240,6 @@ await test(
     // Ctrl+N asks which channel to join, in a dialog in the middle of the window.
     await page.press("n", CTRL);
     await page.until("the dialog", `document.querySelector('[role="dialog"]') !== null`);
-    await pause(500); // Past its opening animation.
     const dialog = await page.rect('[role="dialog"]');
     assert.ok(
       Math.abs((dialog.left + dialog.right) / 2 - viewport.width / 2) < 2 && Math.abs((dialog.top + dialog.bottom) / 2 - viewport.height / 2) < 2,

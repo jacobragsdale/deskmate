@@ -21,8 +21,8 @@ jobs:
       - run: npm run format:check
       - run: npm test
       - run: npm run build
-      # xvfb is part of the runner's image. Electron's sandbox needs unprivileged user namespaces, which Ubuntu 24.04's AppArmor withholds unless a profile allows them, so the runner, thrown away after the job, allows them all.
+      # xvfb is part of the runner's image; its default screen, 640x480, is smaller than the window. Electron's sandbox needs unprivileged user namespaces, which Ubuntu 24.04's AppArmor withholds unless a profile allows them, so the runner, thrown away after the job, allows them all.
       - name: Window smoke test
         run: |
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          xvfb-run --auto-servernum node --test test/window.smoke.ts
+          xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" node --test test/window.smoke.ts
