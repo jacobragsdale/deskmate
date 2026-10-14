@@ -5,11 +5,13 @@ import { DatabaseSync } from "node:sqlite";
 
 import { z } from "zod";
 
+import { readContent } from "../core/kinds.ts";
 import { eventId } from "../core/sign.ts";
 import { deliveredSchema, isChannel, personSchema, teamRepoSchema } from "../core/wire.ts";
 import type { Delivered, Event, Person, Repo, RepoRef, TeamRepo } from "../core/wire.ts";
 
-const SCHEMA_VERSION = 5; // 3 was the notes alone, from the Python hub to 0.4.
+const SCHEMA_VERSION = 6; // 3 was the notes alone, from the Python hub to 0.4.
+const UPGRADABLE = 5; // 0.5's events, which lack only the search index: a hub that finds it adds the index and fills it from the events.
 const BUSY_WAIT = 5; // Seconds to wait for another program that holds the file, such as a backup, before giving up.
 const FIRST_CHAIN = "0".repeat(64); // The chain value before the first event.
 
@@ -39,7 +41,10 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS events_by_recipient ON events (recipient, seq);
 CREATE INDEX IF NOT EXISTS events_by_author ON events (author, seq);
 CREATE TABLE IF NOT EXISTS event_refs (ref TEXT NOT NULL, seq INTEGER NOT NULL, PRIMARY KEY (ref, seq));
+-- The words of each message and answer as last edited, under the event's seq as its rowid. It keeps its own copy of the text: snippet() reads nothing from a contentless table.
+CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(text);
 `;
+const INDEXED = "('message', 'job.result', 'message.edit', 'message.delete')"; // The kinds that change what the search index holds.
 
 // A row is whatever the file holds, so each is parsed like anything else that comes from outside.
 const versionSchema = z.strictObject({ user_version: z.int() });
@@ -51,6 +56,7 @@ const membersSchema = z.array(z.strictObject({ user: z.string() }));
 const channelsSchema = z.array(z.strictObject({ channel: z.string() }));
 const pinSchema = z.strictObject({ name: z.string(), key: z.string(), url: z.string(), branch: z.string().nullable() }).optional();
 const foundSchema = z.strictObject({ found: z.literal(1) }).optional();
+const seqSchema = z.strictObject({ seq: z.int() }).optional();
 const eventRowSchema = z
   .strictObject({ seq: z.int(), id: z.string(), author: z.string(), to: z.string(), kind: z.string(), content: z.string(), ts: z.int(), refs: z.string(), nonce: z.string(), sig: z.string() })
   .transform(({ seq, refs, ...event }) => ({ seq, event: { ...event, refs: parseJson(refs) } }))
@@ -98,16 +104,26 @@ export function verifyChain(path: string): { readonly events: number; readonly h
 export class Database {
   private readonly db: DatabaseSync;
 
-  /** Open the database at `path`, laying down the schema when the file is new. Throws when another version of Player Two made it. */
+  /** Open the database at `path`, laying down the schema when the file is new, and the search index, filled from the events, when 0.5 made it. Throws when any other version of Player Two made it. */
   constructor(path: string) {
     this.db = new DatabaseSync(path, { timeout: BUSY_WAIT * 1000 });
     const version = versionSchema.parse(this.db.prepare("PRAGMA user_version").get()).user_version;
     const { tables } = tablesSchema.parse(this.db.prepare("SELECT count(*) AS tables FROM sqlite_master WHERE type = 'table'").get());
-    if (tables > 0 && version !== SCHEMA_VERSION) {
+    if (tables > 0 && version !== SCHEMA_VERSION && version !== UPGRADABLE) {
       this.db.close();
       throw new Error(`${path} was made by another version of Player Two (schema ${String(version)}, this one uses ${String(SCHEMA_VERSION)}); start with an empty database`);
     }
-    this.db.exec(`${SCHEMA}PRAGMA user_version = ${String(SCHEMA_VERSION)};`);
+    this.db.exec(SCHEMA);
+    if (version !== SCHEMA_VERSION) {
+      // The index starts empty, and is filled in the same transaction that says the schema is this one's, so a hub stopped halfway fills it again from the start.
+      this.transaction(() => {
+        for (const row of this.db.prepare(`SELECT ${EVENT_COLUMNS} FROM events WHERE kind IN ${INDEXED} ORDER BY seq`).iterate()) {
+          const stored = eventRowSchema.parse(row);
+          this.index(stored.seq, stored.event);
+        }
+        this.db.exec(`PRAGMA user_version = ${String(SCHEMA_VERSION)}`);
+      });
+    }
   }
 
   public close(): void {
@@ -214,7 +230,27 @@ export class Database {
     for (const ref of event.refs) {
       refer.run(ref, seq);
     }
+    this.index(seq, event);
     return seq;
+  }
+
+  /**
+   * Keep the search index as every reader's fold has it: the text of each message and answer, a message's replaced by its edit and taken out by its delete.
+   * Those count only from the message's author, in the message's own chat, and on a message rather than an answer; an edit after a delete finds nothing to change. Content its kind does not hold is passed over.
+   */
+  private index(seq: number, event: Event): void {
+    const said = readContent(event);
+    if (said.kind === "message" || said.kind === "job.result") {
+      this.db.prepare("INSERT INTO search (rowid, text) VALUES (?, ?)").run(seq, said.content.text);
+    } else if (said.kind === "message.edit" || said.kind === "message.delete") {
+      // The same author writing to the same recipient is the same chat: a channel, or the two people in a direct one.
+      const target = seqSchema.parse(this.db.prepare("SELECT seq FROM events WHERE id = ? AND author = ? AND recipient = ? AND kind = 'message'").get(event.refs[0] ?? "", event.author, event.to));
+      if (target !== undefined && said.kind === "message.edit") {
+        this.db.prepare("UPDATE search SET text = ? WHERE rowid = ?").run(said.content.text, target.seq);
+      } else if (target !== undefined) {
+        this.db.prepare("DELETE FROM search WHERE rowid = ?").run(target.seq);
+      }
+    }
   }
 
   /** Everything `me` can see after `after`, oldest first, at most `limit` of it. */

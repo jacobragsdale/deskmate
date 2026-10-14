@@ -244,4 +244,4 @@ Inside WSL (or the home folder on Linux and macOS):
 | 0.4 | 1 | Phase 0. Auth header version 2. `/info` reports version and protocol. |
 | 0.5 | 2 | Phase 1. Events replace notes. Fresh database. |
 
-From 0.5 on, a new kind is not a protocol change. The hub refuses to start on a database made by another schema version, as it does today.
+From 0.5 on, a new kind is not a protocol change. The hub refuses to start on a database made by another schema version, except 0.5's (schema 5): to that it adds the search index of phase 2 (schema 6), filled from the events it holds.

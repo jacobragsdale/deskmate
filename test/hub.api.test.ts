@@ -19,6 +19,7 @@ import { deliveredSchema, MAX_SKEW, receiptSchema } from "../src/core/wire.ts";
 import type { Delivered, Event, Repo } from "../src/core/wire.ts";
 import { http, join as joinHub } from "../src/desk/client.ts";
 import { createHub } from "../src/hub/app.ts";
+import { Database } from "../src/hub/db.ts";
 import { NOW, startHub, TEAM_REPOS, TOKEN } from "./startHub.ts";
 import type { Hub } from "./startHub.ts";
 
@@ -503,7 +504,63 @@ await test("the hub refuses to start on a database from another version, such as
   made.exec("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT); PRAGMA user_version = 3;");
   made.close();
 
-  assert.throws(() => createHub({ joinToken: TOKEN, db: old, repos: TEAM_REPOS, downloads: "" }), /another version of Player Two \(schema 3, this one uses 5\)/);
+  assert.throws(() => createHub({ joinToken: TOKEN, db: old, repos: TEAM_REPOS, downloads: "" }), /another version of Player Two \(schema 3, this one uses 6\)/);
+});
+
+await test("the search index holds each message and answer as its author last edited it, and is filled from the events of a database 0.5 made", async (t) => {
+  const hub = await startHub(t);
+  for (const name of ["alice", "bob", "carol"]) {
+    await hub.join(name);
+  }
+  const message = (author: string, to: string, text: string): Event => signed(hub, author, to, "message", { text, via: "cli" });
+  const edited = message("alice", "bob", "the words before");
+  const kept = message("alice", "bob", "words nobody could change");
+  const deleted = message("alice", "bob", "words taken back");
+  const asked = message("bob", "alice", "@alice/uploader a question");
+  for (const event of [
+    edited,
+    kept,
+    deleted,
+    asked,
+    signed(hub, "alice", "bob", "message.edit", { text: "the words after" }, { refs: [edited.id] }),
+    signed(hub, "bob", "alice", "message.edit", { text: "bob's words" }, { refs: [kept.id] }), // Not the author.
+    signed(hub, "alice", "carol", "message.edit", { text: "words for carol" }, { refs: [kept.id] }), // Not the message's chat.
+    signed(hub, "alice", "bob", "message.delete", {}, { refs: [deleted.id] }),
+    signed(hub, "alice", "bob", "message.edit", { text: "words after the delete" }, { refs: [deleted.id] }),
+    signed(hub, "alice", "bob", "job.result", { repo: "uploader", branch: "main", text: "an agent's answer", reviewed: false }, { refs: [asked.id] }),
+    signed(hub, "alice", "bob", "message.edit", { text: "an answer rewritten" }, { refs: [] }),
+    signed(hub, "alice", "bob", "message", "not JSON"),
+    signed(hub, "alice", "bob", "message", { text: "" }) // Not what a message holds.
+  ]) {
+    assert.equal((await post(hub, event.author, event))[0], 201);
+  }
+  const file = join(hub.dir, "hub.db");
+  const words = (): unknown[] => {
+    const db = new DatabaseSync(file, { readOnly: true });
+    try {
+      return db
+        .prepare("SELECT rowid, text FROM search ORDER BY rowid")
+        .all()
+        .map((row) => ({ ...row }));
+    } finally {
+      db.close();
+    }
+  };
+  const indexed = [
+    { rowid: 1, text: "the words after" },
+    { rowid: 2, text: "words nobody could change" },
+    { rowid: 4, text: "@alice/uploader a question" },
+    { rowid: 10, text: "an agent's answer" }
+  ];
+
+  assert.deepEqual(words(), indexed);
+
+  const older = new DatabaseSync(file); // What 0.5 left: the same events, and no index.
+  older.exec("DROP TABLE search; PRAGMA user_version = 5;");
+  older.close();
+  new Database(file).close();
+
+  assert.deepEqual(words(), indexed);
 });
 
 await test("a request the hub cannot serve is told why", async (t) => {
