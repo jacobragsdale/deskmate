@@ -6,12 +6,12 @@ import { parseArgs } from "node:util";
 import { z } from "zod";
 
 import { chatOf } from "../core/chat.ts";
+import { problemOf } from "../core/text.ts";
 import { isChannel } from "../core/wire.ts";
 import type { Delivered } from "../core/wire.ts";
 import { DEFAULT_AGENT, defaultHome, http, join, loadClient, PlayerTwoError, POLL_WAIT } from "../desk/client.ts";
 import type { Client, Transport } from "../desk/client.ts";
 import { runDesk } from "../desk/main.ts";
-import { problemOf } from "../desk/session.ts";
 import { runHub } from "../hub/main.ts";
 
 const INBOX = 20; // Notes `inbox` prints when it is not told where to start.

@@ -199,7 +199,10 @@ export function App(): JSX.Element {
 
   useEffect(() => {
     const accept = (raw: unknown): void => {
-      setView(viewSchema.parse(raw));
+      // Null until the desk has said what to draw; its first view follows by itself.
+      if (raw !== null) {
+        setView(viewSchema.parse(raw));
+      }
     };
     const offView = window.playerTwo.onView(accept);
     const offNotice = window.playerTwo.onNotice((raw) => {
@@ -217,6 +220,8 @@ export function App(): JSX.Element {
     page = <Setup defaultAgent={view.defaultAgent} tell={tell} />;
   } else if (view?.kind === "chat") {
     page = <Chat view={view} act={act} tell={tell} />;
+  } else if (view?.kind === "stopped") {
+    page = <p className="empty stopped">Player Two cannot go on: {view.problem}</p>;
   }
   return (
     <>

@@ -7,11 +7,14 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { TestContext } from "node:test";
 
+import { build } from "esbuild";
+
 import { DeskProcess } from "../src/window/main/deskProcess.ts";
 import type { Launch } from "../src/window/main/deskProcess.ts";
 import type { Notice, View } from "../src/shared/ipc.ts";
 
-const COMMAND = join(import.meta.dirname, "..", "src", "cli", "main.ts");
+const ROOT = join(import.meta.dirname, "..");
+const COMMAND = join(ROOT, "src", "cli", "main.ts");
 
 // A desk that marks each time it is started, says what the test tells it to, and goes.
 const STAND_IN = `
@@ -141,4 +144,27 @@ await test("a desk that speaks another protocol is refused and not started again
   assert.equal(newer.starts(), 1);
   assert.equal(missing.views.length, 1);
   assert.match(missing.views[0]?.kind === "stopped" ? missing.views[0].problem : "", /^the desk keeps stopping with status -2\. The last it said:\nspawn .*no-such-program ENOENT$/);
+});
+
+await test("nothing of the desk's is built into the window's main process or its preload script: they take its types and no more", async () => {
+  const entryPoints = ["src/window/main/main.ts", "src/window/main/preload.ts"];
+  const built = await build({
+    entryPoints,
+    absWorkingDir: ROOT,
+    bundle: true,
+    write: false,
+    metafile: true,
+    outdir: "dist",
+    platform: "node",
+    format: "esm",
+    external: ["electron"],
+    logLevel: "silent"
+  });
+  const inputs = Object.keys(built.metafile.inputs);
+
+  assert.ok(inputs.includes("src/window/main/deskProcess.ts"), inputs.join("\n"));
+  assert.deepEqual(
+    inputs.filter((path) => path.startsWith("src/desk/") || path.startsWith("src/hub/") || path.startsWith("src/cli/")),
+    []
+  );
 });

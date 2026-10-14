@@ -2,12 +2,13 @@
 
 import { createInterface } from "node:readline";
 
+import { problemOf } from "../core/text.ts";
 import { VERSION } from "../core/version.ts";
 import { PROTOCOL } from "../core/wire.ts";
 import { readLine, windowLineSchema } from "../shared/ipc.ts";
 import type { Command, DeskLine, Question, View } from "../shared/ipc.ts";
 import { DEFAULT_AGENT, defaultDev, defaultHome, http, join, loadClient, PlayerTwoError } from "./client.ts";
-import { problemOf, Session } from "./session.ts";
+import { Session } from "./session.ts";
 import type { Hooks } from "./session.ts";
 
 class Desk {

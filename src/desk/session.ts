@@ -14,7 +14,7 @@ import { AgentCancelledError, PlayerTwoError, POLL_WAIT } from "./client.ts";
 import type { Client, Runner } from "./client.ts";
 import * as repos from "./repos.ts";
 import type { Checkout } from "./repos.ts";
-import { oneLine } from "../core/text.ts";
+import { oneLine, problemOf } from "../core/text.ts";
 import { fitBody, isChannel, nameSchema, PROTOCOL } from "../core/wire.ts";
 import type { ChannelInfo, Person, RepoRef, TeamRepo } from "../core/wire.ts";
 
@@ -77,15 +77,6 @@ function sleep(seconds: number, signal?: AbortSignal): Promise<void> {
       { once: true }
     );
   });
-}
-
-/** A failure in words the user can act on. */
-export function problemOf(error: unknown): string {
-  if (error instanceof z.ZodError) {
-    const first = error.issues[0];
-    return first === undefined ? "invalid input" : `invalid ${first.path.length === 0 ? "input" : first.path.join(".")}: ${first.message}`;
-  }
-  return error instanceof Error ? error.message : String(error);
 }
 
 function runKey(noteId: number, repo: string): string {
@@ -155,10 +146,6 @@ export class Session {
     const settled = new AbortController();
     await Promise.race([Promise.all([this.polling, ...runs.map((run) => run.done)]), sleep(STOP_WAIT, settled.signal)]);
     settled.abort(); // Take the timer down with it, so a desk that has stopped is free to exit at once.
-  }
-
-  public isOpen(chat: string): boolean {
-    return this.current === chat;
   }
 
   /** Say whether the user is looking at the window. Coming back marks the open chat read, with a line where they left off. */

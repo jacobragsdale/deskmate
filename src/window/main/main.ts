@@ -1,61 +1,45 @@
-/** The desktop app's main process: one window, the session behind it, and the operating system's notifications, badge and dialogs. */
+/** The desktop app's main process: one window, the desk it starts and speaks to, and the operating system's notifications, badge and dialogs. The session is not here: it is in the desk, a process of its own. */
 
 import { join as joinPath } from "node:path";
 
 import { app, BrowserWindow, dialog, ipcMain, Notification, shell } from "electron";
 import type { IpcMainInvokeEvent } from "electron";
 
-import { DEFAULT_AGENT, defaultDev, defaultHome, http, join, loadClient, PlayerTwoError } from "../../desk/client.ts";
-import { problemOf, Session } from "../../desk/session.ts";
-import type { Hooks } from "../../desk/session.ts";
+import { problemOf } from "../../core/text.ts";
 import { commandSchema } from "../../shared/ipc.ts";
-import type { Arrival, Notice, Outcome, View } from "../../shared/ipc.ts";
+import type { Arrival, Outcome, Question, View } from "../../shared/ipc.ts";
+import { DeskProcess, localLaunch } from "./deskProcess.ts";
 
-const home = defaultHome();
-let session: Session | null = null;
 let window: BrowserWindow | null = null;
-let pushQueued = false;
+let current: View | null = null; // What the desk last said to draw; null until it has said anything.
 let stopped = false;
 
 function report(error: unknown): void {
   console.error(error);
 }
 
-function view(): View {
-  return session === null ? { kind: "setup", defaultAgent: DEFAULT_AGENT } : session.view();
-}
-
 /** Send the window what to draw, and put what needs the user where they see it without the window: the title and the dock badge. */
-function push(): void {
-  pushQueued = false;
-  const current = view();
+function show(view: View): void {
+  current = view;
   if (window === null || window.isDestroyed()) {
     return;
   }
-  window.webContents.send("view", current);
-  if (current.kind === "chat") {
-    window.setTitle(["Player Two", ...(current.waiting > 0 ? [`${String(current.waiting)} waiting`] : []), ...(current.unread > 0 ? [`${String(current.unread)} unread`] : [])].join(" · "));
-    app.setBadgeCount(current.waiting + current.unread);
-  }
-}
-
-/** Several changes in one turn of the event loop are drawn once. */
-function changed(): void {
-  if (!pushQueued) {
-    pushQueued = true;
-    setImmediate(push);
+  window.webContents.send("view", view);
+  if (view.kind === "chat") {
+    window.setTitle(["Player Two", ...(view.waiting > 0 ? [`${String(view.waiting)} waiting`] : []), ...(view.unread > 0 ? [`${String(view.unread)} unread`] : [])].join(" · "));
+    app.setBadgeCount(view.waiting + view.unread);
   }
 }
 
 function open(chat: string): void {
   window?.show();
   window?.focus();
-  session?.handle({ do: "open", chat }).catch(report);
+  desk.send({ do: "open", chat }).catch(report);
 }
 
 /** Tell the user about a note with the system's own notification, unless they are already looking at its chat. */
 function arrived(arrival: Arrival): void {
-  const looking = window?.isFocused() === true && session?.isOpen(arrival.chat) === true;
+  const looking = window?.isFocused() === true && current?.kind === "chat" && current.current?.chat === arrival.chat;
   if (looking || !Notification.isSupported()) {
     return;
   }
@@ -66,38 +50,28 @@ function arrived(arrival: Arrival): void {
   notification.show();
 }
 
-async function confirmClone(url: string, destination: string): Promise<boolean> {
-  const options = {
-    type: "question" as const,
-    message: "Clone this repository?",
-    detail: `From ${url}\nInto ${destination}\n\nIt is cloned with your own git credentials. An agent started in a repo reads that repo's instruction files.`,
-    buttons: ["Clone", "Cancel"],
-    defaultId: 0,
-    cancelId: 1
-  };
-  return (await (window === null ? dialog.showMessageBox(options) : dialog.showMessageBox(window, options))).response === 0;
+/** Put the desk's question to the user in a dialog of the system's own, and give the desk their answer. A dialog that could not be shown is a no. */
+function ask(id: number, question: Question): void {
+  const options = { type: "question" as const, message: question.message, detail: question.detail, buttons: [question.confirm, "Cancel"], defaultId: 0, cancelId: 1 };
+  (window === null ? dialog.showMessageBox(options) : dialog.showMessageBox(window, options)).then(
+    ({ response }) => {
+      desk.answer(id, response === 0);
+    },
+    (error: unknown) => {
+      report(error);
+      desk.answer(id, false);
+    }
+  );
 }
 
-const hooks: Hooks = {
-  changed,
-  arrived,
-  confirmClone,
-  notice: (notice: Notice) => {
+const desk = new DeskProcess(localLaunch(), {
+  view: show,
+  notice: (notice) => {
     window?.webContents.send("notice", notice);
-  }
-};
-
-/** Start following the hub as whoever has joined from this machine. False when nobody has. */
-function startSession(): boolean {
-  const client = loadClient(home, http, () => Date.now() / 1000);
-  if (client === null) {
-    return false;
-  }
-  session = new Session(client, defaultDev(), hooks);
-  session.attend(window?.isFocused() ?? true);
-  session.start();
-  return true;
-}
+  },
+  arrival: arrived,
+  ask
+});
 
 /** Refuse a call from anything but the window's own page. */
 function fromWindow(event: IpcMainInvokeEvent): void {
@@ -106,33 +80,16 @@ function fromWindow(event: IpcMainInvokeEvent): void {
   }
 }
 
-async function handle(raw: unknown): Promise<void> {
-  const command = commandSchema.parse(raw);
-  if (command.do !== "join") {
-    if (session === null) {
-      throw new PlayerTwoError("join a hub first");
-    }
-    await session.handle(command);
-  } else if (session === null) {
-    await join(home, command.hub.trim(), command.name.trim(), command.token.trim(), command.agent.trim() === "" ? DEFAULT_AGENT : command.agent.trim(), http);
-    startSession();
-    changed();
-  }
-}
-
-ipcMain.handle("view", (event): View => {
+ipcMain.handle("view", (event): View | null => {
   fromWindow(event);
-  return view();
+  return current;
 });
 
 ipcMain.handle("command", async (event, raw: unknown): Promise<Outcome> => {
   fromWindow(event);
-  try {
-    await handle(raw);
-    return { ok: true };
-  } catch (error) {
-    return { ok: false, problem: problemOf(error) };
-  }
+  // Checked here as well as in the desk: the desk answers only a line it can read, so one it cannot would leave the window waiting.
+  const command = commandSchema.safeParse(raw);
+  return command.success ? desk.send(command.data) : { ok: false, problem: problemOf(command.error) };
 });
 
 function openOutside(url: string): void {
@@ -165,13 +122,13 @@ function createWindow(): void {
     event.preventDefault(); // The title says what is waiting; the page does not get to overwrite it.
   });
   created.on("focus", () => {
-    session?.attend(true);
+    desk.attend(true);
   });
   created.on("blur", () => {
-    session?.attend(false);
+    desk.attend(false);
   });
   created.on("close", (event) => {
-    const { working, unsent } = session?.view().busy ?? { working: 0, unsent: 0 };
+    const { working, unsent } = current?.kind === "chat" ? current.busy : { working: 0, unsent: 0 };
     const losing = [...(working > 0 ? [`${String(working)} agent${working > 1 ? "s" : ""} still working`] : []), ...(unsent > 0 ? [`${String(unsent)} draft${unsent > 1 ? "s" : ""} not sent`] : [])];
     const stay =
       losing.length > 0 &&
@@ -194,14 +151,14 @@ function createWindow(): void {
 }
 
 app.on("window-all-closed", () => {
-  app.quit(); // With no window there is nobody to approve a run, so the agents and the session go too.
+  app.quit(); // With no window there is nobody to approve a run, so the desk and its agents go too.
 });
 
 app.on("will-quit", (event) => {
-  if (session !== null && !stopped) {
+  if (!stopped) {
     stopped = true;
-    event.preventDefault(); // Stop the agents and tell the chat first, then quit for real.
-    session
+    event.preventDefault(); // Let the desk stop its agents and tell the chat first, then quit for real.
+    desk
       .stop()
       .catch(report)
       .finally(() => {
@@ -214,7 +171,8 @@ app
   .whenReady()
   .then(() => {
     createWindow();
-    startSession();
+    desk.start();
+    desk.attend(window?.isFocused() ?? true);
   })
   .catch((error: unknown) => {
     dialog.showErrorBox("Player Two could not start", problemOf(error));

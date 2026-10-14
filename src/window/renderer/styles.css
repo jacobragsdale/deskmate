@@ -111,6 +111,10 @@ textarea {
   text-align: center;
 }
 
+.stopped {
+  white-space: pre-wrap; /* What the desk last said comes in lines. */
+}
+
 /* ── layout ── */
 
 .app {
