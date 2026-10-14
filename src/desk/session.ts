@@ -6,7 +6,8 @@ import { join as joinPath } from "node:path";
 
 import { z } from "zod";
 
-import type { Arrival, ChatView, Command, CurrentView, Hit, LineView, MessageView, NoteView, Notice, ReplyView, RequestView, RowView } from "../shared/ipc.ts";
+import { runOf } from "../shared/ipc.ts";
+import type { Arrival, AskView, ChatView, Command, CurrentView, Hit, LineView, MessageView, NoteView, Notice, ReplyView, RequestView, RowView } from "../shared/ipc.ts";
 import { agentPrompt, ChatLog, chatOf, continues, mentions, ONLINE, refOf, rings } from "../core/chat.ts";
 import type { Accepted, Entry, Message, Request } from "../core/chat.ts";
 import { readContent } from "../core/kinds.ts";
@@ -15,7 +16,7 @@ import type { Content, ContentOf } from "../core/kinds.ts";
 import { acpRunner } from "./agents/acp.ts";
 import { oneshotRunner, runAgent } from "./agents/oneshot.ts";
 import { PRESETS } from "./agents/presets.ts";
-import type { AgentRunner, FollowUp, RunHandlers } from "./agents/runner.ts";
+import type { AgentRunner, FollowUp, PermissionAsk, RunHandlers } from "./agents/runner.ts";
 import { AgentCancelledError, PlayerTwoError, Refused } from "./client.ts";
 import type { Client, Found, Runner } from "./client.ts";
 import { atMost } from "./permissions.ts";
@@ -31,8 +32,6 @@ const RETRY_DELAY = 5; // Seconds to wait before asking a hub that did not answe
 const UPDATE_DELAY = 60; // Seconds to wait before asking a hub on another protocol again: its answer changes only when someone updates one side.
 const STOP_WAIT = 3; // Seconds to give stopped agents to go before the session is done.
 const PAGE = 50; // Events of one chat loaded at a time: its newest when it is first listed, and as many again each time the user scrolls back.
-// Until P3-C3 shows them to the owner, what the agent asks of them is refused. The activity feed is P3-D3's.
-const IN_THE_DARK: RunHandlers = { activity: () => undefined, permission: () => Promise.resolve("refuse") };
 
 /** What the session remembers between runs, in app-state.json. */
 const savedSchema = z.strictObject({ read: z.record(z.string(), z.int()), chat: z.string().nullable() });
@@ -59,6 +58,16 @@ interface Draft {
   readonly branch: string; // The branch it worked on.
 }
 
+/** An agent's ask waiting for its owner's answer. */
+interface Waiting {
+  readonly run: string; // The run's key.
+  readonly chat: string;
+  readonly ask: PermissionAsk;
+  readonly answer: (answer: Answer) => void;
+}
+
+type Answer = Awaited<ReturnType<RunHandlers["permission"]>>;
+
 interface AgentRun {
   readonly entry: Entry; // The request.
   readonly repo: string;
@@ -71,10 +80,10 @@ interface AgentRun {
 
 type ChatCommand = Exclude<Command, { do: "join" | "doctor" | "search" }>;
 type MessageDo = "send" | "reply" | "react" | "edit" | "delete";
-type JobDo = "sendDraft" | "discardDraft" | "run" | "stop" | "stopAll" | "decline" | "withdraw";
+type JobDo = "sendDraft" | "discardDraft" | "run" | "stop" | "stopAll" | "permit" | "decline" | "withdraw";
 
 const MESSAGE_DOS: ReadonlySet<string> = new Set<MessageDo>(["send", "reply", "react", "edit", "delete"]);
-const JOB_DOS: ReadonlySet<string> = new Set<JobDo>(["sendDraft", "discardDraft", "run", "stop", "stopAll", "decline", "withdraw"]);
+const JOB_DOS: ReadonlySet<string> = new Set<JobDo>(["sendDraft", "discardDraft", "run", "stop", "stopAll", "permit", "decline", "withdraw"]);
 
 function isAboutMessages(command: ChatCommand): command is Extract<ChatCommand, { readonly do: MessageDo }> {
   return MESSAGE_DOS.has(command.do);
@@ -99,10 +108,6 @@ function sleep(seconds: number, signal?: AbortSignal): Promise<void> {
       { once: true }
     );
   });
-}
-
-function runKey(request: string, repo: string): string {
-  return `${request} ${repo}`;
 }
 
 function dayOf(ts: number): string {
@@ -133,6 +138,8 @@ export class Session {
   private readonly stopping = new AbortController();
   private readonly drafts = new Map<string, Draft[]>(); // Per chat, answers waiting for review, oldest first.
   private readonly runs = new Map<string, AgentRun>(); // By request and repo.
+  private readonly waiting = new Map<string, Waiting>(); // Asks the user has not answered, by the id the view gives each.
+  private asked = 0; // Asks made so far, for each one's id.
   private readonly read: Record<string, number>; // Per chat, the seq of the newest event the user has seen.
   private readonly paged = new Map<string, boolean>(); // Chats whose newest page has been loaded, and whether there may be events before what is loaded.
   private readonly linked = new Map<string, NoteView | null>(); // Notes linked to that are not loaded here, as the hub answered for each; null while it is being asked.
@@ -289,13 +296,23 @@ export class Session {
         this.runRequest(command.id, command.repo, command.post, command.mode, command.text);
         break;
       case "stop":
-        this.runs.get(runKey(command.id, command.repo))?.cancel.abort();
+        this.runs.get(runOf(command.id, command.repo))?.cancel.abort();
         break;
       case "stopAll":
         for (const run of [...this.runs.values()].filter((each) => chatOf(each.entry.event, this.me) === command.chat)) {
           run.cancel.abort();
         }
         break;
+      case "permit": {
+        const waiting = this.waiting.get(command.ask);
+        if (waiting === undefined) {
+          throw new PlayerTwoError("your agent is no longer waiting for that answer");
+        }
+        this.waiting.delete(command.ask);
+        waiting.answer(command.answer);
+        this.hooks.changed();
+        break;
+      }
       case "decline":
         await this.decline(command.id, command.repo);
         break;
@@ -371,6 +388,9 @@ export class Session {
       lines: this.lines(chat),
       drafts: (this.drafts.get(chat) ?? []).map((draft) => ({ id: draft.entry.event.id, repo: draft.repo, asker: draft.entry.event.author, text: draft.text })),
       running: [...this.runs.values()].some((run) => chatOf(run.entry.event, this.me) === chat),
+      asks: [...this.waiting].flatMap(([id, waiting]): AskView[] =>
+        waiting.chat === chat ? [{ id, run: waiting.run, action: waiting.ask.action, title: oneLine(waiting.ask.title, 200), detail: waiting.ask.detail }] : []
+      ),
       focus: this.focus
     };
   }
@@ -437,7 +457,7 @@ export class Session {
   private stillMine(message: Message, now: number): Request[] {
     const { event } = message.entry;
     const drafts = this.drafts.get(chatOf(event, this.me)) ?? [];
-    const going = (repo: string): boolean => this.runs.has(runKey(event.id, repo)) || drafts.some((draft) => draft.entry.event.id === event.id && draft.repo === repo);
+    const going = (repo: string): boolean => this.runs.has(runOf(event.id, repo)) || drafts.some((draft) => draft.entry.event.id === event.id && draft.repo === repo);
     return this.chats.requests(message, now, true).filter((request) => request.owner === this.me && going(request.repo));
   }
 
@@ -505,7 +525,7 @@ export class Session {
   private myStatus(request: Request): RequestView["status"] {
     const { repo, state } = request;
     const { event } = request.message.entry;
-    const run = this.runs.get(runKey(event.id, repo));
+    const run = this.runs.get(runOf(event.id, repo));
     if ((this.drafts.get(chatOf(event, this.me)) ?? []).some((draft) => draft.entry.event.id === event.id && draft.repo === repo)) {
       return { kind: "drafted" };
     }
@@ -1027,7 +1047,7 @@ export class Session {
   /** Start a run at `mode`, unless the agent that answers cannot be held to it: then refuse it, before anything is told to the chat, saying which setting would let it run. */
   private startRun(message: Message, repo: string, post: boolean, mode: PermissionMode): void {
     const checkout = this.checkouts.get(repo);
-    const key = runKey(message.entry.event.id, repo);
+    const key = runOf(message.entry.event.id, repo);
     if (this.runs.has(key)) {
       return;
     }
@@ -1069,9 +1089,22 @@ export class Session {
     return retired;
   }
 
+  /**
+   * Put an agent's ask to its owner, in the view and, for when they are not looking, as an arrival, and wait for their answer. A run that ends first takes its asks with it: see `work`.
+   */
+  private askOwner(key: string, chat: string, repo: string, ask: PermissionAsk): Promise<Answer> {
+    return new Promise((answer) => {
+      this.asked += 1;
+      this.waiting.set(String(this.asked), { run: key, chat, ask, answer });
+      this.hooks.arrived({ chat, title: `Your ${repo} agent is waiting for your answer`, body: oneLine(ask.title, 120), forMe: true, rings: true });
+      this.hooks.changed();
+    });
+  }
+
   private async work(key: string, run: AgentRun, checkout: Checkout, runner: AgentRunner, prompt: string, followUp: FollowUp): Promise<void> {
     const { entry, repo } = run;
     const chat = chatOf(entry.event, this.me);
+    const handlers: RunHandlers = { activity: () => undefined, permission: (ask) => this.askOwner(key, chat, repo, ask) };
     const request = [entry.event.id];
     const stopped = (): boolean => run.cancel.signal.aborted; // Asked afresh each time: the user may stop it while this waits.
     let head: Head;
@@ -1094,7 +1127,7 @@ export class Session {
       if (stopped()) {
         throw new AgentCancelledError("stopped"); // While the chat was being told: it ends as stopped, without the agent being started only to be killed.
       }
-      const text = fitText(await runner.run(prompt, checkout.path, run.mode, IN_THE_DARK, run.cancel.signal, followUp));
+      const text = fitText(await runner.run(prompt, checkout.path, run.mode, handlers, run.cancel.signal, followUp));
       if (text === "") {
         ending = "the agent returned nothing";
       } else if (run.post) {
@@ -1111,6 +1144,12 @@ export class Session {
     } else if (ending !== "") {
       await this.client.publish(chat, "job.error", { repo }, request).catch(() => undefined); // Only the fact: what the agent printed on the way down may not be fit to share.
       this.hooks.notice({ title: `your ${repo} agent`, body: ending, severity: "error" });
+    }
+    for (const [id, waiting] of this.waiting) {
+      if (waiting.run === key) {
+        this.waiting.delete(id); // Nobody is asking any more: the runner stopped waiting for it when the run ended.
+        waiting.answer("refuse");
+      }
     }
     this.runs.delete(key);
     this.hooks.changed();

@@ -18,7 +18,8 @@ import type { FollowUp, PermissionAsk, RunHandlers } from "../src/desk/agents/ru
 import { AgentCancelledError } from "../src/desk/client.ts";
 import type { Client } from "../src/desk/client.ts";
 import { Session } from "../src/desk/session.ts";
-import type { ActivityItem, RequestView } from "../src/shared/ipc.ts";
+import { runOf } from "../src/shared/ipc.ts";
+import type { ActivityItem, Arrival, RequestView } from "../src/shared/ipc.ts";
 import { startHub, TEAM_REPOS } from "./startHub.ts";
 
 const FAKE = join(import.meta.dirname, "fixtures", "fake-acp-agent.ts");
@@ -280,13 +281,13 @@ await test(
  * reaches the agent's prompt as context: the agent acts on every word of the prompt it knows. Bob reviews what it drafts, as a teammate's request is first offered, except where it posts.
  */
 await test(
-  "two sessions and the scripted agent: a teammate's request accepted read-only cannot write a file, the owner's own runs at the mode for their own, and Stop ends a run within three seconds",
+  "two sessions and the scripted agent: a teammate's request accepted read-only cannot write a file, accepted supervised it asks the owner and writes only once allowed, the owner's own runs at the mode for their own, and Stop ends a run within three seconds",
   { timeout: 60_000 },
   async (t) => {
     const hub = await startHub(t, () => Date.now() / 1000);
     const [alice, bob] = [await hub.join("alice"), await hub.join("bob")];
     bob.saveAgents([fake()], "fake");
-    const channels = ["#readonly", "#own", "#stop"];
+    const channels = ["#readonly", "#supervised", "#own", "#stop"];
     for (const person of [alice, bob]) {
       for (const channel of channels) {
         await person.publish(channel, "channel.join", {});
@@ -298,7 +299,14 @@ await test(
     writeFileSync(join(checkout, ".git", "config"), `[remote "origin"]\n\turl = ${TEAM_REPOS}Platform/_git/uploader\n`);
     writeFileSync(join(checkout, ".git", "HEAD"), "ref: refs/heads/main\n");
     const hooks = { changed: () => undefined, notice: () => undefined, arrived: () => undefined, confirmClone: () => Promise.resolve(false) };
-    const owner = new Session(bob, dev, hooks, { presence: 1, describe: () => Promise.resolve({ branch: "main", commit: "c0ffee".padEnd(40, "0"), dirty: false }) });
+    const arrivals: Arrival[] = [];
+    const told = {
+      ...hooks,
+      arrived: (arrival: Arrival) => {
+        arrivals.push(arrival);
+      }
+    };
+    const owner = new Session(bob, dev, told, { presence: 1, describe: () => Promise.resolve({ branch: "main", commit: "c0ffee".padEnd(40, "0"), dirty: false }) });
     const asker = new Session(alice, join(hub.dir, "dev-alice"), hooks, { presence: 1 });
     for (const session of [owner, asker]) {
       session.start();
@@ -347,6 +355,21 @@ await test(
     assert.equal(existsSync(edited), false);
     assert.equal(await accepted("#readonly"), "read-only");
     await owner.handle({ do: "discardDraft", chat: "#readonly", id: readOnly, repo: "uploader" });
+
+    // Accepted supervised, the agent's edit waits for bob's answer, in his view and as an arrival for when he is not looking, and the file is written only once he allows it. Alice sees no ask.
+    const supervised = await asked("#supervised", "@bob/uploader edit the README", "supervised", true);
+    const ask = await until("bob is asked", () => owner.view().current?.asks[0]);
+    assert.deepEqual({ ...ask, id: "" }, { id: "", run: runOf(supervised, "uploader"), action: "edit", title: "Edit edited.txt", detail: JSON.stringify({ title: "Edit edited.txt" }, null, 1) });
+    assert.deepEqual(arrivals.at(-1), { chat: "#supervised", title: "Your uploader agent is waiting for your answer", body: "Edit edited.txt", forMe: true, rings: true });
+    await delay(300);
+    assert.equal(existsSync(edited), false);
+    assert.deepEqual(shown(asker, "#supervised", supervised)?.status.kind === "working" && asker.view().current?.asks, []);
+    await owner.handle({ do: "permit", ask: ask.id, answer: "allow-once" });
+    await until("the answer, posted", () => asker.view().current?.messages.some((message) => message.agent === "uploader" && message.body === "turn 1: read; edit allowed"));
+    assert.equal(existsSync(edited), true);
+    assert.deepEqual(owner.view().current?.asks, []);
+    await assert.rejects(owner.handle({ do: "permit", ask: ask.id, answer: "allow-once" }), { message: "your agent is no longer waiting for that answer" });
+    rmSync(edited);
 
     // Bob's own request from his window runs at once, at the mode for his own requests, "auto-edits" when he joined: it edits without asking.
     await owner.handle({ do: "open", chat: "#own" });

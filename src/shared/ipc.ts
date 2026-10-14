@@ -80,6 +80,17 @@ const rowSchema = z
   })
   .readonly();
 
+/** Something the user's agent asks before it acts, that its run's mode leaves to them: which run, what in one line, and the detail, the command or the file and its change, at most 8 KB. */
+const askSchema = z
+  .strictObject({
+    id: z.string(), // What `permit` names.
+    run: z.string(), // The run's id, as `runOf` makes it.
+    action: z.string(), // The kind of action, as ACP names it: "edit", "execute", "fetch" and so on. "Allow for this run" allows that kind until the run ends.
+    title: z.string(),
+    detail: z.string()
+  })
+  .readonly();
+
 const currentSchema = z
   .strictObject({
     chat: z.string(),
@@ -92,6 +103,7 @@ const currentSchema = z
     lines: z.array(lineSchema).readonly(),
     drafts: z.array(z.strictObject({ id: z.string(), repo: z.string(), asker: z.string(), text: z.string() }).readonly()).readonly(), // Answers waiting for review, oldest first, each with its request's id.
     running: z.boolean(), // Whether one of the user's agents is at work here.
+    asks: z.array(askSchema).readonly(), // What the user's agents at work on requests here are waiting for them to allow or refuse, oldest first.
     // The message or answer the user last opened a link to, for the window to scroll to and highlight; null once another chat is opened.
     // `nth` counts the links opened, so the same one opened again is scrolled to again.
     focus: z.strictObject({ id: z.string(), nth: z.int() }).readonly().nullable()
@@ -149,6 +161,7 @@ export const commandSchema = z.discriminatedUnion("do", [
   // `mode` is what the agent may do without asking, and the run never goes beyond it. `text` is the request as the user was shown it: an edit since then refuses the run.
   z.strictObject({ do: z.literal("run"), id, repo, post: z.boolean(), mode: permissionModeSchema, text: z.string() }),
   z.strictObject({ do: z.literal("stop"), id, repo }),
+  z.strictObject({ do: z.literal("permit"), ask: z.string().max(40), answer: z.enum(["allow-once", "allow-run", "refuse"]) }), // The user's answer to an ask in the view.
   z.strictObject({ do: z.literal("stopAll"), chat }), // Stop every agent of the user's at work on a request in this chat, in a thread or not.
   z.strictObject({ do: z.literal("decline"), id, repo }),
   z.strictObject({ do: z.literal("joinChannel"), name: z.string().max(40) }),
@@ -230,6 +243,11 @@ export const windowLineSchema = z.discriminatedUnion("t", [
   z.strictObject({ t: z.literal("attend"), attentive: z.boolean() }) // Whether the user is looking at the window.
 ]);
 
+/** The id of the user's run of their agent in `repo` on the request `id`, as an ask and an activity item name it. */
+export function runOf(id: string, repo: string): string {
+  return `${id} ${repo}`;
+}
+
 /** One line as its sender wrote it, read with the schema for its direction. Null when it is not a line of the protocol. */
 export function readLine<T>(schema: z.ZodType<T>, text: string): T | null {
   try {
@@ -250,6 +268,7 @@ export type View = z.infer<typeof viewSchema>;
 export type ChatView = Extract<View, { kind: "chat" }>;
 export type Check = z.infer<typeof checkSchema>;
 export type ActivityItem = z.infer<typeof activityItemSchema>;
+export type AskView = z.infer<typeof askSchema>;
 export type Hit = z.infer<typeof hitSchema>;
 export type Command = z.infer<typeof commandSchema>;
 export type Outcome = z.infer<typeof outcomeSchema>;
