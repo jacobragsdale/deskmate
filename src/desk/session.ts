@@ -389,8 +389,19 @@ export class Session {
       notes: this.notesOf(message.text),
       quote: answered === null ? "" : `${answered.entry.event.author}: ${oneLine(answered.text)}`,
       header: !continues(previous, message),
-      requests: this.chats.requests(message, now).flatMap((request) => this.requestView(request))
+      requests: (message.deleted ? this.stillMine(message, now) : this.chats.requests(message, now)).flatMap((request) => this.requestView(request))
     };
+  }
+
+  /**
+   * A deleted request asks nothing of anyone, so the fold gives it no jobs; but what the user's desk still has going on it stays theirs whatever its asker does:
+   * a run, shown as running with its Stop, and a draft, to send or throw away.
+   */
+  private stillMine(message: Message, now: number): Request[] {
+    const { event } = message.entry;
+    const drafts = this.drafts.get(chatOf(event, this.me)) ?? [];
+    const going = (repo: string): boolean => this.runs.has(runKey(event.id, repo)) || drafts.some((draft) => draft.entry.event.id === event.id && draft.repo === repo);
+    return this.chats.requests(message, now, true).filter((request) => request.owner === this.me && going(request.repo));
   }
 
   /** An event whose signature failed: who it claims to be from and when, and never what it says. */

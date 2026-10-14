@@ -399,11 +399,14 @@ export class ChatLog {
     return counted.filter((entry) => entry.seq > readUpTo && entry.event.author !== this.me).length;
   }
 
-  /** The agents a message tags and where each stands, in the order they are tagged; none once it is deleted. A job reported as working for longer than any run takes is shown as waiting again. */
-  public requests(message: Message, now: number): Request[] {
+  /**
+   * The agents a message tags and where each stands, in the order they are tagged; none once it is deleted, unless `evenDeleted` asks for them all the same, as its owner's desk does for a run it still has going.
+   * A job reported as working for longer than any run takes is shown as waiting again.
+   */
+  public requests(message: Message, now: number, evenDeleted = false): Request[] {
     const id = message.entry.event.id;
     const found = this.folded(this.where.get(id) ?? "").messages.get(id);
-    const jobs = found === undefined || found.deleted ? [] : found.jobs;
+    const jobs = found === undefined || (found.deleted && !evenDeleted) ? [] : found.jobs;
     return jobs.map((job) => ({ message: job.request, owner: job.owner, repo: job.repo, state: job.state === "working" && now - job.since > STALE ? "waiting" : job.state, accepted: job.accepted }));
   }
 

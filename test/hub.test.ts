@@ -10,7 +10,7 @@ import type { TestContext } from "node:test";
 import { noteLink } from "../src/core/links.ts";
 import { authHeader, loadKey, signEvent } from "../src/core/sign.ts";
 import { AgentCancelledError, http, join as joinHub, loadClient, PlayerTwoError } from "../src/desk/client.ts";
-import type { Client, Transport } from "../src/desk/client.ts";
+import type { Client, Runner, Transport } from "../src/desk/client.ts";
 import { Session } from "../src/desk/session.ts";
 import type { Options } from "../src/desk/session.ts";
 import { createHub } from "../src/hub/app.ts";
@@ -429,6 +429,46 @@ await test("a link to a note shows who wrote it and its first words, from what i
     { state: "hidden", id: hidden.event.id },
     { state: "seen", id: asked.event.id, author: "bob", words: "bob said this, then left" }
   ]);
+});
+
+/** An agent that answers "done" at once, unless its prompt ends "take your time": then it works until its owner stops it. */
+const patient: Runner = (argv, _cwd, cancel) =>
+  argv.at(-1)?.endsWith("take your time") === true
+    ? new Promise((_resolve, reject) => {
+        cancel.addEventListener("abort", () => {
+          reject(new AgentCancelledError("stopped"));
+        });
+      })
+    : Promise.resolve("done");
+
+await test("a request its asker deletes leaves its owner a run they can still see and stop, and a draft they can still throw away", { timeout: 30_000 }, async (t) => {
+  const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+  const alice = await hub.join("alice");
+  const dev = join(hub.dir, "dev-bob");
+  checkout(dev, "uploader");
+  const bob = deskOf(t, await hub.join("bob"), dev, { describe: () => Promise.resolve({ branch: "main", commit: COMMIT, dirty: false }), runner: patient });
+  const slow = (await alice.publish("bob", "message", { text: "@bob/uploader take your time", via: "cli" })).event.id;
+  const quick = (await alice.publish("bob", "message", { text: "@bob/uploader a quick one", via: "cli" })).event.id;
+  const kinds = (id: string): string[] | undefined => shownTo(bob.session, id)?.requests.map((request) => request.status.kind);
+  await until(bob.session, "both requests", () => [slow, quick].every((id) => kinds(id)?.[0] === "ready"));
+  await bob.session.handle({ do: "run", id: slow, repo: "uploader", post: false });
+  await bob.session.handle({ do: "run", id: quick, repo: "uploader", post: false });
+  await until(bob.session, "one running, its acceptance told, and one drafted", () => shownTo(bob.session, slow)?.requests[0]?.accepted !== null && kinds(quick)?.[0] === "drafted");
+
+  await alice.publish("bob", "message.delete", {}, [slow]);
+  await alice.publish("bob", "message.delete", {}, [quick]);
+  await until(bob.session, "both deleted", () => shownTo(bob.session, slow)?.deleted === true && shownTo(bob.session, quick)?.deleted === true);
+  assert.deepEqual([kinds(slow), kinds(quick), shownTo(bob.session, slow)?.requests[0]?.accepted?.commit], [["running"], ["drafted"], COMMIT]);
+  await bob.session.handle({ do: "stop", id: slow, repo: "uploader" });
+  await bob.session.handle({ do: "discardDraft", chat: "alice", id: quick, repo: "uploader" });
+  await until(bob.session, "nothing left going", (view) => view.busy.working === 0 && view.busy.unsent === 0);
+  assert.deepEqual(
+    (await alice.events({ chat: "bob" }))
+      .map((delivered) => delivered.event.kind)
+      .filter((kind) => kind.startsWith("job."))
+      .sort((a, b) => a.localeCompare(b)),
+    ["job.accepted", "job.accepted", "job.cancelled", "job.declined"]
+  ); // Each run told the chat how it ended.
 });
 
 await test("an agent whose run cannot be told to the chat does not start", { timeout: 30_000 }, async (t) => {
