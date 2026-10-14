@@ -1,8 +1,9 @@
 /**
  * A scripted ACP agent for the tests, built on the SDK's agent side and run with `node`. What it does depends on words in the prompt:
- * `read` reports a read tool call; `edit` asks to edit and writes edited.txt only if allowed; `run` asks to execute; `slow` waits until cancelled, with a child process of its own;
+ * `read` reports a read tool call; each `edit` asks to edit and writes edited.txt only if allowed; `run` asks to execute; `slow` waits until cancelled, with a child process of its own;
  * `deaf` does the same but takes no notice of a cancel; `mcp` says which MCP servers its session has. Whatever it did, it says so in a short message streamed in two chunks,
- * after the number of the turn in its session. Started with --signed-out it says it needs signing in, and signing in fails. It adds its pid, and its child's, to `pids` in its folder.
+ * after the number of the turn in its session. Started with --signed-out it says it needs signing in, and signing in fails; with --always-only it offers no way to be allowed just once.
+ * It adds its pid, and its child's, to `pids` in its folder.
  */
 
 import { spawn } from "node:child_process";
@@ -21,6 +22,7 @@ interface Session {
 
 const sessions = new Map<string, Session>();
 const signedOut = process.argv.includes("--signed-out");
+const alwaysOnly = process.argv.includes("--always-only"); // Offers to be allowed only always, never once.
 appendFileSync("pids", `${String(process.pid)}\n`);
 
 /** Ask to do something, as a tool call that waits for the client's answer, and report how it went. Resolves with whether it was allowed. */
@@ -30,7 +32,7 @@ async function permitted(client: acp.AgentContext, sessionId: string, toolCallId
     sessionId,
     toolCall: { toolCallId, title, kind, rawInput: { title } },
     options: [
-      { optionId: "yes", name: "Allow", kind: "allow_once" },
+      ...(alwaysOnly ? [] : [{ optionId: "yes", name: "Allow", kind: "allow_once" } as const]),
       { optionId: "always", name: "Always allow", kind: "allow_always" },
       { optionId: "no", name: "Reject", kind: "reject_once" }
     ]
@@ -92,8 +94,8 @@ acp
       await client.notify("session/update", { sessionId, update: { sessionUpdate: "tool_call_update", toolCallId: "read", status: "completed" } });
       did.push("read");
     }
-    if (has("edit")) {
-      const allowed = await permitted(client, sessionId, `edit-${String(session.turns)}`, "edit", "Edit edited.txt");
+    for (const [index] of [...text.matchAll(/\bedit\b/g)].entries()) {
+      const allowed = await permitted(client, sessionId, `edit-${String(session.turns)}-${String(index)}`, "edit", "Edit edited.txt");
       if (allowed) {
         writeFileSync(join(session.cwd, "edited.txt"), "edited\n");
       }

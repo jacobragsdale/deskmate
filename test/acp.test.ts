@@ -1,7 +1,7 @@
 /** The ACP runner against a scripted agent, test/fixtures/fake-acp-agent.ts, run with node: its answer, signing in, what each mode allows, asks and refuses, stopping, follow-ups, and that nothing it started is left behind. */
 
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -95,3 +95,61 @@ await test("an agent that needs signing in ends saying how, and one whose progra
     message: `could not start Fake's program "no-such-agent-program": spawn no-such-agent-program ENOENT. Check it on the Setup page`
   });
 });
+
+await test(
+  "the desk answers an agent's permission requests by the run's mode: reads at once, and edits and commands allowed, refused or asked of the owner as the table says",
+  { timeout: 60_000 },
+  async (t) => {
+    const runner = acpRunner(fake());
+    const cases = [
+      ["read-only", "allow-once", "read; edit refused; run refused", []],
+      ["supervised", "refuse", "read; edit refused; run refused", ["edit", "execute"]],
+      ["supervised", "allow-once", "read; edit allowed; run allowed", ["edit", "execute"]],
+      ["auto-edits", "refuse", "read; edit allowed; run refused", ["execute"]],
+      ["full", "refuse", "read; edit allowed; run allowed", []]
+    ] as const;
+    for (const [mode, answer, said, asked] of cases) {
+      const dir = folder(t);
+      const { handlers, asks } = recorder(answer);
+      assert.equal(await runner.run("read, edit and run", dir, mode, handlers, never), `turn 1: ${said}`, mode);
+      assert.deepEqual(
+        asks.map((ask) => ask.action),
+        asked,
+        mode
+      );
+      assert.equal(existsSync(join(dir, "edited.txt")), said.includes("edit allowed"), mode);
+      assert.deepEqual(await left(dir), [], mode);
+    }
+    const { handlers, asks } = recorder();
+    await runner.run("edit", folder(t), "supervised", handlers, never);
+    assert.deepEqual(asks, [{ action: "edit", title: "Edit edited.txt", detail: JSON.stringify({ title: "Edit edited.txt" }, null, 1) }]);
+  }
+);
+
+await test(
+  "allowing an action for the run allows that kind without asking until the run ends and not after, and an agent that offers to be allowed only always is refused",
+  { timeout: 30_000 },
+  async (t) => {
+    const runner = acpRunner(fake());
+    const first = recorder("allow-run");
+    assert.equal(await runner.run("edit, edit, run", folder(t), "supervised", first.handlers, never), "turn 1: edit allowed; edit allowed; run allowed");
+    assert.deepEqual(
+      first.asks.map((ask) => ask.action),
+      ["edit", "execute"]
+    );
+    assert.deepEqual(
+      first.items.filter((item) => item.kind === "permission").map((item) => [item.id, item.outcome, item.status]),
+      [
+        ["permission edit-1-0", "", "running"],
+        ["permission edit-1-0", "allowed", "done"],
+        ["permission edit-1-1", "allowed", "done"],
+        ["permission run-1", "", "running"],
+        ["permission run-1", "allowed", "done"]
+      ]
+    );
+    const second = recorder("refuse");
+    assert.equal(await runner.run("edit", folder(t), "supervised", second.handlers, never), "turn 1: edit refused");
+    assert.equal(second.asks.length, 1);
+    assert.equal(await acpRunner(fake("--always-only")).run("edit", folder(t), "full", recorder().handlers, never), "turn 1: edit refused");
+  }
+);

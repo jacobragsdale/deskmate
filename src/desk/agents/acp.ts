@@ -12,12 +12,14 @@ import type { Readable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 import { z } from "zod";
 
+import { head } from "../../core/text.ts";
 import { VERSION } from "../../core/version.ts";
 import { commandLineOf } from "../../core/wire.ts";
 import type { Agent } from "../../core/wire.ts";
 import type { ActivityItem } from "../../shared/ipc.ts";
 import { AgentCancelledError, PlayerTwoError } from "../client.ts";
-import type { PermissionMode } from "../permissions.ts";
+import { decide } from "../permissions.ts";
+import type { Action, PermissionMode } from "../permissions.ts";
 import { AGENT_TIMEOUT } from "./oneshot.ts";
 import { signInFor } from "./presets.ts";
 import type { AgentRunner, RunHandlers } from "./runner.ts";
@@ -25,6 +27,8 @@ import type { AgentRunner, RunHandlers } from "./runner.ts";
 const AUTH_REQUIRED = -32000; // The JSON-RPC error code an ACP agent answers with when it needs signing in first.
 const SAID = 500; // Characters of what the agent last wrote on standard error that a failure quotes.
 const GOING = 1; // Seconds to wait, once the connection has closed, for the agent's process to say how it ended.
+const DETAIL = 8_000; // Characters of a tool call's input an ask shows.
+const CANCELLED: acp.RequestPermissionResponse = { outcome: { outcome: "cancelled" } };
 // Player Two's own MCP server, attached to every session: found on the PATH by name, as the `player-two` an agent is told about in its prompt is,
 // and without --allow-send, so the agent can read and search the chat as the user and send nothing.
 const MCP_SERVER: acp.McpServerStdio = { name: "player-two", command: "player-two", args: ["mcp"], env: [] };
@@ -40,8 +44,68 @@ type Initialized = z.infer<typeof initializedSchema>;
 interface Turn {
   readonly mode: PermissionMode;
   readonly handlers: RunHandlers;
+  readonly cancel: AbortSignal; // The run's: a stop ends any wait for the owner's answer.
   readonly tools: Map<string, ActivityItem>;
+  readonly kinds: Map<string, Action>; // Each tool call's kind, as the agent first said it, for a permission request that leaves it out.
+  readonly allowed: Set<Action>; // Kinds of action the owner allowed for this run. Never kept past it.
   text: string;
+}
+
+/** The kind of action a tool call is, as `decide` reads it. A kind ACP adds later, switching the agent's own mode among them, is `other`. */
+function actionOf(kind: acp.ToolKind | null | undefined): Action | null {
+  switch (kind) {
+    case "read":
+    case "edit":
+    case "delete":
+    case "move":
+    case "search":
+    case "execute":
+    case "think":
+    case "fetch":
+    case "other":
+      return kind;
+    case "switch_mode":
+      return "other";
+    case null:
+    case undefined:
+      return null;
+  }
+}
+
+/** What an ask shows the owner beyond its title: the change to each file, or else what the agent passed the tool, at most DETAIL characters. */
+function detailOf(call: acp.ToolCallUpdate): string {
+  const diffs = (call.content ?? []).flatMap((each) => (each.type === "diff" ? [`${each.path}\n${each.newText}`] : []));
+  const detail = diffs.length > 0 ? diffs.join("\n\n") : call.rawInput === undefined ? "" : JSON.stringify(call.rawInput, null, 1);
+  return head(detail, DETAIL);
+}
+
+/**
+ * The agent's option that carries out a decision. Allowing takes only an option that allows once: one that allows always would outlast the run, and the run's own memory is the desk's.
+ * Refusing takes one that rejects, once or always. An agent that offers none that matches is refused; one that offers no way to refuse is told the request was cancelled, which allows nothing.
+ */
+function optionFor(options: readonly acp.PermissionOption[], decision: "allow" | "refuse"): acp.RequestPermissionResponse {
+  const option =
+    decision === "allow" ? options.find((each) => each.kind === "allow_once") : (options.find((each) => each.kind === "reject_once") ?? options.find((each) => each.kind === "reject_always"));
+  if (option !== undefined) {
+    return { outcome: { outcome: "selected", optionId: option.optionId } };
+  }
+  return decision === "allow" ? optionFor(options, "refuse") : CANCELLED;
+}
+
+/** Resolves once `signal` is aborted. */
+function aborted(signal: AbortSignal): Promise<"aborted"> {
+  return new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve("aborted");
+    }
+    signal.addEventListener(
+      "abort",
+      () => {
+        resolve("aborted");
+      },
+      { once: true }
+    );
+  });
 }
 
 /** A tool call as the owner's feed shows it, until P3-D2 names things as a person would: the agent's own title, and whether it is going, done or failed. */
@@ -127,7 +191,7 @@ class Conversation {
     this.failed.catch(() => undefined); // Read only by what is waiting on the agent; at any other time the process going is not a failure of anything.
     this.connection = acp
       .client({ name: "player-two" })
-      .onRequest("session/request_permission", () => this.permit())
+      .onRequest("session/request_permission", (context) => this.permit(context.params, context.signal))
       .onNotification("session/update", (context) => {
         this.update(context.params);
       })
@@ -218,9 +282,36 @@ class Conversation {
     }
   }
 
-  /** The agent asks before it acts. Until P3-B4 answers by the mode, nothing is allowed. */
-  private permit(): acp.RequestPermissionResponse {
-    return { outcome: { outcome: "cancelled" } };
+  /**
+   * The agent asks before it acts: answer by the run's mode, at once when it allows or refuses, and when it asks, with the owner's answer. "Allow for this run" allows that kind of action
+   * without asking until the run ends. A request outside a turn, or one still waiting when the run is stopped or the agent takes it back, is answered as cancelled.
+   */
+  private async permit(request: acp.RequestPermissionRequest, signal: AbortSignal): Promise<acp.RequestPermissionResponse> {
+    const turn = this.turn;
+    if (turn === null || request.sessionId !== this.sessionId) {
+      return CANCELLED;
+    }
+    const call = request.toolCall;
+    const action = actionOf(call.kind) ?? turn.kinds.get(call.toolCallId) ?? "other";
+    const ask = { action, title: call.title ?? turn.tools.get(call.toolCallId)?.title ?? action, detail: detailOf(call) };
+    const item = (outcome: string, status: ActivityItem["status"]): void => {
+      turn.handlers.activity({ id: `permission ${call.toolCallId}`, run: "", kind: "permission", title: ask.title, outcome, status, quiet: false, detail: ask.detail });
+    };
+    let decision = turn.allowed.has(action) ? "allow" : decide(turn.mode, action);
+    if (decision === "ask") {
+      item("", "running");
+      const answer = await Promise.race([turn.handlers.permission(ask), aborted(turn.cancel), aborted(signal)]);
+      if (answer === "aborted") {
+        item("cancelled", "done");
+        return CANCELLED;
+      }
+      if (answer === "allow-run") {
+        turn.allowed.add(action);
+      }
+      decision = answer === "refuse" ? "refuse" : "allow";
+    }
+    item(decision === "allow" ? "allowed" : "refused", "done");
+    return optionFor(request.options, decision);
   }
 
   /** What the agent streams while it works: its message, which is the answer, and its tool calls, for the owner's feed. */
@@ -232,6 +323,10 @@ class Conversation {
     if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text") {
       turn.text += update.content.text;
     } else if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
+      const action = actionOf(update.kind);
+      if (action !== null && !turn.kinds.has(update.toolCallId)) {
+        turn.kinds.set(update.toolCallId, action);
+      }
       const item = toolItem(update, turn.tools.get(update.toolCallId));
       turn.tools.set(item.id, item);
       turn.handlers.activity(item);
@@ -257,7 +352,7 @@ export function acpRunner(agent: Agent): AgentRunner {
       }
       try {
         await conversation.open(cwd);
-        return await conversation.prompt(prompt, { mode, handlers, tools: new Map(), text: "" });
+        return await conversation.prompt(prompt, { mode, handlers, cancel, tools: new Map(), kinds: new Map(), allowed: new Set(), text: "" });
       } catch (error) {
         if (cancel.aborted) {
           throw new AgentCancelledError("the agent was stopped");
