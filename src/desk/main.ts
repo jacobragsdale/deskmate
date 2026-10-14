@@ -6,8 +6,9 @@ import { problemOf } from "../core/text.ts";
 import { VERSION } from "../core/version.ts";
 import { PROTOCOL } from "../core/wire.ts";
 import { readLine, windowLineSchema } from "../shared/ipc.ts";
-import type { Command, DeskLine, Question, View } from "../shared/ipc.ts";
+import type { Check, Command, DeskLine, Question, View } from "../shared/ipc.ts";
 import { DEFAULT_AGENT, defaultDev, defaultHome, http, join, loadClient, PlayerTwoError } from "./client.ts";
+import { runChecks, WITHOUT_IDENTITY } from "./doctor.ts";
 import { Session } from "./session.ts";
 import type { Hooks } from "./session.ts";
 import { shellPath } from "./shellEnv.ts";
@@ -97,7 +98,12 @@ class Desk {
     }
   }
 
-  private async handle(command: Command): Promise<void> {
+  /** Do what the window asked. Only the setup check answers with something: its list, which goes in the reply. */
+  private async handle(command: Command): Promise<readonly Check[] | null> {
+    if (command.do === "doctor") {
+      const checks = await runChecks(this.home, defaultDev());
+      return this.session === null ? checks.filter((check) => WITHOUT_IDENTITY.has(check.id)) : checks; // Before anyone has joined, nothing that needs an identity is worth showing.
+    }
     if (command.do !== "join") {
       if (this.session === null) {
         throw new PlayerTwoError("join a hub first");
@@ -108,6 +114,7 @@ class Desk {
       this.start();
       this.changed();
     }
+    return null;
   }
 
   private accept(text: string): void {
@@ -120,8 +127,8 @@ class Desk {
       case "command":
         // Not awaited: a command may wait on the user, and the lines that carry their answer come in behind it.
         this.handle(line.command).then(
-          () => {
-            this.write({ t: "reply", id: line.id, outcome: { ok: true } });
+          (data) => {
+            this.write({ t: "reply", id: line.id, outcome: data === null ? { ok: true } : { ok: true, data } });
           },
           (error: unknown) => {
             this.write({ t: "reply", id: line.id, outcome: { ok: false, problem: problemOf(error) } });

@@ -33,6 +33,9 @@ const INSTALL = new Map([
 
 const healthSchema = z.object({ ok: z.literal(true), now: z.number() });
 
+/** The checks that need no identity: what the desk runs before anyone has joined from this machine. */
+export const WITHOUT_IDENTITY: ReadonlySet<string> = new Set(["node", "dev", "git"]);
+
 type Outcome = Pick<Check, "status" | "detail" | "fix">;
 type Found<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly problem: string; readonly code: string };
 

@@ -115,14 +115,18 @@ export const commandSchema = z.discriminatedUnion("do", [
   z.strictObject({ do: z.literal("leaveChannel"), chat }),
   z.strictObject({ do: z.literal("pin"), chat, repo }),
   z.strictObject({ do: z.literal("unpin"), chat }),
-  z.strictObject({ do: z.literal("clone"), repo })
+  z.strictObject({ do: z.literal("clone"), repo }),
+  z.strictObject({ do: z.literal("doctor") }) // Run the setup check. The reply's data is the list.
 ]);
 
 /** One item of the setup check: what was looked at, how it stands, what was found, and the command or instruction that fixes it ("" when there is nothing to do). Nothing runs a fix: the user copies it. */
 export const checkSchema = z.strictObject({ id: z.string(), title: z.string(), status: z.enum(["ok", "warn", "fail", "skip"]), detail: z.string(), fix: z.string() }).readonly();
 
 /** How a command ended. A problem is worded for the user. */
-export const outcomeSchema = z.discriminatedUnion("ok", [z.strictObject({ ok: z.literal(true) }), z.strictObject({ ok: z.literal(false), problem: z.string() })]);
+export const outcomeSchema = z.discriminatedUnion("ok", [
+  z.strictObject({ ok: z.literal(true), data: z.array(checkSchema).readonly().optional() }), // Data only for the setup check: its list.
+  z.strictObject({ ok: z.literal(false), problem: z.string() })
+]);
 
 /** Something to tell the user that is not part of the picture: a failure, or that a long job has started or finished. */
 export const noticeSchema = z.strictObject({ title: z.string(), body: z.string(), severity: z.enum(["info", "error"]) }).readonly();

@@ -63,7 +63,7 @@ interface Snapshot {
   readonly entries: readonly Entry[];
 }
 
-type ChatCommand = Exclude<Command, { do: "join" }>;
+type ChatCommand = Exclude<Command, { do: "join" | "doctor" }>;
 
 function sleep(seconds: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {

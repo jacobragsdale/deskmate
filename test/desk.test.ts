@@ -74,6 +74,14 @@ await test("the desk by lines: the join form, joining, the chats, a note sent an
   say({ t: "command", id: 1, command: { do: "open", chat: "bob" } });
   assert.deepEqual(await reply(1), { ok: false, problem: "join a hub first" });
 
+  // The setup check answers before anyone has joined, with only what needs no identity, and in full after.
+  const checked = async (id: number): Promise<string[]> => {
+    say({ t: "command", id, command: { do: "doctor" } });
+    const outcome = await reply(id);
+    return outcome.ok ? (outcome.data ?? []).map((check) => check.id) : [outcome.problem];
+  };
+  assert.deepEqual(await checked(10), ["node", "dev", "git"]);
+
   // Joining starts the session: the chats arrive as a view, with bob's open.
   say({ t: "command", id: 2, command: { do: "join", hub: hub.url, name: "alice", token: TOKEN, agent: "" } });
   assert.deepEqual(await reply(2), { ok: true });
@@ -107,6 +115,7 @@ await test("the desk by lines: the join form, joining, the chats, a note sent an
   }
   say({ t: "command", id: 6, command: { do: "open", chat: "bob" } });
   assert.deepEqual(await reply(6), { ok: true });
+  assert.deepEqual(await checked(11), ["node", "identity", "hub", "proxy", "protocol", "clock", "dev", "repos", "git", "git-auth", "agent"]);
 
   // The end of its input is the end of the desk.
   input.end();
