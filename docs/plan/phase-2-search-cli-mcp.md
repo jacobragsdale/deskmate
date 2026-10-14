@@ -74,7 +74,7 @@ Add `@modelcontextprotocol/sdk` as a dependency.
 ## E. Telling agents
 
 - [x] **P2-E1** `agentPrompt` in `src/core/chat.ts` gains two sentences when the run is a one-shot command: the agent may run `player-two search --json` and `player-two read --json` to look at earlier notes, and should cite the notes it relied on by their links. Phase 3 gives ACP runs the MCP tools instead.
-- [ ] **P2-E2** The README's "Let your own agent ask" section is rewritten around `player-two ask` and the MCP server.
+- [x] **P2-E2** The README's "Let your own agent ask" section is rewritten around `player-two ask` and the MCP server.
 
 ## Done when
 

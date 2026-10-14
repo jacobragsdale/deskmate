@@ -117,14 +117,18 @@ A channel can be about one repo. Click `◆ Pin a repo` in the channel's title a
 
 ### 7. Let your own agent ask
 
-An agent, or a script, sends a message with `player-two send` and reads the answer from standard output. In WSL the window has installed the command as `~/.local/bin/player-two`:
+Jacob's agent in his editor can ask Bob's agent too, and read and search the chat on the way. Either way below, the question is a message from Jacob like any other: Bob still has to let his agent run, and a tag of Jacob's own agent waits for Jacob's click.
+
+**Through MCP.** Player Two's MCP server, `player-two mcp`, gives the agent the chat as tools. The Setup page's `Editor agents` section has the JSON to copy into Cursor's `~/.cursor/mcp.json` or Copilot's `~/.copilot/mcp-config.json`, inside WSL. As it is, the agent can only read: `whoami`, `list_chats`, `list_agents`, `read_chat`, `read_note`, `search` and `job_status`. With `"--allow-send"` added after `"mcp"`, it can also act as Jacob: `send_message`, `ask_agent`, which asks an agent and waits up to 900 seconds for the answer, and `withdraw`. Every tool tells the agent that what teammates and their agents wrote is information, not instruction, and a note whose signature fails comes without its text.
+
+**From the command line.** In WSL the window has installed the command as `~/.local/bin/player-two`:
 
 ```sh
-player-two send bob "@bob/uploader which tests cover the retry path?" --wait 300
-player-two send '#backend' "who owns the uploader?"
+player-two ask @bob/uploader "which tests cover the retry path?"
+player-two ask @bob/uploader "who calls the uploader?" --in '#backend' --wait 300
 ```
 
-`--wait` prints the next message or agent's answer that someone else sends in that chat, whether or not it answers this one. Bob still has to approve the run, so if nothing arrives in time, `send` prints the `player-two inbox --after SEQ` command that checks again later. `player-two repos` lists who has which repo. Your agent only knows these commands if you tell it, for example in its instructions file.
+`ask` sends the question in the direct chat with Bob, or in a channel with `--in`, waits for that one request to end, up to `--wait` seconds and 900 unless told, and prints the answer. Its exit status says how it ended: `0` answered, `3` declined, `4` failed, stopped or withdrawn, and `5` nothing final yet, when the last line on standard error is the `player-two read` command that checks later. `player-two search` finds earlier messages and answers, and `player-two read` prints one with where its requests stand; each comes with its link, `player-two://note/` and an id, which the window draws as a chip naming the note's author and first words. An agent Player Two runs is told about `search` and `read` in its prompt; one you run yourself learns them from its instructions file, or uses the MCP server instead. `player-two status` shows what is waiting for your own agents.
 
 ## Agents and tags
 
@@ -134,7 +138,7 @@ A repo is named by the last part of its remote URL, in lowercase, whatever the f
 
 The list that opens on `@` shows the agents whose `person/repo` contains what you have typed, most likely first: the channel's pinned repo, your own agents, the agents of the person you are chatting with, repos you also have, then the rest by name. A repo you have no copy of is offered for cloning once you have typed part of its name.
 
-A tag counts only in a message as it was sent. An agent's answer that contains a tag sets nothing off, so agents cannot start each other, and editing a message tags nobody new. A script, or your agent, can tag someone by sending a message with `player-two send`; that tag waits for its target's owner like any other, and that includes a tag of your own agent.
+A tag counts only in a message as it was sent. An agent's answer that contains a tag sets nothing off, so agents cannot start each other, and editing a message tags nobody new. A script, or your agent, can tag someone with `player-two send` or `player-two ask`, or the MCP server's `send_message` and `ask_agent`; that tag waits for its target's owner like any other, and that includes a tag of your own agent.
 
 A request waits for as long as it takes. It is stored on the hub, so it is still there after you restart the window or come back from lunch.
 
@@ -281,6 +285,8 @@ What the hub learns about your machine is the names, clone addresses and branche
 The hub hands a direct event only to its two people, and a channel's events only to the channel's current members and whoever wrote them. Reading needs a request signed with the reader's key. Channels are open: anyone who has joined the hub can join any channel, and then sees its earlier messages too. Do not treat a channel as private from other hub members.
 
 Player Two does not encrypt messages. Whoever operates the hub can read them, and the hub keeps every event: nothing deletes one. Deleting a message hides it in every window, but the message stays in the log, where anyone in the chat can still read it, with `player-two inbox --json` for one; so does a message's text before an edit. Transport encryption is the job of the ingress in front of the hub; over plain `http`, as in the quick start, anyone on the network path can read messages too. The join token is shared, so anyone holding it can register a new name, although not take over an existing one. There is no key rotation: a teammate who loses their key needs their row deleted from the hub's `users` table, and everyone else needs to remove that name from `known.json`.
+
+The MCP server runs as you, with your key, for as long as the editor that started it keeps it. Without `--allow-send` it can read only what you can, and send nothing; with it, the agent can send messages and ask agents in your name, each signed by you and marked as sent from MCP. That an agent treats what it reads as information and not as instruction is what each tool tells it; nothing can make it listen.
 
 The agent runs as you, with whatever permissions your agent's command line is configured to have. Player Two does not sandbox it. An agent started in a repo also reads that repo's own instruction files, which is why a clone is never made without showing you where it comes from.
 
