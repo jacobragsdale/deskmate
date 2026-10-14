@@ -5,12 +5,14 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
+import type { TestContext } from "node:test";
 
 import { noteLink } from "../src/core/links.ts";
 import { authHeader, loadKey, signEvent } from "../src/core/sign.ts";
-import { AgentCancelledError, http, join as joinHub, loadClient } from "../src/desk/client.ts";
-import type { Client } from "../src/desk/client.ts";
+import { AgentCancelledError, http, join as joinHub, loadClient, PlayerTwoError } from "../src/desk/client.ts";
+import type { Client, Transport } from "../src/desk/client.ts";
 import { Session } from "../src/desk/session.ts";
+import type { Options } from "../src/desk/session.ts";
 import { createHub } from "../src/hub/app.ts";
 import type { Arrival, ChatView, MessageView, Notice } from "../src/shared/ipc.ts";
 import { startHub as hubOfItsOwn } from "./startHub.ts";
@@ -100,6 +102,38 @@ async function person(hub: string, name: string): Promise<Person> {
 
 function messages(view: ChatView): readonly MessageView[] {
   return view.current?.messages ?? [];
+}
+
+interface Desk {
+  readonly session: Session;
+  readonly notices: Notice[];
+  readonly ran: string[][]; // Each agent it started, as the command it ran.
+}
+
+/** A desk of its own for one test, stopped when the test ends, checking every second. Its agent answers "done" unless `options` gives it a runner of its own. */
+function deskOf(t: TestContext, client: Client, dev: string, options: Options = {}): Desk {
+  const notices: Notice[] = [];
+  const ran: string[][] = [];
+  const runner = options.runner ?? ((): Promise<string> => Promise.resolve("done"));
+  const hooks = {
+    changed: () => undefined,
+    notice: (notice: Notice) => {
+      notices.push(notice);
+    },
+    arrived: () => undefined,
+    confirmClone: () => Promise.resolve(false)
+  };
+  const session = new Session(client, dev, hooks, {
+    presence: 1,
+    ...options,
+    runner: (argv, cwd, cancel) => {
+      ran.push([...argv]);
+      return runner(argv, cwd, cancel);
+    }
+  });
+  session.start();
+  t.after(() => session.stop());
+  return { session, notices, ran };
 }
 
 /** What one session shows of a message. */
@@ -339,6 +373,35 @@ await test("a session loads each chat's newest page when it starts, and the page
   assert.deepEqual(shown(session.view()), [60, "message 1", false]);
   await session.handle({ do: "older" }); // Nothing before the first: nothing is asked for.
   assert.deepEqual(shown(session.view()), [60, "message 1", false]);
+});
+
+await test("a message stored while one chat's page is asked for again arrives, though another chat was paged before it", { timeout: 30_000 }, async (t) => {
+  const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+  const [alice, carol] = [await hub.join("alice"), await hub.join("carol")];
+  await hub.join("bob");
+  await alice.publish("bob", "message", { text: "first", via: "cli" });
+  await carol.publish("bob", "message", { text: "hello", via: "cli" });
+  const answered: string[] = []; // Each request the hub answered, and the one refused here.
+  const once: Transport = async (method, url, headers, body) => {
+    if (url.includes("/events?chat=carol") && !answered.includes("refused")) {
+      answered.push("refused");
+      throw new PlayerTwoError("carol's page did not come");
+    }
+    const text = await http(method, url, headers, body);
+    answered.push(url);
+    return text;
+  };
+  const bob = loadClient(join(hub.dir, "bob"), once, () => Date.now() / 1000);
+  assert.ok(bob !== null);
+  const { session } = deskOf(t, bob, join(hub.dir, "dev"));
+
+  while (!answered.includes("refused") || !answered.some((url) => url.includes("/events?chat=alice"))) {
+    await pause(10);
+  }
+  await alice.publish("bob", "message", { text: "while carol's page is asked for again", via: "cli" }); // After alice's chat was paged, and before the session tries again.
+  await until(session, "everything loaded", (view) => view.loaded);
+  await session.handle({ do: "open", chat: "alice" });
+  await until(session, "alice's second message", (view) => messages(view).some((message) => message.body === "while carol's page is asked for again"));
 });
 
 await test("a link to a note shows who wrote it and its first words, from what is loaded or from the hub, or that the reader cannot see it", { timeout: 30_000 }, async (t) => {

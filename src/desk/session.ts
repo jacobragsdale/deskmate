@@ -512,6 +512,9 @@ export class Session {
   private async follow(): Promise<void> {
     const stopped = (): boolean => this.stopping.signal.aborted; // Asked afresh each time: it changes while this waits.
     let greeted = false; // Whether the hub has said it speaks this protocol since it last failed to answer.
+    // Where the stream starts: the hub's head, read before the first page, so that whatever is stored while the pages load comes with the stream.
+    // Kept when a page fails and the rest are asked for again, since the chats already paged were read before anything stored since.
+    let from: number | null = null;
     while (!stopped()) {
       let wait = this.presence;
       try {
@@ -521,12 +524,12 @@ export class Session {
         }
         await this.share();
         await this.refresh();
-        const after = this.streaming === null ? (await this.client.head()).seq : 0; // Read before the pages, so that whatever is stored while they load comes with the stream.
+        from ??= (await this.client.head()).seq;
         await this.pageNew();
         if (this.streaming === null) {
           this.loaded = true;
           this.openFirst();
-          this.streaming = this.client.stream(after, (batch) => this.arrive(batch), this.stopping.signal);
+          this.streaming = this.client.stream(from, (batch) => this.arrive(batch), this.stopping.signal);
         }
       } catch (error) {
         if (stopped()) {
