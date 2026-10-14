@@ -6,6 +6,7 @@ import Markdown from "react-markdown";
 
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 import { spans } from "../../core/chat.ts";
 import type { ChatView, CurrentView, MessageView, RequestView } from "../../shared/ipc.ts";
@@ -202,9 +203,12 @@ function Message({ message, me, act }: { readonly message: MessageView; readonly
               /{message.agent} agent{message.branch === "" ? "" : ` on ${message.branch}`}
             </span>
           )}
-          <time dateTime={when.toISOString()} title={when.toLocaleString()}>
-            {when.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}
-          </time>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <time dateTime={when.toISOString()}>{when.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}</time>
+            </TooltipTrigger>
+            <TooltipContent>{when.toLocaleString(undefined, { dateStyle: "full", timeStyle: "medium" })}</TooltipContent>
+          </Tooltip>
         </header>
       )}
       {message.quote !== "" && <p className="quote">{message.quote}</p>}
