@@ -329,7 +329,7 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
   }
 
   const routes: readonly Route[] = [
-    { method: "GET", path: "/healthz", open: true, answer: () => [200, { ok: true }] },
+    { method: "GET", path: "/healthz", open: true, answer: () => [200, { ok: true, now: Math.floor(now()) }] }, // The clock is here as well as in /info for the setup check: once the clocks differ by five minutes, /info refuses the signature that asks for it.
     { method: "POST", path: "/join", open: true, answer: join },
     { method: "GET", path: "/info", answer: () => [200, { version: VERSION, protocol: PROTOCOL, repos: prefix, now: Math.floor(now()) }] },
     { method: "GET", path: "/users", answer: () => [200, db.users()] },

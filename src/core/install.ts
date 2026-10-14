@@ -1,7 +1,7 @@
 /** Installing the Linux runtime: the script that does it, as text. The window feeds it to the user's distribution and the hub serves it to someone on Linux, so it lives where both can reach it. */
 
 /** Text as one word of a shell script, whatever is in it. */
-function quote(text: string): string {
+export function quote(text: string): string {
   return `'${text.replaceAll("'", `'\\''`)}'`;
 }
 

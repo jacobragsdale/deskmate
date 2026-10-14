@@ -295,6 +295,7 @@ await test("the hub says which repos it shares, which version and protocol it is
   const hub = await startHub(t);
 
   assert.deepEqual(await (await hub.join("alice")).info(), { version: VERSION, protocol: 1, repos: "dev.azure.com/acme", now: NOW });
+  assert.deepEqual(await (await fetch(`${hub.url}/healthz`)).json(), { ok: true, now: NOW }); // Unsigned too, for a machine whose clock is too far off for /info to answer it.
   assert.match(VERSION, /^\d+\.\d+\.\d+$/);
 });
 

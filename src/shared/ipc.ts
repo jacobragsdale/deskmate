@@ -118,6 +118,9 @@ export const commandSchema = z.discriminatedUnion("do", [
   z.strictObject({ do: z.literal("clone"), repo })
 ]);
 
+/** One item of the setup check: what was looked at, how it stands, what was found, and the command or instruction that fixes it ("" when there is nothing to do). Nothing runs a fix: the user copies it. */
+export const checkSchema = z.strictObject({ id: z.string(), title: z.string(), status: z.enum(["ok", "warn", "fail", "skip"]), detail: z.string(), fix: z.string() }).readonly();
+
 /** How a command ended. A problem is worded for the user. */
 export const outcomeSchema = z.discriminatedUnion("ok", [z.strictObject({ ok: z.literal(true) }), z.strictObject({ ok: z.literal(false), problem: z.string() })]);
 
@@ -170,6 +173,7 @@ export type RowView = z.infer<typeof rowSchema>;
 export type CurrentView = z.infer<typeof currentSchema>;
 export type View = z.infer<typeof viewSchema>;
 export type ChatView = Extract<View, { kind: "chat" }>;
+export type Check = z.infer<typeof checkSchema>;
 export type Command = z.infer<typeof commandSchema>;
 export type Outcome = z.infer<typeof outcomeSchema>;
 export type Notice = z.infer<typeof noticeSchema>;

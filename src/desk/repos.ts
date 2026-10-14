@@ -25,7 +25,8 @@ function readOrNull(path: string): string | null {
   }
 }
 
-function origin(path: string): string | null {
+/** The URL of a checkout's `origin` remote, read from its .git/config; null when it has none. */
+export function origin(path: string): string | null {
   // ponytail: reads the file directly, so `include` files and `insteadOf` rewrites are not followed. Ask git if that bites.
   let section = "";
   for (const raw of (readOrNull(join(path, ".git", "config")) ?? "").split(/\r\n|\r|\n/)) {
@@ -77,7 +78,8 @@ interface GitResult {
   readonly stderr: string;
 }
 
-function git(args: readonly string[], timeoutSeconds: number): Promise<GitResult> {
+/** Run git with no terminal to prompt on, within a time limit. Resolves however it ends. */
+export function git(args: readonly string[], timeoutSeconds: number): Promise<GitResult> {
   return new Promise((resolve) => {
     // No terminal prompt: there is no terminal to ask on, so git must fail rather than wait for a password.
     const child = execFile("git", args, { timeout: timeoutSeconds * 1000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }, maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {

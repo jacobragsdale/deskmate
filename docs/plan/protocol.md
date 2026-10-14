@@ -142,7 +142,7 @@ JSON in and out. Errors are `{ "detail": "words for the user" }` with a 4xx stat
 
 | Route | Auth | Does |
 |---|---|---|
-| `GET /healthz` | none | `{ ok: true }` |
+| `GET /healthz` | none | `{ ok: true, now }`. `now` is the hub's clock, for the setup check on a machine too far off for `/info` to accept its signature. |
 | `GET /info` | yes | `{ version, protocol, repos, now }`. `now` is the hub's clock, for the setup check. Phase 7 adds `hubKey`. |
 | `POST /join` | join token | Registers a name and key. `201`. `409` if another key holds the name. |
 | `GET /users` | yes | Everyone, with key and last-seen time. |
