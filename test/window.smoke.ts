@@ -16,8 +16,16 @@ import { startHub, TOKEN } from "./startHub.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 const NO_DISPLAY = process.platform === "linux" && (process.env["DISPLAY"] ?? "") === "" && (process.env["WAYLAND_DISPLAY"] ?? "") === "";
-const KEYS = { Enter: { code: "Enter", keyCode: 13 }, Escape: { code: "Escape", keyCode: 27 }, k: { code: "KeyK", keyCode: 75 }, n: { code: "KeyN", keyCode: 78 } } as const;
-const CTRL = 2; // The DevTools protocol's bit for the Ctrl key.
+const KEYS = {
+  Enter: { code: "Enter", keyCode: 13 },
+  Escape: { code: "Escape", keyCode: 27 },
+  ArrowUp: { code: "ArrowUp", keyCode: 38 },
+  ArrowDown: { code: "ArrowDown", keyCode: 40 },
+  k: { code: "KeyK", keyCode: 75 },
+  n: { code: "KeyN", keyCode: 78 }
+} as const;
+const ALT = 1; // The DevTools protocol's bits for the Alt and Ctrl keys.
+const CTRL = 2;
 
 const replySchema = z.object({ id: z.number(), result: z.unknown().optional(), error: z.object({ message: z.string() }).optional() });
 const eventSchema = z.object({ method: z.string(), params: z.unknown() });
@@ -369,6 +377,13 @@ await test(
     await page.until("where it runs", `document.querySelector("main").innerText.includes("bob's uploader agent is working on main ± at c0ffee0")`);
     await bob.publish("alice", "job.result", { repo: "uploader", branch: "main", text: "in queue.py", reviewed: false }, [asked.event.id]);
     await page.until("the answer, with where it ran", `document.querySelector("main").innerText.includes("/uploader agent on main ± at c0ffee0")`);
+
+    // Alt+↑ and Alt+↓ move up and down the chat list from the message box, empty after a message was sent, where ↑ alone would bring that message back.
+    await page.press("ArrowUp", ALT);
+    await page.until("Alt+↑ to the chat above", `document.querySelector("main h1")?.textContent === "#history"`);
+    await page.press("ArrowDown", ALT);
+    await page.until("Alt+↓ back to bob", `document.querySelector("main h1")?.textContent === "bob"`);
+    assert.equal(await page.eval(`document.querySelector('textarea[aria-label="Message bob"]').value`), "");
 
     // Ctrl+K finds a chat by its name as it is typed, and after a pause the messages that hold the words, the words picked out. Enter on one opens its chat with it in view and highlighted.
     const search = '[role="dialog"] input[aria-label="Search"]';

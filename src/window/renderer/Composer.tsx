@@ -20,6 +20,11 @@ function rowOf(pick: Candidate): string {
   return `${pick.owner}/${pick.repo}/${String(pick.clone)}`;
 }
 
+/** An arrow held with a modifier, which is not the message box's: Alt+↑ and Alt+↓ move between chats, and Shift+↑ selects. */
+function heldArrow(event: KeyboardEvent): boolean {
+  return (event.key === "ArrowUp" || event.key === "ArrowDown") && (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey);
+}
+
 interface Props {
   readonly view: ChatView;
   readonly current: CurrentView;
@@ -151,7 +156,7 @@ export function Composer({ view, current, act, submit, tell }: Props): JSX.Eleme
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
     const recalled = lastSent[chat];
-    if (event.nativeEvent.isComposing) {
+    if (event.nativeEvent.isComposing || heldArrow(event)) {
       return;
     }
     if (picks.rows.length > 0 && ["ArrowUp", "ArrowDown", "Enter", "Tab", "Escape"].includes(event.key)) {
