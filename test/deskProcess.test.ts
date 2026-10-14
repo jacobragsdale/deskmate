@@ -102,7 +102,7 @@ await test("the real desk is started, each command gets its own reply, and stopp
 });
 
 await test("a desk that goes away unasked is started again three times, then the window shows why it gave up", { timeout: 30_000 }, async (t) => {
-  const { desk, views, notices, starts } = hold(t, standIn([{ t: "hello", version: "0.4.0", protocol: 1 }, "not a line of the protocol"]));
+  const { desk, views, notices, starts } = hold(t, standIn([{ t: "hello", version: "0.5.0", protocol: 2 }, "not a line of the protocol"]));
 
   const stopped = await until("the stopped view", () => views.find((view) => view.kind === "stopped"));
 
@@ -122,7 +122,7 @@ await test("a desk that goes with a command unanswered has it answered for it, a
     t,
     standIn(
       [
-        { t: "hello", version: "0.4.0", protocol: 1 },
+        { t: "hello", version: "0.5.0", protocol: 2 },
         { t: "view", view: { kind: "setup", defaultAgent: "an-agent" } }
       ],
       "yes"
@@ -143,7 +143,7 @@ await test("a desk that falls over moments after showing something is given up o
   const { views, starts } = hold(
     t,
     standIn([
-      { t: "hello", version: "0.4.0", protocol: 1 },
+      { t: "hello", version: "0.5.0", protocol: 2 },
       { t: "view", view: { kind: "setup", defaultAgent: "an-agent" } }
     ])
   );
@@ -155,7 +155,7 @@ await test("a desk that falls over moments after showing something is given up o
 await test("a desk started afresh while it was still being made ready is started once", { timeout: 30_000 }, async (t) => {
   const says = standIn(
     [
-      { t: "hello", version: "0.4.0", protocol: 1 },
+      { t: "hello", version: "0.5.0", protocol: 2 },
       { t: "view", view: { kind: "setup", defaultAgent: "an-agent" } }
     ],
     "yes"
@@ -198,7 +198,7 @@ await test("a desk that speaks another protocol is refused and not started again
     setTimeout(resolve, 100); // Long enough for a desk that was going to be started again to have been.
   });
 
-  assert.deepEqual(newer.views, [{ kind: "stopped", problem: "the desk speaks protocol 99 and this window speaks protocol 1: update the window" }]);
+  assert.deepEqual(newer.views, [{ kind: "stopped", problem: "the desk speaks protocol 99 and this window speaks protocol 2: update the window" }]);
   assert.equal(newer.starts(), 1);
   assert.equal(newer.desk.saidHello, false); // Not in this window's protocol, which is what the setup check needs to know.
   assert.equal(missing.views.length, 1);

@@ -2,7 +2,7 @@
 
 import { z } from "zod";
 
-export const PROTOCOL = 1; // Goes up when the hub and its clients must be updated together.
+export const PROTOCOL = 2; // Goes up when the hub and its clients must be updated together: 2 is events (0.5).
 export const MAX_CONTENT = 64_000; // Most characters an event's content may hold, counted by code point.
 export const MAX_PATCH = 512_000; // The same for a patch, which carries a diff.
 const MAX_TEXT = MAX_CONTENT - 1_000; // Most of an event's content one text may take once written as JSON, leaving room for the rest of the content.
