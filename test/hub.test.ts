@@ -14,6 +14,7 @@ import type { Arrival, ChatView, MessageView, Notice } from "../src/shared/ipc.t
 import { startHub as hubOfItsOwn } from "./startHub.ts";
 
 const TOKEN = "a-join-token-for-tests";
+const COMMIT = "c0ffee".padEnd(40, "0"); // The commit every checkout here is said to be at.
 const root = mkdtempSync(join(tmpdir(), "player-two-app-"));
 
 function pause(ms: number): Promise<void> {
@@ -76,7 +77,7 @@ async function person(hub: string, name: string): Promise<Person> {
     },
     {
       presence: 1,
-      describe: () => Promise.resolve({ branch: "main", commit: "c0ffee".padEnd(40, "0"), dirty: true }),
+      describe: () => Promise.resolve({ branch: "main", commit: COMMIT, dirty: true }),
       runner: (argv, cwd, cancel) => {
         prompts.push([...argv]);
         if (argv.at(-1)?.endsWith("take your time") === true) {
@@ -142,7 +143,7 @@ await test("two people, their agents and a channel, through the real hub", { tim
   const waiting = await until(bob.session, "bob sees his request waiting", (view) => messages(view).find((message) => message.requests[0]?.status.kind === "waiting"));
   assert.deepEqual(waiting.requests[0]?.status, { kind: "waiting", away: false });
   const asked = await until(jacob.session, "jacob can run it", (view) => messages(view).find((message) => message.requests[0]?.status.kind === "ready"));
-  assert.deepEqual(asked.requests, [{ id: asked.id, owner: "jacob", repo: "uploader", mine: true, status: { kind: "ready", before: "", canDecline: true } }]);
+  assert.deepEqual(asked.requests, [{ id: asked.id, owner: "jacob", repo: "uploader", mine: true, accepted: null, status: { kind: "ready", before: "", canDecline: true } }]);
   assert.equal(jacob.prompts.length, 0);
   await until(jacob.session, "the note counts as unread and waiting while jacob looks away", (view) => view.unread === 1 && view.waiting === 1);
   assert.deepEqual(
@@ -172,11 +173,17 @@ await test("two people, their agents and a channel, through the real hub", { tim
       sender: "jacob",
       agent: "uploader",
       branch: "main ±",
+      commit: COMMIT,
       trusted: true,
       body: "Retries live in /dev-jacob/uploader/queue.py (edited)",
+      edited: false,
+      deleted: false,
+      reactions: [],
       quote: "bob: @jacob/uploader does your retry change handle 429s?",
       header: true,
-      requests: []
+      requests: [],
+      replyCount: 0,
+      replies: []
     }
   );
   await until(bob.session, "the request under bob's note is settled", (view) => messages(view).every((message) => message.requests.length === 0));
@@ -215,9 +222,10 @@ await test("two people, their agents and a channel, through the real hub", { tim
     messages(view).find((message) => message.body.endsWith("take your time") && message.requests[0]?.status.kind === "ready")
   );
   await jacob.session.handle({ do: "run", id: slow.id, repo: "uploader", post: false });
-  await until(bob.session, "bob sees it working, on the branch it reported", (view) =>
-    messages(view).some((message) => message.requests[0]?.status.kind === "working" && message.requests[0].status.branch === "main ±")
+  const working = await until(bob.session, "bob sees it working, on the branch it reported", (view) =>
+    messages(view).find((message) => message.requests[0]?.status.kind === "working" && message.requests[0].status.branch === "main ±")
   );
+  assert.deepEqual(working.requests[0]?.accepted, { branch: "main", commit: COMMIT, dirty: true }); // Where its owner let it run.
   assert.equal(jacob.session.view().busy.working, 1);
   await jacob.session.handle({ do: "stop", id: slow.id, repo: "uploader" });
   await until(bob.session, "bob sees it stopped", (view) => messages(view).some((message) => message.requests[0]?.status.kind === "stopped"));
@@ -232,6 +240,14 @@ await test("two people, their agents and a channel, through the real hub", { tim
   await bob.session.handle({ do: "joinChannel", name: "#backend" });
   const channel = await until(bob.session, "bob is in the channel with its earlier note", (view) => (view.current?.chat === "#backend" && messages(view).length === 1 ? view.current : undefined));
   assert.deepEqual([channel.members, channel.joined, channel.pinned], [["bob", "jacob"], true, { name: "uploader", have: 2, mine: true }]);
+  assert.deepEqual(
+    channel.lines.map((line) => [line.who, line.did, line.repo]),
+    [
+      ["jacob", "joined", ""],
+      ["jacob", "pinned", "uploader"],
+      ["bob", "joined", ""]
+    ]
+  );
   await bob.session.handle({ do: "leaveChannel", chat: "#backend" });
   assert.ok(!bob.session.view().rows.some((row) => row.chat === "#backend"));
 

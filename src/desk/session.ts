@@ -6,7 +6,7 @@ import { join as joinPath } from "node:path";
 
 import { z } from "zod";
 
-import type { Arrival, ChatView, Command, CurrentView, MessageView, Notice, RequestView, RowView } from "../shared/ipc.ts";
+import type { Arrival, ChatView, Command, CurrentView, LineView, MessageView, Notice, ReplyView, RequestView, RowView } from "../shared/ipc.ts";
 import { agentPrompt, ChatLog, chatOf, continues, mentions, ONLINE, refOf, rings } from "../core/chat.ts";
 import type { Accepted, Entry, Message, Request } from "../core/chat.ts";
 import { readContent } from "../core/kinds.ts";
@@ -330,6 +330,7 @@ export class Session {
           : { name: pinned.name, have: members.filter((member) => this.team.some((repo) => repo.user === member && repo.key === pinned.key)).length, mine: this.checkouts.has(pinned.name) },
       newAfter: this.newAfter,
       messages: this.messages(chat, now),
+      lines: this.lines(chat),
       drafts: (this.drafts.get(chat) ?? []).map((draft) => ({ id: draft.entry.event.id, repo: draft.repo, asker: draft.entry.event.author, text: draft.text })),
       running: [...this.runs.values()].some((run) => chatOf(run.entry.event, this.me) === chat)
     };
@@ -357,17 +358,32 @@ export class Session {
   }
 
   private messageView(message: Message, previous: Message | null, now: number): MessageView {
+    const replies: ReplyView[] = [];
+    let before: Message | null = null;
+    for (const reply of message.replies) {
+      replies.push(this.replyView(reply, before, now));
+      before = reply;
+    }
+    return { ...this.replyView(message, previous, now), replyCount: replies.length, replies };
+  }
+
+  private replyView(message: Message, previous: Message | null, now: number): ReplyView {
     const { seq, event } = message.entry;
     const answered = message.answers === null ? null : this.chats.message(message.answers);
+    const accepted = this.acceptedFor(message, now);
     return {
       id: event.id,
       seq,
       sender: event.author,
       agent: message.agent,
-      branch: this.branchOf(message, now),
+      branch: accepted === null ? message.branch : ranOn(accepted),
+      commit: accepted?.commit ?? "",
       ts: event.ts,
       trusted: true,
       body: message.text,
+      edited: message.edited,
+      deleted: message.deleted,
+      reactions: [...message.reactions].map(([emoji, people]) => ({ emoji, people: [...people] })),
       quote: answered === null ? "" : `${answered.entry.event.author}: ${oneLine(answered.text)}`,
       header: !continues(previous, message),
       requests: this.chats.requests(message, now).flatMap((request) => this.requestView(request))
@@ -376,21 +392,28 @@ export class Session {
 
   /** An event whose signature failed: who it claims to be from and when, and never what it says. */
   private warningView({ seq, event }: Entry): MessageView {
-    return { id: event.id, seq, sender: event.author, agent: null, branch: "", ts: event.ts, trusted: false, body: "", quote: "", header: true, requests: [] };
+    const nothing = { agent: null, branch: "", commit: "", body: "", edited: false, deleted: false, reactions: [], quote: "", requests: [], replyCount: 0, replies: [] };
+    return { id: event.id, seq, sender: event.author, ts: event.ts, trusted: false, header: true, ...nothing };
   }
 
-  /** The branch an answer was written on: as its owner accepted the run when the request is here, and as the answer says when it is not. */
-  private branchOf(message: Message, now: number): string {
+  /** Someone joined, left, pinned or unpinned in the open chat, in order. */
+  private lines(chat: string): LineView[] {
+    return this.chats.items(chat).flatMap((item) => (item.kind === "line" ? [{ seq: item.entry.seq, ts: item.entry.event.ts, who: item.entry.event.author, did: item.did, repo: item.repo }] : []));
+  }
+
+  /** What an answer's run was let go ahead with: from the job it answers, when its request is here. */
+  private acceptedFor(message: Message, now: number): Accepted | null {
     const request = message.answers === null ? null : this.chats.message(message.answers);
     const job = request === null ? undefined : this.chats.requests(request, now).find((each) => each.owner === message.entry.event.author && each.repo === message.agent);
-    return job === undefined || job.accepted === null ? message.branch : ranOn(job.accepted);
+    return job?.accepted ?? null;
   }
 
   /** Where one tagged agent stands: for the user's own, what they can do; for a teammate's, how far it has got. Nothing once it is answered. */
   private requestView(request: Request): RequestView[] {
     const { owner, repo } = request;
     const mine = owner === this.me;
-    return request.state === "answered" ? [] : [{ id: request.message.entry.event.id, owner, repo, mine, status: mine ? this.myStatus(request) : this.theirStatus(request) }];
+    const accepted = request.accepted === null ? null : { branch: request.accepted.branch, commit: request.accepted.commit, dirty: request.accepted.dirty };
+    return request.state === "answered" ? [] : [{ id: request.message.entry.event.id, owner, repo, mine, accepted, status: mine ? this.myStatus(request) : this.theirStatus(request) }];
   }
 
   private myStatus(request: Request): RequestView["status"] {

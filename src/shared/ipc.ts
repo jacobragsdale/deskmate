@@ -17,6 +17,7 @@ const requestSchema = z
     owner: z.string(),
     repo: z.string(),
     mine: z.boolean(),
+    accepted: z.strictObject({ branch: z.string(), commit: z.string(), dirty: z.boolean() }).readonly().nullable(), // What its owner last let it run on; null when they never have.
     status: z.discriminatedUnion("kind", [
       z.strictObject({ kind: z.literal("drafted") }), // Mine: an answer is waiting for my review.
       z.strictObject({ kind: z.literal("running"), startedAt: z.number(), branch: z.string() }), // Mine: at work since `startedAt`, Unix milliseconds.
@@ -34,21 +35,38 @@ const requestSchema = z
   })
   .readonly();
 
+/** What a message and a reply both show. */
+const said = {
+  id: z.string(), // The event's id: what a command about it names.
+  seq: z.int(), // Its place in the hub's log, which is the order a chat is in.
+  sender: z.string(),
+  agent: z.string().nullable(), // The repo the sender's agent worked in, for an agent's answer; null when the sender typed it.
+  branch: z.string(), // The branch that agent was on; "" when unknown.
+  commit: z.string(), // The commit it was on, as its owner accepted the run; "" when unknown.
+  ts: z.int(),
+  trusted: z.boolean(),
+  body: z.string(), // As last edited. "" when deleted, and when the message failed its signature check: its text never reaches the window.
+  edited: z.boolean(),
+  deleted: z.boolean(),
+  reactions: z.array(z.strictObject({ emoji: z.string(), people: z.array(z.string()).readonly() }).readonly()).readonly(), // Each emoji in the order it was first used, and who reacted with it.
+  quote: z.string(), // The request an answer is to, on one line; "" when it answers nothing.
+  header: z.boolean(), // Whether to say who wrote it, or let it sit under the previous message's header.
+  requests: z.array(requestSchema).readonly()
+};
+
+/** A message in a thread, under its root. */
+const replySchema = z.strictObject(said).readonly();
+
 const messageSchema = z
   .strictObject({
-    id: z.string(), // The event's id: what a command about it names.
-    seq: z.int(), // Its place in the hub's log, which is the order a chat is in.
-    sender: z.string(),
-    agent: z.string().nullable(), // The repo the sender's agent worked in; null when the sender typed it.
-    branch: z.string(), // The branch that agent was on; "" when unknown.
-    ts: z.int(),
-    trusted: z.boolean(),
-    body: z.string(), // "" when the message failed its signature check: its text never reaches the window.
-    quote: z.string(), // The request an answer is to, on one line; "" when it answers nothing.
-    header: z.boolean(), // Whether to say who wrote it, or let it sit under the previous message's header.
-    requests: z.array(requestSchema).readonly()
+    ...said,
+    replyCount: z.int(),
+    replies: z.array(replySchema).readonly() // Oldest first. A reply to a reply is here too: threads are one level deep.
   })
   .readonly();
+
+/** Someone joined or left the channel, or pinned a repo to it (named) or unpinned it: a quiet line, drawn in its place among the messages by its seq. */
+const lineSchema = z.strictObject({ seq: z.int(), ts: z.int(), who: z.string(), did: z.enum(["joined", "left", "pinned", "unpinned"]), repo: z.string() }).readonly();
 
 const rowSchema = z
   .strictObject({
@@ -68,6 +86,7 @@ const currentSchema = z
     pinned: z.strictObject({ name: z.string(), have: z.int(), mine: z.boolean() }).nullable(), // The repo the channel is about, how many members have it, and whether I do.
     newAfter: z.int().nullable(), // Messages after this seq arrived while the user was elsewhere.
     messages: z.array(messageSchema).readonly(),
+    lines: z.array(lineSchema).readonly(),
     drafts: z.array(z.strictObject({ id: z.string(), repo: z.string(), asker: z.string(), text: z.string() }).readonly()).readonly(), // Answers waiting for review, oldest first, each with its request's id.
     running: z.boolean() // Whether one of the user's agents is at work here.
   })
@@ -183,6 +202,8 @@ export function readLine<T>(schema: z.ZodType<T>, text: string): T | null {
 
 export type RequestView = z.infer<typeof requestSchema>;
 export type MessageView = z.infer<typeof messageSchema>;
+export type ReplyView = z.infer<typeof replySchema>;
+export type LineView = z.infer<typeof lineSchema>;
 export type RowView = z.infer<typeof rowSchema>;
 export type CurrentView = z.infer<typeof currentSchema>;
 export type View = z.infer<typeof viewSchema>;

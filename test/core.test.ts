@@ -128,6 +128,9 @@ await test("an edit or a delete counts only from the message's author, and never
   log.add([entry("bob", "jacob", "message.delete", {}, about), entry("bob", "jacob", "message.edit", { text: "back again" }, about)]);
   assert.deepEqual(shown(log, "bob")[0], "bob: (deleted) (edited)"); // Gone for good: an edit after the delete changes nothing.
   assert.equal(log.message(hello.event.id)?.text, "");
+  assert.deepEqual(states(log, ask), ["jacob/uploader waiting"]);
+  log.add([entry("bob", "jacob", "message.delete", {}, { refs: [ask.event.id] })]);
+  assert.deepEqual(states(log, ask), []); // A deleted request asks nothing of anyone.
 });
 
 await test("a job's event counts only from the agent's owner, and a withdrawal only from whoever asked", () => {
