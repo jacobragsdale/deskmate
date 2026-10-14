@@ -163,7 +163,7 @@ The `/notes` routes and the four channel-changing routes go. In their place:
 | `GET /events?after=S&limit=N` | Everything visible to the caller after `seq` S (0 when not given), oldest first. For catching up. `before` goes only with `chat`, and `after` only without it. |
 | `GET /events?chat=A&around=S&limit=N` | Phase 2. A page centred on one event, for opening a search result. |
 | `GET /events/{id}` | Phase 2. One event the caller can see, with its `seq`. |
-| `GET /stream?after=S` | A `text/event-stream` that never ends: one `data:` line per event as `{ seq, event }`, and a comment line every 20 seconds so proxies keep it open. |
+| `GET /stream?after=S` | A `text/event-stream` that never ends: one `data:` line per event as `{ seq, event }`, and a comment line every 20 seconds so proxies keep it open. An event is sent when the caller can see it as the stream reaches it; one passed over is not sent later, when they can. |
 | `GET /audit/head` | `{ seq, chain }` for the newest event. |
 | `GET /search?q=Q&chat=A&limit=N` | Phase 2. Full-text search over messages and results in chats the caller can see. |
 | `POST /hooks/{id}` | Phase 7. A workflow's webhook. |

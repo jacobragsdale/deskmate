@@ -84,6 +84,52 @@ async function say(hub: Hub, author: string, to: string, text: string): Promise<
   return seq;
 }
 
+/** An open GET /stream: the next line that is not empty, as a message's text, an event's kind, or a comment as it came; and hanging up. */
+interface Stream {
+  readonly next: () => Promise<string>;
+  readonly hangUp: () => void;
+}
+
+async function openStream(hub: Hub, reader: string, after: number): Promise<Stream> {
+  const path = `/stream?after=${String(after)}`;
+  const hangUp = new AbortController();
+  const response = await fetch(hub.url + path, { headers: signedBy(hub, reader, "GET", path), signal: hangUp.signal });
+  assert.equal(response.headers.get("content-type"), "text/event-stream");
+  assert.ok(response.body !== null);
+  const chunks = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  let held = "";
+  const line = async (): Promise<string> => {
+    for (let end = held.indexOf("\n"); end === -1; end = held.indexOf("\n")) {
+      const { value, done } = await chunks.read();
+      if (done) {
+        return "(closed)";
+      }
+      held += value;
+    }
+    const [first = "", ...rest] = held.split("\n");
+    held = rest.join("\n");
+    return first;
+  };
+  const next = async (): Promise<string> => {
+    for (let found = await line(); ; found = await line()) {
+      if (found.startsWith("data: ")) {
+        const { event } = deliveredSchema.parse(JSON.parse(found.slice("data: ".length)));
+        const content = readContent(event);
+        return content.kind === "message" ? content.content.text : event.kind;
+      }
+      if (found !== "") {
+        return found;
+      }
+    }
+  };
+  return {
+    next,
+    hangUp: () => {
+      hangUp.abort();
+    }
+  };
+}
+
 async function bodies(client: Client, mine = true): Promise<string[]> {
   return (await client.notes({ mine })).map((delivered) => delivered.note.body);
 }
@@ -247,6 +293,64 @@ await test("a chat pages back with before and limit, catching up pages forward w
   assert.deepEqual(await refused("chat=Alice"), [422, "invalid chat: Invalid string: must match pattern /^#?[a-z0-9][a-z0-9_-]{0,31}$/"]);
   assert.deepEqual(await refused("before=3"), [422, "invalid query: before goes with chat, and after without it"]);
   assert.deepEqual(await refused("chat=alice&after=3"), [422, "invalid query: before goes with chat, and after without it"]);
+});
+
+await test("the stream sends what is visible after S, then each event as it is stored, a comment every 20 seconds, and nothing more of a channel once it is left", { timeout: 10_000 }, async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] }); // The hub's alone: fetch and the test runner keep their own timers.
+  const hub = await startHub(t);
+  for (const name of ["alice", "bob"]) {
+    await hub.join(name);
+    await post(hub, name, signed(hub, name, "#backend", "channel.join"));
+  }
+  await say(hub, "alice", "#backend", "before the stream");
+  const stream = await openStream(hub, "bob", 2);
+  t.after(stream.hangUp);
+
+  assert.equal(await stream.next(), "before the stream");
+  await say(hub, "alice", "bob", "while it is open");
+  assert.equal(await stream.next(), "while it is open");
+  t.mock.timers.tick(20_000);
+  assert.equal(await stream.next(), ":");
+  await post(hub, "bob", signed(hub, "bob", "#backend", "channel.leave"));
+  await say(hub, "alice", "#backend", "after bob left");
+  await say(hub, "alice", "bob", "still to bob");
+  assert.equal(await stream.next(), "channel.leave");
+  assert.equal(await stream.next(), "still to bob");
+});
+
+await test("a stream that starts more than a page behind sends all of it, in order", { timeout: 10_000 }, async (t) => {
+  const hub = await startHub(t);
+  await hub.join("alice");
+  for (let n = 1; n <= 205; n += 1) {
+    await say(hub, "alice", "alice", String(n));
+  }
+  const stream = await openStream(hub, "alice", 0);
+  t.after(stream.hangUp);
+  const got: string[] = [];
+  for (let n = 1; n <= 205; n += 1) {
+    got.push(await stream.next());
+  }
+
+  assert.deepEqual(
+    got,
+    Array.from({ length: 205 }, (_, n) => String(n + 1))
+  );
+});
+
+await test("a stream whose reader hangs up is closed, leaving no timer behind", { timeout: 10_000 }, async (t) => {
+  const hub = await startHub(t);
+  await hub.join("alice");
+  const timers = (): number => process.getActiveResourcesInfo().filter((kind) => kind === "Timeout").length;
+  const before = timers();
+  const stream = await openStream(hub, "alice", 0);
+
+  assert.equal(timers(), before + 1); // The comment line's.
+  stream.hangUp();
+  for (let tries = 0; timers() > before && tries < 100; tries += 1) {
+    await pause(10);
+  }
+  assert.equal(timers(), before);
+  assert.equal(await say(hub, "alice", "alice", "nobody is listening"), 1); // And the hub goes on.
 });
 
 await test("joining again with the same key is allowed", async (t) => {

@@ -22,6 +22,7 @@ const MAX_WAIT = 30; // Longest a client may hold one long-poll open, in seconds
 const HISTORY = 500; // Most notes one `tail` request may ask for.
 const PAGE = 100; // Events one read gets when it does not say how many.
 const MAX_PAGE = 200; // Most events one read may ask for.
+const PING = 20; // Seconds between the comment lines that keep an open stream from looking idle to a proxy.
 const MAX_REPOS = 500; // Most checkouts one person may advertise.
 const MAX_REQUEST = 4_000_000; // Most characters one request's body may hold: several times the longest list of repos or the longest note.
 const RUNTIME = "wsl-runtime.tar.gz"; // The Linux runtime in the downloads folder, with its digest beside it in the same name and ".sha256".
@@ -53,6 +54,7 @@ const eventsQuerySchema = z.object({
   after: numeric.pipe(z.int()).optional(),
   limit: numeric.pipe(z.int().min(1).max(MAX_PAGE)).default(PAGE)
 });
+const streamQuerySchema = z.object({ after: numeric.pipe(z.int()).default(0) });
 const notesQuerySchema = z.object({
   after: numeric.pipe(z.int()).default(0),
   wait: numeric.pipe(z.number().max(MAX_WAIT)).default(0),
@@ -67,7 +69,7 @@ interface Ask {
   readonly channel: string; // The channel the path names, with its "#"; "" on a route that names none.
   readonly query: URLSearchParams;
   readonly body: string; // What the request carried, not yet parsed.
-  readonly response: ServerResponse; // Only for a long-poll to see that its reader has hung up.
+  readonly response: ServerResponse; // For a long-poll to see that its reader has hung up, and for the stream, which writes to it itself.
 }
 
 type Answer = readonly [status: number, body: unknown];
@@ -76,7 +78,7 @@ interface Route {
   readonly method: string;
   readonly path: string; // With "{name}" where a channel's name goes.
   readonly open?: true; // Answered without asking who is calling.
-  readonly answer: (ask: Ask) => Answer | Promise<Answer>;
+  readonly answer: (ask: Ask) => Answer | Promise<Answer> | null; // Null when the route has answered by itself.
 }
 
 /** A request the hub will not serve. The words are for whoever sent it. */
@@ -372,6 +374,44 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
   }
 
   /**
+   * Hold the response open and send the caller every event they can see after `after`, then each new one as it is stored, and a comment line every PING seconds.
+   * Each batch is read through the same rule as every other read, at the moment it is sent, so a channel left since the stream opened sends nothing more.
+   */
+  function stream(ask: Ask): null {
+    const { after } = parsed(streamQuerySchema, Object.fromEntries(ask.query), "query");
+    const { me, response } = ask;
+    let sent = after;
+    const send = (): void => {
+      // Stops while the reader has not taken what was written, and goes on when it has ("drain"), so a slow reader holds a page of the log in memory, not all of it.
+      while (!response.writableNeedDrain) {
+        const newest = db.head().seq; // Nothing can be stored between this and the read below: both happen in this one turn of the loop.
+        const page = db.eventsAfter(me, sent, MAX_PAGE);
+        for (const delivered of page) {
+          response.write(`data: ${JSON.stringify(delivered)}\n\n`);
+          sent = delivered.seq;
+        }
+        if (page.length < MAX_PAGE) {
+          sent = Math.max(sent, newest); // Passed over: an event the caller could not see as the stream went by is not sent if they can later, as after joining a channel. Reading the chat shows it.
+          return;
+        }
+      }
+    };
+    const ping = setInterval(() => {
+      response.write(":\n\n");
+    }, PING * 1000);
+    response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }).flushHeaders();
+    waiting.add(send);
+    response.on("drain", send);
+    response.once("close", () => {
+      clearInterval(ping);
+      waiting.delete(send);
+      response.off("drain", send);
+    });
+    send();
+    return null;
+  }
+
+  /**
    * Notes the caller can see with an id above `after`, oldest first: sent to them, to a channel they are in, or (unless `mine` is false) sent by them.
    * `wait` holds the request open until one arrives; `tail` returns only the newest few; `status` false leaves out agent status reports.
    */
@@ -431,6 +471,7 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     { method: "GET", path: "/notes", answer: getNotes },
     { method: "POST", path: "/events", answer: postEvent },
     { method: "GET", path: "/events", answer: getEvents },
+    { method: "GET", path: "/stream", answer: stream },
     { method: "GET", path: "/channels", answer: () => [200, db.channels().map(channelInfo)] },
     { method: "POST", path: "/channels/{name}/join", answer: joinChannel },
     { method: "POST", path: "/channels/{name}/leave", answer: leaveChannel },
