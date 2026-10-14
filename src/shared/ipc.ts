@@ -143,7 +143,7 @@ export const commandSchema = z.discriminatedUnion("do", [
   z.strictObject({ do: z.literal("withdraw"), id, owner: z.string(), repo }), // Take back a request of the user's that `owner`'s agent has not started on.
   z.strictObject({ do: z.literal("sendDraft"), chat, id, repo, text: z.string().min(1) }),
   z.strictObject({ do: z.literal("discardDraft"), chat, id, repo }),
-  z.strictObject({ do: z.literal("run"), id, repo, post: z.boolean() }),
+  z.strictObject({ do: z.literal("run"), id, repo, post: z.boolean(), text: z.string() }), // `text` is the request as the user was shown it: an edit since then refuses the run.
   z.strictObject({ do: z.literal("stop"), id, repo }),
   z.strictObject({ do: z.literal("stopAll"), chat }), // Stop every agent of the user's at work on a request in this chat, in a thread or not.
   z.strictObject({ do: z.literal("decline"), id, repo }),

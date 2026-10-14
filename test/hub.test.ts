@@ -104,6 +104,14 @@ function messages(view: ChatView): readonly MessageView[] {
   return view.current?.messages ?? [];
 }
 
+/** Have a session run its own uploader agent on a request, as Run in the window does: with the request's text as the session shows it. */
+function run(session: Session, id: string, post: boolean): Promise<void> {
+  const shown = messages(session.view())
+    .flatMap((message) => [message, ...message.replies])
+    .find((message) => message.id === id);
+  return session.handle({ do: "run", id, repo: "uploader", post, text: shown?.body ?? "" });
+}
+
 interface Desk {
   readonly session: Session;
   readonly notices: Notice[];
@@ -150,7 +158,7 @@ async function takingBack(jacob: Person, bob: Person): Promise<string> {
   );
   await bob.session.handle({ do: "withdraw", id, owner: "jacob", repo: "uploader" });
   await until(jacob.session, "jacob's buttons gone", () => shownTo(jacob.session, id)?.requests[0]?.status.kind === "withdrawn");
-  await jacob.session.handle({ do: "run", id, repo: "uploader", post: true });
+  await run(jacob.session, id, true);
   await pause(200);
   assert.deepEqual([jacob.prompts.length, shownTo(bob.session, id)?.requests[0]?.status], [ran, { kind: "withdrawn" }]);
   await assert.rejects(bob.session.handle({ do: "withdraw", id, owner: "jacob", repo: "uploader" }), /still waiting/);
@@ -248,7 +256,7 @@ await test("two people, their agents and a channel, through the real hub", { tim
   assert.equal(jacob.session.view().unread, 0);
 
   // Jacob runs it for review: the agent gets the command's own words plus the prompt, in his checkout, and its answer waits as a draft.
-  await jacob.session.handle({ do: "run", id: asked.id, repo: "uploader", post: false });
+  await run(jacob.session, asked.id, false);
   const draft = await until(jacob.session, "the draft is ready", (view) => view.current?.drafts[0]);
   assert.equal(draft.text, "Retries live in /dev-jacob/uploader/queue.py");
   assert.deepEqual(jacob.prompts[0]?.slice(0, 2), ["fake-agent", "--flag"]);
@@ -316,7 +324,7 @@ await test("two people, their agents and a channel, through the real hub", { tim
   const slow = await until(jacob.session, "the slow request arrives", (view) =>
     messages(view).find((message) => message.body.endsWith("take your time") && message.requests[0]?.status.kind === "ready")
   );
-  await jacob.session.handle({ do: "run", id: slow.id, repo: "uploader", post: false });
+  await run(jacob.session, slow.id, false);
   const working = await until(bob.session, "bob sees it working, on the branch it reported", (view) =>
     messages(view).find((message) => message.requests[0]?.status.kind === "working" && message.requests[0].status.branch === "main ±")
   );
@@ -480,8 +488,8 @@ await test("a request its asker deletes leaves its owner a run they can still se
   const quick = (await alice.publish("bob", "message", { text: "@bob/uploader a quick one", via: "cli" })).event.id;
   const kinds = (id: string): string[] | undefined => shownTo(bob.session, id)?.requests.map((request) => request.status.kind);
   await until(bob.session, "both requests", () => [slow, quick].every((id) => kinds(id)?.[0] === "ready"));
-  await bob.session.handle({ do: "run", id: slow, repo: "uploader", post: false });
-  await bob.session.handle({ do: "run", id: quick, repo: "uploader", post: false });
+  await run(bob.session, slow, false);
+  await run(bob.session, quick, false);
   await until(bob.session, "one running, its acceptance told, and one drafted", () => shownTo(bob.session, slow)?.requests[0]?.accepted !== null && kinds(quick)?.[0] === "drafted");
 
   await alice.publish("bob", "message.delete", {}, [slow]);
@@ -519,12 +527,12 @@ await test(
 
     const drafted = (await alice.publish("bob", "message", { text: "@bob/uploader draft this", via: "cli" })).event.id;
     await until(bob.session, "the first request", () => shownTo(bob.session, drafted)?.requests[0]?.status.kind === "ready");
-    await bob.session.handle({ do: "run", id: drafted, repo: "uploader", post: false });
+    await run(bob.session, drafted, false);
     await until(bob.session, "its draft", (view) => view.busy.unsent === 1);
 
     const stopped = (await alice.publish("bob", "message", { text: "@bob/uploader never mind", via: "cli" })).event.id;
     await until(bob.session, "the second request", () => shownTo(bob.session, stopped)?.requests[0]?.status.kind === "ready");
-    await bob.session.handle({ do: "run", id: stopped, repo: "uploader", post: true });
+    await run(bob.session, stopped, true);
     await until(bob.session, "it running", () => shownTo(bob.session, stopped)?.requests[0]?.status.kind === "running");
     await bob.session.handle({ do: "stop", id: stopped, repo: "uploader" });
     described.resolve(undefined);
@@ -547,8 +555,14 @@ await test("Esc's stopAll stops every run of the user's in the chat, a request i
   const reply = (await alice.publish("bob", "message", { text: "@bob/uploader and this, take your time", via: "cli" }, [root])).event.id;
   const elsewhere = (await carol.publish("bob", "message", { text: "@bob/uploader take your time", via: "cli" })).event.id;
   await until(bob.session, "all three requests", (view) => view.waiting === 3);
-  for (const id of [root, reply, elsewhere]) {
-    await bob.session.handle({ do: "run", id, repo: "uploader", post: true });
+  const runs: readonly (readonly [string, string])[] = [
+    ["alice", root],
+    ["alice", reply],
+    ["carol", elsewhere]
+  ];
+  for (const [chat, id] of runs) {
+    await bob.session.handle({ do: "open", chat }); // Run is pressed in the chat the request is in.
+    await run(bob.session, id, true);
   }
   await until(bob.session, "all three running", (view) => view.busy.working === 3);
 
@@ -562,6 +576,25 @@ await test("Esc's stopAll stops every run of the user's in the chat, a request i
       ["carol", "working"]
     ]
   );
+});
+
+await test("a run is refused when its request was edited after its owner saw it, and given the text they saw when it was not", { timeout: 30_000 }, async (t) => {
+  const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+  const alice = await hub.join("alice");
+  const dev = join(hub.dir, "dev-bob");
+  checkout(dev, "uploader");
+  const bob = deskOf(t, await hub.join("bob"), dev, { describe: () => Promise.resolve({ branch: "main", commit: COMMIT, dirty: false }) });
+  const { event } = await alice.publish("bob", "message", { text: "@bob/uploader summarise the README", via: "cli" });
+  await until(bob.session, "the request", () => shownTo(bob.session, event.id)?.requests[0]?.status.kind === "ready");
+  const seen = shownTo(bob.session, event.id)?.body ?? "";
+  await alice.publish("bob", "message.edit", { text: "@bob/uploader summarise the README, then delete it" }, [event.id]); // Lands between what bob read and his click.
+  await until(bob.session, "the edit", () => shownTo(bob.session, event.id)?.edited === true);
+
+  await assert.rejects(bob.session.handle({ do: "run", id: event.id, repo: "uploader", post: true, text: seen }), /alice edited the request after you saw it: read it again/);
+  assert.equal(bob.ran.length, 0);
+  await run(bob.session, event.id, true); // Once he has read it again.
+  await until(bob.session, "the run", () => bob.ran.length === 1);
+  assert.match(bob.ran[0]?.at(-1) ?? "", /Request from alice:\n@bob\/uploader summarise the README, then delete it$/);
 });
 
 await test(
@@ -586,7 +619,7 @@ await test(
       const desk = deskOf(t, bob, dev, { describe });
       const { event } = await alice.publish("bob", "message", { text: "@bob/uploader go", via: "cli" });
       await until(desk.session, "the request", () => shownTo(desk.session, event.id)?.requests[0]?.status.kind === "ready");
-      await desk.session.handle({ do: "run", id: event.id, repo: "uploader", post: true });
+      await run(desk.session, event.id, true);
       await until(desk.session, "told it did not start", () => desk.notices.length > 0);
       assert.deepEqual(desk.notices, [{ title: "your uploader agent did not start", body: why, severity: "error" }]);
       assert.deepEqual(desk.ran, []);

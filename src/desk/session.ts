@@ -264,7 +264,7 @@ export class Session {
         await this.discardDraft(command.chat, command.id, command.repo);
         break;
       case "run":
-        this.runRequest(command.id, command.repo, command.post);
+        this.runRequest(command.id, command.repo, command.post, command.text);
         break;
       case "stop":
         this.runs.get(runKey(command.id, command.repo))?.cancel.abort();
@@ -800,9 +800,13 @@ export class Session {
     await this.decline(request, repo);
   }
 
-  private runRequest(request: string, repo: string, post: boolean): void {
+  /** Run the user's agent on a request, with its text as it stands now; which must be what the user was shown, `seen`, when they said to run it, or the agent would be given something they never saw. */
+  private runRequest(request: string, repo: string, post: boolean, seen: string): void {
     const message = this.chats.message(request);
     if (message !== null && this.chats.requests(message, this.client.now()).some((each) => each.owner === this.me && each.repo === repo && each.state !== "withdrawn")) {
+      if (message.text !== seen) {
+        throw new PlayerTwoError(`${message.entry.event.author} edited the request after you saw it: read it again before you run it`);
+      }
       this.startRun(message, repo, post);
     }
   }

@@ -43,15 +43,17 @@ function Elapsed({ since }: { readonly since: number }): JSX.Element {
   return <>{Math.max(0, Math.round((now - since) / 1000))}s</>;
 }
 
-/** One of the user's own agents, ready to run: the buttons that run it, and one that declines it. */
+/** One of the user's own agents, ready to run: the buttons that run it, and one that declines it. A run carries `text`, the request as the user sees it here, so the desk can refuse one edited since. */
 function ReadyLine({
   request,
+  text,
   who,
   before,
   canDecline,
   act
 }: {
   readonly request: RequestView;
+  readonly text: string;
   readonly who: string;
   readonly before: keyof typeof BEFORE;
   readonly canDecline: boolean;
@@ -68,7 +70,7 @@ function ReadyLine({
         className="text-foreground"
         type="button"
         onClick={() => {
-          act({ do: "run", id, repo, post: false });
+          act({ do: "run", id, repo, post: false, text });
         }}
       >
         ▶ Run and review
@@ -79,7 +81,7 @@ function ReadyLine({
         className="text-foreground"
         type="button"
         onClick={() => {
-          act({ do: "run", id, repo, post: true });
+          act({ do: "run", id, repo, post: true, text });
         }}
       >
         ▶▶ Run and post
@@ -146,8 +148,8 @@ function WaitingLine({ request, away, asker, act }: { readonly request: RequestV
   );
 }
 
-/** Where one agent a message tags stands, and what the reader can do about it. `asker` is whether the reader wrote the message. */
-function RequestLine({ request, asker, act }: { readonly request: RequestView; readonly asker: boolean; readonly act: Act }): JSX.Element {
+/** Where one agent a message tags stands, and what the reader can do about it. `text` is the message as shown; `asker` is whether the reader wrote it. */
+function RequestLine({ request, text, asker, act }: { readonly request: RequestView; readonly text: string; readonly asker: boolean; readonly act: Act }): JSX.Element {
   const { id, owner, repo, status } = request;
   const who = request.mine ? `your ${repo} agent` : `${owner}'s ${repo} agent`;
   switch (status.kind) {
@@ -189,7 +191,7 @@ function RequestLine({ request, asker, act }: { readonly request: RequestView; r
         </p>
       );
     case "ready":
-      return <ReadyLine request={request} who={who} before={status.before} canDecline={status.canDecline} act={act} />;
+      return <ReadyLine request={request} text={text} who={who} before={status.before} canDecline={status.canDecline} act={act} />;
     case "working":
       return (
         <p className={LINE}>
@@ -574,7 +576,7 @@ function Said({ message, me, act, onReply }: { readonly message: ReplyView; read
       )}
       <Reactions message={message} me={me} react={react} />
       {message.requests.map((request) => (
-        <RequestLine key={`${request.owner}/${request.repo}`} request={request} asker={message.sender === me} act={act} />
+        <RequestLine key={`${request.owner}/${request.repo}`} request={request} text={message.body} asker={message.sender === me} act={act} />
       ))}
       {!message.deleted && !editing && <Actions react={react} onReply={onReply} own={own} />}
     </article>
