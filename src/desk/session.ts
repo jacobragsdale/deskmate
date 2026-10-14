@@ -111,7 +111,6 @@ export class Session {
   private readonly stopping = new AbortController();
   private readonly drafts = new Map<string, Draft[]>(); // Per chat, answers waiting for review, oldest first.
   private readonly runs = new Map<string, AgentRun>(); // By request and repo.
-  private readonly autorun = new Set<string>(); // Messages just sent from here: their tags of the user's own agents run without asking.
   private readonly read: Record<string, number>; // Per chat, the seq of the newest event the user has seen.
   private readonly paged = new Map<string, boolean>(); // Chats whose newest page has been loaded, and whether there may be events before what is loaded.
   private lastChat: string | null; // The chat that was open when the session last ran.
@@ -498,11 +497,6 @@ export class Session {
 
   private take(entries: readonly Entry[], announce: boolean): void {
     const fresh = this.chats.add(entries);
-    for (const entry of fresh) {
-      if (this.autorun.has(entry.event.id)) {
-        this.runOwnTags(entry);
-      }
-    }
     this.openFirst();
     if (announce) {
       this.announce(fresh.filter((entry) => (entry.event.kind === "message" || entry.event.kind === "job.result") && entry.event.author !== this.me));
@@ -579,28 +573,20 @@ export class Session {
     this.hooks.changed();
   }
 
+  /**
+   * Send what the user typed. They typed it here, so its tags of their own agents run at once without asking: its id is known as soon as it is signed, so it is folded in its place and run from there.
+   * Nothing that arrives from the hub ever starts an agent. A message from anyone else, from the command or anything else that is not this window, or from this window before the desk last started, waits for the owner's click.
+   */
   private async send(chat: string, text: string): Promise<void> {
     const body = fitText(text.trim());
     if (body === "") {
       return;
     }
-    // A message typed here runs its tags of the user's own agents without asking, once it has come back from the hub.
     const sent = await this.client.publish(chat, "message", { text: body, via: "window" });
-    this.autorun.add(sent.event.id);
-    const found = this.chats.message(sent.event.id);
-    if (found !== null) {
-      this.runOwnTags(found.entry);
-    }
-  }
-
-  private runOwnTags(entry: Entry): void {
-    this.autorun.delete(entry.event.id);
-    const message = this.chats.message(entry.event.id);
-    if (entry.event.author !== this.me || message === null) {
-      return;
-    }
-    for (const request of this.chats.requests(message, this.client.now())) {
-      if (request.owner === this.me && request.state === "waiting" && this.checkouts.has(request.repo)) {
+    this.take([{ ...sent, trusted: true }], false);
+    const message = this.chats.message(sent.event.id);
+    for (const request of message === null ? [] : this.chats.requests(message, this.client.now())) {
+      if (message !== null && request.owner === this.me && request.state === "waiting" && this.checkouts.has(request.repo)) {
         this.startRun(message, request.repo, true);
       }
     }

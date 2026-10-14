@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 
 import { AgentCancelledError, http, join as joinHub, loadClient } from "../src/desk/client.ts";
+import type { Client } from "../src/desk/client.ts";
 import { Session } from "../src/desk/session.ts";
 import { createHub } from "../src/hub/app.ts";
 import type { Arrival, ChatView, MessageView, Notice } from "../src/shared/ipc.ts";
@@ -43,6 +44,7 @@ function checkout(dev: string, name: string): string {
 }
 
 interface Person {
+  readonly client: Client;
   readonly session: Session;
   readonly arrivals: Arrival[];
   readonly notices: Notice[];
@@ -90,7 +92,7 @@ async function person(hub: string, name: string): Promise<Person> {
     }
   );
   session.start();
-  return { session, arrivals, notices, prompts };
+  return { client, session, arrivals, notices, prompts };
 }
 
 function messages(view: ChatView): readonly MessageView[] {
@@ -185,6 +187,19 @@ await test("two people, their agents and a channel, through the real hub", { tim
   await until(bob.session, "the own-tag answer is posted", (view) => messages(view).filter((message) => message.agent === "uploader").length === 2);
   assert.match(jacob.prompts[1]?.[2] ?? "", /jacob tagged you in a direct chat with bob .* nobody reviewing it first/);
   assert.match(jacob.prompts[1]?.[2] ?? "", /Earlier messages in this chat/);
+
+  // His own tag sent any other way waits for his click, wherever it came from: here, from the command line, and in what his desk loads when it starts again.
+  await jacob.client.publish("bob", "message", { text: "@jacob/uploader from the command line", via: "cli" });
+  const ready = { kind: "ready", before: "", canDecline: false };
+  const fromCommand = (view: ChatView): MessageView | undefined => messages(view).find((message) => message.body === "@jacob/uploader from the command line");
+  await until(jacob.session, "the command line's tag waiting for jacob", (view) => fromCommand(view)?.requests[0]?.status.kind === "ready");
+  const restarted = await person(hub, "jacob");
+  people.push(restarted);
+  await until(restarted.session, "the same tag waiting after a restart", (view) => fromCommand(view)?.requests[0]?.status.kind === "ready");
+  await pause(300);
+  assert.deepEqual([fromCommand(jacob.session.view())?.requests[0]?.status, fromCommand(restarted.session.view())?.requests[0]?.status], [ready, ready]);
+  assert.deepEqual([jacob.prompts.length, restarted.prompts.length], [2, 0]);
+  await restarted.session.stop();
 
   // A declined request says so to the asker.
   await bob.session.handle({ do: "send", chat: "jacob", text: "@jacob/uploader one more" });
