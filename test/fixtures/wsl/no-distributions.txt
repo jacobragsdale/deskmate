@@ -1,0 +1,6 @@
+Windows Subsystem for Linux has no installed distributions.
+You can resolve this by installing a distribution with the instructions below:
+
+Use 'wsl.exe --list --online' to list available distributions
+and 'wsl.exe --install <Distro>' to install.
+Error code: Wsl/WSL_E_DEFAULT_DISTRO_NOT_FOUND

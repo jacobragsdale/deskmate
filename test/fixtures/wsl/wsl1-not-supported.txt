@@ -1,0 +1,3 @@
+WSL1 is not supported with your current machine configuration.
+Please enable the "Windows Subsystem for Linux" optional component to use WSL1.
+Error code: Wsl/Service/CreateInstance/WSL_E_WSL1_NOT_SUPPORTED

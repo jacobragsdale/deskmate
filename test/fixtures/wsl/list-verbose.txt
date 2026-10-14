@@ -1,0 +1,5 @@
+  NAME                   STATE           VERSION
+* Ubuntu                 Running         2
+  Ubuntu-22.04           Stopped         2
+  Legacy                 Stopped         1
+  docker-desktop         Running         2
