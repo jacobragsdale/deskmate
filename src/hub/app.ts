@@ -28,7 +28,7 @@ export type Log = (event: string, facts: Readonly<Record<string, string | number
 
 const advertsSchema = z.array(repoSchema).max(MAX_REPOS);
 
-// A query string holds only text, so numbers and yes-or-no arrive written out. The words for yes and no are the ones the Python hub took.
+// A query string holds only text, so numbers and yes-or-no arrive written out, the latter in any of the spellings the hub has always taken.
 const numeric = z
   .string()
   .regex(/^\d+(\.\d+)?$/)
@@ -55,7 +55,7 @@ type Answer = readonly [status: number, body: unknown];
 
 interface Route {
   readonly method: string;
-  readonly path: string; // As hub.py writes it, with "{name}" where a channel's name goes.
+  readonly path: string; // With "{name}" where a channel's name goes.
   readonly open?: true; // Answered without asking who is calling.
   readonly answer: (ask: Ask) => Answer | Promise<Answer>;
 }
