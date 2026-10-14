@@ -9,8 +9,8 @@ import { readLine, windowLineSchema } from "../shared/ipc.ts";
 import type { Command, DeskLine, Question, View } from "../shared/ipc.ts";
 import { DEFAULT_AGENT, defaultDev, defaultHome, http, join, loadClient, PlayerTwoError } from "./client.ts";
 import { Session } from "./session.ts";
-import { shellPath } from "./shellEnv.ts";
 import type { Hooks } from "./session.ts";
+import { shellPath } from "./shellEnv.ts";
 
 class Desk {
   private readonly home = defaultHome();

@@ -100,7 +100,7 @@ await test("the real desk is started, each command gets its own reply, and stopp
 });
 
 await test("a desk that goes away unasked is started again three times, then the window shows why it gave up", { timeout: 30_000 }, async (t) => {
-  const { views, notices, starts } = hold(t, standIn([{ t: "hello", version: "0.4.0", protocol: 1 }, "not a line of the protocol"]));
+  const { desk, views, notices, starts } = hold(t, standIn([{ t: "hello", version: "0.4.0", protocol: 1 }, "not a line of the protocol"]));
 
   const stopped = await until("the stopped view", () => views.find((view) => view.kind === "stopped"));
 
@@ -108,6 +108,11 @@ await test("a desk that goes away unasked is started again three times, then the
   assert.deepEqual(stopped.problem.split("\n").slice(1).sort(byCodeUnit), ["not a line of the protocol", "the desk fell over"]);
   assert.equal(starts(), 4);
   assert.deepEqual(notices[0], { title: "the window ignored a line from the desk it could not read", body: "not a line of the protocol", severity: "error" });
+
+  // Started afresh, as after the user has fixed what stopped it, it gets its three restarts again.
+  await desk.restart();
+  await until("the second stopped view", () => views.filter((view) => view.kind === "stopped").length === 2);
+  assert.equal(starts(), 8);
 });
 
 await test("a desk that goes with a command unanswered has it answered for it, and one that had shown something is started again however often it goes", { timeout: 30_000 }, async (t) => {
@@ -129,6 +134,31 @@ await test("a desk that goes with a command unanswered has it answered for it, a
 
   assert.equal(starts(), 6);
   assert.ok(views.every((view) => view.kind === "setup"));
+});
+
+await test("a desk started afresh while it was still being made ready is started once", { timeout: 30_000 }, async (t) => {
+  const says = standIn(
+    [
+      { t: "hello", version: "0.4.0", protocol: 1 },
+      { t: "view", view: { kind: "setup", defaultAgent: "an-agent" } }
+    ],
+    "yes"
+  );
+  const slow = (dir: string): Promise<Result<Launch>> =>
+    new Promise((resolve) => {
+      setTimeout(() => {
+        resolve(says(dir));
+      }, 100);
+    });
+  const { desk, views, starts } = hold(t, slow);
+
+  await desk.restart();
+  await until("the join form", () => views.length > 0);
+  await new Promise((resolve) => {
+    setTimeout(resolve, 300); // Long enough for the first start's desk to have come up too, had it been let.
+  });
+
+  assert.deepEqual([starts(), views.length], [1, 1]);
 });
 
 await test("a desk that speaks another protocol is refused and not started again, and one that cannot be started is given up on", { timeout: 30_000 }, async (t) => {

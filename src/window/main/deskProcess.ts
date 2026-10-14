@@ -18,7 +18,7 @@ import type { Result } from "./wsl.ts";
 const RESTARTS = 3; // Times a desk that went away unasked is started again before the window gives up on it.
 const RESTART_DELAY = 1000; // Milliseconds before the first of them; each one after waits twice as long.
 const STOP_WAIT = 3000; // Milliseconds a desk gets to stop its agents and tell the chat before it is killed.
-const TAIL = 2000; // Characters of the desk's standard error kept, to show if it will not stay up.
+const TAIL = 2000; // Characters kept of what the desk says outside the protocol, to show if it will not stay up.
 
 /** The program that is the desk on this machine, and what it is started with. */
 export interface Launch {
@@ -81,9 +81,10 @@ export class DeskProcess {
   private readonly restartDelay: number;
   private readonly waiting = new Map<number, (outcome: Outcome) => void>(); // Commands the desk has not answered yet, by id.
   private child: ChildProcessWithoutNullStreams | null = null;
-  private restart: NodeJS.Timeout | undefined;
+  private startAgain: NodeJS.Timeout | undefined; // The timer that starts a desk that went away unasked again.
   private wanted = true; // False once the window has stopped the desk or refused it: a desk that goes after that is not started again.
   private restarts = 0;
+  private attempt = 0; // Counts the starts, so that a desk made ready for one that has since been stopped or replaced is not started.
   private commands = 0;
   private attentive: boolean | null = null; // What the desk was last told, so one started again is told too.
   private tail = "";
@@ -97,10 +98,12 @@ export class DeskProcess {
 
   /** Get the desk ready and start it. If it cannot be made ready there is nothing to start again, so the window says why at once. */
   public start(): void {
+    this.attempt += 1;
+    const attempt = this.attempt;
     this.prepare().then(
       (launch) => {
-        if (!this.wanted) {
-          return; // Stopped while it was being made ready.
+        if (!this.wanted || attempt !== this.attempt) {
+          return; // Stopped, or started afresh, while it was being made ready.
         }
         if (launch.ok) {
           this.spawn(launch.value);
@@ -138,10 +141,18 @@ export class DeskProcess {
     this.write({ t: "attend", attentive });
   }
 
+  /** Stop the desk and start it afresh, counting its restarts from nothing: after a change to where it runs, or when the user has fixed what stopped it. */
+  public async restart(): Promise<void> {
+    await this.stop();
+    this.wanted = true;
+    this.restarts = 0;
+    this.start();
+  }
+
   /** Close the desk's input, which tells it to quit, and wait for it to go. One that has not gone in three seconds is killed. */
   public async stop(): Promise<void> {
     this.wanted = false;
-    clearTimeout(this.restart);
+    clearTimeout(this.startAgain);
     const child = this.child;
     if (child === null) {
       return;
@@ -236,7 +247,7 @@ export class DeskProcess {
       return;
     }
     if (this.restarts < RESTARTS) {
-      this.restart = setTimeout(
+      this.startAgain = setTimeout(
         () => {
           this.start();
         },
