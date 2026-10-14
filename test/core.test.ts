@@ -514,7 +514,7 @@ await test("a text is cut so the event carrying it fits what the hub accepts, ho
   assert.equal(fitText("plain"), "plain");
 });
 
-await test("a checkout's head is its branch, the commit it is at and whether anything is uncommitted, and one with no commit cannot be described", async (t) => {
+await test("a checkout's head is its branch, the commit it is at and whether anything is uncommitted, and one with no commit, or whose status git cannot read, cannot be described", async (t) => {
   const path = mkdtempSync(join(tmpdir(), "player-two-head-"));
   t.after(() => {
     rmSync(path, { recursive: true, force: true });
@@ -528,6 +528,8 @@ await test("a checkout's head is its branch, the commit it is at and whether any
   assert.deepEqual([head.branch, /^[0-9a-f]{40}$/.test(head.commit), head.dirty], ["main", true, false]);
   writeFileSync(join(path, "new.txt"), "changed");
   assert.deepEqual(await repos.describe(checkout), { ...head, dirty: true });
+  writeFileSync(join(path, ".git", "index"), "not an index"); // The commit can still be named, but git status fails.
+  await assert.rejects(repos.describe(checkout), /git cannot say whether .* has uncommitted changes: fatal: .*index/);
 });
 
 await test("running an agent returns what it printed, reports a failure, and stops when cancelled", async () => {

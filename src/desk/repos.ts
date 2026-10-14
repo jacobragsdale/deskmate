@@ -96,12 +96,23 @@ export function git(args: readonly string[], timeoutSeconds: number): Promise<Gi
   });
 }
 
-/** Where a checkout stands right now. Rejects when git cannot say which commit it is at, as in a repository with no commits yet. */
+/** Git's last words on a failed run. */
+function lastWords(result: GitResult): string {
+  return result.timedOut ? `no answer within ${String(STATUS_TIMEOUT)} seconds` : (result.stderr.trim().split("\n").at(-1) ?? "");
+}
+
+/**
+ * Where a checkout stands right now. Rejects when git cannot say which commit it is at, as in a repository with no commits yet,
+ * or whether anything is uncommitted, as with a corrupt index: what is recorded about a run must be what git said, not a guess.
+ */
 export async function describe(checkout: Checkout): Promise<Head> {
   const [head, status] = await Promise.all([git(["-C", checkout.path, "rev-parse", "HEAD"], STATUS_TIMEOUT), git(["-C", checkout.path, "status", "--porcelain"], STATUS_TIMEOUT)]);
   const commit = head.stdout.trim();
   if (!head.ok || !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(commit)) {
-    throw new Error(`git cannot say which commit ${checkout.path} is at: ${head.stderr.trim().split("\n").at(-1) ?? ""}`);
+    throw new Error(`git cannot say which commit ${checkout.path} is at: ${lastWords(head)}`);
+  }
+  if (!status.ok) {
+    throw new Error(`git cannot say whether ${checkout.path} has uncommitted changes: ${lastWords(status)}`);
   }
   return { branch: branchOf(checkout.path), commit, dirty: status.stdout.trim() !== "" };
 }
