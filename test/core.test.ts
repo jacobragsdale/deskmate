@@ -1,4 +1,4 @@
-/** The parts of the client that have logic of their own: tag states, the tag list, splitting the agent command, and running it. */
+/** The parts of the client that have logic of their own: tag states, the tag list, reading what the hub answers, splitting the agent command, and running it. */
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -6,8 +6,9 @@ import { test } from "node:test";
 import { candidates, ChatLog, STALE } from "../src/core/chat.ts";
 import type { Entry } from "../src/core/chat.ts";
 import { runAgent, splitCommand } from "../src/desk/agents/oneshot.ts";
-import { AgentCancelledError, DeskmateError } from "../src/desk/client.ts";
-import { loadKey, signNote } from "../src/core/sign.ts";
+import { AgentCancelledError, Client, DeskmateError } from "../src/desk/client.ts";
+import type { Transport } from "../src/desk/client.ts";
+import { loadKey, publicHex, signNote } from "../src/core/sign.ts";
 import { fitBody, MAX_BODY } from "../src/core/wire.ts";
 import type { Kind, TeamRepo } from "../src/core/wire.ts";
 
@@ -57,6 +58,35 @@ await test("the tag list leads with the pinned repo, then my agents, then my par
   assert.deepEqual(tags("", "uploader", null), ["jacob/uploader", "bob/uploader", "jacob/theme", "bob/theme", "carol/billing"]);
   assert.deepEqual(tags("bill", null, null), ["carol/billing", "clone jacob/billing"]);
   assert.deepEqual(candidates("", team, "jacob", null, null, 2).more, 3);
+});
+
+/** A client whose hub is a table of answers, by method and path. Nothing is sent anywhere. */
+function clientOf(answers: Readonly<Record<string, unknown>>): Client {
+  const transport: Transport = (method, url) => Promise.resolve(JSON.stringify(answers[`${method} ${new URL(url).pathname}`]));
+  return new Client("/nowhere", { hub: "http://hub.test", name: "jacob", agent: "fake-agent" }, key, transport, () => NOW);
+}
+
+await test("the client reads past a field a newer hub adds, but refuses one inside a signed note", async () => {
+  const note = signNote(key, { sender: "bob", to: "jacob", kind: "note", body: "hello", ts: NOW, agent: null, re: null });
+  const info = { version: "9.0.0", protocol: 1, repos: "dev.azure.com/acme", now: NOW };
+  const bob = { name: "bob", pubkey: publicHex(key), seen: NOW };
+  const backend = { name: "#backend", members: ["bob"], repo: null };
+  const client = clientOf({
+    "GET /info": { ...info, hubKey: "new" },
+    "GET /users": [{ ...bob, role: "new" }],
+    "GET /repos": [{ ...repo("bob", "uploader"), commit: "new" }],
+    "GET /channels": [{ ...backend, topic: "new" }],
+    "POST /notes": { id: 7, seq: 7 },
+    "GET /notes": [{ id: 7, note, seq: 7 }]
+  });
+
+  assert.deepEqual(await client.info(), info);
+  assert.deepEqual(await client.users(), [bob]);
+  assert.deepEqual(await client.repos(), [repo("bob", "uploader")]);
+  assert.deepEqual(await client.channels(), [backend]);
+  assert.equal(await client.send("bob", "hello"), 7);
+  assert.deepEqual(await client.notes(), [{ id: 7, note }]);
+  await assert.rejects(clientOf({ "GET /notes": [{ id: 7, note: { ...note, via: "new" } }] }).notes(), /Unrecognized key/);
 });
 
 await test("an agent command is split the way a shell would split it", () => {

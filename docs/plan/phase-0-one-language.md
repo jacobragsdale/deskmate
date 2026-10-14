@@ -66,7 +66,7 @@ Shape:
 These change the wire, so the Python client stops working here. That is expected.
 
 - [x] **P0-C1** `GET /info` returns `{ version, protocol: 1, repos, now }`. `version` comes from `package.json` at build time.
-- [ ] **P0-C2** In `src/desk/client.ts`, parse the hub's responses with schemas that ignore unknown keys: `z.object`, not `z.strictObject`, for `HubInfo`, `Person`, `ChannelInfo`, `TeamRepo`, `Delivered`, `Receipt`. The note inside `Delivered` stays strict. Say why in a comment beside them: these may gain fields, and a signed note may not.
+- [x] **P0-C2** In `src/desk/client.ts`, parse the hub's responses with schemas that ignore unknown keys: `z.object`, not `z.strictObject`, for `HubInfo`, `Person`, `ChannelInfo`, `TeamRepo`, `Delivered`, `Receipt`. The note inside `Delivered` stays strict. Say why in a comment beside them: these may gain fields, and a signed note may not.
 - [ ] **P0-C3** Auth header version 2, as in [`protocol.md`](protocol.md): the signed text includes the method and the path with its query. `src/core/sign.ts` builds it; the hub verifies against the request it actually received. Add a vector to `test/fixtures` and a test that a header for `GET /users` is refused on `POST /channels/x/join`.
 - [ ] **P0-C4** The desk compares `/info`'s `protocol` with its own when it connects. On a mismatch the link state is `down` with a problem that names which side to update, and it does not retry in a loop: it asks again once a minute.
 - [ ] **P0-C5** Set the version to `0.4.0` in `package.json`.

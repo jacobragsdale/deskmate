@@ -35,11 +35,14 @@ export const userSchema = z.strictObject({ name: nameSchema, pubkey: pubKeySchem
 /** What someone sends to register a name: the name, their key, and the token the hub's owner gave the team. */
 export const joinSchema = z.strictObject({ name: nameSchema, pubkey: pubKeySchema, token: z.string() }).readonly();
 
+// What the hub answers with is read with z.object, which drops a key it does not know, so the hub can add a field without every older client refusing the answer.
+// That is Person, HubInfo, TeamRepo, ChannelInfo, Delivered and Receipt. A note is the exception, also inside Delivered: every field of it is signed, so one nobody expected is a reason to refuse it.
+
 /** Someone who has joined, and the Unix seconds of their last signed request; 0 if they have never made one. */
-export const personSchema = z.strictObject({ name: nameSchema, pubkey: pubKeySchema, seen: z.int() }).readonly();
+export const personSchema = z.object({ name: nameSchema, pubkey: pubKeySchema, seen: z.int() }).readonly();
 
 /** What the hub says about itself. `repos` is the key every shareable repo starts with, such as "dev.azure.com/acme"; `now` is the hub's clock in Unix seconds. */
-export const hubInfoSchema = z.strictObject({ version: z.string(), protocol: z.int(), repos: z.string(), now: z.int() }).readonly();
+export const hubInfoSchema = z.object({ version: z.string(), protocol: z.int(), repos: z.string(), now: z.int() }).readonly();
 
 /** A repo as everyone can refer to it. */
 export const repoRefSchema = z.strictObject({ name: repoNameSchema, key: repoKeySchema, url: repoUrlSchema }).readonly();
@@ -47,10 +50,10 @@ export const repoRefSchema = z.strictObject({ name: repoNameSchema, key: repoKey
 /** A repo someone has checked out, and the branch their copy is on. */
 export const repoSchema = z.strictObject({ name: repoNameSchema, key: repoKeySchema, url: repoUrlSchema, branch: branchSchema }).readonly();
 
-export const teamRepoSchema = z.strictObject({ name: repoNameSchema, key: repoKeySchema, url: repoUrlSchema, branch: branchSchema, user: nameSchema }).readonly();
+export const teamRepoSchema = z.object({ name: repoNameSchema, key: repoKeySchema, url: repoUrlSchema, branch: branchSchema, user: nameSchema }).readonly();
 
 /** `repo` is the repo the channel is about, if one is pinned. */
-export const channelInfoSchema = z.strictObject({ name: channelSchema, members: z.array(nameSchema).readonly(), repo: repoRefSchema.nullable() }).readonly();
+export const channelInfoSchema = z.object({ name: channelSchema, members: z.array(nameSchema).readonly(), repo: repoRefSchema.nullable() }).readonly();
 
 /** A message signed by its sender. The hub relays it unchanged, so every recipient can verify it too. */
 export const noteSchema = z
@@ -66,8 +69,8 @@ export const noteSchema = z
   })
   .readonly();
 
-export const deliveredSchema = z.strictObject({ id: z.int(), note: noteSchema }).readonly();
-export const receiptSchema = z.strictObject({ id: z.int() }).readonly();
+export const deliveredSchema = z.object({ id: z.int(), note: noteSchema }).readonly();
+export const receiptSchema = z.object({ id: z.int() }).readonly();
 
 export const configSchema = z.strictObject({ hub: z.string().regex(/^https?:\/\/\S*[^/\s]$/), name: nameSchema, agent: z.string().min(1) }).readonly();
 
