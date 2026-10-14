@@ -11,6 +11,7 @@ import { test } from "node:test";
 
 import { z } from "zod";
 
+import { noteLink } from "../src/core/links.ts";
 import { startHub, TOKEN } from "./startHub.ts";
 
 const ROOT = join(import.meta.dirname, "..");
@@ -147,7 +148,7 @@ class Page {
 }
 
 await test(
-  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions and edits as text, and pages back, keeping its place",
+  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, and pages back, keeping its place",
   { skip: NO_DISPLAY ? "no display: run it under xvfb-run" : false, timeout: 120_000 },
   async (t) => {
     assert.ok(existsSync(join(ROOT, "dist", "main.js")), "dist/ is not built: run `npm run build` first");
@@ -312,7 +313,7 @@ await test(
     // Carol starts a channel, pins a repo to it and writes more than a page, and alice joins it from the dialog. Scrolling to the top loads the page before, and the message that was first stays where it was.
     const carol = await hub.join("carol");
     await carol.publish("#history", "channel.join", {});
-    await carol.publish("#history", "message", { text: "the first", via: "cli" });
+    const theFirst = await carol.publish("#history", "message", { text: "the first", via: "cli" });
     await carol.publish("#history", "channel.pin", { repo: { name: "uploader", key: "dev.azure.com/acme/platform/uploader", url: "https://dev.azure.com/acme/Platform/_git/uploader" }, branch: null });
     for (let count = 1; count <= 60; count += 1) {
       await carol.publish("#history", "message", { text: `history ${String(count)}`, via: "cli" });
@@ -361,6 +362,15 @@ await test(
     await page.until("where it runs", `document.querySelector("main").innerText.includes("bob's uploader agent is working on main ± at c0ffee0")`);
     await bob.publish("alice", "job.result", { repo: "uploader", branch: "main", text: "in queue.py", reviewed: false }, [asked.event.id]);
     await page.until("the answer, with where it ran", `document.querySelector("main").innerText.includes("/uploader agent on main ± at c0ffee0")`);
+
+    // A link to a note is a chip of text: who wrote it and its first words when alice can see it, in plain text and written out in Markdown alike, and "a note you cannot see" when she cannot. None is a link the window follows.
+    await carol.publish("#hidden", "channel.join", {});
+    const hidden = await carol.publish("#hidden", "message", { text: "not for alice", via: "cli" });
+    await bob.publish("alice", "message", { text: `as carol said in ${noteLink(theFirst.event.id)}`, via: "cli" });
+    await bob.publish("alice", "message", { text: `\`\`\`\nfenced\n\`\`\`\n\nsee [this note](${noteLink(hidden.event.id)}) and ${noteLink(theFirst.event.id)}`, via: "cli" });
+    const chips = `[...document.querySelectorAll("main [data-note]")].map((each) => each.textContent).join(" | ")`;
+    await page.until("the chips", `${chips} === "carol: the first | a note you cannot see | carol: the first"`);
+    assert.equal(await page.eval(`document.querySelectorAll('main a[href^="player-two"], main a[href=""]').length`), 0);
 
     assert.deepEqual(page.problems, []);
   }

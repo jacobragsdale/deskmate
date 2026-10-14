@@ -6,10 +6,11 @@ import { join as joinPath } from "node:path";
 
 import { z } from "zod";
 
-import type { Arrival, ChatView, Command, CurrentView, LineView, MessageView, Notice, ReplyView, RequestView, RowView } from "../shared/ipc.ts";
+import type { Arrival, ChatView, Command, CurrentView, LineView, MessageView, NoteView, Notice, ReplyView, RequestView, RowView } from "../shared/ipc.ts";
 import { agentPrompt, ChatLog, chatOf, continues, mentions, ONLINE, refOf, rings } from "../core/chat.ts";
 import type { Accepted, Entry, Message, Request } from "../core/chat.ts";
 import { readContent } from "../core/kinds.ts";
+import { notesIn } from "../core/links.ts";
 import type { Content, ContentOf } from "../core/kinds.ts";
 import { runAgent, splitCommand } from "./agents/oneshot.ts";
 import { AgentCancelledError, PlayerTwoError } from "./client.ts";
@@ -127,6 +128,7 @@ export class Session {
   private readonly runs = new Map<string, AgentRun>(); // By request and repo.
   private readonly read: Record<string, number>; // Per chat, the seq of the newest event the user has seen.
   private readonly paged = new Map<string, boolean>(); // Chats whose newest page has been loaded, and whether there may be events before what is loaded.
+  private readonly linked = new Map<string, NoteView | null>(); // Notes linked to that are not loaded here, as the hub answered for each; null while it is being asked.
   private lastChat: string | null; // The chat that was open when the session last ran.
   private people: readonly Person[] = [];
   private channels: readonly ChannelInfo[] = [];
@@ -384,6 +386,7 @@ export class Session {
       edited: message.edited,
       deleted: message.deleted,
       reactions: [...message.reactions].map(([emoji, people]) => ({ emoji, people: [...people] })),
+      notes: this.notesOf(message.text),
       quote: answered === null ? "" : `${answered.entry.event.author}: ${oneLine(answered.text)}`,
       header: !continues(previous, message),
       requests: this.chats.requests(message, now).flatMap((request) => this.requestView(request))
@@ -392,8 +395,43 @@ export class Session {
 
   /** An event whose signature failed: who it claims to be from and when, and never what it says. */
   private warningView({ seq, event }: Entry): MessageView {
-    const nothing = { agent: null, branch: "", commit: "", body: "", edited: false, deleted: false, reactions: [], quote: "", requests: [], replyCount: 0, replies: [] };
+    const nothing = { agent: null, branch: "", commit: "", body: "", edited: false, deleted: false, reactions: [], notes: [], quote: "", requests: [], replyCount: 0, replies: [] };
     return { id: event.id, seq, sender: event.author, ts: event.ts, trusted: false, header: true, ...nothing };
+  }
+
+  /**
+   * What each note a text links to is, as far as the desk knows: one loaded here as the fold has it, edits and all, and any other as the hub answered for it.
+   * One that is neither is asked of the hub, once, and left out until the answer comes and the window is told again.
+   */
+  private notesOf(text: string): NoteView[] {
+    return [...new Set(notesIn(text).flatMap((piece) => piece.note ?? []))].flatMap((id): NoteView[] => {
+      const loaded = this.chats.message(id);
+      if (loaded !== null) {
+        return [{ state: "seen", id, author: loaded.entry.event.author, words: loaded.deleted ? "message deleted" : oneLine(loaded.text) }];
+      }
+      if (!this.linked.has(id)) {
+        this.linked.set(id, null);
+        this.lookUp(id).catch(() => undefined); // It catches what it can fail with itself.
+      }
+      const known = this.linked.get(id) ?? null;
+      return known === null ? [] : [known];
+    });
+  }
+
+  /**
+   * Ask the hub for a note linked to that is not loaded here. One it will not show this user, or whose signature fails, is a note they cannot see.
+   * When the hub cannot be reached it is asked again the next time the link is drawn.
+   */
+  private async lookUp(id: string): Promise<void> {
+    try {
+      const found = await this.client.event(id);
+      const trusted = found !== null && (await this.client.isTrusted(found.event));
+      const text = found === null ? "" : textOf({ ...found, trusted });
+      this.linked.set(id, found !== null && trusted ? { state: "seen", id, author: found.event.author, words: oneLine(text === "" ? found.event.kind : text) } : { state: "hidden", id });
+      this.hooks.changed();
+    } catch {
+      this.linked.delete(id);
+    }
   }
 
   /** Someone joined, left, pinned or unpinned in the open chat, in order. */
@@ -760,6 +798,7 @@ export class Session {
     }
     const channel = `#${bare.data}`;
     await this.publish(channel, "channel.join", {});
+    this.linked.clear(); // A note in the channel that the hub would not show before, it shows now.
     await this.refreshChannels();
     await this.page(channel);
     this.open(channel);

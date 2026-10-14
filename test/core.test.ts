@@ -1,4 +1,4 @@
-/** The parts of the client that have logic of their own: the fold of a chat's events and the rules that keep it honest, the tag list, an event's envelope and what each kind says, reading what the hub answers, a hub on another protocol, splitting the agent command, and running it. */
+/** The parts of the client that have logic of their own: the fold of a chat's events and the rules that keep it honest, the tag list, links to notes, an event's envelope and what each kind says, reading what the hub answers, a hub on another protocol, splitting the agent command, and running it. */
 
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -15,6 +15,7 @@ import { runAgent, splitCommand } from "../src/desk/agents/oneshot.ts";
 import { AgentCancelledError, Client, PlayerTwoError } from "../src/desk/client.ts";
 import type { Transport } from "../src/desk/client.ts";
 import { readContent } from "../src/core/kinds.ts";
+import { noteLink, noteOf, notesIn } from "../src/core/links.ts";
 import { loadKey, publicHex, signEvent } from "../src/core/sign.ts";
 import * as repos from "../src/desk/repos.ts";
 import { Session } from "../src/desk/session.ts";
@@ -251,6 +252,29 @@ await test("a message rings when it is sent to the user or tags their agent in a
     ),
     [true, false, true, false, false]
   );
+});
+
+await test("a link to a note names a 64-hex id and nothing else, and is found in text wherever it stands whole", () => {
+  const id = "ab".repeat(32);
+  const link = noteLink(id);
+
+  assert.equal(link, `player-two://note/${id}`);
+  assert.equal(noteOf(link), id);
+  for (const other of [`${link}/`, `${link}0`, link.slice(0, -1), link.toUpperCase(), `player-two://note/${"AB".repeat(32)}`, `player-two://chat/${id}`, `https://example.com/${id}`, ` ${link}`, ""]) {
+    assert.equal(noteOf(other), null, other);
+  }
+  assert.deepEqual(notesIn(`see ${link}, and (${link}).`), [
+    { text: "see ", note: null },
+    { text: link, note: id },
+    { text: ", and (", note: null },
+    { text: link, note: id },
+    { text: ").", note: null }
+  ]);
+  assert.deepEqual(notesIn(`${link}cafe and ${link.slice(0, -1)} and player-two://note/${"AB".repeat(32)}`), [
+    { text: `${link}cafe and ${link.slice(0, -1)} and player-two://note/${"AB".repeat(32)}`, note: null }
+  ]);
+  assert.deepEqual(notesIn(link), [{ text: link, note: id }]);
+  assert.deepEqual(notesIn(""), []);
 });
 
 await test("the tag list leads with the pinned repo, then my agents, then my partner's, and offers a clone once a repo is named", () => {

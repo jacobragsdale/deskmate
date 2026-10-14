@@ -2,9 +2,9 @@
 
 import { cn } from "cn";
 import { EllipsisIcon, Loader2Icon, PencilIcon, ReplyIcon, SmilePlusIcon, Trash2Icon } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import type { JSX, SyntheticEvent } from "react";
-import Markdown from "react-markdown";
+import Markdown, { defaultUrlTransform } from "react-markdown";
 
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -14,6 +14,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 import { spans } from "../../core/chat.ts";
+import { noteLink, noteOf, notesIn } from "../../core/links.ts";
 import { oneLine } from "../../core/text.ts";
 import type { MessageView, ReplyView, RequestView } from "../../shared/ipc.ts";
 import type { Act } from "./App.tsx";
@@ -232,21 +233,74 @@ function Edited({ message }: { readonly message: ReplyView }): JSX.Element | nul
   return message.edited ? <span className="text-xs text-muted-foreground"> (edited)</span> : null;
 }
 
+/** A link to a note, drawn as a chip of text: who wrote the note and its first words once the desk has looked it up, or that the reader cannot see it. Nothing in it is followed or run. */
+function NoteChip({ id, notes }: { readonly id: string; readonly notes: ReplyView["notes"] }): JSX.Element {
+  const note = notes.find((each) => each.id === id);
+  let label = "a note…"; // Still being looked up.
+  if (note?.state === "seen") {
+    label = `${note.author}: ${note.words}`;
+  } else if (note?.state === "hidden") {
+    label = "a note you cannot see";
+  }
+  return (
+    <span className="mx-0.5 inline-block max-w-80 truncate rounded-md border bg-muted px-1.5 align-bottom text-xs" title={noteLink(id)} data-note={id}>
+      {label}
+    </span>
+  );
+}
+
+/** A node of a Markdown tree, as far as finding links to notes in its text needs to know it. */
+interface MarkdownNode {
+  readonly type: string;
+  readonly value?: string;
+  readonly url?: string;
+  readonly children?: MarkdownNode[];
+}
+
+/** A remark plugin: each link to a note written out in plain text becomes a link, so that it is drawn as a chip as one written [like this](…) is. Code, and the text of a link, are left as they are. */
+function linkNotes(): (tree: MarkdownNode) => void {
+  const visit = (node: MarkdownNode): void => {
+    const children = node.type === "link" || node.type === "linkReference" ? [] : (node.children ?? []);
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      const child = children[index];
+      const pieces = child?.type === "text" ? notesIn(child.value ?? "") : [];
+      if (pieces.some((piece) => piece.note !== null)) {
+        children.splice(
+          index,
+          1,
+          ...pieces.map((piece): MarkdownNode => (piece.note === null ? { type: "text", value: piece.text } : { type: "link", url: piece.text, children: [{ type: "text", value: piece.text }] }))
+        );
+      } else if (child !== undefined) {
+        visit(child);
+      }
+    }
+  };
+  return visit;
+}
+
 function Body({ message }: { readonly message: ReplyView }): JSX.Element {
   if (message.deleted) {
     return <p className="text-muted-foreground italic">message deleted</p>;
   }
   if (message.agent !== null || message.body.includes("```")) {
     // Markdown from an agent is drawn as elements, never as HTML: raw tags in it stay text. Images are not fetched: a remote one would tell its host who read the message.
+    // A link to a note is a chip; every other link is as safe as react-markdown's own rule makes it, which drops a player-two: address like any it does not know.
     return (
       <div className="markdown">
         <Markdown
+          remarkPlugins={[linkNotes]}
+          urlTransform={(url) => (noteOf(url) === null ? defaultUrlTransform(url) : url)}
           components={{
-            a: ({ href, children }) => (
-              <a href={href} target="_blank" rel="noreferrer">
-                {children}
-              </a>
-            ),
+            a: ({ href, children }) => {
+              const note = noteOf(href ?? "");
+              return note === null ? (
+                <a href={href} target="_blank" rel="noreferrer">
+                  {children}
+                </a>
+              ) : (
+                <NoteChip id={note} notes={message.notes} />
+              );
+            },
             img: ({ alt, src }) => (
               <span className="text-muted-foreground">
                 [image{alt === undefined || alt === "" ? "" : `: ${alt}`}] {typeof src === "string" ? src : ""}
@@ -262,12 +316,20 @@ function Body({ message }: { readonly message: ReplyView }): JSX.Element {
   }
   return (
     <p className="wrap-anywhere whitespace-pre-wrap">
-      {spans(message.body).map((span, index) => (
-        // The pieces of one message never reorder, so their position is a stable key.
-        <span key={index} className={span.tag ? "font-semibold text-tag" : undefined}>
-          {span.text}
-        </span>
-      ))}
+      {/* The pieces of one message never reorder, so their position is a stable key. */}
+      {notesIn(message.body).map((piece, at) =>
+        piece.note === null ? (
+          <Fragment key={at}>
+            {spans(piece.text).map((span, index) => (
+              <span key={index} className={span.tag ? "font-semibold text-tag" : undefined}>
+                {span.text}
+              </span>
+            ))}
+          </Fragment>
+        ) : (
+          <NoteChip key={at} id={piece.note} notes={message.notes} />
+        )
+      )}
       <Edited message={message} />
     </p>
   );

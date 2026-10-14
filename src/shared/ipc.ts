@@ -35,6 +35,12 @@ const requestSchema = z
   })
   .readonly();
 
+/** A note a message links to, once the desk has looked it up: who wrote it and its first words, or that the reader cannot see it. */
+const noteSchema = z.discriminatedUnion("state", [
+  z.strictObject({ state: z.literal("seen"), id: z.string(), author: z.string(), words: z.string() }).readonly(),
+  z.strictObject({ state: z.literal("hidden"), id: z.string() }).readonly() // Not one the reader can see, or one whose signature failed.
+]);
+
 /** What a message and a reply both show. */
 const said = {
   id: z.string(), // The event's id: what a command about it names.
@@ -49,6 +55,7 @@ const said = {
   edited: z.boolean(),
   deleted: z.boolean(),
   reactions: z.array(z.strictObject({ emoji: z.string(), people: z.array(z.string()).readonly() }).readonly()).readonly(), // Each emoji in the order it was first used, and who reacted with it.
+  notes: z.array(noteSchema).readonly(), // The notes its text links to that the desk has looked up; a link not here is still being looked up.
   quote: z.string(), // The request an answer is to, on one line; "" when it answers nothing.
   header: z.boolean(), // Whether to say who wrote it, or let it sit under the previous message's header.
   requests: z.array(requestSchema).readonly()
@@ -201,6 +208,7 @@ export function readLine<T>(schema: z.ZodType<T>, text: string): T | null {
 }
 
 export type RequestView = z.infer<typeof requestSchema>;
+export type NoteView = z.infer<typeof noteSchema>;
 export type MessageView = z.infer<typeof messageSchema>;
 export type ReplyView = z.infer<typeof replySchema>;
 export type LineView = z.infer<typeof lineSchema>;

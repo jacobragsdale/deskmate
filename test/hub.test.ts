@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 
+import { noteLink } from "../src/core/links.ts";
 import { authHeader, loadKey, signEvent } from "../src/core/sign.ts";
 import { AgentCancelledError, http, join as joinHub, loadClient } from "../src/desk/client.ts";
 import type { Client } from "../src/desk/client.ts";
@@ -238,6 +239,7 @@ await test("two people, their agents and a channel, through the real hub", { tim
       edited: false,
       deleted: false,
       reactions: [],
+      notes: [],
       quote: "bob: @jacob/uploader does your retry change handle 429s?",
       header: true,
       requests: [],
@@ -337,6 +339,33 @@ await test("a session loads each chat's newest page when it starts, and the page
   assert.deepEqual(shown(session.view()), [60, "message 1", false]);
   await session.handle({ do: "older" }); // Nothing before the first: nothing is asked for.
   assert.deepEqual(shown(session.view()), [60, "message 1", false]);
+});
+
+await test("a link to a note shows who wrote it and its first words, from what is loaded or from the hub, or that the reader cannot see it", { timeout: 30_000 }, async (t) => {
+  const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+  const [alice, bob, carol] = [await hub.join("alice"), await hub.join("bob"), await hub.join("carol")];
+  const loaded = await alice.publish("bob", "message", { text: "the first words of a note", via: "cli" });
+  await alice.publish("bob", "message.edit", { text: "the words it has now" }, [loaded.event.id]);
+  await carol.publish("#private", "channel.join", {});
+  const hidden = await carol.publish("#private", "message", { text: "only for carol", via: "cli" });
+  await bob.publish("#left", "channel.join", {});
+  const asked = await bob.publish("#left", "message", { text: "bob said this, then left", via: "cli" }); // Not loaded, as bob is not in the channel now; but his own, so the hub shows it to him.
+  await bob.publish("#left", "channel.leave", {});
+  const links = [loaded, hidden, asked, loaded].map(({ event }) => noteLink(event.id)).join(", ");
+  const { event } = await alice.publish("bob", "message", { text: `see ${links} and player-two://note/${"0".repeat(65)}`, via: "cli" });
+  const session = new Session(bob, join(hub.dir, "dev"), { changed: () => undefined, notice: () => undefined, arrived: () => undefined, confirmClone: () => Promise.resolve(false) }, { presence: 1 });
+  session.start();
+  t.after(() => session.stop());
+
+  const notes = await until(session, "every note looked up", () => {
+    const shown = shownTo(session, event.id)?.notes ?? [];
+    return shown.length === 3 && shown;
+  });
+  assert.deepEqual(notes, [
+    { state: "seen", id: loaded.event.id, author: "alice", words: "the words it has now" },
+    { state: "hidden", id: hidden.event.id },
+    { state: "seen", id: asked.event.id, author: "bob", words: "bob said this, then left" }
+  ]);
 });
 
 await test("an agent whose run cannot be told to the chat does not start", { timeout: 30_000 }, async (t) => {
