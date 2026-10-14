@@ -30,7 +30,11 @@ Find the first unticked task in the lowest-numbered phase file and continue from
 
 | Path | What it is |
 |---|---|
-| `src/deskmate/`, `tests/` | The Python hub, command and terminal interface. Deleted during phase 0. |
-| `app/` | The Electron app: `src/core` is the TypeScript client, `src/main` the Electron main process, `src/renderer` the React window, `test` the tests. Moves to the repository root in task P0-A1. |
+| `src/core/` | What every part shares: the wire format, signing, chat state. No disk and no process. |
+| `src/hub/` | The hub: its database, its routes, and starting it. |
+| `src/desk/` | One person's side: their identity, the client, their repos, the session, running an agent. |
+| `src/cli/` | The `deskmate` command, built to `dist/deskmate.js`. The hub is started with it. |
+| `src/window/`, `src/shared/` | The Electron main process and the React window, and what crosses between them. |
+| `test/` | The tests, run with `node --test`. |
 | `deploy/`, `Dockerfile` | The hub's image and its Kubernetes manifest. |
 | `docs/plan/` | The implementation plan. |

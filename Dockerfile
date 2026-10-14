@@ -1,12 +1,10 @@
-FROM python:3.13-slim
-COPY --from=ghcr.io/astral-sh/uv:0.12.7 /uv /usr/local/bin/uv
+# The hub's image: Node and the one built file. Build that first, with `npm ci && npm run build`.
+FROM node:26-slim
 WORKDIR /app
-COPY pyproject.toml uv.lock README.md ./
-COPY src ./src
-RUN uv sync --locked --no-dev --no-editable && mkdir /data && chown 10001 /data
-# The hub sits behind an ingress, so trust its X-Forwarded-Proto: install.sh then advertises the https URL.
-ENV DESKMATE_DB=/data/deskmate.db FORWARDED_ALLOW_IPS=*
+COPY dist/deskmate.js ./
+RUN mkdir /data && chown 10001 /data
+ENV DESKMATE_DB=/data/deskmate.db
 USER 10001
 VOLUME /data
 EXPOSE 8787
-CMD ["/app/.venv/bin/deskmate", "hub", "--host", "0.0.0.0", "--port", "8787"]
+CMD ["node", "/app/deskmate.js", "hub", "--host", "0.0.0.0", "--port", "8787"]
