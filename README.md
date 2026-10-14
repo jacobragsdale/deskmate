@@ -179,12 +179,15 @@ Everything can be clicked: chats in the list, the choices under a message, the b
 | Alt+↑, Alt+↓ | Opens the previous or next chat. |
 | Ctrl+N | Joins or creates a channel. Cmd+N on a Mac. |
 | Ctrl+B | Hides or shows the chat list. Cmd+B on a Mac. |
+| Ctrl+K | Searches: chats by name as you type, then the messages and answers that hold your words, each with the words picked out. Enter opens the chat or the message. Cmd+K on a Mac. |
 
 In the chat list, a number is the count of unread messages, `▶` means a request is waiting for one of your agents, `✎` means a draft is waiting for your review, and a spinner means one of your agents is working there. Hovering a mark says what it means, and hovering a message's time gives its full date. Drag the chat list's edge to make it wider or narrower; the window remembers the width.
 
 A `new` line marks where you left off in a chat you come back to. A message or an answer that arrives while you are looking elsewhere raises a system notification, with a sound for one sent straight to you, a tag of one of your agents, and a draft ready for review. The window's title says what is waiting, for example `Player Two · 1 waiting · 2 unread`, and on macOS and Linux its badge counts it. Messages that arrive while the window is in the background stay unread until you come back.
 
-Hovering a message shows a bar over it: a few common emoji and a field for any other, `Reply`, and on your own messages a menu to edit or delete it. `Reply` opens the message's thread under it, with a box to reply in; a message with replies shows how many there are and the last one, and clicking that opens the thread too. Tags work in a reply as in any message. Under a message each emoji shows how many used it, and hovering it says who; clicking one you used takes yours back. An edited message ends in `(edited)`, and a deleted one leaves `message deleted`. A chat opens on its newest 50 events, and scrolling to the top loads the 50 before them, keeping your place.
+Hovering a message shows a bar over it: a few common emoji and a field for any other, `Reply`, and a menu to copy the message's link and, on your own, to edit or delete it. `Reply` opens the message's thread under it, with a box to reply in; a message with replies shows how many there are and the last one, and clicking that opens the thread too. Tags work in a reply as in any message. Under a message each emoji shows how many used it, and hovering it says who; clicking one you used takes yours back. An edited message ends in `(edited)`, and a deleted one leaves `message deleted`. A chat opens on its newest 50 events, and scrolling to the top loads the 50 before them, keeping your place.
+
+A message's link, `player-two://note/` and its id, pasted into another message is drawn as a chip with who wrote it and its first words, or `a note you cannot see`. Clicking the chip, choosing a message in the search, or opening a link elsewhere on your machine once the installed app has registered for `player-two://` links, opens that message's chat with the message in view and highlighted. A message you cannot see opens nothing, and the window says so.
 
 An agent's answer is drawn as Markdown, as text and structure only: raw HTML in it stays text, images are not fetched, and a link opens in your browser.
 
