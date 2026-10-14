@@ -10,8 +10,8 @@ import { z } from "zod";
 import { agentPrompt, mentions } from "../src/core/chat.ts";
 import type { Entry } from "../src/core/chat.ts";
 import { parseRemote, prefixKey } from "../src/core/remotes.ts";
-import { authClaim, authHeader, authIsValid, eventIsAuthentic, loadKey, noteIsAuthentic, privateHex, publicHex, signEvent, signNote } from "../src/core/sign.ts";
-import { noteSchema } from "../src/core/wire.ts";
+import { authClaim, authHeader, authIsValid, eventIsAuthentic, loadKey, privateHex, publicHex, signEvent, signNote } from "../src/core/sign.ts";
+import { eventSchema } from "../src/core/wire.ts";
 import type { Event } from "../src/core/wire.ts";
 
 // The record, written by scripts/make-vectors.ts. Every teammate's client and the hub must agree with it byte for byte, so it changes only on purpose, in the commit that changes the format.
@@ -20,7 +20,7 @@ const vectors = z
     private_key: z.string(),
     public_key: z.string(),
     ts: z.int(),
-    notes: z.array(noteSchema),
+    events: z.array(eventSchema),
     auth: z.strictObject({ method: z.string(), path: z.string(), header: z.string() }),
     remotes: z.array(z.tuple([z.string(), z.strictObject({ key: z.string(), name: z.string(), url: z.string() }).nullable()])),
     prefixes: z.array(z.tuple([z.string(), z.string()])),
@@ -40,19 +40,11 @@ await test("a key loads from its hex and gives the same public key", () => {
   assert.equal(publicHex(key), vectors.public_key);
 });
 
-await test("every note signs to the signature on record, and the one on record verifies", () => {
-  for (const note of vectors.notes) {
-    assert.equal(signNote(key, note).sig, note.sig, note.body);
-    assert.ok(noteIsAuthentic(note, vectors.public_key), note.body);
+await test("every event signs again to the id and signature on record, and the one on record holds", () => {
+  for (const event of vectors.events) {
+    assert.deepEqual(signEvent(key, event, event.nonce), event, event.content);
+    assert.ok(eventIsAuthentic(event, vectors.public_key), event.content);
   }
-});
-
-await test("changing a signed field breaks the signature", () => {
-  const [note] = vectors.notes;
-  assert.ok(note !== undefined);
-  assert.ok(!noteIsAuthentic({ ...note, body: "goodbye" }, vectors.public_key));
-  assert.ok(!noteIsAuthentic({ ...note, to: "carol" }, vectors.public_key));
-  assert.ok(!noteIsAuthentic(note, publicHex(loadKey("22".repeat(32)))));
 });
 
 await test("an event's id is the hash of what it signs, and changing any signed field breaks it", () => {

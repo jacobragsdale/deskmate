@@ -2,62 +2,85 @@
  "private_key": "1111111111111111111111111111111111111111111111111111111111111111",
  "public_key": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
  "ts": 1800000000,
- "notes": [
+ "events": [
   {
-   "sender": "jacob",
+   "id": "0102deab0b10659ec8fc4c5ffa745caed7da1793fd5987e09e53952174692f24",
+   "author": "jacob",
    "to": "bob",
-   "kind": "note",
-   "body": "hello",
+   "kind": "message",
+   "content": "{\"text\":\"hello\",\"via\":\"window\"}",
    "ts": 1800000000,
-   "agent": null,
-   "re": null,
-   "sig": "6bcf5446eca7c63715a03e39d9fc9391e00daa428df9ef8fd49412e328228de74ff30b39675cf9957899549654921fd10e8b44790e6cdb84516eaab736191b0d"
+   "refs": [],
+   "nonce": "0000000000000000",
+   "sig": "080b2c620e9bbbd68a6cc0568a1ba487804c9e3bf9a828096db51c2443132f02e42ed7716a23bc851972d4add327c5a7648d6ed9fa47154e9df7d3374e152c0c"
   },
   {
-   "sender": "jacob",
+   "id": "e2eb13eddb5848a38db4d1c37328e8fcb8b695567dc1bafed8ca012df5f9db3a",
+   "author": "jacob",
    "to": "#backend",
-   "kind": "note",
-   "body": "quotes \" and \\ and / and <tags>",
+   "kind": "message",
+   "content": "{\"text\":\"quotes \\\" and \\\\ and / and <tags>\",\"via\":\"window\"}",
    "ts": 1800000000,
-   "agent": "uploader",
-   "re": 41,
-   "sig": "ab60c7b66f776742ea9a2a2334577ebfb362aab429c58cd7dc5da84798b462d615a63c4e0d8b22d40112d637c733ee8bd2f0bec08e77e309190748c73998ae07"
+   "refs": [
+    "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+   ],
+   "nonce": "0000000000000001",
+   "sig": "7daac57732e7d6b530e4a4808d76b6764c25a9fdbf6211be0be6ad82fb1664545270da58e04bffb84a7a4deaa45f61198ff90d7c2ef35a5b94085b4532476e0d"
   },
   {
-   "sender": "jacob",
+   "id": "731e9c9dde03479f3e948199bb5d784f47eb784313e3a9ad5375436fcd9deeb1",
+   "author": "jacob",
    "to": "bob",
-   "kind": "status",
-   "body": "working\nfeature/retry ±",
+   "kind": "job.accepted",
+   "content": "{\"repo\":\"acme.billing.api\",\"branch\":\"feature/retry ±\",\"commit\":\"0123456789abcdef0123456789abcdef01234567\",\"dirty\":true,\"delivery\":\"review\",\"mode\":\"full\",\"by\":\"owner\"}",
    "ts": 1800000000,
-   "agent": "acme.billing.api",
-   "re": 7,
-   "sig": "bfc8096c51f33b5b80092d1c4e9a3054d398373c716b9f3e7be7c73e1632e3c40508ee2dea04f9bcf01f4d33560d8790a640694ce5b3cf3a1c6f7a6c28600307"
+   "refs": [
+    "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+   ],
+   "nonce": "0000000000000002",
+   "sig": "05f41618e21ef22e592b70f70b42fe64267d7390df0e57e3625e69dcc22227cfdbfaa99b0836d3bc828b960da198ca3b93798c0ad7d7cf636e944abc0f1ad107"
   },
   {
-   "sender": "jacob",
+   "id": "2adbdebdbc13e2a1080dd293574bb8eae87c2e41ab6a4f21b7aa69c5ab6f219c",
+   "author": "jacob",
    "to": "bob",
-   "kind": "note",
-   "body": "tab\there, newline\nhere, return\rhere, bell\u0007 backspace\b formfeed\f unit\u001f del",
+   "kind": "message",
+   "content": "{\"text\":\"tab\\there, newline\\nhere, return\\rhere, bell\\u0007 backspace\\b formfeed\\f unit\\u001f del\",\"via\":\"window\"}",
    "ts": 1800000000,
-   "agent": null,
-   "re": null,
-   "sig": "1c473a8d1946995ba94c063483dcd97fa8af548734263c3522669512b123beef5fc663cd6be232cfa4ab7c6e42e125ce7fbbd3618dbc4697ee1043f90ffd8c05"
+   "refs": [],
+   "nonce": "0000000000000003",
+   "sig": "594cc179409049911ed49a348ac24d0dd499c52cd9f577ff892e715b3785ed930701c552e29394d63d7a2f43cab4cc64ff6ba08da3a293dd062efe7a476c0c06"
   },
   {
-   "sender": "jacob",
-   "to": "bob",
-   "kind": "note",
-   "body": "naïve café — 日本語 🎉   line and   paragraph separators, nbsp ",
+   "id": "4edff104634e81a93c561f4fa7ca47d63937cb82038685d63210265cfa47e93e",
+   "author": "jacob",
+   "to": "#backend",
+   "kind": "message",
+   "content": "{\"text\":\"naïve café — 日本語 🎉   line and   paragraph separators, nbsp \",\"via\":\"window\"}",
    "ts": 1800000000,
-   "agent": null,
-   "re": null,
-   "sig": "8182051806f773fda1ee9a6dbda5c08052d90cbb94a4e202b519f4a5ecb11c96c3c3a9a722b47e8718921a15711becc0207a59fe834d044b2caad6433996f008"
+   "refs": [
+    "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+    "1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e"
+   ],
+   "nonce": "0000000000000004",
+   "sig": "c31ef6b98179dfaa4a32ddad39e0fcf86b0f5a84146d1e599a59c4fa72df92f6699e981c74858b39aaa2607ea523641e2cd8da39da3fff538e29f880e7d1ac0a"
+  },
+  {
+   "id": "88722feba3336ab1586b3152cebd120949a793041209415a25fadffae0061796",
+   "author": "jacob",
+   "to": "*",
+   "kind": "some.later.kind",
+   "content": "quotes \" and \\ and / and <tags> tab\there, newline\nhere, return\rhere, bell\u0007 backspace\b formfeed\f unit\u001f del naïve café — 日本語 🎉   line and   paragraph separators, nbsp ",
+   "ts": 1800000000,
+   "refs": [],
+   "nonce": "0000000000000005",
+   "sig": "293c8fd49cbb0e7ae85dc086a86942eb114a3d7a89e690060587144d4961fae402d66ca3d4daa73cba33e229788ba9e9f3e1b5eca52a86417b5c5da283779103"
   }
  ],
  "auth": {
   "method": "GET",
-  "path": "/notes?after=41&wait=25.0&mine=false&status=true",
-  "header": "PlayerTwo jacob:1800000000:52d7921e4371badeb0853ab5ba3b374d121159a045a23152374a5e9bfd2c6ad9f80eb92b6f705341144d7f69504ec79b2634dc482a736b1daf579e433b3e9f01"
+  "path": "/events?chat=%23backend&before=41&limit=50",
+  "header": "PlayerTwo jacob:1800000000:5e6b665f2f8829428cc8ebb4d13d047b5a03d74159fae81c657e70609da9fe77418f094f1dfa5629c1daf863c3017ef15dd6e12e41e81616c4f3f11d8faaac09"
  },
  "remotes": [
   [

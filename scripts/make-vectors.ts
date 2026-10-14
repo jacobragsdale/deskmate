@@ -9,20 +9,35 @@ import { join } from "node:path";
 import { agentPrompt, mentions } from "../src/core/chat.ts";
 import type { Entry } from "../src/core/chat.ts";
 import { parseRemote, prefixKey } from "../src/core/remotes.ts";
-import { authHeader, loadKey, publicHex, signNote } from "../src/core/sign.ts";
-import type { Kind } from "../src/core/wire.ts";
+import { authHeader, loadKey, publicHex, signEvent, signNote } from "../src/core/sign.ts";
 
 const PRIVATE_KEY = "11".repeat(32);
 const TS = 1_800_000_000;
-const AUTH = { method: "GET", path: "/notes?after=41&wait=25.0&mine=false&status=true" };
+const AUTH = { method: "GET", path: "/events?chat=%23backend&before=41&limit=50" };
+const REF = "0f".repeat(32); // An id for the events below to be about.
 
-// Bodies chosen for what an encoder might get wrong: quotes and slashes, every kind of control character, and text outside ASCII and outside the first plane.
-const NOTES: readonly (readonly [sender: string, to: string, kind: Kind, body: string, agent: string | null, re: number | null])[] = [
-  ["jacob", "bob", "note", "hello", null, null],
-  ["jacob", "#backend", "note", 'quotes " and \\ and / and <tags>', "uploader", 41],
-  ["jacob", "bob", "status", "working\nfeature/retry ±", "acme.billing.api", 7],
-  ["jacob", "bob", "note", "tab\there, newline\nhere, return\rhere, bell\x07 backspace\x08 formfeed\x0c unit\x1f del\x7f", null, null],
-  ["jacob", "bob", "note", "naïve café — 日本語 \u{1f389}   line and   paragraph separators, nbsp ", null, null]
+// Texts chosen for what an encoder might get wrong: quotes and slashes, every kind of control character, and text outside ASCII and outside the first plane.
+const QUOTES = 'quotes " and \\ and / and <tags>';
+const CONTROLS = "tab\there, newline\nhere, return\rhere, bell\x07 backspace\x08 formfeed\x0c unit\x1f del\x7f";
+const WIDE = "naïve café — 日本語 \u{1f389} \u2028 line and \u2029 paragraph separators, nbsp\u00a0";
+
+function message(text: string): string {
+  return JSON.stringify({ text, via: "window" });
+}
+
+// A message's text is inside JSON inside the signed JSON, so its control characters reach the signed bytes escaped twice; the last event's content is not JSON at all, which the envelope allows and a reader calls unknown, so they reach them as they are.
+const EVENTS: readonly (readonly [to: string, kind: string, content: string, refs: readonly string[]])[] = [
+  ["bob", "message", message("hello"), []],
+  ["#backend", "message", message(QUOTES), [REF]],
+  [
+    "bob",
+    "job.accepted",
+    JSON.stringify({ repo: "acme.billing.api", branch: "feature/retry ±", commit: "0123456789abcdef0123456789abcdef01234567", dirty: true, delivery: "review", mode: "full", by: "owner" }),
+    [REF]
+  ],
+  ["bob", "message", message(CONTROLS), []],
+  ["#backend", "message", message(WIDE), [REF, "1e".repeat(32)]],
+  ["*", "some.later.kind", `${QUOTES} ${CONTROLS} ${WIDE}`, []]
 ];
 
 const REMOTES: readonly string[] = [
@@ -73,11 +88,12 @@ function entry(id: number, sender: string, to: string, body: string, agent: stri
 const earlier = [entry(1, "bob", "#backend", "it was the connection pool"), entry(2, "carol", "#backend", "Retries live in queue.py", "uploader")];
 const ask = "@jacob/uploader where do we retry?";
 
+// Each event's nonce is fixed, its place in the list, so the record can be signed again to the same bytes.
 const vectors = {
   private_key: PRIVATE_KEY,
   public_key: publicHex(key),
   ts: TS,
-  notes: NOTES.map(([sender, to, kind, body, agent, re]) => signNote(key, { sender, to, kind, body, ts: TS, agent, re })),
+  events: EVENTS.map(([to, kind, content, refs], index) => signEvent(key, { author: "jacob", to, kind, content, ts: TS, refs }, index.toString(16).padStart(16, "0"))),
   auth: { ...AUTH, header: authHeader(key, "jacob", TS, AUTH.method, AUTH.path) },
   remotes: REMOTES.map((remote) => [remote, parseRemote(remote)]),
   prefixes: PREFIXES.map((url) => [url, prefixKey(url)]),

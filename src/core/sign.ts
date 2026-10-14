@@ -92,7 +92,7 @@ export function eventId(fields: EventFields & { readonly nonce: string }): strin
 
 /** Sign an event. Its id is known from here on, before the hub has seen it. `nonce` is random unless a test or the vectors fix it. */
 export function signEvent(key: KeyObject, fields: EventFields, nonce: string = randomBytes(8).toString("hex")): Event {
-  const signed = { ...fields, nonce };
+  const signed = { author: fields.author, to: fields.to, kind: fields.kind, content: fields.content, ts: fields.ts, refs: fields.refs, nonce }; // Field by field, so an event passed in as its own fields brings no old id or signature along.
   return eventSchema.parse({ id: eventId(signed), ...signed, sig: sign(null, eventBytes(signed), key).toString("hex") });
 }
 
