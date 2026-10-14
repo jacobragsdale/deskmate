@@ -91,18 +91,35 @@ await test("main joins sends and lists messages", async (t) => {
   assert.deepEqual(await playerTwo(hub, "bob", ["who"]), { status: 0, out: "alice\nbob (you)", err: "" });
 });
 
-await test("main carries a message through a channel", async (t) => {
+await test("main carries a message through a channel, joined and left by events", async (t) => {
   const hub = await startHub(t);
+  const [alice, bob] = [await hub.join("alice"), await hub.join("bob")];
   for (const who of ["alice", "bob"]) {
-    assert.equal((await playerTwo(hub, who, ["join", hub.url, who, TOKEN])).status, 0);
-    assert.equal((await playerTwo(hub, who, ["channel", "join", "backend"])).status, 0);
+    assert.equal((await playerTwo(hub, who, ["channel", "join", "backend"])).out, who === "alice" ? "joined #backend; members: alice" : "joined #backend; members: alice, bob");
   }
+  assert.equal((await playerTwo(hub, "alice", ["channel", "join", "#backend"])).status, 0); // Joining again says nothing more.
   assert.equal((await playerTwo(hub, "alice", ["send", "#backend", "deploy at noon"])).status, 0);
 
   assert.match((await playerTwo(hub, "bob", ["inbox"])).out, /· alice in #backend ·/);
-  assert.equal((await playerTwo(hub, "alice", ["inbox"])).out, "no messages"); // Your own messages are not in your inbox.
+  assert.equal((await playerTwo(hub, "alice", ["inbox"])).out, "no messages"); // Your own messages are not in your inbox, and joining is not a message.
   assert.equal((await playerTwo(hub, "bob", ["channel"])).out, "#backend (joined)  alice, bob");
   assert.equal((await playerTwo(hub, "bob", ["channel", "leave", "#backend"])).out, "left #backend; members: alice");
+  assert.equal((await playerTwo(hub, "bob", ["channel", "leave", "backend"])).out, "left #backend; members: alice"); // Leaving again says nothing more.
+  assert.deepEqual((await alice.events({ chat: "#backend" })).map((each) => `${each.event.author} ${each.event.kind}`).reverse(), [
+    "alice channel.join",
+    "bob channel.join",
+    "alice message",
+    "bob channel.leave"
+  ]);
+  assert.deepEqual(
+    (await bob.events({ chat: "#backend" })).map((each) => `${each.event.author} ${each.event.kind}`),
+    ["bob channel.leave", "bob channel.join"]
+  ); // Bob is out, so he sees only what he did there himself.
+  assert.deepEqual(await playerTwo(hub, "bob", ["channel", "join", "Back End"]), {
+    status: 1,
+    out: "",
+    err: "player-two: a channel's name is lowercase letters, digits, - and _, at most 32 characters"
+  });
 });
 
 await test("main lists shared repos and keeps job events out of the inbox, but not an agent's answer", async (t) => {
@@ -210,7 +227,7 @@ await test("inbox prints the newest 20 messages, however far back past other eve
 await test("with --json a reading command prints one value: messages as the hub delivered them and whether each is trusted, and the lists as arrays", async (t) => {
   const hub = await startHub(t);
   const [alice, bob, carol] = [await hub.join("alice"), await hub.join("bob"), await hub.join("carol")];
-  await bob.joinChannel("backend");
+  await bob.publish("#backend", "channel.join", {});
   await bob.advertise([{ name: "uploader", key: "dev.azure.com/acme/platform/uploader", url: "https://dev.azure.com/acme/Platform/_git/uploader", branch: "main" }]);
   await bob.publish("alice", "message", { text: "from bob", via: "cli" });
   await carol.publish("alice", "message", { text: "from carol", via: "cli" });

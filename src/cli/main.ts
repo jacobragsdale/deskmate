@@ -9,8 +9,8 @@ import { chatOf } from "../core/chat.ts";
 import type { Entry } from "../core/chat.ts";
 import { readContent } from "../core/kinds.ts";
 import { problemOf } from "../core/text.ts";
-import { fitText, isChannel } from "../core/wire.ts";
-import type { Delivered, Event } from "../core/wire.ts";
+import { channelSchema, fitText, isChannel } from "../core/wire.ts";
+import type { ChannelInfo, Delivered, Event } from "../core/wire.ts";
 import { DEFAULT_AGENT, defaultDev, defaultHome, http, join, loadClient, PlayerTwoError } from "../desk/client.ts";
 import type { Client, Transport } from "../desk/client.ts";
 import { runChecks } from "../desk/doctor.ts";
@@ -190,6 +190,19 @@ async function inbox(joined: () => Client, args: string[], out: (line: string) =
   show(out, values.json, found, found.length === 0 ? "no messages" : found.map((each) => render(each, each.trusted)).join("\n"));
 }
 
+/** Join or leave a channel, given with or without its "#", unless the user is already in it or already out of it, and return it as the hub then reports it. */
+async function joinOrLeave(client: Client, action: "join" | "leave", name: string): Promise<ChannelInfo> {
+  const channel = channelSchema.safeParse(name.startsWith("#") ? name : `#${name}`);
+  if (!channel.success) {
+    throw new PlayerTwoError("a channel's name is lowercase letters, digits, - and _, at most 32 characters");
+  }
+  const found = async (): Promise<ChannelInfo> => (await client.channels()).find((each) => each.name === channel.data) ?? { name: channel.data, members: [], repo: null, branch: null }; // A channel everyone has left is not listed.
+  if ((await found()).members.includes(client.config.name) !== (action === "join")) {
+    await client.publish(channel.data, action === "join" ? "channel.join" : "channel.leave", {});
+  }
+  return found();
+}
+
 async function channel(joined: () => Client, args: string[], out: (line: string) => void): Promise<void> {
   const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { json: { type: "boolean", default: false } } });
   const [action = "list", name] = positionals;
@@ -206,7 +219,7 @@ async function channel(joined: () => Client, args: string[], out: (line: string)
   if (name === undefined) {
     throw new PlayerTwoError(`which channel? Try: player-two channel ${action} backend`);
   }
-  const info = action === "join" ? await client.joinChannel(name) : await client.leaveChannel(name);
+  const info = await joinOrLeave(client, action, name);
   show(out, values.json, info, `${action === "join" ? "joined" : "left"} ${info.name}; members: ${info.members.length === 0 ? "none" : info.members.join(", ")}`);
 }
 
