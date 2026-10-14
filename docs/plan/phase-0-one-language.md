@@ -218,7 +218,7 @@ The window's look moves from one hand-written stylesheet to Tailwind and shadcn/
 ## K. The README
 
 - [x] **P0-K1** Rewrite `README.md` for what now exists, keeping its plain style and its section order: what Player Two is; quick start (start the hub with Docker, install the window on Windows, join, tag your agent, tag a teammate's, start a channel, let your agent ask); agents and tags; the window; commands; configuration; what Player Two protects and what it does not; deploying the hub on AKS; development. Replace the terminal screenshot with a description of the window. Every command and path in it must be one that exists.
-- [ ] **P0-K2** At the top of `docs/ideas.md`, add one line: the list was written for the terminal interface, which is gone; items the window already covers are not marked.
+- [x] **P0-K2** At the top of `docs/ideas.md`, add one line: the list was written for the terminal interface, which is gone; items the window already covers are not marked.
 
 ## Done when
 

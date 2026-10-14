@@ -1,5 +1,7 @@
 # Interface ideas
 
+This list was written for the terminal interface, which is gone; items the window already covers are not marked.
+
 One hundred possible changes to how deskmate looks and behaves, from a pass over every part of the interface on 2026-10-12. Each is one change, not a plan. The thirteen marked ✔ were built in that pass: the first three had already been agreed, and the other ten were picked because each removes something a person hits in ordinary use and needs no change to the hub.
 
 ## The tag list that opens on `@`
