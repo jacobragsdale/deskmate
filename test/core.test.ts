@@ -15,7 +15,7 @@ import { runAgent, splitCommand } from "../src/desk/agents/oneshot.ts";
 import { AgentCancelledError, Client, PlayerTwoError } from "../src/desk/client.ts";
 import type { Transport } from "../src/desk/client.ts";
 import { readContent } from "../src/core/kinds.ts";
-import { loadKey, publicHex, signEvent, signNote } from "../src/core/sign.ts";
+import { loadKey, publicHex, signEvent } from "../src/core/sign.ts";
 import * as repos from "../src/desk/repos.ts";
 import { Session } from "../src/desk/session.ts";
 import { eventSchema, fitText, MAX_CONTENT, MAX_PATCH, PROTOCOL } from "../src/core/wire.ts";
@@ -272,9 +272,9 @@ function clientOf(answers: Readonly<Record<string, unknown>>, asked: string[] = 
   return new Client("/nowhere", { hub: "http://hub.test", name: "jacob", agent: "fake-agent" }, key, transport, () => NOW);
 }
 
-await test("the client reads past a field a newer hub adds, but refuses one inside a signed note", async () => {
-  const note = signNote(key, { sender: "bob", to: "jacob", kind: "note", body: "hello", ts: NOW, agent: null, re: null });
-  const info = { version: "9.0.0", protocol: 1, repos: "dev.azure.com/acme", now: NOW };
+await test("the client reads past a field a newer hub adds, but refuses one inside a signed event", async () => {
+  const event = signEvent(key, { author: "bob", to: "jacob", kind: "message", content: JSON.stringify({ text: "hello", via: "cli" }), ts: NOW, refs: [] });
+  const info = { version: "9.0.0", protocol: PROTOCOL, repos: "dev.azure.com/acme", now: NOW };
   const bob = { name: "bob", pubkey: publicHex(key), seen: NOW };
   const backend = { name: "#backend", members: ["bob"], repo: null, branch: null };
   const uploader = { name: "uploader", key: "dev.azure.com/acme/platform/uploader", url: "https://dev.azure.com/acme/Platform/_git/uploader" };
@@ -287,17 +287,19 @@ await test("the client reads past a field a newer hub adds, but refuses one insi
       { ...backend, topic: "new" },
       { ...pinned, repo: { ...uploader, commit: "new" } }
     ],
-    "POST /notes": { id: 7, seq: 7 },
-    "GET /notes": [{ id: 7, note, seq: 7 }]
+    "POST /events": { seq: 7, chain: "new" },
+    "GET /events": [{ seq: 7, event, chain: "new" }],
+    "GET /audit/head": { seq: 7, chain: "0".repeat(64), events: "new" }
   });
 
   assert.deepEqual(await client.info(), info);
   assert.deepEqual(await client.users(), [bob]);
   assert.deepEqual(await client.repos(), [repo("bob", "uploader")]);
   assert.deepEqual(await client.channels(), [backend, pinned]);
-  assert.equal(await client.send("bob", "hello"), 7);
-  assert.deepEqual(await client.notes(), [{ id: 7, note }]);
-  await assert.rejects(clientOf({ "GET /notes": [{ id: 7, note: { ...note, via: "new" } }] }).notes(), /Unrecognized key/);
+  assert.equal((await client.publish("bob", "message", { text: "hello", via: "cli" })).seq, 7);
+  assert.deepEqual(await client.events({ chat: "bob" }), [{ seq: 7, event }]);
+  assert.deepEqual(await client.head(), { seq: 7, chain: "0".repeat(64) });
+  await assert.rejects(clientOf({ "GET /events": [{ seq: 7, event: { ...event, via: "new" } }] }).events({ chat: "bob" }), /Unrecognized key/);
 });
 
 await test("the client posts an event whose id it knows at once, reads a chat back newest first, catches up past a page, and follows the stream across a drop", { timeout: 20_000 }, async (t) => {

@@ -2,12 +2,13 @@
 
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { http, join as joinHub, loadClient } from "../src/desk/client.ts";
+import { authHeader, loadKey } from "../src/core/sign.ts";
+import { http, join as joinHub } from "../src/desk/client.ts";
 
 const COMMAND = join(import.meta.dirname, "..", "src", "cli", "main.ts");
 const TOKEN = "a-join-token-for-tests";
@@ -46,15 +47,14 @@ await test("the hub stops at once when told to, even with a reader waiting", { t
     });
   });
   await joinHub(join(dir, "alice"), url, "alice", TOKEN, "fake-agent", http);
-  const alice = loadClient(join(dir, "alice"), http, () => Date.now() / 1000);
-  assert.ok(alice !== null);
-  const reading = alice.notes({ wait: 20 }).then(
-    () => "answered",
+  const path = "/stream?after=0";
+  const key = loadKey(readFileSync(join(dir, "alice", "key"), "utf8").trim());
+  const stream = await fetch(url + path, { headers: { Authorization: authHeader(key, "alice", Math.floor(Date.now() / 1000), "GET", path) } }); // Answered at once with its headers, then held open.
+  assert.equal(stream.status, 200);
+  const reading = stream.text().then(
+    () => "ended",
     () => "cut off"
   );
-  await new Promise((resolve) => {
-    setTimeout(resolve, 200); // Long enough for the reader's request to be held open.
-  });
 
   const told = Date.now();
   hub.kill("SIGTERM");

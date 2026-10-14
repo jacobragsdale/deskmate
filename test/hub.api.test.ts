@@ -1,4 +1,4 @@
-/** The hub's routes, one behaviour at a time, each against a hub of its own on a clock that stands still. The note routes, until they go, are in test/hub.notes.test.ts. */
+/** The hub's routes, one behaviour at a time, each against a hub of its own on a clock that stands still. */
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -513,6 +513,8 @@ await test("a request the hub cannot serve is told why", async (t) => {
 
   assert.deepEqual(await refusal(hub, "GET", "/nowhere"), [404, "Not Found"]);
   assert.deepEqual(await refusal(hub, "DELETE", "/healthz"), [405, "Method Not Allowed"]);
+  assert.deepEqual(await refusal(hub, "GET", "/notes"), [404, "Not Found"]); // Notes went with phase 1, and so did the routes that changed a channel: those are events now.
+  assert.deepEqual(await refusal(hub, "POST", "/channels/backend/join"), [404, "Not Found"]);
   assert.deepEqual(await refusal(hub, "POST", "/join", { body: "{" }), [422, "invalid body: not JSON"]);
   assert.deepEqual(await refusal(hub, "POST", "/join", { body: badKey }), [422, "invalid pubkey: Invalid string: must match pattern /^[0-9a-f]{64}$/"]);
   assert.deepEqual(await refusal(hub, "GET", "/stream?after=x", { headers: signedBy(hub, "alice", "GET", "/stream?after=x") }), [

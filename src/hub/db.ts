@@ -6,12 +6,10 @@ import { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 
 import { eventId } from "../core/sign.ts";
-import { deliveredNoteSchema, deliveredSchema, isChannel, personSchema, teamRepoSchema } from "../core/wire.ts";
-import type { Delivered, DeliveredNote, Event, Note, Person, Repo, RepoRef, TeamRepo } from "../core/wire.ts";
+import { deliveredSchema, isChannel, personSchema, teamRepoSchema } from "../core/wire.ts";
+import type { Delivered, Event, Person, Repo, RepoRef, TeamRepo } from "../core/wire.ts";
 
 const SCHEMA_VERSION = 5; // 3 was the notes alone, from the Python hub to 0.4.
-const PAGE = 100; // Most notes one request gets when it does not ask for the newest few.
-const CONSTRAINT = 19; // SQLite's code for a broken constraint: the low byte of the fuller code a failed statement reports.
 const BUSY_WAIT = 5; // Seconds to wait for another program that holds the file, such as a backup, before giving up.
 const FIRST_CHAIN = "0".repeat(64); // The chain value before the first event.
 
@@ -25,19 +23,6 @@ CREATE TABLE IF NOT EXISTS users (name TEXT PRIMARY KEY, pubkey TEXT NOT NULL, s
 CREATE TABLE IF NOT EXISTS members (channel TEXT NOT NULL, user TEXT NOT NULL, PRIMARY KEY (channel, user));
 CREATE TABLE IF NOT EXISTS pins (channel TEXT PRIMARY KEY, name TEXT NOT NULL, key TEXT NOT NULL, url TEXT NOT NULL, branch TEXT);
 CREATE TABLE IF NOT EXISTS repos (user TEXT NOT NULL, name TEXT NOT NULL, key TEXT NOT NULL, url TEXT NOT NULL, branch TEXT NOT NULL, PRIMARY KEY (user, name));
-CREATE TABLE IF NOT EXISTS notes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    sender TEXT NOT NULL,
-    recipient TEXT NOT NULL,
-    kind TEXT NOT NULL,
-    body TEXT NOT NULL,
-    ts INTEGER NOT NULL,
-    agent TEXT,
-    re INTEGER,
-    sig TEXT NOT NULL UNIQUE
-);
-CREATE INDEX IF NOT EXISTS notes_by_recipient ON notes (recipient, id);
-CREATE INDEX IF NOT EXISTS notes_by_sender ON notes (sender, id);
 CREATE TABLE IF NOT EXISTS events (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     id TEXT NOT NULL UNIQUE,
@@ -65,7 +50,6 @@ const teamReposSchema = z.array(teamRepoSchema);
 const membersSchema = z.array(z.strictObject({ user: z.string() }));
 const channelsSchema = z.array(z.strictObject({ channel: z.string() }));
 const pinSchema = z.strictObject({ name: z.string(), key: z.string(), url: z.string(), branch: z.string().nullable() }).optional();
-const deliveredListSchema = z.array(deliveredNoteSchema);
 const foundSchema = z.strictObject({ found: z.literal(1) }).optional();
 const eventRowSchema = z
   .strictObject({ seq: z.int(), id: z.string(), author: z.string(), to: z.string(), kind: z.string(), content: z.string(), ts: z.int(), refs: z.string(), nonce: z.string(), sig: z.string() })
@@ -244,36 +228,5 @@ export class Database {
     return eventRowsSchema.parse(
       this.db.prepare(`SELECT ${EVENT_COLUMNS} FROM events WHERE seq < :before AND ${inChat} AND ${VISIBLE} ORDER BY seq DESC LIMIT :limit`).all({ me, chat, before, limit })
     );
-  }
-
-  /** Keep a note and return the id it was given. Null when this exact note is already kept: a signature is stored once, which is what stops a replay. */
-  public addNote(note: Note): number | null {
-    try {
-      const added = this.db
-        .prepare("INSERT INTO notes (sender, recipient, kind, body, ts, agent, re, sig) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(note.sender, note.to, note.kind, note.body, note.ts, note.agent, note.re, note.sig);
-      return Number(added.lastInsertRowid);
-    } catch (error) {
-      // Refused by the UNIQUE signature. Letting the insert fail, rather than asking it to ignore a duplicate, keeps the ids without gaps.
-      if (error instanceof Error && "errcode" in error && typeof error.errcode === "number" && (error.errcode & 0xff) === CONSTRAINT) {
-        return null;
-      }
-      throw error;
-    }
-  }
-
-  /**
-   * The notes `me` can see with an id above `after`, oldest first: sent to them, to a channel they are in, or (unless `mine` is false) by them.
-   * With `tail` they are the newest that many; without, the first page. `status` false leaves out agent status reports.
-   */
-  public notes(me: string, after: number, tail: number | null, mine: boolean, status: boolean): readonly DeliveredNote[] {
-    const visible = "(recipient = :me OR recipient IN (SELECT channel FROM members WHERE user = :me) OR sender = :me) AND (:mine OR sender != :me) AND (:status OR kind = 'note')";
-    const columns = 'id, sender, recipient AS "to", kind, body, ts, agent, re, sig';
-    const query =
-      tail === null
-        ? `SELECT ${columns} FROM notes WHERE id > :after AND ${visible} ORDER BY id LIMIT :limit`
-        : `SELECT * FROM (SELECT ${columns} FROM notes WHERE id > :after AND ${visible} ORDER BY id DESC LIMIT :limit) ORDER BY id`;
-    const rows = this.db.prepare(query).all({ me, after, mine: mine ? 1 : 0, status: status ? 1 : 0, limit: tail ?? PAGE });
-    return deliveredListSchema.parse(rows.map(({ id, ...note }) => ({ id, note })));
   }
 }

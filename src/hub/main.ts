@@ -43,7 +43,7 @@ export function runHub(args: readonly string[], env: NodeJS.ProcessEnv): Server 
   });
   process.once("SIGTERM", () => {
     log("hub stopping", {});
-    // Nothing in flight is worth waiting for: a request is answered in one turn of the loop once it has arrived, and a reader holding a long-poll open just asks again.
+    // Nothing in flight is worth waiting for: a request is answered in one turn of the loop once it has arrived, and a reader holding the stream open opens it again from where it was.
     server.close();
     server.closeAllConnections();
   });

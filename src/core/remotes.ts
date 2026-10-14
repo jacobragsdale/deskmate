@@ -26,7 +26,7 @@ export function cloneFolder(url: string): string | null {
 }
 
 /** Percent-decode what can be decoded and leave the rest alone, a stray "%" included. */
-export function unquote(text: string): string {
+function unquote(text: string): string {
   return text.replace(/(?:%[0-9a-fA-F]{2})+/g, (run) => {
     try {
       return decodeURIComponent(run);

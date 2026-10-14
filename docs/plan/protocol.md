@@ -55,7 +55,7 @@ Authorization: PlayerTwo <name>:<ts>:<sig>
 
 ### Notes (until phase 1)
 
-As in `src/core/sign.ts`: `["deskmate-note-v3", sender, to, kind, body, ts, agent, re]`, with the prefix `player-two-note-v3` once task P0-E4 has renamed it.
+What 0.4 signed for a note: `["player-two-note-v3", sender, to, kind, body, ts, agent, re]`, `deskmate-note-v3` before task P0-E4 renamed it. Phase 1 removed notes, and nothing signs or checks one now.
 
 ### Events (phase 1 on)
 
@@ -138,7 +138,7 @@ Two moves the diagram leaves out, which the window offered before events: the ow
 
 ## The hub's API
 
-JSON in and out. Errors are `{ "detail": "words for the user" }` with a 4xx status. The hub's responses may gain fields: clients parse them with schemas that ignore keys they do not know. Events and notes themselves stay strict, because every field in them is signed.
+JSON in and out. Errors are `{ "detail": "words for the user" }` with a 4xx status. The hub's responses may gain fields: clients parse them with schemas that ignore keys they do not know. Events themselves stay strict, because every field in them is signed.
 
 ### After phase 0
 

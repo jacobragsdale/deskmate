@@ -1,10 +1,10 @@
-/** Ed25519 keys and what is signed with them: events, the notes they replace, and the header that proves who is asking. */
+/** Ed25519 keys and what is signed with them: events, and the header that proves who is asking. */
 
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, sign, verify } from "node:crypto";
 import type { KeyObject } from "node:crypto";
 
-import { eventSchema, MAX_SKEW, noteSchema } from "./wire.ts";
-import type { Event, Kind, Note } from "./wire.ts";
+import { eventSchema, MAX_SKEW } from "./wire.ts";
+import type { Event } from "./wire.ts";
 
 const AUTH_SCHEME = "PlayerTwo";
 // A raw 32-byte Ed25519 key is these fixed DER headers followed by the key itself.
@@ -46,30 +46,6 @@ export function isFresh(ts: number, now: number): boolean {
   return Math.abs(now - ts) <= MAX_SKEW;
 }
 
-interface NoteFields {
-  readonly sender: string;
-  readonly to: string;
-  readonly kind: Kind;
-  readonly body: string;
-  readonly ts: number;
-  readonly agent: string | null;
-  readonly re: number | null;
-}
-
-function notePayload(note: NoteFields): Buffer {
-  // A JSON array of fixed positions has exactly one encoding, so both sides sign the same bytes.
-  // JSON.stringify writes it with no spaces and leaves every character outside ASCII as it is; test/vectors.test.ts holds the bytes to the record.
-  return Buffer.from(JSON.stringify(["player-two-note-v3", note.sender, note.to, note.kind, note.body, note.ts, note.agent, note.re]), "utf8");
-}
-
-export function signNote(key: KeyObject, fields: NoteFields): Note {
-  return noteSchema.parse({ ...fields, sig: sign(null, notePayload(fields), key).toString("hex") });
-}
-
-export function noteIsAuthentic(note: Note, pubkey: string): boolean {
-  return verifySignature(pubkey, notePayload(note), note.sig);
-}
-
 /** What the author of an event says: everything in it but the id and the signature, which are worked out from these. */
 interface EventFields {
   readonly author: string;
@@ -80,7 +56,10 @@ interface EventFields {
   readonly refs: readonly string[];
 }
 
-/** The bytes an event's id is the hash of and its signature signs. As with a note, a JSON array of fixed positions, so there is one encoding; test/vectors.test.ts holds them to the record. */
+/**
+ * The bytes an event's id is the hash of and its signature signs: a JSON array of fixed positions, which has exactly one encoding, so both sides sign the same bytes.
+ * JSON.stringify writes it with no spaces and leaves every character outside ASCII as it is; test/vectors.test.ts holds the bytes to the record.
+ */
 export function eventBytes(fields: EventFields & { readonly nonce: string }): Buffer {
   return Buffer.from(JSON.stringify(["player-two-event-v1", fields.author, fields.to, fields.kind, fields.content, fields.ts, fields.refs, fields.nonce]), "utf8");
 }
@@ -106,7 +85,7 @@ function authPayload(name: string, ts: number, method: string, path: string): Bu
   return Buffer.from(`player-two-auth-v2:${name}:${String(ts)}:${method}:${path}`, "utf8");
 }
 
-/** Prove who is asking for this one request. It gates reads and channel membership: every note carries its own signature. */
+/** Prove who is asking for this one request. It gates reads and who may post: every event carries its own signature as well. */
 export function authHeader(key: KeyObject, name: string, ts: number, method: string, path: string): string {
   return `${AUTH_SCHEME} ${name}:${String(ts)}:${sign(null, authPayload(name, ts, method, path), key).toString("hex")}`;
 }

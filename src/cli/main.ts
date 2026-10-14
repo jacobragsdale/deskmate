@@ -74,7 +74,7 @@ function show(out: (line: string) => void, json: boolean, found: unknown, words:
   out(json ? JSON.stringify(found) : words);
 }
 
-/** What a message or an agent's answer says, and which agent's answer it is; null for an event of any other kind, which the inbox passes over as status notes were. */
+/** What a message or an agent's answer says, and which agent's answer it is; null for an event of any other kind, which the inbox passes over. */
 function saying(event: Event): { readonly text: string; readonly agent: string | null } | null {
   const said = readContent(event);
   if (said.kind === "message") {

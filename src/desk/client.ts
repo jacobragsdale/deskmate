@@ -10,34 +10,19 @@ import { z } from "zod";
 
 import { contentSchema } from "../core/kinds.ts";
 import type { Content, ContentOf } from "../core/kinds.ts";
-import { authHeader, eventIsAuthentic, loadKey, newKey, noteIsAuthentic, privateHex, publicHex, signEvent, signNote } from "../core/sign.ts";
-import {
-  channelInfoSchema,
-  configSchema,
-  deliveredNoteSchema,
-  deliveredSchema,
-  hubInfoSchema,
-  nameSchema,
-  noteReceiptSchema,
-  personSchema,
-  receiptSchema,
-  repoRefSchema,
-  repoSchema,
-  teamRepoSchema,
-  userSchema
-} from "../core/wire.ts";
-import type { ChannelInfo, Config, Delivered, DeliveredNote, Event, HubInfo, Kind, Note, Person, Repo, RepoRef, TeamRepo } from "../core/wire.ts";
+import { authHeader, eventIsAuthentic, loadKey, newKey, privateHex, publicHex, signEvent } from "../core/sign.ts";
+import { channelInfoSchema, configSchema, deliveredSchema, hubInfoSchema, personSchema, receiptSchema, repoSchema, teamRepoSchema, userSchema } from "../core/wire.ts";
+import type { ChannelInfo, Config, Delivered, Event, HubInfo, Person, Repo, TeamRepo } from "../core/wire.ts";
 import { AGENT_CHOICES } from "../shared/ipc.ts";
 
 export const DEFAULT_AGENT: string = AGENT_CHOICES[0].command; // Cursor, as the join form offers it first.
-export const POLL_WAIT = 25; // Seconds one long-poll stays open; under the hub's limit and common proxy timeouts.
-const CALL_TIMEOUT = 10;
+const CALL_TIMEOUT = 10; // Seconds any one request but the stream may take.
 const CATCH_UP_PAGE = 200; // Events one catching-up request asks for: the most the hub gives at once.
 const STREAM_RETRY = 30; // Most seconds between two tries at opening the stream again.
 const JSON_BODY = { "Content-Type": "application/json" };
 
 /** Makes one HTTP request and resolves with the response body. Rejects with a PlayerTwoError the user can act on. */
-export type Transport = (method: string, url: string, headers: Readonly<Record<string, string>>, body: string | null, timeoutSeconds: number, signal?: AbortSignal) => Promise<string>;
+export type Transport = (method: string, url: string, headers: Readonly<Record<string, string>>, body: string | null) => Promise<string>;
 /** Runs the agent command in a folder and resolves with what it printed. Aborting `cancel` stops it. */
 export type Runner = (argv: readonly string[], cwd: string, cancel: AbortSignal) => Promise<string>;
 
@@ -45,7 +30,6 @@ const peopleSchema = z.array(personSchema);
 const reposSchema = z.array(repoSchema);
 const teamReposSchema = z.array(teamRepoSchema);
 const channelsSchema = z.array(channelInfoSchema);
-const noteListSchema = z.array(deliveredNoteSchema);
 const eventListSchema = z.array(deliveredSchema);
 const auditHeadSchema = z.object({ seq: z.int(), chain: z.string() }).readonly();
 const pinsSchema = z.record(z.string(), z.string());
@@ -69,12 +53,11 @@ function detailOf(raw: string): string {
   }
 }
 
-export const http: Transport = async (method, url, headers, body, timeoutSeconds, signal) => {
-  const timeout = AbortSignal.timeout(Math.ceil(timeoutSeconds * 1000)); // A whole number of milliseconds: what is left of a wait rarely is one, and a fraction is refused.
+export const http: Transport = async (method, url, headers, body) => {
   let response: Response;
   let text: string;
   try {
-    response = await fetch(url, { method, headers, body, signal: signal === undefined ? timeout : AbortSignal.any([timeout, signal]) });
+    response = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(CALL_TIMEOUT * 1000) });
     text = await response.text();
   } catch (error) {
     throw new PlayerTwoError(`cannot reach the hub at ${url}: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
@@ -85,11 +68,6 @@ export const http: Transport = async (method, url, headers, body, timeoutSeconds
   }
   return text;
 };
-
-/** A channel's name without its "#". It becomes part of a URL path, so anything but a plain name is refused. */
-function bare(channel: string): string {
-  return nameSchema.parse(channel.startsWith("#") ? channel.slice(1) : channel);
-}
 
 export class Client {
   public readonly home: string;
@@ -126,40 +104,6 @@ export class Client {
 
   public async channels(): Promise<ChannelInfo[]> {
     return channelsSchema.parse(parseJson(await this.call("GET", "/channels")));
-  }
-
-  /** Join a channel, creating it if it does not exist. The name may be given with or without its "#". */
-  public async joinChannel(channel: string): Promise<ChannelInfo> {
-    return channelInfoSchema.parse(parseJson(await this.call("POST", `/channels/${bare(channel)}/join`)));
-  }
-
-  public async leaveChannel(channel: string): Promise<ChannelInfo> {
-    return channelInfoSchema.parse(parseJson(await this.call("POST", `/channels/${bare(channel)}/leave`)));
-  }
-
-  /** Say which repo a channel is about. */
-  public async pin(channel: string, repo: RepoRef): Promise<ChannelInfo> {
-    const pinned = repoRefSchema.parse({ name: repo.name, key: repo.key, url: repo.url });
-    return channelInfoSchema.parse(parseJson(await this.call("PUT", `/channels/${bare(channel)}/repo`, JSON.stringify(pinned))));
-  }
-
-  public async unpin(channel: string): Promise<ChannelInfo> {
-    return channelInfoSchema.parse(parseJson(await this.call("DELETE", `/channels/${bare(channel)}/repo`)));
-  }
-
-  /** Sign a note and hand it to the hub. Resolves with the id the hub gave it. */
-  public async send(to: string, body: string, options: { readonly kind?: Kind; readonly agent?: string | null; readonly re?: number | null } = {}): Promise<number> {
-    const note = signNote(this.key, { sender: this.config.name, to, kind: options.kind ?? "note", body, ts: Math.floor(this.now()), agent: options.agent ?? null, re: options.re ?? null });
-    return noteReceiptSchema.parse(parseJson(await this.transport("POST", `${this.config.hub}/notes`, JSON_BODY, JSON.stringify(note), CALL_TIMEOUT))).id;
-  }
-
-  /** Notes this user can see: sent to them, to their channels, and (unless `mine` is false) by them. `status` false leaves out agent status reports. */
-  public async notes(
-    options: { readonly after?: number; readonly wait?: number; readonly tail?: number; readonly mine?: boolean; readonly status?: boolean; readonly signal?: AbortSignal } = {}
-  ): Promise<DeliveredNote[]> {
-    const wait = options.wait ?? 0;
-    const query = `/notes?after=${String(options.after ?? 0)}&wait=${wait.toFixed(1)}&mine=${String(options.mine ?? true)}&status=${String(options.status ?? true)}${options.tail === undefined ? "" : `&tail=${String(options.tail)}`}`;
-    return noteListSchema.parse(parseJson(await this.call("GET", query, null, wait + CALL_TIMEOUT, options.signal)));
   }
 
   /** Sign an event and hand it to the hub. Its id is known once it is signed; resolves with the event and the place the hub gave it. */
@@ -235,9 +179,9 @@ export class Client {
     }
   }
 
-  /** Check an event against the key first seen for its author, so a hub that later swaps a key cannot forge one. A note, until the command reads events, is checked the same way. */
-  public async isTrusted(signed: Event | Note): Promise<boolean> {
-    const author = "author" in signed ? signed.author : signed.sender;
+  /** Check an event against the key first seen for its author, so a hub that later swaps a key cannot forge one. */
+  public async isTrusted(event: Event): Promise<boolean> {
+    const { author } = event;
     const pinFile = joinPath(this.home, "known.json");
     let pins = existsSync(pinFile) ? pinsSchema.parse(parseJson(readFileSync(pinFile, "utf8"))) : {};
     if (pins[author] === undefined) {
@@ -249,15 +193,15 @@ export class Client {
     if (pubkey === undefined) {
       return false;
     }
-    return "author" in signed ? eventIsAuthentic(signed, pubkey) : noteIsAuthentic(signed, pubkey);
+    return eventIsAuthentic(event, pubkey);
   }
 
   private headers(method: string, path: string, body: string | null): Readonly<Record<string, string>> {
     return { Authorization: authHeader(this.key, this.config.name, Math.floor(this.now()), method, path), ...(body === null ? {} : JSON_BODY) };
   }
 
-  private call(method: string, path: string, body: string | null = null, timeoutSeconds = CALL_TIMEOUT, signal?: AbortSignal): Promise<string> {
-    return this.transport(method, this.config.hub + path, this.headers(method, path, body), body, timeoutSeconds, signal);
+  private call(method: string, path: string, body: string | null = null): Promise<string> {
+    return this.transport(method, this.config.hub + path, this.headers(method, path, body), body);
   }
 }
 
@@ -282,7 +226,7 @@ export async function join(home: string, hub: string, name: string, token: strin
     writeFileSync(keyFile, privateHex(newKey()), { mode: 0o600 });
   }
   const request = { ...userSchema.parse({ name, pubkey: publicHex(loadKey(readFileSync(keyFile, "utf8").trim())) }), token };
-  await transport("POST", `${config.hub}/join`, JSON_BODY, JSON.stringify(request), CALL_TIMEOUT);
+  await transport("POST", `${config.hub}/join`, JSON_BODY, JSON.stringify(request));
   writeFileSync(joinPath(home, "config.json"), JSON.stringify(config, null, 1));
   return config;
 }

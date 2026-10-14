@@ -1,4 +1,4 @@
-/** The hub: keeps everyone's public key and channel memberships, relays signed events (and, until they go, notes), and keeps them for later reading. One table of routes on node:http. */
+/** The hub: keeps everyone's public key and channel memberships, relays signed events, and keeps them for later reading. One table of routes on node:http. */
 
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createReadStream, readFileSync, statSync } from "node:fs";
@@ -11,20 +11,18 @@ import { z } from "zod";
 
 import { digestIn, hubInstallScript } from "../core/install.ts";
 import { readContent } from "../core/kinds.ts";
-import { isUnder, prefixKey, unquote } from "../core/remotes.ts";
-import { authClaim, authIsValid, eventId, eventIsAuthentic, isFresh, noteIsAuthentic } from "../core/sign.ts";
+import { isUnder, prefixKey } from "../core/remotes.ts";
+import { authClaim, authIsValid, eventId, eventIsAuthentic, isFresh } from "../core/sign.ts";
 import { VERSION } from "../core/version.ts";
-import { addressSchema, eventSchema, isChannel, joinSchema, nameSchema, noteSchema, PROTOCOL, repoRefSchema, repoSchema } from "../core/wire.ts";
+import { addressSchema, eventSchema, isChannel, joinSchema, PROTOCOL, repoSchema } from "../core/wire.ts";
 import type { ChannelInfo, Event, RepoRef } from "../core/wire.ts";
 import { Database } from "./db.ts";
 
-const MAX_WAIT = 30; // Longest a client may hold one long-poll open, in seconds.
-const HISTORY = 500; // Most notes one `tail` request may ask for.
 const PAGE = 100; // Events one read gets when it does not say how many.
 const MAX_PAGE = 200; // Most events one read may ask for.
 const PING = 20; // Seconds between the comment lines that keep an open stream from looking idle to a proxy.
 const MAX_REPOS = 500; // Most checkouts one person may advertise.
-const MAX_REQUEST = 4_000_000; // Most characters one request's body may hold: several times the longest list of repos or the longest note.
+const MAX_REQUEST = 4_000_000; // Most characters one request's body may hold: several times the longest list of repos or the longest event.
 const RUNTIME = "wsl-runtime.tar.gz"; // The Linux runtime in the downloads folder, with its digest beside it in the same name and ".sha256".
 const INSTALLER = "player-two-setup.exe"; // The Windows installer, as electron-builder names it (`nsis.artifactName` in package.json).
 const PLAIN_FILE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/; // A file in the downloads folder is asked for by this name as it arrived: no slash, no "..", nothing percent-encoded.
@@ -42,12 +40,11 @@ export type Log = (event: string, facts: Readonly<Record<string, string | number
 
 const advertsSchema = z.array(repoSchema).max(MAX_REPOS);
 
-// A query string holds only text, so numbers and yes-or-no arrive written out, the latter in any of the spellings the hub has always taken.
+// A query string holds only text, so numbers arrive written out.
 const numeric = z
   .string()
   .regex(/^\d+(\.\d+)?$/)
   .transform(Number);
-const flag = z.stringbool({ truthy: ["1", "on", "t", "true", "y", "yes"], falsy: ["0", "off", "f", "false", "n", "no"] });
 const eventsQuerySchema = z.object({
   chat: addressSchema.optional(),
   before: numeric.pipe(z.int()).optional(),
@@ -55,30 +52,22 @@ const eventsQuerySchema = z.object({
   limit: numeric.pipe(z.int().min(1).max(MAX_PAGE)).default(PAGE)
 });
 const streamQuerySchema = z.object({ after: numeric.pipe(z.int()).default(0) });
-const notesQuerySchema = z.object({
-  after: numeric.pipe(z.int()).default(0),
-  wait: numeric.pipe(z.number().max(MAX_WAIT)).default(0),
-  tail: numeric.pipe(z.int().min(1).max(HISTORY)).optional(),
-  mine: flag.default(true),
-  status: flag.default(true)
-});
 
 /** One request as a route sees it. */
 interface Ask {
   readonly me: string; // Who is asking, proved by their signature; "" on the routes open to anyone.
-  readonly channel: string; // The channel the path names, with its "#"; "" on a route that names none.
   readonly query: URLSearchParams;
   readonly body: string; // What the request carried, not yet parsed.
-  readonly response: ServerResponse; // For a long-poll to see that its reader has hung up, and for the stream, which writes to it itself.
+  readonly response: ServerResponse; // For the stream, which writes to it itself.
 }
 
 type Answer = readonly [status: number, body: unknown];
 
 interface Route {
   readonly method: string;
-  readonly path: string; // With "{name}" where a channel's name goes.
+  readonly path: string;
   readonly open?: true; // Answered without asking who is calling.
-  readonly answer: (ask: Ask) => Answer | Promise<Answer> | null; // Null when the route has answered by itself.
+  readonly answer: (ask: Ask) => Answer | null; // Null when the route has answered by itself.
 }
 
 /** A request the hub will not serve. The words are for whoever sent it. */
@@ -195,22 +184,7 @@ function installPage(hub: string): string {
 export function createHub(settings: HubSettings, now: () => number = () => Date.now() / 1000, log: Log = () => undefined): Server {
   const prefix = prefixKey(settings.repos);
   const db = new Database(settings.db);
-  const waiting = new Set<() => void>(); // Readers holding a request open for the next note or event; each is called when one arrives.
-
-  /** Settles when a note arrives, when `ms` have passed, or when the reader hangs up, whichever is first. A waiting reader costs a timer, not a thread. */
-  function arrival(ms: number, response: ServerResponse): Promise<void> {
-    return new Promise((resolve) => {
-      const wake = (): void => {
-        clearTimeout(timer);
-        waiting.delete(wake);
-        response.off("close", wake);
-        resolve();
-      };
-      const timer = setTimeout(wake, ms);
-      waiting.add(wake);
-      response.once("close", wake);
-    });
-  }
+  const waiting = new Set<() => void>(); // Streams open for the next event; each is called when one is stored.
 
   /** Who is asking, once their header is seen to be signed for this very request: its method, and its path and query as they arrived. */
   function caller(request: IncomingMessage): string {
@@ -225,12 +199,6 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
 
   function channelInfo(channel: string): ChannelInfo {
     return { name: channel, members: db.members(channel), ...db.pinOf(channel) };
-  }
-
-  function mustBeIn(channel: string, me: string): void {
-    if (!db.members(channel).includes(me)) {
-      throw new Refusal(403, `join ${channel} first`);
-    }
   }
 
   function shareable(repo: RepoRef): void {
@@ -261,33 +229,6 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     }
     db.replaceRepos(ask.me, mine);
     return [200, mine];
-  }
-
-  function postNote(ask: Ask): Answer {
-    const note = jsonBody(noteSchema, ask.body);
-    const pubkey = db.pubkeyOf(note.sender);
-    if (pubkey === null || !noteIsAuthentic(note, pubkey)) {
-      throw new Refusal(401, "note is not signed by its sender");
-    }
-    if (!isFresh(note.ts, now())) {
-      throw new Refusal(400, "note timestamp is more than 5 minutes off the hub clock; check your system time");
-    }
-    if (isChannel(note.to)) {
-      if (!db.members(note.to).includes(note.sender)) {
-        throw new Refusal(403, `join ${note.to} before posting to it`);
-      }
-    } else if (db.pubkeyOf(note.to) === null) {
-      throw new Refusal(404, `nobody named '${note.to}' has joined`);
-    }
-    const id = db.addNote(note);
-    if (id === null) {
-      throw new Refusal(409, "this exact note was already delivered");
-    }
-    waiting.forEach((wake) => {
-      wake();
-    });
-    log("note queued", { note_id: id, sender: note.sender, recipient: note.to, kind: note.kind });
-    return [201, { id }];
   }
 
   /** The fourth of the checks an event passes: whether its author may write to whom it is for. */
@@ -411,55 +352,6 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     return null;
   }
 
-  /**
-   * Notes the caller can see with an id above `after`, oldest first: sent to them, to a channel they are in, or (unless `mine` is false) sent by them.
-   * `wait` holds the request open until one arrives; `tail` returns only the newest few; `status` false leaves out agent status reports.
-   */
-  async function getNotes(ask: Ask): Promise<Answer> {
-    const { after, wait, tail, mine, status } = parsed(notesQuerySchema, Object.fromEntries(ask.query), "query");
-    const deadline = performance.now() + wait * 1000;
-    for (;;) {
-      // Looking and going to sleep happen in one turn of the loop, so a note cannot land between "nothing yet" and waiting for it.
-      const notes = db.notes(ask.me, after, tail ?? null, mine, status);
-      const remaining = deadline - performance.now();
-      if (notes.length > 0 || remaining <= 0) {
-        return [200, notes];
-      }
-      await arrival(remaining, ask.response);
-      if (ask.response.destroyed) {
-        return [200, []]; // Nobody is listening, and the database may have closed with the server.
-      }
-    }
-  }
-
-  /** Join a channel, creating it if nobody is in it yet. */
-  function joinChannel(ask: Ask): Answer {
-    db.addMember(ask.channel, ask.me);
-    log("channel joined", { channel: ask.channel, user: ask.me });
-    return [200, channelInfo(ask.channel)];
-  }
-
-  function leaveChannel(ask: Ask): Answer {
-    db.removeMember(ask.channel, ask.me);
-    log("channel left", { channel: ask.channel, user: ask.me });
-    return [200, channelInfo(ask.channel)];
-  }
-
-  /** Say which repo a channel is about. Any member may set or change it. */
-  function pinRepo(ask: Ask): Answer {
-    const repo = jsonBody(repoRefSchema, ask.body);
-    mustBeIn(ask.channel, ask.me);
-    shareable(repo);
-    db.setPin(ask.channel, repo, null);
-    return [200, channelInfo(ask.channel)];
-  }
-
-  function unpinRepo(ask: Ask): Answer {
-    mustBeIn(ask.channel, ask.me);
-    db.removePin(ask.channel);
-    return [200, channelInfo(ask.channel)];
-  }
-
   const routes: readonly Route[] = [
     { method: "GET", path: "/healthz", open: true, answer: () => [200, { ok: true, now: Math.floor(now()) }] }, // The clock is here as well as in /info for the setup check: once the clocks differ by five minutes, /info refuses the signature that asks for it.
     { method: "POST", path: "/join", open: true, answer: join },
@@ -467,19 +359,12 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     { method: "GET", path: "/users", answer: () => [200, db.users()] },
     { method: "PUT", path: "/repos", answer: putRepos },
     { method: "GET", path: "/repos", answer: () => [200, db.repos()] },
-    { method: "POST", path: "/notes", open: true, answer: postNote }, // A note carries its own signature, so it needs no header.
-    { method: "GET", path: "/notes", answer: getNotes },
     { method: "POST", path: "/events", answer: postEvent },
     { method: "GET", path: "/events", answer: getEvents },
     { method: "GET", path: "/stream", answer: stream },
     { method: "GET", path: "/audit/head", answer: () => [200, db.head()] }, // For comparing with what someone saw before: a log changed since cannot end in the same chain value.
-    { method: "GET", path: "/channels", answer: () => [200, db.channels().map(channelInfo)] },
-    { method: "POST", path: "/channels/{name}/join", answer: joinChannel },
-    { method: "POST", path: "/channels/{name}/leave", answer: leaveChannel },
-    { method: "PUT", path: "/channels/{name}/repo", answer: pinRepo },
-    { method: "DELETE", path: "/channels/{name}/repo", answer: unpinRepo }
+    { method: "GET", path: "/channels", answer: () => [200, db.channels().map(channelInfo)] }
   ];
-  const table = routes.map((route) => ({ route, pattern: new RegExp(`^${route.path.replace("{name}", "([^/]+)")}$`) }));
 
   /** The digest of the runtime in the downloads folder, from the file beside it. */
   function runtimeDigest(): string {
@@ -533,17 +418,13 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     if (served(path, request, response)) {
       return null; // Answered already, with a file, a page or a script rather than JSON.
     }
-    const there = table.flatMap(({ route, pattern }) => {
-      const found = pattern.exec(path);
-      return found === null ? [] : [{ route, name: found[1] }];
-    });
-    const hit = there.find((candidate) => candidate.route.method === request.method);
+    const there = routes.filter((route) => route.path === path);
+    const hit = there.find((route) => route.method === request.method);
     if (hit === undefined) {
       throw there.length === 0 ? new Refusal(404, "Not Found") : new Refusal(405, "Method Not Allowed");
     }
-    const me = hit.route.open === true ? "" : caller(request);
-    const channel = hit.name === undefined ? "" : `#${parsed(nameSchema, unquote(hit.name), "name")}`;
-    return hit.route.answer({ me, channel, query: new URLSearchParams(query.join("?")), body: await bodyText(request), response });
+    const me = hit.open === true ? "" : caller(request);
+    return hit.answer({ me, query: new URLSearchParams(query.join("?")), body: await bodyText(request), response });
   }
 
   const server = createServer((request, response) => {
