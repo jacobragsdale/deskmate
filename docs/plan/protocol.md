@@ -132,7 +132,7 @@ waiting ──accepted──► working ──result──► answered
    └──withdrawn──► withdrawn
 ```
 
-Two moves the diagram leaves out, which the window offered before events: the owner may accept a request again after declining it or after a run that failed or was stopped, and may decline one that is working, as when a draft is thrown away. `answered` and `withdrawn` are final.
+Moves the diagram leaves out, which the window offered before events: the owner may accept a request again after declining it, after a run that failed or was stopped, or while it is still `working`, as when a run never ended because its desk went (the later acceptance replaces the earlier one, branch, commit and all); and may decline one that is working, as when a draft is thrown away. `answered` and `withdrawn` are final.
 
 `working` with no result for 960 seconds is shown as `waiting` again, as today. A tag counts only in a `message` a person authored, or from phase 7 one the hub authored for a workflow; a `job.result` that contains a tag starts nothing.
 

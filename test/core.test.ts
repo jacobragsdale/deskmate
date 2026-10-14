@@ -91,6 +91,11 @@ await test("a tagged agent's state follows its owner's job events, and one worki
   assert.deepEqual(stateAfter(job("job.declined", { reason: "" })), ["jacob/uploader declined"]);
   assert.deepEqual(stateAfter(job("job.accepted", ACCEPTED), job("job.declined", { reason: "" })), ["jacob/uploader declined"]); // A draft thrown away.
   assert.deepEqual(stateAfter(job("job.declined", { reason: "" }), job("job.accepted", ACCEPTED)), ["jacob/uploader working"]); // Run after all.
+  const again = logOf("jacob", [ask, job("job.accepted", ACCEPTED, NOW - STALE - 1), job("job.accepted", { ...ACCEPTED, commit: "b".repeat(40) })]); // A run that never ended, as when its desk went, run again at another commit.
+  assert.deepEqual(
+    again.requests(again.message(ask.event.id) ?? assert.fail("no request"), NOW).map((request) => [request.state, request.accepted?.commit]),
+    [["working", "b".repeat(40)]]
+  );
   assert.deepEqual(stateAfter(job("job.result", answer)), ["jacob/uploader waiting"]); // An answer to a run nobody accepted moves nothing,
   assert.deepEqual(stateAfter(job("job.accepted", ACCEPTED), job("job.result", answer), job("job.accepted", ACCEPTED), job("job.error")), ["jacob/uploader answered"]); // and nothing moves one answered.
 

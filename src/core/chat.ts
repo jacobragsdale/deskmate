@@ -206,9 +206,9 @@ interface Folded {
   readonly jobs: Map<string, Job>; // By the request's id and the agent.
 }
 
-// What each job event moves a job to, and from where. The owner may run a request again after declining it or after a run that failed or was stopped, and may decline one at any time until it is answered.
+// What each job event moves a job to, and from where. The owner may run a request again after declining it, after a run that failed or was stopped, or while it is still working, as when a run never ended because its desk went (the later acceptance is the one that counts), and may decline one at any time until it is answered.
 const MOVES: Readonly<Record<JobKind, readonly [State, readonly State[]]>> = {
-  "job.accepted": ["working", ["waiting", "declined", "failed", "stopped"]],
+  "job.accepted": ["working", ["waiting", "working", "declined", "failed", "stopped"]],
   "job.declined": ["declined", ["waiting", "working", "failed", "stopped"]],
   "job.result": ["answered", ["working"]],
   "job.error": ["failed", ["working"]],
