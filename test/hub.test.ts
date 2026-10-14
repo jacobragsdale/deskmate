@@ -1,9 +1,7 @@
-/** Two people's sessions against the real Python hub: the check that this port and the hub still speak the same protocol. Needs `uv`; skipped without it. */
+/** Two people's sessions against the real hub, started in this process: the check that the client and the hub still speak the same protocol. */
 
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -11,27 +9,11 @@ import { after, test } from "node:test";
 import { AgentCancelledError, http, join as joinHub, loadClient } from "../src/desk/client.ts";
 import { Session } from "../src/desk/session.ts";
 import type { Arrival } from "../src/desk/session.ts";
+import { createHub } from "../src/hub/app.ts";
 import type { ChatView, MessageView, Notice } from "../src/shared/ipc.ts";
 
 const TOKEN = "a-join-token-for-tests";
 const root = mkdtempSync(join(tmpdir(), "deskmate-app-"));
-const haveUv = spawnSync("uv", ["--version"]).status === 0;
-
-function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = createServer();
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      server.close(() => {
-        if (address !== null && typeof address === "object") {
-          resolve(address.port);
-        } else {
-          reject(new Error("no port"));
-        }
-      });
-    });
-  });
-}
 
 function pause(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -115,33 +97,23 @@ function messages(view: ChatView): readonly MessageView[] {
   return view.current?.messages ?? [];
 }
 
-await test("two people, their agents and a channel, through the real hub", { skip: haveUv ? false : "uv is not installed", timeout: 60_000 }, async () => {
-  const port = await freePort();
-  const hub = `http://127.0.0.1:${String(port)}`;
-  const server = spawn("uv", ["run", "--project", join(import.meta.dirname, ".."), "deskmate", "hub", "--port", String(port)], {
-    env: { ...process.env, DESKMATE_JOIN_TOKEN: TOKEN, DESKMATE_DB: join(root, "hub.db"), DESKMATE_REPOS: "https://dev.azure.com/acme/" },
-    stdio: "ignore",
-    detached: true
+await test("two people, their agents and a channel, through the real hub", { timeout: 60_000 }, async () => {
+  const server = createHub({ joinToken: TOKEN, db: join(root, "hub.db"), repos: "https://dev.azure.com/acme/" });
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", resolve);
   });
+  const address = server.address();
+  assert.ok(address !== null && typeof address === "object");
+  const hub = `http://127.0.0.1:${String(address.port)}`;
   const people: Person[] = [];
   after(async () => {
     await Promise.all(people.map((each) => each.session.stop()));
-    if (server.pid !== undefined) {
-      process.kill(-server.pid, "SIGKILL");
-    }
+    await new Promise((resolve) => {
+      server.close(resolve);
+      server.closeAllConnections();
+    });
     rmSync(root, { recursive: true, force: true });
   });
-  for (
-    let tries = 0;
-    tries < 100 &&
-    !(await fetch(`${hub}/healthz`).then(
-      (response) => response.ok,
-      () => false
-    ));
-    tries += 1
-  ) {
-    await pause(100);
-  }
 
   const jacob = await person(hub, "jacob");
   const bob = await person(hub, "bob");

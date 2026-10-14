@@ -59,7 +59,7 @@ Shape:
 - [x] **P0-B6** The channel routes: list, join, leave, pin, unpin.
 - [x] **P0-B7** `main.ts`: `DESKMATE_JOIN_TOKEN` (at least 16 characters), `DESKMATE_DB`, `DESKMATE_REPOS`, all required; `--host` (default `127.0.0.1`) and `--port` (default `8787`). Refuse to start with a clear message when one is missing. Stop cleanly on `SIGTERM` within three seconds.
 - [x] **P0-B8** `test/hub.api.test.ts`: port every case in `tests/test_hub.py` except the installer one (section H replaces it). Start the server in-process on port 0 with a fixed clock. Keep the Python tests' names as the test titles.
-- [ ] **P0-B9** `test/hub.test.ts` starts the Node hub in-process instead of spawning `uv`. It must pass without changing a single expectation.
+- [x] **P0-B9** `test/hub.test.ts` starts the Node hub in-process instead of spawning `uv`. It must pass without changing a single expectation.
 
 ## C. Protocol 1: what the review found
 

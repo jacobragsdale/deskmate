@@ -9,6 +9,7 @@ import type { Delivered, Note, Person, Repo, RepoRef, TeamRepo } from "../core/w
 
 const SCHEMA_VERSION = 3;
 const PAGE = 100; // Most notes one request gets when it does not ask for the newest few.
+const CONSTRAINT = 19; // SQLite's code for a broken constraint: the low byte of the fuller code a failed statement reports.
 const BUSY_WAIT = 5; // Seconds to wait for another program that holds the file, such as a backup, before giving up.
 
 const SCHEMA = `
@@ -135,10 +136,18 @@ export class Database {
 
   /** Keep a note and return the id it was given. Null when this exact note is already kept: a signature is stored once, which is what stops a replay. */
   public addNote(note: Note): number | null {
-    const added = this.db
-      .prepare("INSERT OR IGNORE INTO notes (sender, recipient, kind, body, ts, agent, re, sig) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(note.sender, note.to, note.kind, note.body, note.ts, note.agent, note.re, note.sig);
-    return Number(added.changes) === 0 ? null : Number(added.lastInsertRowid);
+    try {
+      const added = this.db
+        .prepare("INSERT INTO notes (sender, recipient, kind, body, ts, agent, re, sig) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(note.sender, note.to, note.kind, note.body, note.ts, note.agent, note.re, note.sig);
+      return Number(added.lastInsertRowid);
+    } catch (error) {
+      // Refused by the UNIQUE signature. Letting the insert fail, rather than asking it to ignore a duplicate, keeps the ids without gaps.
+      if (error instanceof Error && "errcode" in error && typeof error.errcode === "number" && (error.errcode & 0xff) === CONSTRAINT) {
+        return null;
+      }
+      throw error;
+    }
   }
 
   /**

@@ -152,14 +152,14 @@ await test("a note is accepted only inside the freshness window", async (t) => {
 
 await test("a replayed note is delivered once", async (t) => {
   const hub = await startHub(t);
-  await hub.join("alice");
-  const bob = await hub.join("bob");
+  const [alice, bob] = [await hub.join("alice"), await hub.join("bob")];
   const note = signNote(keyOf(hub, "alice"), { sender: "alice", to: "bob", kind: "note", body: "once", ts: NOW, agent: null, re: null });
 
   const statuses = [await postNote(hub, note), await postNote(hub, note)];
 
   assert.deepEqual(statuses, [201, 409]);
   assert.deepEqual(await bodies(bob), ["once"]);
+  assert.equal(await alice.send("bob", "next"), 2); // The copy that was refused used up no id.
 });
 
 await test("a note to an unknown name is refused", async (t) => {
