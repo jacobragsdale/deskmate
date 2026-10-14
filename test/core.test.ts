@@ -15,7 +15,7 @@ import { runAgent, splitCommand } from "../src/desk/agents/oneshot.ts";
 import { AgentCancelledError, Client, PlayerTwoError } from "../src/desk/client.ts";
 import type { Transport } from "../src/desk/client.ts";
 import { readContent } from "../src/core/kinds.ts";
-import { noteLink, noteOf, notesIn } from "../src/core/links.ts";
+import { noteIn, noteLink, noteOf, notesIn } from "../src/core/links.ts";
 import { loadKey, publicHex, signEvent } from "../src/core/sign.ts";
 import * as repos from "../src/desk/repos.ts";
 import { Session } from "../src/desk/session.ts";
@@ -280,6 +280,48 @@ await test("a link to a note names a 64-hex id and nothing else, and is found in
   ]);
   assert.deepEqual(notesIn(link), [{ text: link, note: id }]);
   assert.deepEqual(notesIn(""), []);
+});
+
+await test("the app takes a note from the arguments it is started or handed with only when one is exactly a note link, whatever else is among them", () => {
+  const id = "ab".repeat(32);
+  const link = noteLink(id);
+  const exe = "C:\\Program Files\\Player Two\\Player Two.exe";
+  const shapes: readonly (readonly string[])[] = [
+    [exe, link], // Windows, started by the link.
+    [exe, "--allow-file-access-from-files", "--original-process-start-time=13371337133713371", link], // Windows, a second copy's arguments as the first is handed them.
+    ["/tmp/.mount_PlayerA1b2C3/player-two", "--no-sandbox", link], // Linux, from the AppImage's desktop file.
+    ["/usr/lib/electron/electron", "/home/jacob/dev/player-two", link], // Linux, run from its source.
+    [exe, "player-two://note/../x", link] // A hostile link is passed over; one beside it that holds is still taken.
+  ];
+  for (const argv of shapes) {
+    assert.equal(noteIn(argv), id, argv.join(" "));
+  }
+  const hostile = [
+    "player-two://note/../x",
+    `player-two://note/../${id}`,
+    `player-two://note/${id}/..`,
+    `player-two://chat/${id}`,
+    `player-two://evil.example/${id}`,
+    `player-two://note/${id.toUpperCase()}`,
+    `PLAYER-TWO://note/${id}`,
+    `player-two://note/${id}/more`,
+    `player-two://note/${id}/`,
+    `player-two://note/${id}?x=1`,
+    `player-two://note/${id}#x`,
+    `player-two://note/${id.slice(1)}`,
+    `player-two://note/${id}0`,
+    `${link}" --inspect=9229`,
+    `--app=${link}`,
+    `player-two:note/${id}`,
+    `player-two:///note/${id}`,
+    `https://example.com/note/${id}`,
+    ""
+  ];
+  for (const argument of hostile) {
+    assert.equal(noteIn([exe, argument]), null, argument);
+  }
+  assert.equal(noteIn([exe]), null);
+  assert.equal(noteIn([]), null);
 });
 
 await test("the tag list leads with the pinned repo, then my agents, then my partner's, and offers a clone once a repo is named", () => {

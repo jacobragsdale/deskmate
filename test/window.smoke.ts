@@ -391,6 +391,32 @@ await test(
     await page.click("nav button", "bob");
     await page.until("the chat with bob again", `document.querySelector("main h1")?.textContent === "bob"`);
 
+    // A link the app is started with while it runs goes to the window already open, which opens the note: the second copy hands it over and quits.
+    // Bounded, and killed at the end whatever happens: a copy that kept running would keep this test from ever ending.
+    const second = spawn(electron, [ROOT, noteLink(theFirst.event.id)], { env, stdio: ["ignore", "ignore", "pipe"] });
+    t.after(() => {
+      second.kill("SIGKILL");
+    });
+    const secondSaid: string[] = [];
+    createInterface({ input: second.stderr }).on("line", (line) => {
+      secondSaid.push(line);
+    });
+    const ended = await Promise.race([
+      new Promise((resolve) => {
+        second.once("exit", resolve);
+      }),
+      new Promise((resolve) => {
+        setTimeout(resolve, 30_000, "still running after 30 seconds").unref(); // Unref'd, so it does not hold the test open once the copy has gone.
+      })
+    ]);
+    assert.equal(ended, 0, `the second copy did not hand its link over and quit. The last it said:\n${secondSaid.slice(-10).join("\n")}`);
+    await page.until(
+      "the note the link names, open and highlighted",
+      `document.querySelector("main h1")?.textContent === "#history" && document.querySelector('${focused}')?.innerText.includes("the first") === true`
+    );
+    await page.click("nav button", "bob");
+    await page.until("the chat with bob once more", `document.querySelector("main h1")?.textContent === "bob"`);
+
     // A link to a note is a chip of text: who wrote it and its first words when alice can see it, in plain text and written out in Markdown alike, and "a note you cannot see" when she cannot. None is a link the window follows.
     await carol.publish("#hidden", "channel.join", {});
     const hidden = await carol.publish("#hidden", "message", { text: "not for alice", via: "cli" });

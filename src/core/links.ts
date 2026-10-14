@@ -22,6 +22,14 @@ export function noteOf(link: string): string | null {
   return ID.test(id) ? id : null;
 }
 
+/**
+ * The id of the first of a program's arguments that is exactly a link to a note, as the system hands the app a link it opens: on Windows and Linux among the arguments it is started with,
+ * or those of a second copy, which Chromium may reorder and add its own switches to. Every other argument is passed over, a link of any other shape included; null when none is a note link.
+ */
+export function noteIn(argv: readonly string[]): string | null {
+  return argv.map(noteOf).find((id) => id !== null) ?? null;
+}
+
 /** A text cut into plain stretches and the links to notes in it, in order. */
 export function notesIn(text: string): Piece[] {
   const pieces: Piece[] = [];

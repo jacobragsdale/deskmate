@@ -5,9 +5,10 @@ import { join as joinPath } from "node:path";
 import { app, BrowserWindow, dialog, ipcMain, Notification, shell } from "electron";
 import type { IpcMainInvokeEvent } from "electron";
 
+import { noteIn, noteOf } from "../../core/links.ts";
 import { problemOf } from "../../core/text.ts";
 import { commandSchema } from "../../shared/ipc.ts";
-import type { Arrival, Check, DistroChoice, Outcome, Question, View } from "../../shared/ipc.ts";
+import type { Arrival, Check, DistroChoice, Notice, Outcome, Question, View } from "../../shared/ipc.ts";
 import { DeskProcess, localLaunch, windowChecks, wslLaunch } from "./deskProcess.ts";
 import { distroSchema, loadSettings, saveSettings } from "./settings.ts";
 import { listDistros } from "./wsl.ts";
@@ -17,6 +18,7 @@ const START_WAIT = 120_000; // Milliseconds the setup page waits for a desk it s
 let window: BrowserWindow | null = null;
 let current: View | null = null; // What the desk last said to draw; null until it has said anything.
 let stopped = false;
+let linked: string | null = noteIn(process.argv); // A note a link asked for that the desk has not been asked to open yet: one the app was started with waits until the chats are loaded.
 
 function report(error: unknown): void {
   console.error(error);
@@ -25,6 +27,7 @@ function report(error: unknown): void {
 /** Send the window what to draw, and put what needs the user where they see it without the window: the title and the dock badge. */
 function show(view: View): void {
   current = view;
+  openLinked();
   if (window === null || window.isDestroyed()) {
     return;
   }
@@ -35,10 +38,45 @@ function show(view: View): void {
   }
 }
 
-function open(chat: string): void {
+/** Bring the window to the front, from the taskbar too. */
+function bringUp(): void {
+  if (window?.isMinimized() === true) {
+    window.restore();
+  }
   window?.show();
   window?.focus();
+}
+
+function open(chat: string): void {
+  bringUp();
   desk.send({ do: "open", chat }).catch(report);
+}
+
+/** Have the desk open the note a link asked for, once it has loaded the chats. A note the user cannot see is said so in the window, as the desk words it. */
+function openLinked(): void {
+  const id = linked;
+  if (id === null || current?.kind !== "chat" || !current.loaded) {
+    return;
+  }
+  linked = null;
+  desk
+    .send({ do: "openNote", id })
+    .then((outcome) => {
+      if (!outcome.ok) {
+        const notice: Notice = { title: "", body: outcome.problem, severity: "error" };
+        window?.webContents.send("notice", notice);
+      }
+    })
+    .catch(report);
+}
+
+/** A link the system handed over, as the id of the note it names, already checked to be exactly a note link, or null for anything else: the window comes up either way, and only a note is opened. */
+function follow(id: string | null): void {
+  bringUp();
+  if (id !== null) {
+    linked = id;
+    openLinked();
+  }
 }
 
 /** Tell the user about a message or an answer with the system's own notification, unless they are already looking at its chat. */
@@ -205,6 +243,20 @@ function createWindow(): void {
   created.loadFile(joinPath(import.meta.dirname, "renderer", "index.html")).catch(report);
 }
 
+// One copy of the app at a time, so that a link opened while it runs goes to the window already open: a second copy hands the first its arguments and quits.
+const primary = app.requestSingleInstanceLock();
+if (!primary) {
+  app.quit();
+}
+app.on("second-instance", (_event, argv) => {
+  follow(noteIn(argv));
+});
+// On macOS a link comes this way, at start-up as later, rather than among the arguments.
+app.on("open-url", (event, url) => {
+  event.preventDefault();
+  follow(noteOf(url));
+});
+
 app.on("window-all-closed", () => {
   app.quit(); // With no window there is nobody to approve a run, so the desk and its agents go too.
 });
@@ -225,6 +277,13 @@ app.on("will-quit", (event) => {
 app
   .whenReady()
   .then(() => {
+    if (!primary) {
+      return;
+    }
+    // Links to notes open this app. A copy run from its source, as in development and the smoke test, leaves the system's handler alone: it would be the bare Electron binary.
+    if (app.isPackaged) {
+      app.setAsDefaultProtocolClient("player-two");
+    }
     createWindow();
     desk.start();
     desk.attend(window?.isFocused() ?? true);
