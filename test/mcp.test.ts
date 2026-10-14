@@ -218,7 +218,7 @@ await test("without --allow-send nothing can be sent, and ask_agent returns the 
   const asking = call(sending, "ask_agent", { agent: "bob/uploader", text: "where do we retry?", wait_seconds: 20 });
   const request = await until(session, "bob can run alice's request", (view) => view.current?.messages.find((message) => message.requests[0]?.status.kind === "ready"));
   assert.equal(prompts.length, 0); // Nothing runs until bob says so.
-  await session.handle({ do: "run", id: request.id, repo: "uploader", post: true, text: request.body });
+  await session.handle({ do: "run", id: request.id, repo: "uploader", post: true, mode: "full", text: request.body });
   const asked = z
     .object({ outcome: z.literal("answered"), request: z.string(), answer: z.object({ author: z.string(), agent: z.string(), trusted: z.boolean(), text: z.string() }) })
     .parse(await asking);

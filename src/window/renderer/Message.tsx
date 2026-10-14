@@ -44,7 +44,10 @@ function Elapsed({ since }: { readonly since: number }): JSX.Element {
   return <>{Math.max(0, Math.round((now - since) / 1000))}s</>;
 }
 
-/** One of the user's own agents, ready to run: the buttons that run it, and one that declines it. A run carries `text`, the request as the user sees it here, so the desk can refuse one edited since. */
+/**
+ * One of the user's own agents, ready to run: the buttons that run it, and one that declines it. A run carries `text`, the request as the user sees it here, so the desk can refuse one edited since.
+ * Both run it read-only, the least an agent may do, which is where a request from anyone but the user's own window starts.
+ */
 function ReadyLine({
   request,
   text,
@@ -71,7 +74,7 @@ function ReadyLine({
         className="text-foreground"
         type="button"
         onClick={() => {
-          act({ do: "run", id, repo, post: false, text });
+          act({ do: "run", id, repo, post: false, mode: "read-only", text });
         }}
       >
         ▶ Run and review
@@ -82,7 +85,7 @@ function ReadyLine({
         className="text-foreground"
         type="button"
         onClick={() => {
-          act({ do: "run", id, repo, post: true, text });
+          act({ do: "run", id, repo, post: true, mode: "read-only", text });
         }}
       >
         ▶▶ Run and post

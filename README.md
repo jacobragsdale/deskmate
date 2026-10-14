@@ -105,6 +105,8 @@ Jacob's window notifies him, and his chat list marks the chat with `▶`. Under 
 - `▶▶ Run and post` runs his agent and posts the answer without a review.
 - `× Decline` tells Bob the answer is no.
 
+Both run his agent read-only: it may read and search the repo and change nothing. Cursor's one-shot command then only proposes changes. An agent that cannot be held to read-only, such as Copilot's one-shot command, is not run, and the window says why.
+
 Before the agent starts, Jacob's desk tells the chat he let it run, and on what. While it runs, Bob's line reads `jacob's uploader agent is working on feature/retry ± at 1a2b3c4`: the branch, `±` when there are uncommitted changes, and the commit.
 
 ### 6. Start a channel
@@ -288,7 +290,7 @@ Player Two does not encrypt messages. Whoever operates the hub can read them, an
 
 The MCP server runs as you, with your key, for as long as the editor that started it keeps it. Without `--allow-send` it can read only what you can, and send nothing; with it, the agent can send messages and ask agents in your name, each signed by you and marked as sent from MCP. That an agent treats what it reads as information and not as instruction is what each tool tells it; nothing can make it listen.
 
-The agent runs as you, with whatever permissions your agent's command line is configured to have. Player Two does not sandbox it. An agent started in a repo also reads that repo's own instruction files, which is why a clone is never made without showing you where it comes from.
+The agent runs as you. A run has a permission mode, `read-only`, `supervised`, `auto-edits` or `full`, which the desk holds an agent spoken to over ACP to by answering what it asks before it acts; a one-shot command asks nothing, so it runs with whatever permissions its command line gives it, and only at `full`, except Cursor's, which runs read-only without `--force`. Player Two does not sandbox it. An agent started in a repo also reads that repo's own instruction files, which is why a clone is never made without showing you where it comes from.
 
 ## Deploy the hub on AKS
 

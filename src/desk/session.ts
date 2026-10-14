@@ -30,8 +30,7 @@ const RETRY_DELAY = 5; // Seconds to wait before asking a hub that did not answe
 const UPDATE_DELAY = 60; // Seconds to wait before asking a hub on another protocol again: its answer changes only when someone updates one side.
 const STOP_WAIT = 3; // Seconds to give stopped agents to go before the session is done.
 const PAGE = 50; // Events of one chat loaded at a time: its newest when it is first listed, and as many again each time the user scrolls back.
-// Every run is let go at "full", as its job.accepted says, until P3-C1 gives each its own mode. Nothing is asked of the owner at "full", and the activity feed is P3-D3's.
-const RUN_MODE: PermissionMode = "full";
+// Until P3-C3 shows them to the owner, what the agent asks of them is refused. The activity feed is P3-D3's.
 const IN_THE_DARK: RunHandlers = { activity: () => undefined, permission: () => Promise.resolve("refuse") };
 
 /** What the session remembers between runs, in app-state.json. */
@@ -63,6 +62,7 @@ interface AgentRun {
   readonly entry: Entry; // The request.
   readonly repo: string;
   readonly post: boolean; // Post the answer as soon as it is ready, rather than drafting it for review.
+  readonly mode: PermissionMode; // What the agent may do without asking, as job.accepted says.
   readonly cancel: AbortController;
   readonly startedAt: number; // Unix milliseconds.
   done: Promise<void>; // Settles once the agent's process is gone and the chat has been told how it ended.
@@ -285,7 +285,7 @@ export class Session {
         await this.discardDraft(command.chat, command.id, command.repo);
         break;
       case "run":
-        this.runRequest(command.id, command.repo, command.post, command.text);
+        this.runRequest(command.id, command.repo, command.post, command.mode, command.text);
         break;
       case "stop":
         this.runs.get(runKey(command.id, command.repo))?.cancel.abort();
@@ -496,7 +496,7 @@ export class Session {
   private requestView(request: Request): RequestView[] {
     const { owner, repo } = request;
     const mine = owner === this.me;
-    const accepted = request.accepted === null ? null : { branch: request.accepted.branch, commit: request.accepted.commit, dirty: request.accepted.dirty };
+    const accepted = request.accepted === null ? null : { branch: request.accepted.branch, commit: request.accepted.commit, dirty: request.accepted.dirty, mode: request.accepted.mode };
     return request.state === "answered" ? [] : [{ id: request.message.entry.event.id, owner, repo, mine, accepted, status: mine ? this.myStatus(request) : this.theirStatus(request) }];
   }
 
@@ -765,7 +765,8 @@ export class Session {
   }
 
   /**
-   * Send what the user typed, as a message or with `refs` as a reply in a thread. They typed it here, so its tags of their own agents run at once without asking: its id is known as soon as it is signed, so it is folded in its place and run from there.
+   * Send what the user typed, as a message or with `refs` as a reply in a thread. They typed it here, so its tags of their own agents run at once without asking, at the mode they chose for their own requests:
+   * its id is known as soon as it is signed, so it is folded in its place and run from there.
    * Nothing that arrives from the hub ever starts an agent. A message from anyone else, from the command or anything else that is not this window, or from this window before the desk last started, waits for the owner's click.
    */
   private async send(chat: string, text: string, refs: readonly string[]): Promise<void> {
@@ -777,7 +778,7 @@ export class Session {
     const message = this.chats.message(sent.event.id);
     for (const request of message === null ? [] : this.chats.requests(message, this.client.now())) {
       if (message !== null && request.owner === this.me && request.state === "waiting" && this.checkouts.has(request.repo)) {
-        this.startRun(message, request.repo, true);
+        this.startRun(message, request.repo, true, this.client.config.ownMode);
       }
     }
   }
@@ -887,14 +888,17 @@ export class Session {
     await this.decline(request, repo);
   }
 
-  /** Run the user's agent on a request, with its text as it stands now; which must be what the user was shown, `seen`, when they said to run it, or the agent would be given something they never saw. */
-  private runRequest(request: string, repo: string, post: boolean, seen: string): void {
+  /**
+   * Run the user's agent on a request at `mode`, with its text as it stands now; which must be what the user was shown, `seen`, when they said to run it, or the agent would be given something they never saw.
+   * The mode is the user's choice each time: a teammate's request is offered read-only first.
+   */
+  private runRequest(request: string, repo: string, post: boolean, mode: PermissionMode, seen: string): void {
     const message = this.chats.message(request);
     if (message !== null && this.chats.requests(message, this.client.now()).some((each) => each.owner === this.me && each.repo === repo && each.state !== "withdrawn")) {
       if (message.text !== seen) {
         throw new PlayerTwoError(`${message.entry.event.author} edited the request after you saw it: read it again before you run it`);
       }
-      this.startRun(message, repo, post);
+      this.startRun(message, repo, post, mode);
     }
   }
 
@@ -994,7 +998,7 @@ export class Session {
 
   // ── running an agent ──────────────────────────────────────────────────────
 
-  private startRun(message: Message, repo: string, post: boolean): void {
+  private startRun(message: Message, repo: string, post: boolean, mode: PermissionMode): void {
     const checkout = this.checkouts.get(repo);
     const key = runKey(message.entry.event.id, repo);
     if (this.runs.has(key)) {
@@ -1007,7 +1011,7 @@ export class Session {
     const prompt = agentPrompt(message, this.me, repo, this.chats.earlier(message), !post, agent.protocol === "acp");
     // A reply in a thread from the same asker to the same agent goes on in the session the thread's last such request left open, if one is.
     const followUp = { key: [message.root ?? message.entry.event.id, message.entry.event.author, repo].join(" "), text: message.text };
-    const run: AgentRun = { entry: message.entry, repo, post, cancel: new AbortController(), startedAt: Date.now(), done: Promise.resolve() };
+    const run: AgentRun = { entry: message.entry, repo, post, mode, cancel: new AbortController(), startedAt: Date.now(), done: Promise.resolve() };
     this.runs.set(key, run);
     run.done = this.work(key, run, checkout, this.runnerFor(agent), prompt, followUp);
     this.hooks.changed();
@@ -1045,7 +1049,7 @@ export class Session {
       if (stopped()) {
         throw new AgentCancelledError(`Stopped your ${repo} agent before it started.`); // While git was asked where the checkout stands: nothing ran, so the chat hears nothing.
       }
-      await this.client.publish(chat, "job.accepted", { repo, ...head, delivery: run.post ? "post" : "review", mode: "full", by: "owner" }, request);
+      await this.client.publish(chat, "job.accepted", { repo, ...head, delivery: run.post ? "post" : "review", mode: run.mode, by: "owner" }, request);
     } catch (error) {
       this.hooks.notice(
         error instanceof AgentCancelledError ? { title: "", body: error.message, severity: "info" } : { title: `your ${repo} agent did not start`, body: problemOf(error), severity: "error" }
@@ -1059,7 +1063,7 @@ export class Session {
       if (stopped()) {
         throw new AgentCancelledError("stopped"); // While the chat was being told: it ends as stopped, without the agent being started only to be killed.
       }
-      const text = fitText(await runner.run(prompt, checkout.path, RUN_MODE, IN_THE_DARK, run.cancel.signal, followUp));
+      const text = fitText(await runner.run(prompt, checkout.path, run.mode, IN_THE_DARK, run.cancel.signal, followUp));
       if (text === "") {
         ending = "the agent returned nothing";
       } else if (run.post) {

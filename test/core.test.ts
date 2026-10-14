@@ -617,7 +617,8 @@ await test("each kind's content is read by its kind, and anything else is unknow
   assert.equal(read("message", { text: "hi", via: "email" }), "unknown");
   assert.equal(read("message", "not JSON"), "unknown");
   assert.equal(read("message", [{ text: "hi", via: "window" }]), "unknown");
-  assert.equal(read("job.accepted", { ...accepted, mode: "supervised" }), "unknown"); // Not until phase 3.
+  assert.equal(read("job.accepted", { ...accepted, mode: "supervised" }), `job.accepted ${JSON.stringify({ ...accepted, mode: "supervised" })}`); // Every permission mode, from phase 3.
+  assert.equal(read("job.accepted", { ...accepted, mode: "everything" }), "unknown");
   assert.equal(read("channel.pin", { repo: null, branch: "main" }), "unknown"); // Not until phase 6.
   assert.equal(read("job.withdrawn", { agent: "uploader" }), "unknown");
 });

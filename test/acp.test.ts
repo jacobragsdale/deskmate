@@ -12,13 +12,13 @@ import type { TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { readContent } from "../src/core/kinds.ts";
-import type { Agent } from "../src/core/wire.ts";
+import type { Agent, PermissionMode } from "../src/core/wire.ts";
 import { acpRunner } from "../src/desk/agents/acp.ts";
 import type { FollowUp, PermissionAsk, RunHandlers } from "../src/desk/agents/runner.ts";
 import { AgentCancelledError } from "../src/desk/client.ts";
 import type { Client } from "../src/desk/client.ts";
 import { Session } from "../src/desk/session.ts";
-import type { ActivityItem } from "../src/shared/ipc.ts";
+import type { ActivityItem, RequestView } from "../src/shared/ipc.ts";
 import { startHub, TEAM_REPOS } from "./startHub.ts";
 
 const FAKE = join(import.meta.dirname, "fixtures", "fake-acp-agent.ts");
@@ -253,7 +253,7 @@ await test(
       for (let tries = 0; tries < 200 && session.view().waiting === 0; tries += 1) {
         await delay(50);
       }
-      await session.handle({ do: "run", id, repo: "uploader", post: true, text });
+      await session.handle({ do: "run", id, repo: "uploader", post: true, mode: "full", text });
       for (let tries = 0; tries < 200; tries += 1) {
         const result = (await asker.events({ chat: "#team" })).find((delivered) => delivered.event.kind === "job.result" && delivered.event.refs[0] === id);
         const said = result === undefined ? null : readContent(result.event);
@@ -271,6 +271,100 @@ await test(
     assert.equal((await answer(alice, "@bob/uploader read once more")).said, "turn 1: read"); // Another thread.
     assert.equal(alive(checkout).length, 3);
     await session.stop();
+    assert.deepEqual(await left(checkout), []);
+  }
+);
+
+/**
+ * The phase's two-session scenario: alice asks bob's agent, the scripted one, from her window, and bob lets it run at a mode. Each step is in a channel of its own, so that no earlier request
+ * reaches the agent's prompt as context: the agent acts on every word of the prompt it knows. Bob reviews what it drafts, as a teammate's request is first offered, except where it posts.
+ */
+await test(
+  "two sessions and the scripted agent: a teammate's request accepted read-only cannot write a file, the owner's own runs at the mode for their own, and Stop ends a run within three seconds",
+  { timeout: 60_000 },
+  async (t) => {
+    const hub = await startHub(t, () => Date.now() / 1000);
+    const [alice, bob] = [await hub.join("alice"), await hub.join("bob")];
+    bob.saveAgents([fake()], "fake");
+    const channels = ["#readonly", "#own", "#stop"];
+    for (const person of [alice, bob]) {
+      for (const channel of channels) {
+        await person.publish(channel, "channel.join", {});
+      }
+    }
+    const dev = join(hub.dir, "dev-bob");
+    const checkout = join(dev, "uploader");
+    mkdirSync(join(checkout, ".git"), { recursive: true });
+    writeFileSync(join(checkout, ".git", "config"), `[remote "origin"]\n\turl = ${TEAM_REPOS}Platform/_git/uploader\n`);
+    writeFileSync(join(checkout, ".git", "HEAD"), "ref: refs/heads/main\n");
+    const hooks = { changed: () => undefined, notice: () => undefined, arrived: () => undefined, confirmClone: () => Promise.resolve(false) };
+    const owner = new Session(bob, dev, hooks, { presence: 1, describe: () => Promise.resolve({ branch: "main", commit: "c0ffee".padEnd(40, "0"), dirty: false }) });
+    const asker = new Session(alice, join(hub.dir, "dev-alice"), hooks, { presence: 1 });
+    for (const session of [owner, asker]) {
+      session.start();
+      t.after(() => session.stop());
+    }
+    const edited = join(checkout, "edited.txt");
+
+    /** What a session shows of the request with this id, in the chat it opens. */
+    const shown = (session: Session, chat: string, id: string): RequestView | undefined => {
+      session.handle({ do: "open", chat }).catch(() => undefined);
+      return session
+        .view()
+        .current?.messages.find((message) => message.id === id)
+        ?.requests.at(0);
+    };
+    const until = async <T>(what: string, find: () => T | undefined | false): Promise<T> => {
+      for (let tries = 0; tries < 200; tries += 1) {
+        const found = find();
+        if (found !== undefined && found !== false) {
+          return found;
+        }
+        await delay(50);
+      }
+      throw new Error(`never happened: ${what}`);
+    };
+    /** Alice asks from her window; bob, once he sees it, lets it run at `mode`. */
+    const asked = async (chat: string, text: string, mode: PermissionMode, post: boolean): Promise<string> => {
+      await until("alice's chats loaded", () => asker.view().rows.some((row) => row.chat === chat));
+      await asker.handle({ do: "open", chat });
+      await asker.handle({ do: "send", chat, text });
+      const id = await until("alice's request", () => asker.view().current?.messages.find((message) => message.body === text)?.id);
+      await until("bob can run it", () => shown(owner, chat, id)?.status.kind === "ready");
+      await owner.handle({ do: "run", id, repo: "uploader", post, mode, text });
+      return id;
+    };
+    /** The mode the one run in a chat was accepted at, as alice reads it. */
+    const accepted = async (chat: string): Promise<string> => {
+      const said = (await alice.events({ chat })).map((delivered) => readContent(delivered.event)).find((each) => each.kind === "job.accepted");
+      return said?.kind === "job.accepted" ? said.content.mode : "";
+    };
+
+    // Accepted read-only, as a teammate's request is first offered, the agent is refused every edit it asks for, and writes nothing.
+    const readOnly = await asked("#readonly", "@bob/uploader edit the README", "read-only", false);
+    const draft = await until("bob's draft", () => owner.view().current?.drafts.find((each) => each.id === readOnly));
+    assert.match(draft.text, /^turn 1: read; edit refused; edit refused$/); // One edit is the request's, one the prompt's "may edit" before it is sent.
+    assert.equal(existsSync(edited), false);
+    assert.equal(await accepted("#readonly"), "read-only");
+    await owner.handle({ do: "discardDraft", chat: "#readonly", id: readOnly, repo: "uploader" });
+
+    // Bob's own request from his window runs at once, at the mode for his own requests, "auto-edits" when he joined: it edits without asking.
+    await owner.handle({ do: "open", chat: "#own" });
+    await owner.handle({ do: "send", chat: "#own", text: "@bob/uploader edit the README" });
+    await until("bob's own answer", () => owner.view().current?.messages.some((message) => message.agent === "uploader" && message.body === "turn 1: read; edit allowed"));
+    assert.equal(existsSync(edited), true);
+    assert.equal(await accepted("#own"), "auto-edits");
+
+    // Stop ends a run within three seconds, for the owner and for whoever asked.
+    const ran = readFileSync(join(checkout, "pids"), "utf8").trim().split("\n").length;
+    const slow = await asked("#stop", "@bob/uploader slow", "read-only", true);
+    await started(checkout, ran + 2);
+    const stoppedAt = Date.now();
+    await owner.handle({ do: "stop", id: slow, repo: "uploader" });
+    await until("bob sees it stopped", () => shown(owner, "#stop", slow)?.status.kind === "ready");
+    await until("alice sees it stopped", () => shown(asker, "#stop", slow)?.status.kind === "stopped");
+    assert.ok(Date.now() - stoppedAt < 3000, `took ${String(Date.now() - stoppedAt)} ms to stop`);
+    await owner.stop(); // And the sessions the answered runs kept for a follow-up with it.
     assert.deepEqual(await left(checkout), []);
   }
 );

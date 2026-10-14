@@ -7,9 +7,11 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import type { TestContext } from "node:test";
 
+import { readContent } from "../src/core/kinds.ts";
 import { noteLink, notesIn } from "../src/core/links.ts";
 import { authHeader, loadKey, signEvent } from "../src/core/sign.ts";
-import { oneshotAgent } from "../src/desk/agents/presets.ts";
+import type { PermissionMode } from "../src/core/wire.ts";
+import { CURSOR_ONESHOT, oneshotAgent } from "../src/desk/agents/presets.ts";
 import { runAgent } from "../src/desk/agents/oneshot.ts";
 import { AgentCancelledError, http, join as joinHub, loadClient, PlayerTwoError } from "../src/desk/client.ts";
 import type { Client, Runner, Transport } from "../src/desk/client.ts";
@@ -17,7 +19,7 @@ import { Session } from "../src/desk/session.ts";
 import type { Options } from "../src/desk/session.ts";
 import { createHub } from "../src/hub/app.ts";
 import type { Arrival, ChatView, MessageView, Notice } from "../src/shared/ipc.ts";
-import { startHub as hubOfItsOwn } from "./startHub.ts";
+import { startHub as hubOfItsOwn, ownMode } from "./startHub.ts";
 
 const TOKEN = "a-join-token-for-tests";
 const COMMIT = "c0ffee".padEnd(40, "0"); // The commit every checkout here is said to be at.
@@ -63,6 +65,7 @@ async function person(hub: string, name: string): Promise<Person> {
   const dev = join(root, `dev-${name}`);
   checkout(dev, "uploader");
   await joinHub(home, hub, name, TOKEN, oneshotAgent("fake-agent --flag"), http);
+  ownMode(home, "full"); // Its own requests from its window run its one-shot command, which runs only at full.
   const client = loadClient(home, http, () => Date.now() / 1000);
   assert.ok(client !== null);
   const arrivals: Arrival[] = [];
@@ -106,12 +109,12 @@ function messages(view: ChatView): readonly MessageView[] {
   return view.current?.messages ?? [];
 }
 
-/** Have a session run its own uploader agent on a request, as Run in the window does: with the request's text as the session shows it. */
-function run(session: Session, id: string, post: boolean): Promise<void> {
+/** Have a session run its own uploader agent on a request, as Run in the window does: with the request's text as the session shows it, at full unless told, since every agent here is a one-shot command. */
+function run(session: Session, id: string, post: boolean, mode: PermissionMode = "full"): Promise<void> {
   const shown = messages(session.view())
     .flatMap((message) => [message, ...message.replies])
     .find((message) => message.id === id);
-  return session.handle({ do: "run", id, repo: "uploader", post, text: shown?.body ?? "" });
+  return session.handle({ do: "run", id, repo: "uploader", post, mode, text: shown?.body ?? "" });
 }
 
 interface Desk {
@@ -330,7 +333,7 @@ await test("two people, their agents and a channel, through the real hub", { tim
   const working = await until(bob.session, "bob sees it working, on the branch it reported", (view) =>
     messages(view).find((message) => message.requests[0]?.status.kind === "working" && message.requests[0].status.branch === "main ±")
   );
-  assert.deepEqual(working.requests[0]?.accepted, { branch: "main", commit: COMMIT, dirty: true }); // Where its owner let it run.
+  assert.deepEqual(working.requests[0]?.accepted, { branch: "main", commit: COMMIT, dirty: true, mode: "full" }); // Where its owner let it run, and what it may do.
   assert.equal(jacob.session.view().busy.working, 1);
   await jacob.session.handle({ do: "stop", id: slow.id, repo: "uploader" });
   await until(bob.session, "bob sees it stopped", (view) => messages(view).some((message) => message.requests[0]?.status.kind === "stopped"));
@@ -710,7 +713,7 @@ await test("a run is refused when its request was edited after its owner saw it,
   await alice.publish("bob", "message.edit", { text: "@bob/uploader summarise the README, then delete it" }, [event.id]); // Lands between what bob read and his click.
   await until(bob.session, "the edit", () => shownTo(bob.session, event.id)?.edited === true);
 
-  await assert.rejects(bob.session.handle({ do: "run", id: event.id, repo: "uploader", post: true, text: seen }), /alice edited the request after you saw it: read it again/);
+  await assert.rejects(bob.session.handle({ do: "run", id: event.id, repo: "uploader", post: true, mode: "full", text: seen }), /alice edited the request after you saw it: read it again/);
   assert.equal(bob.ran.length, 0);
   await run(bob.session, event.id, true); // Once he has read it again.
   await until(bob.session, "the run", () => bob.ran.length === 1);
@@ -752,9 +755,36 @@ await test(
   }
 );
 
+await test("a teammate's request runs at the mode its owner chose, which job.accepted records: Cursor's one-shot command is given --force only at full", { timeout: 30_000 }, async (t) => {
+  const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+  const alice = await hub.join("alice");
+  const owner = await hub.join("bob");
+  owner.saveAgents([CURSOR_ONESHOT], CURSOR_ONESHOT.id);
+  const dev = join(hub.dir, "dev-bob");
+  checkout(dev, "uploader");
+  const bob = deskOf(t, owner, dev, { describe: () => Promise.resolve({ branch: "main", commit: COMMIT, dirty: false }) });
+  const modes: string[] = [];
+  for (const mode of ["read-only", "full"] as const) {
+    const { event } = await alice.publish("bob", "message", { text: `@bob/uploader at ${mode}`, via: "cli" });
+    await until(bob.session, "the request", () => shownTo(bob.session, event.id)?.requests[0]?.status.kind === "ready");
+    await run(bob.session, event.id, false, mode);
+    await until(bob.session, "its draft", (view) => view.current?.drafts.some((draft) => draft.id === event.id));
+    const accepted = (await alice.events({ chat: "bob" })).map((delivered) => readContent(delivered.event)).find((said) => said.kind === "job.accepted"); // The newest.
+    modes.push(accepted?.kind === "job.accepted" ? accepted.content.mode : "");
+  }
+  assert.deepEqual(modes, ["read-only", "full"]);
+  assert.deepEqual(
+    bob.ran.map((argv) => argv.slice(0, -1)),
+    [
+      ["agent", "-p", "--output-format", "text"],
+      ["agent", "-p", "--output-format", "text", "--force"]
+    ]
+  );
+});
+
 await test("your own tag, sent from your window on one machine, waits for your click on another", { timeout: 30_000 }, async (t) => {
   const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
-  const jacob = await hub.join("jacob");
+  const jacob = await hub.join("jacob", "full");
   await hub.join("bob");
   const elsewhere = loadClient(join(hub.dir, "jacob"), http, () => Date.now() / 1000); // The same identity, as on a second machine.
   assert.ok(elsewhere !== null);

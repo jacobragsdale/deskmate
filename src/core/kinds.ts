@@ -2,11 +2,11 @@
 
 import { z } from "zod";
 
-import { branchSchema, NAME, REPO_NAME, repoNameSchema, repoRefSchema } from "./wire.ts";
+import { branchSchema, NAME, permissionModeSchema, REPO_NAME, repoNameSchema, repoRefSchema } from "./wire.ts";
 import type { Event } from "./wire.ts";
 
 // Content travels as a string and the signature covers the string, so reading it with z.object, which passes over a field it does not know, changes nothing that was signed.
-// It lets a later phase add a field to a kind without older readers losing the kind. A value this phase does not allow yet, such as a mode other than "full", still makes it unreadable.
+// It lets a later phase add a field to a kind without older readers losing the kind. A value this phase does not allow yet, such as a grant in `by`, still makes it unreadable.
 const nothing = z.object({}).readonly();
 const text = z.string().min(1);
 const repo = repoNameSchema; // The repo of the agent a job is for. The agent's owner is the event's author.
@@ -30,7 +30,7 @@ export const contentSchema = z
           commit: z.string().regex(/^[0-9a-f]{40}([0-9a-f]{24})?$/), // SHA-1, or SHA-256 for a repository that uses it.
           dirty: z.boolean(), // Whether the checkout had changes nobody had committed.
           delivery: z.enum(["review", "post"]),
-          mode: z.literal("full"), // A permission mode; phase 3 gives it the others.
+          mode: permissionModeSchema, // What the owner let the agent do without asking: a run never goes beyond it.
           by: z.literal("owner") // Phase 4 adds a grant.
         })
         .readonly()
