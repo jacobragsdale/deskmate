@@ -1,5 +1,5 @@
 /**
- * Azure DevOps, called by the desk with the person's own token. The hub never holds a token and never calls Azure.
+ * Azure DevOps, called by the desk with the person's own token: a repository, its pull requests, and the latest build of a branch. The hub never holds a token and never calls Azure.
  * Every call answers with what it found or a problem in words, and neither ever holds the token.
  */
 
@@ -63,9 +63,57 @@ const branchNameSchema = z.string().transform((name) => name.replace(/^refs\/hea
 // Each answer is read with z.object, which keeps the fields named and passes over the rest: an answer has dozens, and Azure adds more.
 const repositorySchema = z.object({ id: z.string(), defaultBranch: branchNameSchema.optional() }).transform((repo) => ({ id: repo.id, defaultBranch: repo.defaultBranch ?? null }));
 
+const pullRequestSchema = z
+  .object({
+    pullRequestId: z.int(),
+    title: z.string(),
+    status: z.string(), // "active", "completed" or "abandoned".
+    isDraft: z.boolean().default(false), // Left out of every one of Microsoft's samples.
+    sourceRefName: branchNameSchema,
+    targetRefName: branchNameSchema,
+    createdBy: z.object({ displayName: z.string() }),
+    reviewers: z.array(z.object({ displayName: z.string(), vote: z.int() })).default([])
+  })
+  .transform((pr) => ({
+    id: pr.pullRequestId,
+    title: pr.title,
+    status: pr.status,
+    draft: pr.isDraft,
+    source: pr.sourceRefName,
+    target: pr.targetRefName,
+    creator: pr.createdBy.displayName,
+    reviewers: pr.reviewers.map((reviewer) => ({ name: reviewer.displayName, vote: reviewer.vote })) // 10 approved, 5 with suggestions, 0 none yet, -5 waiting for the author, -10 rejected.
+  }));
+
+const pullRequestListSchema = z.object({ value: z.array(pullRequestSchema) });
+
+const buildListSchema = z.object({
+  value: z.array(
+    z
+      .object({ id: z.int(), definition: z.object({ name: z.string() }), status: z.string(), result: z.string().optional() }) // A build still running has no result.
+      .transform((build) => ({ id: build.id, name: build.definition.name, status: build.status, result: build.result ?? null }))
+  )
+});
+
 const failureSchema = z.object({ message: z.string() }); // What Azure DevOps answers a request it refuses with, among other fields.
 
+// Every web address is made from the repo's own and an id: Microsoft documents none for a pull request, and does not name the links a build carries.
 export type Repository = z.output<typeof repositorySchema> & { readonly web: string };
+export type PullRequest = z.output<typeof pullRequestSchema> & { readonly web: string };
+export type Build = z.output<typeof buildListSchema>["value"][number] & { readonly web: string };
+
+/** What a new pull request is: from which branch into which, with what words, and whether it is a draft. */
+export interface NewPullRequest {
+  readonly source: string;
+  readonly target: string;
+  readonly title: string;
+  readonly description: string;
+  readonly draft: boolean;
+}
+
+function withWeb(ref: RepoRef, pr: z.output<typeof pullRequestSchema>): PullRequest {
+  return { ...pr, web: `${ref.url}/pullrequest/${String(pr.id)}` };
+}
 
 /**
  * The password git's credential helper holds for a URL, asked with `git credential fill`; null when it has none or does not answer in time.
@@ -182,6 +230,40 @@ export class Azure {
   public async repository(ref: RepoRef): Promise<Answer<Repository>> {
     const found = await this.call(ref, { route: (at) => at.repo, what: `repository ${ref.name}` }, repositorySchema);
     return found.ok ? { ok: true, data: { ...found.data, web: ref.url } } : found;
+  }
+
+  public async pullRequest(ref: RepoRef, id: number): Promise<Answer<PullRequest>> {
+    const found = await this.call(ref, { route: (at) => `${at.repo}/pullrequests/${String(id)}`, what: `pull request ${String(id)} in ${ref.name}` }, pullRequestSchema);
+    return found.ok ? { ok: true, data: withWeb(ref, found.data) } : found;
+  }
+
+  /** The newest five pull requests from a branch, whatever their status. */
+  public async pullRequestsFor(ref: RepoRef, branch: string): Promise<Answer<PullRequest[]>> {
+    const query = { "searchCriteria.sourceRefName": `refs/heads/${branch}`, "searchCriteria.status": "all", $top: "5" };
+    const found = await this.call(ref, { route: (at) => `${at.repo}/pullrequests`, query, what: `repository ${ref.name}` }, pullRequestListSchema);
+    return found.ok ? { ok: true, data: found.data.value.map((pr) => withWeb(ref, pr)) } : found;
+  }
+
+  /** The build queued last for a branch, or null when it has none. Builds are asked for by the repository's id, so that is looked up first. */
+  public async latestBuild(ref: RepoRef, branch: string): Promise<Answer<Build | null>> {
+    const repository = await this.repository(ref);
+    if (!repository.ok) {
+      return repository;
+    }
+    const query = { repositoryId: repository.data.id, repositoryType: "TfsGit", branchName: `refs/heads/${branch}`, $top: "1", queryOrder: "queueTimeDescending" };
+    const found = await this.call(ref, { route: (at) => `${at.project}/build/builds`, query, what: `project of ${ref.name}` }, buildListSchema);
+    if (!found.ok) {
+      return found;
+    }
+    const build = found.data.value[0];
+    const project = ref.url.slice(0, ref.url.lastIndexOf("/_git/")); // https://dev.azure.com/{organisation}/{project}
+    return { ok: true, data: build === undefined ? null : { ...build, web: `${project}/_build/results?buildId=${String(build.id)}` } };
+  }
+
+  public async createPullRequest(ref: RepoRef, pr: NewPullRequest): Promise<Answer<PullRequest>> {
+    const post = { sourceRefName: `refs/heads/${pr.source}`, targetRefName: `refs/heads/${pr.target}`, title: pr.title, description: pr.description, isDraft: pr.draft };
+    const found = await this.call(ref, { route: (at) => `${at.repo}/pullrequests`, post, what: `repository ${ref.name}` }, pullRequestSchema);
+    return found.ok ? { ok: true, data: withWeb(ref, found.data) } : found;
   }
 
   private async send(url: string, authorization: string, post: unknown): Promise<Reply | string> {
