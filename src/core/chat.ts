@@ -419,13 +419,21 @@ export class ChatLog {
 
   /**
    * The agents a message tags and where each stands, in the order they are tagged; none once it is deleted, unless `evenDeleted` asks for them all the same, as its owner's desk does for a run it still has going.
-   * A job reported as working for longer than any run takes is shown as waiting again.
+   * A job reported as working for longer than any run takes is shown as waiting again. `now` is counted in whole seconds, as an event's `ts` is,
+   * so that one shown as waiting is one a withdrawal signed now moves (see `moves`).
    */
   public requests(message: Message, now: number, evenDeleted = false): Request[] {
     const id = message.entry.event.id;
     const found = this.folded(this.where.get(id) ?? "").messages.get(id);
     const jobs = found === undefined || (found.deleted && !evenDeleted) ? [] : found.jobs;
-    return jobs.map((job) => ({ message: job.request, owner: job.owner, repo: job.repo, state: job.state === "working" && now - job.since > STALE ? "waiting" : job.state, accepted: job.accepted }));
+    const seconds = Math.floor(now);
+    return jobs.map((job) => ({
+      message: job.request,
+      owner: job.owner,
+      repo: job.repo,
+      state: job.state === "working" && seconds - job.since > STALE ? "waiting" : job.state,
+      accepted: job.accepted
+    }));
   }
 
   /** The messages and answers just before this one in its chat, oldest first, for an agent to read as context. */
