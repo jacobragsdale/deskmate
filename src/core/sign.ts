@@ -1,10 +1,10 @@
-/** Ed25519 keys and the two things signed with them: notes, and the header that proves who is asking. */
+/** Ed25519 keys and what is signed with them: events, the notes they replace, and the header that proves who is asking. */
 
-import { createPrivateKey, createPublicKey, generateKeyPairSync, sign, verify } from "node:crypto";
+import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, sign, verify } from "node:crypto";
 import type { KeyObject } from "node:crypto";
 
-import { MAX_SKEW, noteSchema } from "./wire.ts";
-import type { Kind, Note } from "./wire.ts";
+import { eventSchema, MAX_SKEW, noteSchema } from "./wire.ts";
+import type { Event, Kind, Note } from "./wire.ts";
 
 const AUTH_SCHEME = "PlayerTwo";
 // A raw 32-byte Ed25519 key is these fixed DER headers followed by the key itself.
@@ -68,6 +68,37 @@ export function signNote(key: KeyObject, fields: NoteFields): Note {
 
 export function noteIsAuthentic(note: Note, pubkey: string): boolean {
   return verifySignature(pubkey, notePayload(note), note.sig);
+}
+
+/** What the author of an event says: everything in it but the id and the signature, which are worked out from these. */
+interface EventFields {
+  readonly author: string;
+  readonly to: string;
+  readonly kind: string;
+  readonly content: string;
+  readonly ts: number;
+  readonly refs: readonly string[];
+}
+
+/** The bytes an event's id is the hash of and its signature signs. As with a note, a JSON array of fixed positions, so there is one encoding; test/vectors.test.ts holds them to the record. */
+export function eventBytes(fields: EventFields & { readonly nonce: string }): Buffer {
+  return Buffer.from(JSON.stringify(["player-two-event-v1", fields.author, fields.to, fields.kind, fields.content, fields.ts, fields.refs, fields.nonce]), "utf8");
+}
+
+/** The id an event with these fields has: the sha256 of its signed bytes, in hex. */
+export function eventId(fields: EventFields & { readonly nonce: string }): string {
+  return createHash("sha256").update(eventBytes(fields)).digest("hex");
+}
+
+/** Sign an event. Its id is known from here on, before the hub has seen it. `nonce` is random unless a test or the vectors fix it. */
+export function signEvent(key: KeyObject, fields: EventFields, nonce: string = randomBytes(8).toString("hex")): Event {
+  const signed = { ...fields, nonce };
+  return eventSchema.parse({ id: eventId(signed), ...signed, sig: sign(null, eventBytes(signed), key).toString("hex") });
+}
+
+/** Whether an event is what `pubkey`'s owner signed: its id is the hash of its fields, and its signature holds. */
+export function eventIsAuthentic(event: Event, pubkey: string): boolean {
+  return event.id === eventId(event) && verifySignature(pubkey, eventBytes(event), event.sig);
 }
 
 /** What an auth header signs: who is asking, when, and for what. `path` is the path and query exactly as sent, so a header taken off one request is no use on another. */

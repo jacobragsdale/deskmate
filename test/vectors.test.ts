@@ -10,8 +10,9 @@ import { z } from "zod";
 import { agentPrompt, mentions } from "../src/core/chat.ts";
 import type { Entry } from "../src/core/chat.ts";
 import { parseRemote, prefixKey } from "../src/core/remotes.ts";
-import { authClaim, authHeader, authIsValid, loadKey, noteIsAuthentic, privateHex, publicHex, signNote } from "../src/core/sign.ts";
+import { authClaim, authHeader, authIsValid, eventIsAuthentic, loadKey, noteIsAuthentic, privateHex, publicHex, signEvent, signNote } from "../src/core/sign.ts";
 import { noteSchema } from "../src/core/wire.ts";
+import type { Event } from "../src/core/wire.ts";
 
 // The record, written by scripts/make-vectors.ts. Every teammate's client and the hub must agree with it byte for byte, so it changes only on purpose, in the commit that changes the format.
 const vectors = z
@@ -52,6 +53,28 @@ await test("changing a signed field breaks the signature", () => {
   assert.ok(!noteIsAuthentic({ ...note, body: "goodbye" }, vectors.public_key));
   assert.ok(!noteIsAuthentic({ ...note, to: "carol" }, vectors.public_key));
   assert.ok(!noteIsAuthentic(note, publicHex(loadKey("22".repeat(32)))));
+});
+
+await test("an event's id is the hash of what it signs, and changing any signed field breaks it", () => {
+  const fields = { author: "jacob", to: "#backend", kind: "message", content: '{"text":"hi","via":"cli"}', ts: vectors.ts, refs: [] };
+  const event = signEvent(key, fields);
+  const changes: readonly Partial<Event>[] = [
+    { author: "bob" },
+    { to: "bob" },
+    { kind: "message.edit" },
+    { content: '{"text":"bye","via":"cli"}' },
+    { ts: vectors.ts + 1 },
+    { refs: [event.id] },
+    { nonce: "00".repeat(8) },
+    { id: "00".repeat(32) } // The signature still holds, but the id is not the hash of the fields.
+  ];
+
+  assert.ok(eventIsAuthentic(event, vectors.public_key));
+  assert.notEqual(signEvent(key, fields).id, event.id); // Each gets a nonce of its own, so the same words twice are two events.
+  for (const change of changes) {
+    assert.ok(!eventIsAuthentic({ ...event, ...change }, vectors.public_key), JSON.stringify(change));
+  }
+  assert.ok(!eventIsAuthentic(event, publicHex(loadKey("22".repeat(32)))));
 });
 
 await test("the auth header signs the request it is for, and no other", () => {
