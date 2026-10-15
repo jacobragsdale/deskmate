@@ -433,6 +433,16 @@ await test("two people, their agents and a channel, through the real hub", { tim
   await bob.session.handle({ do: "leaveChannel", chat: "#backend" });
   assert.ok(!bob.session.view().rows.some((row) => row.chat === "#backend"));
 
+  // Bob starts a room for a branch; jacob's Start, from a suggestion his window still showed, joins and opens it rather than making a second.
+  await bob.session.handle({ do: "startRoom", repo: "uploader", branch: "feature/retry" });
+  await jacob.session.handle({ do: "startRoom", repo: "uploader", branch: "feature/retry" });
+  assert.equal(jacob.session.view().current?.chat, "#uploader-feature-retry");
+  assert.deepEqual(
+    (await jacob.client.channels()).filter((each) => each.branch === "feature/retry").map((each) => [each.name, each.members]),
+    [["#uploader-feature-retry", ["bob", "jacob"]]]
+  );
+  assert.deepEqual(jacob.notices.at(-1), { title: "", body: "#uploader-feature-retry was started for uploader on feature/retry already: it is open, and you are in it.", severity: "info" });
+
   assert.deepEqual(
     [...jacob.notices, ...bob.notices].filter((notice) => notice.severity === "error"),
     [{ title: "your uploader agent", body: "the agent returned nothing", severity: "error" }] // The run that failed, and nothing else.

@@ -1403,12 +1403,25 @@ export class Session {
     await this.refreshChannels();
   }
 
-  /** Start a room about a branch of one of the user's repos: a channel named from both, which they join and pin to it. The channels are asked for first, for a name nobody has taken since. */
+  /**
+   * Start a room about a branch of one of the user's repos: a channel named from both, which they join and pin to it. The channels are asked for first: a channel pinned to the branch already,
+   * as one a teammate started while the suggestion was still shown here, is joined and opened instead; otherwise the name is one nobody has taken since.
+   */
   private async startRoom(repo: string, branch: string): Promise<void> {
-    if (!this.checkouts.has(repo)) {
+    const checkout = this.checkouts.get(repo);
+    if (checkout === undefined) {
       throw new PlayerTwoError(`you have no checkout of ${repo} to start a room about`);
     }
     await this.refreshChannels();
+    const started = this.channels.find((channel) => channel.repo?.key === checkout.remote.key && channel.branch === branch);
+    if (started !== undefined) {
+      if (!started.members.includes(this.me)) {
+        await this.joinChannel(started.name);
+      }
+      this.open(started.name);
+      this.hooks.notice({ title: "", body: `${started.name} was started for ${repo} on ${branch} already: it is open, and you are in it.`, severity: "info" });
+      return;
+    }
     const taken = this.channels.map((channel) => channel.name);
     const name = roomName(repo, branch, taken);
     await this.joinChannel(name);
