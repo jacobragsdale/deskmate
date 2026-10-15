@@ -15,6 +15,7 @@ import type { Readable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 import { z } from "zod";
 
+import { oneLine } from "../../core/text.ts";
 import { VERSION } from "../../core/version.ts";
 import { commandLineOf } from "../../core/wire.ts";
 import type { Agent } from "../../core/wire.ts";
@@ -23,7 +24,7 @@ import type { ActivityItem } from "../../shared/ipc.ts";
 import { AgentCancelledError, AgentTimedOutError, PlayerTwoError } from "../client.ts";
 import { decide } from "../permissions.ts";
 import type { Action, Decision, PermissionMode } from "../permissions.ts";
-import { actionOf, Feed, summaryOf } from "./activity.ts";
+import { actionOf, Feed, LINE, summaryOf } from "./activity.ts";
 import { AGENT_TIMEOUT } from "./oneshot.ts";
 import { signInFor } from "./presets.ts";
 import type { AgentRunner, FollowUp, RunHandlers } from "./runner.ts";
@@ -340,7 +341,7 @@ class Conversation {
     const call = request.toolCall;
     const kind = call.kind ?? turn.feed.kindOf(call.toolCallId);
     const action = actionOf(kind) ?? "other";
-    const ask = { action, title: call.title ?? turn.feed.titleOf(call.toolCallId) ?? action, detail: turn.feed.detailOf(call) };
+    const ask = { action, title: oneLine(call.title ?? turn.feed.titleOf(call.toolCallId) ?? action, LINE), detail: turn.feed.detailOf(call) };
     const item = (outcome: string, status: ActivityItem["status"], doing: Summary): void => {
       turn.handlers.activity({ id: `permission ${call.toolCallId}`, run: "", kind: "permission", title: ask.title, outcome, status, quiet: false, loud: false, detail: ask.detail }, doing);
     };
@@ -452,7 +453,6 @@ export function acpRunner(agent: Agent, seconds: { readonly limit: number; reado
     kept.set(key, { conversation, cwd, timer });
   };
   return {
-    restrictable: true,
     cannotHonour: () => "",
     run: async (prompt, cwd, mode, handlers, cancel, followUp) => {
       const reused = take(followUp, cwd);

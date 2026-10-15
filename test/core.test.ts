@@ -705,11 +705,11 @@ await test("a one-shot agent runs only at a mode its command can keep to: Cursor
   const copilot = oneshotRunner(oneshotAgent("copilot -s --allow-all-tools --no-ask-user -p"), exec);
   const own = oneshotRunner(oneshotAgent("claude -p"), exec);
   assert.deepEqual(
-    [cursor, copilot, own].map((runner) => [runner.restrictable, ...MODES.map((mode) => runner.cannotHonour(mode) === "")]),
+    [cursor, copilot, own].map((runner) => MODES.map((mode) => runner.cannotHonour(mode) === "")),
     [
-      [false, true, false, false, true],
-      [false, false, false, false, true],
-      [false, false, false, false, true]
+      [true, false, false, true],
+      [false, false, false, true],
+      [false, false, false, true]
     ]
   );
   assert.equal(await cursor.run("hi", process.cwd(), "read-only", handlers, never), "done");

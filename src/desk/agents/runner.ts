@@ -25,7 +25,6 @@ export interface FollowUp {
 }
 
 export interface AgentRunner {
-  readonly restrictable: boolean; // False means modes cannot be enforced on it.
   /** Why it cannot be held to `mode`, said before a run starts; "" when it can. A run at such a mode is refused before anything starts. */
   cannotHonour(mode: PermissionMode): string;
   /**

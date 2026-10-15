@@ -296,6 +296,25 @@ await test("a stop ends a wait for the owner's answer at once, telling the agent
   assert.deepEqual(await left(dir), []);
 });
 
+await test("a tool call's title, and an ask's, is one line of at most 200 characters", { timeout: 20_000 }, async (t) => {
+  const { handlers, items, asks } = recorder();
+  assert.equal(await acpRunner(fake()).run("long", folder(t), "supervised", handlers, never), "turn 1: long refused");
+  const title = `Edit ${"x".repeat(194)}…`;
+  assert.deepEqual(
+    asks.map((ask) => ask.title),
+    [title]
+  );
+  assert.deepEqual(
+    items.filter((item) => item.kind === "tool" || item.kind === "permission").map((item) => [item.kind, item.title]),
+    [
+      ["tool", title],
+      ["permission", title],
+      ["permission", title],
+      ["tool", title]
+    ]
+  );
+});
+
 await test("a request to act from another session than the run's is refused as cancelled, whatever the mode allows", { timeout: 20_000 }, async (t) => {
   assert.equal(await acpRunner(fake()).run("stray", folder(t), "full", recorder("allow-once").handlers, never), "turn 1: stray cancelled");
 });

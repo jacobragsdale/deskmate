@@ -3,7 +3,7 @@
  * `twice` says something in a message of its own first, with a step after it; `read` reports reading README.md in its folder, by its path; `many` reports 600 reads;
  * `switch` asks to switch its session to a mode in which it edits without asking, as ACP lets an agent's modes differ in what they ask; each `edit` asks to edit and writes edited.txt only if allowed;
  * `run` asks to run `npm test` in its folder; `takeback` asks to edit and takes the request back 300 ms later; `leave` asks to edit and ends its turn without waiting for the answer;
- * `stray` asks under another session's id; `mcp` says which MCP servers its session has; `slow` waits until cancelled, with a child process of its own; `deaf` does the same but takes no notice of a cancel.
+ * `stray` asks under another session's id; `long` asks to edit under a title of two lines and over 300 characters; `mcp` says which MCP servers its session has; `slow` waits until cancelled, with a child process of its own; `deaf` does the same but takes no notice of a cancel.
  * Whatever it did, it says so in a short message streamed in two chunks, after the number of the turn in its session. Told while it asks that its turn is cancelled, it ends the turn as cancelled, as ACP asks. Started with --signed-out it says it needs signing in, and signing in fails; with --always-only it offers no way to be allowed just once;
  * with --no-asking it edits without asking first, as an agent that cannot be limited would; with --deaf every prompt is also `deaf`.
  * It adds its pid, and its child's, to `pids` in its folder, or to the file --pids=FILE names, unless started with --no-pids, for a test of what it writes there.
@@ -114,6 +114,11 @@ async function stray(client: acp.AgentContext, sessionId: string): Promise<strin
   return `stray ${answer.outcome.outcome}`;
 }
 
+/** Ask to edit under a title too long for one line, and on two. */
+async function long(client: acp.AgentContext, sessionId: string): Promise<string> {
+  return (await permitted(client, sessionId, "long", "edit", `Edit ${"x".repeat(300)}\nand more`)) ? "long allowed" : "long refused";
+}
+
 /** Everything the agent does for the words of one prompt, but wait, and what it says it did. */
 async function act(client: acp.AgentContext, sessionId: string, session: Session, text: string, has: (word: string) => boolean): Promise<string[]> {
   const did: string[] = [];
@@ -143,7 +148,8 @@ async function act(client: acp.AgentContext, sessionId: string, session: Session
   for (const [word, step] of [
     ["takeback", takeBack],
     ["leave", leave],
-    ["stray", stray]
+    ["stray", stray],
+    ["long", long]
   ] as const) {
     if (has(word)) {
       did.push(await step(client, sessionId));

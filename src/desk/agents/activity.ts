@@ -15,6 +15,7 @@ import type { Action, PermissionMode } from "../permissions.ts";
 
 export const DETAIL = 8_000; // Characters of an item's detail, and of an ask's.
 const TITLE = 120; // Characters of a message's first words as its title.
+export const LINE = 200; // Characters of a tool call's title, and of an ask's, on one line.
 
 // What a tool call did, as a person would put it, by its kind; a kind with no verb here is named by the agent's own title.
 const VERBS: Partial<Record<Action, string>> = { read: "Read", edit: "Edited", delete: "Deleted", move: "Moved", search: "Searched for", execute: "Ran", fetch: "Fetched" };
@@ -206,7 +207,7 @@ export class Feed {
         id: update.toolCallId,
         run: "",
         kind: "tool",
-        title: verb === undefined || object === null ? call.title : `${verb} ${object}`, // One it cannot name is called what the agent called it, rather than a guess.
+        title: oneLine(verb === undefined || object === null ? call.title : `${verb} ${object}`, LINE), // One it cannot name is called what the agent called it, rather than a guess.
         outcome: this.outcomeOf(status, diffs, call.rawOutput),
         status,
         quiet: action === "read" || action === "search" || action === "think",

@@ -113,7 +113,6 @@ export function oneshotRunner(agent: Agent, exec: Runner = runAgent): AgentRunne
       : `${agent.label} runs as a single command and cannot be limited: it runs only with full access`;
   };
   return {
-    restrictable: false,
     cannotHonour,
     run: (prompt, cwd, mode, _handlers, cancel) => {
       const why = cannotHonour(mode);
