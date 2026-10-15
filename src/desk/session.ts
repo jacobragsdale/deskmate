@@ -748,7 +748,7 @@ export class Session {
       reactions: [...message.reactions].map(([emoji, people]) => ({ emoji, people: [...people] })),
       notes: this.notesOf(message.text),
       pulls: this.pullsOf(message.text, chatOf(event, this.me)),
-      quote: answered === null ? "" : `${answered.entry.event.author}: ${oneLine(answered.text)}`,
+      quote: answered === null ? "" : `${answered.entry.trusted ? writerWords(answered.entry.event) : answered.entry.event.author}: ${oneLine(answered.text)}`, // A workflow's by its name.
       header: !continues(previous, message) || (previous !== null && workflowOf(previous.entry.event) !== workflowOf(event)), // Two workflows' messages are the hub's alike.
       workflow: workflowOf(event),
       requests: (message.deleted ? this.stillMine(message, now) : this.chats.requests(message, now)).flatMap((request) => this.requestView(request)),
@@ -825,7 +825,7 @@ export class Session {
     try {
       const found = await this.client.event(id);
       const trusted = found !== null && (await this.client.isTrusted(found));
-      this.linked.set(id, found !== null && trusted ? { state: "elsewhere", id, author: ownerOf(found.event.author), chat: chatOf(found.event, this.me) } : { state: "hidden", id });
+      this.linked.set(id, found !== null && trusted ? { state: "elsewhere", id, author: writerWords(found.event), chat: chatOf(found.event, this.me) } : { state: "hidden", id });
       this.hooks.changed();
     } catch {
       this.linked.delete(id);
@@ -1456,7 +1456,7 @@ export class Session {
       const asker = askerOf(event, said); // Null for a message whose tags count for nothing, as one of the hub's not for a workflow.
       const tagged = entry.trusted && asker !== null ? mentions(text).filter(([owner]) => owner === this.me) : asked;
       const where = isChannel(event.to) ? ` in ${event.to}` : "";
-      const who = asked.length > 0 ? agentWords(event.author, this.me) : (asker ?? event.author);
+      const who = asked.length > 0 ? agentWords(event.author, this.me) : writerWords(event); // Whoever tagged it, a workflow by its name, as its header says.
       const title = tagged[0] === undefined ? `${fromWords(entry, this.me)}${where}` : `${who} ${asked.length > 0 ? "asked" : "tagged"} your ${tagged[0][1]} agent${where}`;
       this.hooks.arrived({
         chat: chatOf(event, this.me),

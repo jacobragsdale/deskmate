@@ -1601,7 +1601,7 @@ await test(
     assert.deepEqual(
       bob.arrivals.map((arrival) => [arrival.title, arrival.body, arrival.forMe]),
       [
-        ["workflow:#ops/ci-failure tagged your uploader agent in #ops", "the build failed: @bob/uploader what broke?", true],
+        ["workflow: ci-failure tagged your uploader agent in #ops", "the build failed: @bob/uploader what broke?", true],
         ["hub in #ops", "the build failed: @bob/uploader what broke?", false],
         ["hub in #ops", "a message failed its signature check", false]
       ]
@@ -1617,8 +1617,42 @@ await test(
     await until(bob.session, "the workflow's request run", () => shownTo(bob.session, runs)?.requests[0]?.status.kind === "running" || bob.ran.length > 0);
     await pause(300);
     assert.deepEqual([bob.ran.length, shownTo(bob.session, forgedAgain)?.trusted, shownTo(bob.session, waits)?.requests[0]?.status.kind], [1, false, "ready"]);
+    const answer = await until(bob.session, "its answer", () => messages(bob.session.view()).find((message) => message.agent === "uploader"));
+    assert.equal(answer.quote, "workflow: ci-failure: the build failed: @bob/uploader what broke?"); // Quoting its request by the workflow's name, as its header does.
   }
 );
+
+await test("a link to a workflow's message that is not loaded names the workflow, as the message's header does", { timeout: 30_000 }, async (t) => {
+  const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+  const [alice, bob] = [await hub.join("alice"), await hub.join("bob")];
+  for (const each of [alice, bob]) {
+    await each.publish("#ops", "channel.join", {});
+  }
+  const db = new Database(join(hub.dir, "hub.db"));
+  const hubKey = db.hubKey();
+  db.close();
+  const posted = storedUnchecked(hub, hubKey, {
+    author: "hub",
+    to: "#ops",
+    kind: "message",
+    content: { text: "the build failed", via: "workflow", workflow: "ci-failure" },
+    ts: Math.floor(Date.now() / 1000),
+    refs: []
+  });
+  for (let n = 0; n < 60; n += 1) {
+    await alice.publish("#ops", "message", { text: `filler ${String(n)}`, via: "cli" }); // Past the newest page, so the workflow's message is not loaded.
+  }
+  const { event } = await alice.publish("#ops", "message", { text: `see ${noteLink(posted.event.id)}`, via: "cli" });
+  const { session } = deskOf(t, bob, join(hub.dir, "dev"));
+  await until(session, "#ops listed", (view) => view.rows.some((row) => row.chat === "#ops"));
+  await session.handle({ do: "open", chat: "#ops" });
+
+  const notes = await until(session, "the note looked up", () => {
+    const shown = shownTo(session, event.id)?.notes ?? [];
+    return shown[0]?.state === "elsewhere" && shown;
+  });
+  assert.deepEqual(notes, [{ state: "elsewhere", id: posted.event.id, author: "workflow: ci-failure", chat: "#ops" }]);
+});
 
 await test(
   "the grant command lets teammates ask the user's agent from now for as long as asked, listed with its runs today until it is revoked or ends, and everyone in the chat sees an answer's run went ahead under it; only a checkout of one's own is granted, and only a grant of one's own revoked",
