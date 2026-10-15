@@ -6,12 +6,12 @@
  * `stray` asks under another session's id; `long` asks to edit under a title of two lines and over 300 characters; `mcp` says which MCP servers its session has; `whoami` says the agent its environment names in PLAYER_TWO_AGENT;
  * `slow` waits until cancelled, with a child process of its own; `deaf` does the same but takes no notice of a cancel.
  * Whatever it did, it says so in a short message streamed in two chunks, after the number of the turn in its session. Told while it asks that its turn is cancelled, it ends the turn as cancelled, as ACP asks. Started with --signed-out it says it needs signing in, and signing in fails; with --always-only it offers no way to be allowed just once;
- * with --no-asking it edits without asking first, as an agent that cannot be limited would; with --deaf every prompt is also `deaf`.
+ * with --no-asking it edits without asking first, as an agent that cannot be limited would; with --deaf every prompt is also `deaf`. It says it is version 1.2.3, or with --version-file=FILE what FILE holds, as an agent updated in place would.
  * It adds its pid, and its child's, to `pids` in its folder, or to the file --pids=FILE names, unless started with --no-pids, for a test of what it writes there.
  */
 
 import { spawn } from "node:child_process";
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Writable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
@@ -38,6 +38,7 @@ const signedOut = process.argv.includes("--signed-out");
 const alwaysOnly = process.argv.includes("--always-only"); // Offers to be allowed only always, never once.
 const noAsking = process.argv.includes("--no-asking");
 const deaf = process.argv.includes("--deaf");
+const versionFile = process.argv.find((arg) => arg.startsWith("--version-file="))?.slice("--version-file=".length);
 const pids = process.argv.includes("--no-pids") ? null : (process.argv.find((arg) => arg.startsWith("--pids="))?.slice("--pids=".length) ?? "pids"); // From its folder, the session's.
 if (pids !== null) {
   appendFileSync(pids, `${String(process.pid)}\n`);
@@ -203,7 +204,7 @@ function input(): ReadableStream<Uint8Array> {
 
 acp
   .agent({ name: "fake-acp-agent" })
-  .onRequest("initialize", () => ({ protocolVersion: acp.PROTOCOL_VERSION, agentInfo: { name: "fake-acp-agent", version: "1.2.3" }, authMethods: [{ id: "browser", name: "Sign in with a browser" }] }))
+  .onRequest("initialize", () => ({ protocolVersion: acp.PROTOCOL_VERSION, agentInfo: { name: "fake-acp-agent", version: versionFile === undefined ? "1.2.3" : readFileSync(versionFile, "utf8").trim() }, authMethods: [{ id: "browser", name: "Sign in with a browser" }] }))
   .onRequest("authenticate", () => {
     throw new Error("there is no browser here");
   })

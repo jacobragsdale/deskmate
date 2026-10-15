@@ -871,7 +871,7 @@ await test(
     let clock = NOW; // Everyone's, and the hub's: it moves only when the test says.
     const hub = await startHub(t, () => clock);
     const [bob, jacob] = [await hub.join("bob"), await hub.join("jacob")];
-    jacob.saveAgents([fake()], "fake");
+    jacob.saveAgents([fake("--no-pids")], "fake"); // No pids file, which the permission test would take for a file it wrote.
     for (const person of [bob, jacob]) {
       for (const channel of ["#review", "#revoked", "#post", "#carol", "#theirs", "#expired"]) {
         await person.publish(channel, "channel.join", {});
@@ -901,6 +901,7 @@ await test(
       t.after(() => session.stop());
     }
     await until("both loaded, and jacob's checkout shared", () => owner.view().loaded && owner.view().myRepos.includes("uploader") && asker.view().loaded);
+    assert.equal((await owner.testPermissions("fake")).status, "ok"); // A grant below full runs an agent over ACP only once it has shown it asks.
     const edited = join(checkout, "edited.txt");
 
     /** Jacob grants from his window: read-only, to `askers`, for `lasts` seconds. Resolves with the grant's id. */
@@ -983,5 +984,73 @@ await test(
     clock += 60;
     await waits("#expired", 4);
     assert.deepEqual(notices, []);
+  }
+);
+
+await test(
+  "a grant lets an agent over ACP run below full only once it has passed the permission test, at the version it says it is now: untested, or updated since, the request waits and its owner is told to test it; a run its owner starts is not held back",
+  { timeout: 60_000 },
+  async (t) => {
+    const hub = await startHub(t, () => Date.now() / 1000);
+    const [alice, bob] = [await hub.join("alice"), await hub.join("bob")];
+    const version = join(hub.dir, "version");
+    writeFileSync(version, "1.2.3");
+    bob.saveAgents([fake("--no-pids", `--version-file=${version}`)], "fake"); // No pids file, which the permission test would take for a file it wrote.
+    const dev = join(hub.dir, "dev-bob");
+    mkdirSync(join(dev, "uploader", ".git"), { recursive: true });
+    writeFileSync(join(dev, "uploader", ".git", "config"), `[remote "origin"]\n\turl = ${TEAM_REPOS}Platform/_git/uploader\n`);
+    writeFileSync(join(dev, "uploader", ".git", "HEAD"), "ref: refs/heads/main\n");
+    const notices: Notice[] = [];
+    const hooks = {
+      changed: () => undefined,
+      notice: (notice: Notice) => {
+        notices.push(notice);
+      },
+      arrived: () => undefined,
+      confirmClone: () => Promise.resolve(false)
+    };
+    const session = new Session(bob, dev, hooks, { presence: 1, describe: () => Promise.resolve({ branch: "main", commit: "c0ffee".padEnd(40, "0"), dirty: false }) });
+    session.start();
+    t.after(() => session.stop());
+    await until("bob's checkout shared", () => session.view().loaded && session.view().myRepos.includes("uploader"));
+    await session.handle({ do: "grant", repo: "uploader", askers: ["alice"], mode: "read-only", delivery: "post", lasts: 3600, runsPerDay: 20 });
+    const ask = async (text: string): Promise<string> => (await alice.publish("bob", "message", { text: `@bob/uploader ${text}`, via: "cli" })).event.id;
+    const status = (id: string): string | undefined => {
+      session.handle({ do: "open", chat: "alice" }).catch(() => undefined);
+      return session.view().current?.messages.find((message) => message.id === id)?.requests[0]?.status.kind;
+    };
+    const answered = async (id: string): Promise<string> => {
+      for (let tries = 0; tries < 200; tries += 1) {
+        const result = (await alice.events({ chat: "bob" })).find(({ event }) => event.kind === "job.result" && event.refs[0] === id);
+        const said = result === undefined ? null : readContent(result.event);
+        if (said?.kind === "job.result") {
+          return said.content.text;
+        }
+        await delay(50);
+      }
+      throw new Error(`no answer to ${id}`);
+    };
+    const waits = async (text: string, why: string): Promise<string> => {
+      const told = notices.length;
+      const id = await ask(text);
+      await until("its owner told why it waits", () => notices.length > told && status(id) === "ready");
+      assert.deepEqual(notices.slice(told), [{ title: "your uploader agent did not run alice's request under your grant", body: why, severity: "error" }]);
+      assert.deepEqual(await alice.events({ chat: "bob" }).then((found) => found.filter(({ event }) => event.refs[0] === id)), []);
+      return id;
+    };
+
+    // Never tested: alice's request waits. Bob can still run it himself, at the mode he chooses, as before.
+    const untested = await waits("read", "Fake's permissions have not been tested, so nothing shows it keeps to read-only with nobody watching. Run Test permissions on the Setup page");
+    await session.handle({ do: "run", id: untested, repo: "uploader", post: true, mode: "read-only", text: "@bob/uploader read" });
+    assert.equal(await answered(untested), "turn 1: read");
+
+    // Tested, then updated in place: the grant waits for the version that passed.
+    assert.equal((await session.testPermissions("fake")).status, "ok");
+    writeFileSync(version, "1.3.0");
+    await waits("read again", "Fake is version 1.3.0 now, and passed its permission test at version 1.2.3. Run Test permissions on the Setup page again");
+
+    // Tested again, it runs.
+    assert.equal((await session.testPermissions("fake")).status, "ok");
+    assert.equal(await answered(await ask("read once more")), "turn 1: read");
   }
 );

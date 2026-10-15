@@ -24,7 +24,7 @@ const LIMIT = 20; // Seconds anything one check does may take. Each call has a s
 const HUB_TIMEOUT = 10;
 const GIT_TIMEOUT = 10;
 const GIT_AUTH_TIMEOUT = 15;
-const ACP_TIMEOUT = 10; // Seconds an agent over ACP has to start, agree a protocol and open a session.
+export const ACP_TIMEOUT = 10; // Seconds an agent over ACP has to start, agree a protocol and open a session.
 const PERMISSIONS_TIMEOUT = 120; // Seconds an agent has for the permission test's one request.
 const TESTED = "agent-permissions.json"; // In the config folder: each agent's permission test, by its command line.
 // What the permission test asks for: a file, which an agent that can be held to a mode asks before it writes, and which the test then refuses.

@@ -218,6 +218,7 @@ Rules:
 2. A grant names a mode. A delegated job's mode is at most its parent's.
 3. The order is `read-only` < `supervised` < `auto-edits` < `full`.
 4. Enforcement is the desk answering the agent's permission requests over ACP. An agent that never asks cannot be held to a mode. The setup check tests each configured agent for this, and an agent that fails it, or runs as a one-shot command, is labelled "cannot be restricted" wherever a mode is chosen.
+5. With nobody watching, an agent over ACP is not taken at its word: a grant below `full` lets it run only once it has passed that test, and, when the test recorded a version, only while the agent says it is that version as the run is let go. Otherwise the request waits for its owner, who is told to test it. A run its owner starts by hand is theirs to watch, and the window says the agent is untested.
 
 `src/desk/permissions.ts` holds the table as one pure function from mode and kind of action to `allow`, `ask` or `refuse`.
 
@@ -231,7 +232,7 @@ Inside WSL (or the home folder on Linux and macOS):
 | `~/.config/player-two/key` | The person's private key. Mode `0600`. |
 | `~/.config/player-two/known.json` | The key first seen for each teammate, and the user's own, written when they join. The user's own events, their agents' registrations among them, are checked against the key in `key`, never one the hub lists; a hub that lists another for them is not believed, and the desk tells them so. An agent's key is not kept here: it is learned from its owner's registrations, which that pinned key vouches for, each time a client starts. |
 | `~/.config/player-two/app-state.json` | Read marks, last open chat, and the mode and delivery each asker's requests of each repo were last run at, with the agent that ran them (phase 3). Safe to delete. |
-| `~/.config/player-two/agent-permissions.json` | Phase 3. How each agent over ACP did in the permission test, by its command line, with its version. Deleting it makes every agent untested again. |
+| `~/.config/player-two/agent-permissions.json` | Phase 3. How each agent over ACP did in the permission test, by its command line, with its version. Deleting it makes every agent untested again, which holds back every grant below `full` (see Permission modes). |
 | `~/.config/player-two/agents/<repo>.key` | Phase 4. One key per checkout's agent. Mode `0600`, in a folder of mode `0700`: a key whose file or folder other users can get at is refused, and not made private behind its owner's back. Replacing the file rotates the key: the desk registers the new one on its next beat, or before its next run if that is sooner. |
 | `~/.config/player-two/azure.json` | Phase 6. An Azure DevOps token, if one was saved. Mode `0600`. |
 | `~/.player-two/runtime/sha256-<digest>/` | The Linux runtime the window unpacked. `~/.player-two/current` links to the one in use, and `~/.player-two/previous` to the one before it; any other is removed. |
