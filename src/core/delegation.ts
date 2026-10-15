@@ -12,7 +12,7 @@ import type { Event, PermissionMode } from "./wire.ts";
 export const MAX_DEPTH = 2; // Most agents a request may come through: the root's agent, and one it asked.
 export const MAX_CHILDREN = 4; // Most agents one job may ask.
 export const MAX_TREE = 8; // Most jobs that may be asked under one root request, the root's own not counted.
-export const ROOT_TIME = 3_600; // Seconds from its owner letting the root's agent run after which nothing more may be asked under it.
+export const ROOT_TIME = 3_600; // Seconds from its owner letting the root's agent run after which nothing more may be asked under it, and every run under it is stopped.
 
 /** One job: the request that asked it, the root's message or a job.request, the agent asked ("owner/repo"), and the jobs it asked in turn, oldest first. */
 export interface Node {
@@ -21,8 +21,11 @@ export interface Node {
   readonly children: readonly Node[];
 }
 
-/** Whether a request may run, and if so the most its run may be let do: the lowest mode any job above it was let run at. */
-export type Verdict = { readonly ok: true; readonly mode: PermissionMode } | { readonly ok: false; readonly reason: string };
+/**
+ * Whether a request may run, and if so the most its run may be let do, the lowest mode any job above it was let run at, and `since`, when the root's agent was last let run, by its
+ * owner's clock: the root's time runs from then, which every desk below holds its own run to by its own clock.
+ */
+export type Verdict = { readonly ok: true; readonly mode: PermissionMode; readonly since: number } | { readonly ok: false; readonly reason: string };
 
 /** The root request by its id with its text: a message a person wrote, whose signature holds. Null when the log holds no such event, as for a root made up. */
 function rootOf(log: readonly Entry[], id: string): { readonly entry: Entry; readonly text: string } | null {
@@ -182,7 +185,8 @@ export function checkRequest(log: readonly Entry[], request: Entry): Verdict {
   if (typeof runs === "string") {
     return { ok: false, reason: runs };
   }
-  if (request.event.ts - (runs[0]?.ts ?? 0) >= ROOT_TIME) {
+  const since = runs[0]?.ts ?? 0;
+  if (request.event.ts - since >= ROOT_TIME) {
     return { ok: false, reason: `its root has been running for ${String(ROOT_TIME / 60)} minutes` };
   }
   const crowd = crowded(forest, hops?.at(-1), request);
@@ -190,7 +194,7 @@ export function checkRequest(log: readonly Entry[], request: Entry): Verdict {
     return { ok: false, reason: crowd };
   }
   // A child runs at most at its parent's mode. The lowest in the chain is taken, not the parent's alone, so a desk above that let its run go further than its own parent's does not lift the ceiling.
-  return { ok: true, mode: runs.reduce<PermissionMode>((low, { accepted }) => (MODES.indexOf(accepted.mode) < MODES.indexOf(low) ? accepted.mode : low), "full") };
+  return { ok: true, mode: runs.reduce<PermissionMode>((low, { accepted }) => (MODES.indexOf(accepted.mode) < MODES.indexOf(low) ? accepted.mode : low), "full"), since };
 }
 
 /** Everyone a request runs on the say of: whoever made the root request, and the owner of each agent it came through, each once. Null when it is not a job.request whose signature holds, or its root is not a person's message in the log. */

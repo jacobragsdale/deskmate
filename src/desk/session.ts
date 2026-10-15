@@ -202,8 +202,8 @@ function least(a: PermissionMode, b: PermissionMode): PermissionMode {
   return atMost(a, b) ? a : b;
 }
 
-/** What the log says of an agent's request of another: the most its run may be let do and everyone it runs on the say of, or why it may not go. */
-type Judged = { readonly ok: true; readonly mode: PermissionMode; readonly people: readonly string[] } | { readonly ok: false; readonly reason: string };
+/** What the log and the clock say of an agent's request of another: the most its run may be let do, when its root was let run, and everyone it runs on the say of; or why it may not go. */
+type Judged = { readonly ok: true; readonly mode: PermissionMode; readonly since: number; readonly people: readonly string[] } | { readonly ok: false; readonly reason: string };
 
 export class Session {
   private readonly client: Client;
@@ -736,7 +736,10 @@ export class Session {
     return { kind: "ready", before, canDecline: event.author !== this.me && state !== "declined", offer: { ...offer, mode: least(offer.mode, ceiling) }, ceiling };
   }
 
-  /** What the log of its chat says of a request of the user's agent that another agent sent (see src/core/delegation.ts). */
+  /**
+   * What the log of its chat says of a request of the user's agent that another agent sent (see src/core/delegation.ts), and this desk's clock: the log holds a request to its root's
+   * time by when it was sent, and the clock holds a run to it, so that nothing under a root starts or goes on once its time is up, whether or not the root's desk is there to stop its own.
+   */
   private judge(message: Message): Judged {
     const log = this.chats.log(message.entry.event.id);
     const verdict = checkRequest(log, message.entry);
@@ -744,7 +747,15 @@ export class Session {
     if (!verdict.ok) {
       return verdict;
     }
-    return people === null ? { ok: false, reason: "nobody here can say who asked first" } : { ...verdict, people };
+    if (people === null) {
+      return { ok: false, reason: "nobody here can say who asked first" };
+    }
+    return this.client.now() - verdict.since >= this.rootTime ? { ok: false, reason: `its root has been running for ${this.minutes()} minutes` } : { ...verdict, people };
+  }
+
+  /** The root's time in minutes, as the user is told it. */
+  private minutes(): string {
+    return String(Math.round(this.rootTime / 60));
   }
 
   /**
@@ -1875,22 +1886,33 @@ export class Session {
   }
 
   /**
-   * For a run let ask other agents on a person's request, the root of all it asks, a timer that stops it once `rootTime` has passed since it was let go, whatever is still waiting:
-   * its end then withdraws what it asked (see `withdrawChildren`). Undefined for any other run.
+   * A timer that stops a run in a tree once its root's time is up by this desk's clock, whatever is still waiting: a run let ask other agents on a person's request, the root of all it
+   * asks, `rootTime` after it was let go; and a run on an agent's request `rootTime` after the root's agent was last let run, as the log has it, so that every desk in a tree holds
+   * its own run to the root's time, the root's desk there or not. Its end then withdraws what it asked (see `withdrawChildren`). A run whose clock `holdFor` holds is one of these,
+   * so none is held past it. Undefined for any other run, and for one on a request the log no longer lets go, which is stopped as the log is next read (see `unwanted`).
    */
   private hourOf(run: AgentRun): NodeJS.Timeout | undefined {
-    if (!run.delegate || run.entry.event.kind !== "message") {
+    const { event } = run.entry;
+    const asked = event.kind === "job.request" ? this.chats.message(event.id) : null;
+    const judged = asked === null ? null : this.judge(asked);
+    let left: number;
+    let since: string; // When the time began, for the notice.
+    if (judged?.ok === true) {
+      left = judged.since + this.rootTime - this.client.now();
+      since = `${asked?.delegation?.first ?? "someone"}'s request, which it was asked under, was let run`;
+    } else if (run.delegate && event.kind === "message") {
+      left = this.rootTime;
+      since = `it was let ask other agents on ${event.author}'s request`;
+    } else {
       return undefined;
     }
-    return setTimeout(() => {
-      const minutes = String(Math.round(this.rootTime / 60));
-      this.hooks.notice({
-        title: `your ${run.repo} agent ran out of time`,
-        body: `${minutes} minutes have passed since it was let ask other agents on ${run.entry.event.author}'s request.`,
-        severity: "info"
-      });
-      run.cancel.abort();
-    }, this.rootTime * 1000);
+    return setTimeout(
+      () => {
+        this.hooks.notice({ title: `your ${run.repo} agent ran out of time`, body: `${this.minutes()} minutes have passed since ${since}.`, severity: "info" });
+        run.cancel.abort();
+      },
+      Math.max(0, left) * 1000
+    );
   }
 
   /** Once a run let ask other agents has ended, however it ended, take back what its agent asked that has not ended, signed by the agent that asked. Best effort, as any job's end is. */

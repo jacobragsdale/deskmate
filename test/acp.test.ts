@@ -1138,7 +1138,7 @@ async function eventually<T>(what: string, find: () => Promise<T | undefined>): 
 }
 
 await test(
-  "time a run spends with an agent it asked at work is not its own; and once the root's time has passed since its owner let it ask others it is stopped, taking back what its agent asked that is still open",
+  "time a run spends with an agent it asked at work is not its own; and once the root's time has passed since its owner let it ask others it is stopped, taking back what its agent asked that is still open, as is a run under it on another desk, by that desk's own clock, which then starts none",
   { timeout: 60_000 },
   async (t) => {
     const { alice, bob, session } = await bobsDesk(t, [], { limit: 2, rootTime: 6 });
@@ -1172,5 +1172,26 @@ await test(
     await said(second, "bob/uploader", "job.cancelled");
     const withdrawn = await said(left, "bob/uploader", "job.withdrawn");
     assert.deepEqual(readContent(withdrawn.event), { kind: "job.withdrawn", content: { agent: "alice/billing" } });
+
+    // Asked by alice's agent, whose desk is gone, bob's agent asks hers in turn and its clock stands still; bob's desk stops it once six seconds have passed since alice let hers go,
+    // by its own clock, and takes back what it asked. A request asked meanwhile, waiting for him, can no longer be run then.
+    const apiKey = agentKey(alice.home, "api");
+    await alice.publish("*", "agent.register", { repo: "api", pubkey: publicHex(apiKey) });
+    const api = alice.as("alice/api", apiKey);
+    const { id: root } = (await alice.publish("#team", "message", { text: "@alice/api slow", via: "cli" })).event;
+    await alice.publish("#team", "job.accepted", { repo: "api", branch: "main", commit: "c0ffee".padEnd(40, "0"), dirty: false, delivery: "post", mode: "read-only", delegate: true, by: "owner" }, [
+      root
+    ]);
+    const asks = async (text: string): Promise<string> => (await api.publish("#team", "job.request", { target: "bob/uploader", text, chain: ["alice/api"] }, [root, root])).event.id;
+    const [asked, meanwhile] = [await asks("slow"), await asks("read")];
+    await until("bob can run alice's agent's request", () =>
+      session.view().current?.messages.some((message) => message.replies.some((reply) => reply.id === asked && reply.requests[0]?.status.kind === "ready"))
+    );
+    await session.handle({ do: "run", id: asked, repo: "uploader", post: true, mode: "read-only", text: "slow", delegate: true });
+    await said(asked, "bob", "job.accepted");
+    const below = (await agent.publish("#team", "job.request", { target: "alice/billing", text: "is it yours?", chain: ["alice/api", "bob/uploader"] }, [root, asked])).event.id;
+    await said(asked, "bob/uploader", "job.cancelled");
+    assert.deepEqual(readContent((await said(below, "bob/uploader", "job.withdrawn")).event), { kind: "job.withdrawn", content: { agent: "alice/billing" } });
+    await assert.rejects(session.handle({ do: "run", id: meanwhile, repo: "uploader", post: true, mode: "read-only", text: "read" }), /request may not go: its root has been running for/);
   }
 );
