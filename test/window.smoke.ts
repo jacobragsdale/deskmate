@@ -14,11 +14,12 @@ import { z } from "zod";
 
 import { readContent } from "../src/core/kinds.ts";
 import { noteLink } from "../src/core/links.ts";
-import { newKey, publicHex } from "../src/core/sign.ts";
+import { loadKey, newKey, publicHex, signEvent } from "../src/core/sign.ts";
 import { commandLineOf } from "../src/core/wire.ts";
 import type { Client } from "../src/desk/client.ts";
 import { fakeAzure, platform } from "./fakeAzure.ts";
 import type { Project } from "./fakeAzure.ts";
+import { Database } from "../src/hub/db.ts";
 import { startHub, TOKEN } from "./startHub.ts";
 
 const ROOT = join(import.meta.dirname, "..");
@@ -601,7 +602,7 @@ async function pullRequests(page: Page, carol: Client, home: string, project: Pr
  * for alice's 👍 between its two posts. Her panel lists both, in words, each template as written and the secret nowhere; copies the webhook's address; shows a run as the hub reports its
  * steps; and removes one. She publishes her own from billing's .player-two/workflows/ in its place.
  */
-async function workflows(page: Page, bob: Client, hub: string, home: string): Promise<void> {
+async function workflows(page: Page, bob: Client, hub: string, home: string, dir: string): Promise<void> {
   const secret = "a-secret-the-panel-never-shows";
   // What billing keeps: a workflow, one that does not read, a file that is no workflow, and a link to one outside the repo, which the desk never follows.
   const folder = join(home, "dev", "billing", ".player-two", "workflows");
@@ -610,6 +611,7 @@ async function workflows(page: Page, bob: Client, hub: string, home: string): Pr
   writeFileSync(join(folder, "ci.yml"), hers);
   writeFileSync(join(folder, "broken.yaml"), 'name: broken\non:\n  webhook: {}\nsteps:\n  - tag: "@alice/billing"\n');
   writeFileSync(join(folder, "README.md"), "Publish these from Player Two.\n");
+  writeFileSync(join(folder, "nightly.yml"), 'name: nightly\non:\n  webhook: {}\nsteps:\n  - post: "the nightly build"\n');
   writeFileSync(join(home, "elsewhere.yml"), 'name: elsewhere\non:\n  webhook: {}\nsteps:\n  - post: "read through a link"\n');
   symlinkSync(join(home, "elsewhere.yml"), join(folder, "linked.yml"));
   await bob.publish("#ops", "channel.join", {});
@@ -649,12 +651,28 @@ async function workflows(page: Page, bob: Client, hub: string, home: string): Pr
   assert.match(String(await page.eval(`${runs("deploy")}[0]`)), /^Run \d+ · .+ · step 1 done$/);
   assert.equal(await page.eval(`${item("ci-failure")}.innerText.includes("No runs yet.")`), true);
 
-  // Remove takes deploy away, and the hub lists ci-failure alone.
+  // A workflow of bob's whose file does not read here, as one written for a later Player Two might not, made live as the hub would have made it.
+  const unread = signEvent(loadKey(readFileSync(join(dir, "bob", "key"), "utf8").trim()), {
+    author: "bob",
+    to: "#ops",
+    kind: "workflow.define",
+    content: JSON.stringify({ name: "nightly", yaml: "name: nightly\non:\n  webhook: {}\nsteps: []\n" }),
+    ts: Math.floor(Date.now() / 1000),
+    refs: []
+  });
+  const db = new Database(join(dir, "hub.db"));
+  db.transaction(() => {
+    db.addEvent(unread);
+    db.setWorkflow("#ops", "nightly", unread.id);
+  });
+  db.close();
+
+  // Remove takes deploy away, and the hub lists ci-failure, and the one that does not read here.
   await page.eval(`[...${item("deploy")}.querySelectorAll("button")].find((each) => each.textContent === "Remove").click()`);
   await page.until("deploy removed", `${item("deploy")} == null && ${item("ci-failure")} != null`);
   assert.deepEqual(
     (await bob.workflows("#ops")).map(({ event }) => event.id),
-    [bobs.event.id]
+    [bobs.event.id, unread.id]
   );
   await page.shot("workflows");
 
@@ -663,12 +681,16 @@ async function workflows(page: Page, bob: Client, hub: string, home: string): Pr
   await page.click('[role="dialog"] button', "Publish a workflow");
   const files = `[...document.querySelectorAll('[role="dialog"] ul[aria-label="Files"] button')].map((each) => each.textContent)`;
   await page.until("billing's workflow files", `${files}.length > 0`);
-  assert.deepEqual(await page.eval(files), ["✗ broken.yaml", "ci.yml"]);
+  assert.deepEqual(await page.eval(files), ["✗ broken.yaml", "ci.yml", "nightly.yml"]);
   assert.match(String(await page.eval(`${panel}.innerText`)), /From ~\/dev\/billing\/\.player-two\/workflows:/);
   const chosen = `document.querySelector('[role="dialog"] section')`;
   await page.click('[role="dialog"] ul[aria-label="Files"] button', "broken.yaml");
   await page.until("the line that is wrong, and why", `${chosen}?.querySelector('[role="alert"]')?.textContent === "line 5: steps.0.text: required"`);
   assert.equal(await page.eval(`${chosen}.querySelectorAll("button").length`), 0);
+  // nightly.yml replaces bob's nightly, though its file does not read here, and says so.
+  await page.click('[role="dialog"] ul[aria-label="Files"] button', "nightly.yml");
+  await page.until("nightly.yml in words", `${chosen}?.getAttribute("aria-label") === "nightly.yml"`);
+  assert.match(String(await page.eval(`${chosen}.innerText`)), /It replaces the nightly bob published: its runs waiting for a 👍 are cancelled, and its webhook, if it has one, gets a new address\./);
   await page.click('[role="dialog"] ul[aria-label="Files"] button', "ci.yml");
   await page.until("ci.yml in words", `${chosen}?.getAttribute("aria-label") === "ci.yml"`);
   assert.deepEqual(await page.eval(steps(chosen)), ["post: The build failed on {{body.branch}}", "wait up to 1 day for a 👍 from alice: Retry it?", "post: Retrying."]);
@@ -676,7 +698,7 @@ async function workflows(page: Page, bob: Client, hub: string, home: string): Pr
   await page.shot("publish");
   await page.click('[role="dialog"] section button', "Publish ci-failure to #ops");
   await page.until("hers listed in place of bob's", `${said("ci-failure")}?.startsWith("on a webhook · published by you · ") === true`);
-  const [published] = await bob.workflows("#ops");
+  const published = (await bob.workflows("#ops")).find(({ event }) => event.author === "alice");
   const content = published === undefined ? null : readContent(published.event);
   assert.ok(published?.event.author === "alice" && content?.kind === "workflow.define" && content.content.yaml === hers);
   const hook = `${hub}/hooks/${published.event.id.slice(0, 32)}`;
@@ -1601,7 +1623,7 @@ await test(
     await pullRequests(page, carol, home, azure.project, () => {
       azure.project.result = "failed";
     });
-    await workflows(page, bob, hub.url, home);
+    await workflows(page, bob, hub.url, home, hub.dir);
 
     assert.deepEqual(page.problems, []);
 

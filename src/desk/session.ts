@@ -1038,7 +1038,9 @@ export class Session {
       entries?.map(({ trusted, event }): WorkflowView => {
         const read = trusted ? this.fileOf(event) : "its signature does not match the key first seen for them";
         if (typeof read === "string") {
-          return { shown: false, id: event.id, author: event.author, ts: event.ts, why: trusted ? `its file does not read here: ${read}` : read };
+          const said = readContent(event);
+          const name = trusted && said.kind === "workflow.define" ? said.content.name : null; // The hub's name for it, which a file of that name replaces, whether or not it reads here.
+          return { shown: false, id: event.id, author: event.author, ts: event.ts, name, why: trusted ? `its file does not read here: ${read}` : read };
         }
         const { name, on, steps } = read;
         return {

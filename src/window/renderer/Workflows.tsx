@@ -128,7 +128,8 @@ type Found = NonNullable<Extract<Outcome, { readonly ok: true }>["workflowFiles"
 function Chosen({ file, current, me, act, onDone }: { readonly file: WorkflowFile; readonly current: CurrentView; readonly me: string; readonly act: Act; readonly onDone: () => void }): JSX.Element {
   const [sending, setSending] = useState(false); // While the desk publishes it: the button does nothing more, so a second click publishes nothing twice.
   const { read } = file;
-  const replaced = read.ok ? current.workflows?.flatMap((each) => (each.shown && each.name === read.name ? [each] : []))[0] : undefined;
+  // The live one of that name, whether or not its file reads here: the hub replaces it all the same.
+  const replaced = read.ok ? current.workflows?.find((each) => each.name === read.name) : undefined;
   return (
     <section className="flex min-w-0 flex-col gap-1.5 border-t pt-2" aria-label={file.name}>
       {read.ok ? (
@@ -146,7 +147,7 @@ function Chosen({ file, current, me, act, onDone }: { readonly file: WorkflowFil
           {replaced !== undefined && (
             <p className="text-warn">
               It replaces the {read.name} {replaced.author === me ? "you" : replaced.author} published: its runs waiting for a 👍 are cancelled
-              {replaced.hook === null ? "" : ", and its webhook gets a new address"}.
+              {!replaced.shown ? ", and its webhook, if it has one, gets a new address" : replaced.hook === null ? "" : ", and its webhook gets a new address"}.
             </p>
           )}
           <p className="text-xs text-muted-foreground">Everyone in {current.chat} can read the file once it is published, its secret and the addresses it calls included.</p>
@@ -166,7 +167,7 @@ function Chosen({ file, current, me, act, onDone }: { readonly file: WorkflowFil
         <Button
           type="button"
           className="self-start"
-          disabled={sending}
+          disabled={sending || current.workflows === null} // Until the live ones are listed, it is not known what it replaces.
           onClick={() => {
             setSending(true);
             act({ do: "publishWorkflow", chat: current.chat, file: file.name, yaml: file.yaml }, (ok) => {

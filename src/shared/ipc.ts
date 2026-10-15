@@ -175,7 +175,8 @@ const lineSchema = z.strictObject({ seq: z.int(), ts: z.int(), who: z.string(), 
  * as the hub reported it. One that cannot be shown says why, never what it says.
  */
 const workflowSchema = z.discriminatedUnion("shown", [
-  z.strictObject({ shown: z.literal(false), id: z.string(), author: z.string(), ts: z.int(), why: z.string() }).readonly(),
+  // One whose file does not read here, or whose signature fails: `name` is the name its definition gives, when its signature holds, which publishing another of that name replaces.
+  z.strictObject({ shown: z.literal(false), id: z.string(), author: z.string(), ts: z.int(), name: z.string().nullable(), why: z.string() }).readonly(),
   z
     .strictObject({
       shown: z.literal(true),
