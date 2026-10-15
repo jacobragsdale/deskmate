@@ -13,6 +13,8 @@ import { test } from "node:test";
 import type { TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
+import { z } from "zod";
+
 import type { Client } from "../src/desk/client.ts";
 import * as repos from "../src/desk/repos.ts";
 import { Session } from "../src/desk/session.ts";
@@ -195,8 +197,17 @@ await test("no more than a hundred answers are kept fresh at once, and while the
   t.mock.timers.reset();
 });
 
+/** A list of pull requests as Azure DevOps might give one: the branch's newest, active, last, after its older ones and after an active one from another branch, which is not to be believed. */
+function reordered(call: Call, reply: Reply | null): Reply | null {
+  if (reply === null || call.method !== "GET" || !call.path.endsWith("/pullrequests")) {
+    return reply;
+  }
+  const [newest, ...older] = z.object({ value: z.array(z.looseObject({})) }).parse(JSON.parse(reply.body)).value;
+  return newest === undefined ? reply : { ...reply, body: JSON.stringify({ value: [...older, { ...newest, pullRequestId: 23, sourceRefName: "refs/heads/elsewhere" }, newest] }) };
+}
+
 await test("a branch room on Azure DevOps shows its branch's pull request, an active one first, and its latest build, looked at again while it is open and the user looks, and not otherwise", async (t) => {
-  const { calls } = await azure(t);
+  const { calls } = await azure(t, reordered);
   const hub = await startHub(t, () => Date.now() / 1000);
   const [bob, jacob] = [await hub.join("bob"), await hub.join("jacob")];
   for (const chat of ["#room", "#whole", "#odd"]) {
@@ -218,22 +229,24 @@ await test("a branch room on Azure DevOps shows its branch's pull request, an ac
       "https://dev.azure.com/acme/platform/_git/uploader/pullrequest/22",
       { id: 391, name: "AnotherRepository-CI", status: "completed", result: "failed", web: "https://dev.azure.com/acme/platform/_build/results?buildId=391" }
     ]
-  ); // Pull request 20, from the same branch, is completed.
+  ); // Listed after 20, from the same branch and completed, and 23, active but from another.
 
-  // Looked at again while it is open and the user looks; not while they look away, and again once they are back.
+  // Looked at again while it is open and the user looks; not while they look away, and again once they are back. A look under way when they go ends with its build.
   const builds = (): number => calls.filter((call) => call.path.endsWith("/build/builds")).length;
+  const settled = (): boolean => builds() === calls.filter((call) => call.path.endsWith("/pullrequests")).length;
   await until("looked at again", () => builds() >= 3);
   session.attend(false);
-  await delay(300); // For a look under way to end.
+  await until("no look under way", settled);
   const away = builds();
-  await delay(600);
+  await delay(600); // Three times the room's 0.2 seconds.
   assert.equal(builds(), away);
   session.attend(true);
   await until("looked at once the user is back", () => builds() > away);
 
   // Not in a room about the whole repo.
   await session.handle({ do: "open", chat: "#whole" });
-  await delay(300);
+  assert.equal(session.view().current?.pinned?.azure, null);
+  await until("no look under way", settled);
   const left = builds();
   await delay(600);
   assert.deepEqual([builds(), session.view().current?.pinned?.azure], [left, null]);
@@ -409,6 +422,20 @@ await test("a pull request from a branch room's branch is filled from its commit
   assert.equal((await session.pullForm(from)).behind, true);
   await session.handle(opened);
   assert.deepEqual([questions.length, project.made.length], [3, 3]);
+});
+
+await test("a pull request goes into the default branch the checkout's origin names when Azure DevOps names none, as for an empty repository", async (t) => {
+  await azure(t, (call, reply) => (reply !== null && call.path.endsWith("/git/repositories/uploader") ? { ...reply, body: JSON.stringify({ id: "an-empty-repository" }) } : reply));
+  const hub = await startHub(t, () => Date.now() / 1000);
+  const [bob, jacob] = [await hub.join("bob"), await hub.join("jacob")];
+  for (const person of [bob, jacob]) {
+    await person.publish("#room", "channel.join", {});
+  }
+  await bob.publish("#room", "channel.pin", { repo: UPLOADER, branch: "feature/retry" });
+  const { mine } = uploader(join(hub.dir, "dev-jacob"));
+  git(mine, "remote", "set-head", "origin", "master");
+  const { session } = await deskOf(t, jacob, join(hub.dir, "dev-jacob"), "#room");
+  assert.equal((await session.pullForm({ room: "#room" })).target, "master");
 });
 
 await test("a long subject, or a branch of many commits, fills the dialog with no more than it may send back: the title cut, and the subjects that fit with how many more", async (t) => {
