@@ -300,8 +300,9 @@ export const viewSchema = z.discriminatedUnion("kind", [
 const chat = z.string().min(1).max(40);
 const repo = z.string().min(1).max(64);
 const id = z.string().regex(/^[0-9a-f]{64}$/); // An event's id: for a job, its request's.
-// Where a pull request would come from: a branch room, by its chat, from the branch it is pinned to, which must be the one the user's checkout of its repo is on.
-const pullFrom = z.strictObject({ room: chat });
+// Where a pull request would come from: a branch room, by its chat, from the branch it is pinned to, which must be the one the user's checkout of its repo is on; or a patch, by its id,
+// from the branch Apply to a new branch made of it in the user's checkout, which is named from the id.
+const pullFrom = z.union([z.strictObject({ room: chat }), z.strictObject({ patch: id })]);
 
 /** Everything the window may ask the desk to do. Parsed on both sides of the line before anything acts on it. */
 export const commandSchema = z.discriminatedUnion("do", [

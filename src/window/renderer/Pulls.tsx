@@ -120,6 +120,35 @@ function OpenPull({ from, act, onDone }: { readonly from: From; readonly act: Ac
   );
 }
 
+/** A button that opens the dialog for a pull request from `from`. */
+export function PullButton({ from, act, children }: { readonly from: From; readonly act: Act; readonly children: string }): JSX.Element {
+  const [opening, setOpening] = useState(false);
+  return (
+    <>
+      <Button
+        size="xs"
+        variant="outline"
+        className="text-foreground"
+        type="button"
+        onClick={() => {
+          setOpening(true);
+        }}
+      >
+        {children}
+      </Button>
+      {opening && (
+        <OpenPull
+          from={from}
+          act={act}
+          onDone={() => {
+            setOpening(false);
+          }}
+        />
+      )}
+    </>
+  );
+}
+
 /**
  * In a branch room whose repo is on Azure DevOps, the branch's pull request and its latest build, each a link, as the desk last found them, or why it could not; and with no pull
  * request, for a user with a checkout of the repo, "Create one".
@@ -135,7 +164,6 @@ export function RoomLine({
   readonly mine: boolean;
   readonly act: Act;
 }): JSX.Element | null {
-  const [opening, setOpening] = useState(false);
   if (azure === null) {
     return null;
   }
@@ -149,17 +177,9 @@ export function RoomLine({
               {mine && (
                 <>
                   {" · "}
-                  <Button
-                    size="xs"
-                    variant="outline"
-                    className="text-foreground"
-                    type="button"
-                    onClick={() => {
-                      setOpening(true);
-                    }}
-                  >
+                  <PullButton from={{ room: chat }} act={act}>
                     Create one
-                  </Button>
+                  </PullButton>
                 </>
               )}
             </>
@@ -179,15 +199,6 @@ export function RoomLine({
         </>
       ) : (
         `Azure DevOps: ${azure.problem}`
-      )}
-      {opening && (
-        <OpenPull
-          from={{ room: chat }}
-          act={act}
-          onDone={() => {
-            setOpening(false);
-          }}
-        />
       )}
     </p>
   );

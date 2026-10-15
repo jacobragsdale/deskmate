@@ -326,7 +326,7 @@ async function askingAgents(page: Page, bob: Client, carol: Client, bobsAgent: K
  * and Apply says it does not apply to alice's checkout; one that does is put to her in a dialog of the system's own, answered here through PLAYER_TWO_TEST_ASKS (see main.ts),
  * which names her repo, its branch and the files and warns of her uncommitted work and of an instructions file; no leaves her checkout alone, yes applies it.
  */
-async function patches(page: Page, erin: Client, home: string): Promise<void> {
+async function patches(page: Page, erin: Client, home: string, project: Project): Promise<void> {
   const billing = { name: "billing", key: "dev.azure.com/acme/platform/billing", url: "https://dev.azure.com/acme/Platform/_git/billing" };
   const hostile = [
     "diff --git a/page.html b/page.html",
@@ -427,6 +427,22 @@ async function patches(page: Page, erin: Client, home: string): Promise<void> {
   assert.match(asked, new RegExp(`"message":"Apply this patch from erin to a new branch of your billing checkout\\?".*New branch: player-two/${id.slice(0, 8)}, from ${base.slice(0, 7)}`));
   assert.equal(execFileSync("git", ["-C", checkout, "show", `player-two/${id.slice(0, 8)}:notes.txt`], { encoding: "utf8" }), "a note\n");
   assert.equal(execFileSync("git", ["-C", checkout, "branch", "--show-current"], { encoding: "utf8" }), "main\n");
+
+  // Made, that branch can be pushed and a pull request opened from it, with the patch's title, the push asked first in a dialog of the system's own, and said yes to.
+  const push = `[...${good}.querySelectorAll("button")].find((each) => each.textContent === "Push and open a pull request")`;
+  await page.until("Push and open a pull request offered", `${push} !== undefined`);
+  await page.eval(`${push}.click()`);
+  const form = `document.querySelector('[role="dialog"] [data-pull-form]')`;
+  await page.until("the dialog, titled as the patch is", `${form}?.querySelector('input[name="title"]')?.value === "Add a note"`);
+  assert.equal(await page.eval(`${form}.querySelector("p").textContent`), `From player-two/${id.slice(0, 8)} into master, in billing`);
+  await page.click('[role="dialog"] button[type="submit"]');
+  await page.until("the dialog closed once it is open", `document.querySelector('[role="dialog"]') === null`);
+  assert.match(readFileSync(asks, "utf8").trim().split("\n").at(-1) ?? "", new RegExp(`^\\{"message":"Push player-two/${id.slice(0, 8)} to origin\\?"`));
+  const origin = join(home, "remotes", "acme", "Platform", "_git", "billing");
+  const tip = (path: string): string => execFileSync("git", ["-C", path, "rev-parse", `player-two/${id.slice(0, 8)}`], { encoding: "utf8" });
+  assert.equal(tip(origin), tip(checkout));
+  assert.deepEqual(project.made, [{ sourceRefName: `refs/heads/player-two/${id.slice(0, 8)}`, targetRefName: "refs/heads/master", title: "Add a note", description: "", isDraft: false }]);
+  await page.until("its link in the chat, as a chip", `[...document.querySelectorAll("main [data-pull]")].some((each) => each.textContent === "!101 Add a note · active · 1 waiting")`);
   rmSync(`${asks}.yes`);
 
   // Alice approves it from Review…, with a comment that is HTML, and erin asks for changes: each shows on the card as who said what, as text.
@@ -565,18 +581,18 @@ async function pullRequests(page: Page, carol: Client, home: string, project: Pr
   assert.deepEqual([asked.message, asked.confirm], ["Push feature-retry to origin?", "Push"]);
   assert.ok(asked.detail.includes(`Repo: widgets, in ${widgets}\nBranch: feature-retry\nRemote: origin, file://${origin}\n`), asked.detail);
   assert.equal(execFileSync("git", ["-C", origin, "rev-parse", "feature-retry"], { encoding: "utf8" }), execFileSync("git", ["-C", widgets, "rev-parse", "HEAD"], { encoding: "utf8" }));
-  assert.deepEqual(project.made, [{ sourceRefName: "refs/heads/feature-retry", targetRefName: "refs/heads/master", title: "Retry the upload once more", description: "", isDraft: true }]);
-  const opened = "!101 Retry the upload once more · active · draft · 1 waiting";
+  assert.deepEqual(project.made.at(-1), { sourceRefName: "refs/heads/feature-retry", targetRefName: "refs/heads/master", title: "Retry the upload once more", description: "", isDraft: true });
+  const opened = "!102 Retry the upload once more · active · draft · 1 waiting";
   await page.until("its link in the room, as a chip", `[...document.querySelectorAll("main [data-pull]")].some((each) => each.textContent === ${JSON.stringify(opened)})`);
-  assert.ok(String(await page.eval(`document.querySelector("main").innerText`)).includes("Opened pull request 101: "));
+  assert.ok(String(await page.eval(`document.querySelector("main").innerText`)).includes("Opened pull request 102: "));
   await page.until("it under the header", `${line}?.innerText === ${JSON.stringify(`${opened} · AnotherRepository-CI: failed`)}`);
-  assert.equal(await page.eval(`${line}.querySelector("a").href`), "https://dev.azure.com/acme/platform/_git/widgets/pullrequest/101");
+  assert.equal(await page.eval(`${line}.querySelector("a").href`), "https://dev.azure.com/acme/platform/_git/widgets/pullrequest/102");
   rmSync(`${asks}.yes`);
   await page.shot("pull-request-opened");
 }
 
 await test(
-  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, keeps a card in reach in a closed thread and brings one far above the end into view, refuses and allows for the run from a card, and offers only the modes the agent that answers can keep, full alone beside its reason when that is all, and a full chosen once not again in one click when less is there, and for a grant full alone while it is untested; and on My agents makes grants from its dialog, which warns of full access for anyone however its answers go and asks a second yes when they are posted directly, one grant for each double click, revokes one with a double click and not the next, counts the run a grant lets go, and holds a repo back with a double click, unshared and answering nobody under that grant, and lets it answer again; and says under whose grant a run went ahead, to its owner while it runs and in its answer, and to whoever asked, and that an answer its agent signed was not reviewed, where it is shown and where it is found; and while a grant is live stays open on close, saying why, where it cannot say it went to the tray, and once told hides on close, answering on, until started again; lists a grant apart once its repo is not checked out here, and revokes it there; lets the user's agent, asked by another, ask others from a switch beside what that means, says before its buttons how that request came, draws under the message that started it the tree of jobs under it, folded once all are done, and ends it all with that message's one Withdraw, after which what was asked under it is not offered again, saying why; draws a patch as a card beside the draft it goes with and in the chat, each file folded with what it adds and removes, and every word of a hostile one as text, and applies one, to her branch or a new one, only once a dialog of the system's own, naming the repo, the branch, the files and what to beware of, has had a yes, and shows who approved one or asked for changes, saying what; suggests a room for a branch she and a teammate are on, not the default, and none she dismissed, which is remembered; starts one, pinned to the branch and saying who is on it and which members are elsewhere, and pins one to a branch from the dialog, where the tag list leads with the agents on that branch; draws each pull request a message refers to, by !123 in a room pinned to a repo on Azure DevOps or by its address, as a chip of what a fake Azure DevOps answered, and under a branch room's header its branch's pull request and latest build, and opens one from there, pushing its branch only once a dialog of the system's own has had a yes; and quits on close once none is",
+  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, keeps a card in reach in a closed thread and brings one far above the end into view, refuses and allows for the run from a card, and offers only the modes the agent that answers can keep, full alone beside its reason when that is all, and a full chosen once not again in one click when less is there, and for a grant full alone while it is untested; and on My agents makes grants from its dialog, which warns of full access for anyone however its answers go and asks a second yes when they are posted directly, one grant for each double click, revokes one with a double click and not the next, counts the run a grant lets go, and holds a repo back with a double click, unshared and answering nobody under that grant, and lets it answer again; and says under whose grant a run went ahead, to its owner while it runs and in its answer, and to whoever asked, and that an answer its agent signed was not reviewed, where it is shown and where it is found; and while a grant is live stays open on close, saying why, where it cannot say it went to the tray, and once told hides on close, answering on, until started again; lists a grant apart once its repo is not checked out here, and revokes it there; lets the user's agent, asked by another, ask others from a switch beside what that means, says before its buttons how that request came, draws under the message that started it the tree of jobs under it, folded once all are done, and ends it all with that message's one Withdraw, after which what was asked under it is not offered again, saying why; draws a patch as a card beside the draft it goes with and in the chat, each file folded with what it adds and removes, and every word of a hostile one as text, and applies one, to her branch or a new one, only once a dialog of the system's own, naming the repo, the branch, the files and what to beware of, has had a yes, pushes the branch one was applied to and opens a pull request from it, the push said yes to first, and shows who approved one or asked for changes, saying what; suggests a room for a branch she and a teammate are on, not the default, and none she dismissed, which is remembered; starts one, pinned to the branch and saying who is on it and which members are elsewhere, and pins one to a branch from the dialog, where the tag list leads with the agents on that branch; draws each pull request a message refers to, by !123 in a room pinned to a repo on Azure DevOps or by its address, as a chip of what a fake Azure DevOps answered, and under a branch room's header its branch's pull request and latest build, and opens one from there, pushing its branch only once a dialog of the system's own has had a yes; and quits on close once none is",
   { skip: NO_DISPLAY ? "no display: run it under xvfb-run" : false, timeout: 120_000 },
   async (t) => {
     assert.ok(existsSync(join(ROOT, "dist", "main.js")), "dist/ is not built: run `npm run build` first");
@@ -1405,7 +1421,7 @@ await test(
     await page.until("the search closed", `document.querySelector('[role="dialog"]') === null`);
 
     await askingAgents(page, bob, carol, bobsAgent, commit);
-    await patches(page, await hub.join("erin"), home);
+    await patches(page, await hub.join("erin"), home, azure.project);
     await branchRooms(page, carol, home);
     await pullRequests(page, carol, home, azure.project);
 

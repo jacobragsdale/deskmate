@@ -6,7 +6,7 @@
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -232,6 +232,7 @@ await test("a branch room on Azure DevOps shows its branch's pull request, an ac
 function uploader(dev: string): { readonly mine: string; readonly origin: string } {
   const mine = checkout(dev, "uploader");
   const origin = join(REMOTES, "Platform", "_git", "uploader");
+  rmSync(origin, { recursive: true, force: true }); // An earlier test's.
   execFileSync("git", ["init", "-q", "--bare", origin]);
   git(mine, "push", "-q", origin, "main:master");
   git(mine, "fetch", "-q", "origin");
@@ -336,4 +337,34 @@ await test("a pull request is opened only from the branch the user's checkout is
     []
   );
   assert.deepEqual(questions, []);
+});
+
+await test("a patch applied to a new branch opens its pull request from that branch, with its title, once the push is said yes to, and not before it was applied there", async (t) => {
+  const { project } = await azure(t);
+  const hub = await startHub(t, () => Date.now() / 1000);
+  const [bob, jacob] = [await hub.join("bob"), await hub.join("jacob")];
+  for (const person of [bob, jacob]) {
+    await person.publish("#team", "channel.join", {});
+  }
+  const { mine, origin } = uploader(join(hub.dir, "dev-jacob"));
+  const diff = "diff --git a/note.txt b/note.txt\nnew file mode 100644\n--- /dev/null\n+++ b/note.txt\n@@ -0,0 +1 @@\n+a note\n";
+  const sent = await bob.publish("#team", "patch", { repo: UPLOADER, base: git(mine, "rev-parse", "main"), branch: "main", title: "Add a note", diff });
+  const { id } = sent.event;
+  const { session, questions, reply } = await deskOf(t, jacob, join(hub.dir, "dev-jacob"), "#team");
+  await until("the patch", () => shownTo(session, id));
+  const from = { patch: id };
+  await assert.rejects(session.pullForm(from), { message: `apply it to a new branch first: you have not made player-two/${id.slice(0, 8)} of it` });
+
+  reply.yes = true;
+  await session.handle({ do: "applyPatch", id, newBranch: true });
+  const branch = `player-two/${id.slice(0, 8)}`;
+  await until("applied to its branch", () => shownTo(session, id)?.patch?.applied.some((each) => each.branch === branch));
+  assert.deepEqual(await session.pullForm(from), { repo: "uploader", branch, target: "master", title: "Add a note", description: "" });
+  await session.handle({ do: "openPull", from, title: "Add a note", description: "", draft: false });
+  assert.equal(questions.at(-1)?.message, `Push ${branch} to origin?`);
+  assert.equal(git(origin, "rev-parse", branch), git(mine, "rev-parse", branch));
+  assert.equal(git(mine, "branch", "--show-current"), "feature/retry"); // Pushed from where Apply to a new branch made it, the checkout left on its own branch.
+  assert.deepEqual(project.made, [{ sourceRefName: `refs/heads/${branch}`, targetRefName: "refs/heads/master", title: "Add a note", description: "", isDraft: false }]);
+  const said = (await jacob.events({ chat: "#team" })).find(({ event }) => event.kind === "message" && event.author === "jacob");
+  assert.deepEqual(JSON.parse(said?.event.content ?? "{}"), { text: "Opened pull request 101: https://dev.azure.com/acme/Platform/_git/uploader/pullrequest/101", via: "window" });
 });

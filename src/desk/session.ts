@@ -1734,10 +1734,14 @@ export class Session {
   // ── pull requests ─────────────────────────────────────────────────────────
 
   /**
-   * The checkout, branch and chat a pull request from `from` comes from: in a branch room, the branch it is pinned to, which is a teammate's text, so it must be one git can be given
-   * as a branch alone and the one the user's checkout of the room's repo is on, as its HEAD says now. Refused, saying why, before any git runs, when it is not.
+   * The checkout, branch, commit and chat a pull request from `from` comes from, and its title when it has one already. In a branch room, the branch it is pinned to, which is a
+   * teammate's text, so it must be one git can be given as a branch alone and the one the user's checkout of the room's repo is on, as its HEAD says now: refused, saying why, before
+   * any git runs, when it is not. From a patch, the branch Apply to a new branch made of it, whose name the desk makes from the patch's id, and the patch's title.
    */
-  private async pullSource(from: PullFrom): Promise<{ readonly checkout: Checkout; readonly branch: string; readonly rev: string; readonly chat: string }> {
+  private async pullSource(from: PullFrom): Promise<{ readonly checkout: Checkout; readonly branch: string; readonly rev: string; readonly chat: string; readonly title: string | null }> {
+    if ("patch" in from) {
+      return this.patchSource(from.patch);
+    }
     const info = this.channels.find((channel) => channel.name === from.room);
     if (info?.repo === null || info === undefined || info.branch === null) {
       throw new PlayerTwoError(`${from.room} is not a room about a branch`);
@@ -1756,7 +1760,24 @@ export class Session {
     if (on !== info.branch || !isBranch(on)) {
       throw new PlayerTwoError(`your ${checkout.remote.name} checkout is on ${plain(on)}, not ${plain(info.branch)}: switch to it to open its pull request`);
     }
-    return { checkout, branch: on, rev: "HEAD", chat: from.room };
+    return { checkout, branch: on, rev: "HEAD", chat: from.room, title: null };
+  }
+
+  /** Where a pull request from the patch `id` comes from: the branch of the user's that Apply to a new branch made of it, `player-two/` and the first 8 of its id, and its chat. */
+  private patchSource(id: string): Awaited<ReturnType<Session["pullSource"]>> {
+    const message = this.found(id);
+    const branch = `player-two/${id.slice(0, 8)}`;
+    if (message.patch === null) {
+      throw new PlayerTwoError("that is not a patch");
+    }
+    if (!message.patch.applied.some((each) => each.who === this.me && each.branch === branch)) {
+      throw new PlayerTwoError(`apply it to a new branch first: you have not made ${branch} of it`);
+    }
+    const checkout = this.checkoutOf(message.patch.content.repo);
+    if (checkout === undefined || onAzure(checkout.remote.key) === null) {
+      throw new PlayerTwoError(checkout === undefined ? `you have no checkout of ${message.patch.content.repo.name} under ${this.dev}` : `${checkout.remote.name} is not on Azure DevOps`);
+    }
+    return { checkout, branch, rev: `refs/heads/${branch}`, chat: chatOf(message.entry.event, this.me), title: message.patch.content.title };
   }
 
   /** The branch a pull request from `checkout`'s repo goes into: the default Azure DevOps names for it, or where it names none, as in an empty repo, the one its origin names. */
@@ -1772,12 +1793,15 @@ export class Session {
     return target;
   }
 
-  /** What a pull request from `from` would be, for the dialog that opens one: into the repo's default branch, titled with its first commit's subject, and described by all of them when there are more. */
+  /**
+   * What a pull request from `from` would be, for the dialog that opens one: into the repo's default branch, titled as its patch is or else with its first commit's subject, and described
+   * by all of them when there are more.
+   */
   public async pullForm(from: PullFrom): Promise<Form> {
-    const { checkout, branch, rev } = await this.pullSource(from);
+    const { checkout, branch, rev, title } = await this.pullSource(from);
     const target = await this.targetOf(checkout);
     const said = await repos.subjects(checkout.path, rev, target);
-    return { repo: checkout.remote.name, branch, target, title: said[0] ?? branch, description: said.length > 1 ? said.map((subject) => `- ${subject}`).join("\n") : "" };
+    return { repo: checkout.remote.name, branch, target, title: title ?? said[0] ?? branch, description: said.length > 1 ? said.map((subject) => `- ${subject}`).join("\n") : "" };
   }
 
   /**

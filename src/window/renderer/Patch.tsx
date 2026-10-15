@@ -11,6 +11,7 @@ import { modeOf, parseDiff } from "../../core/diff.ts";
 import type { DiffFile } from "../../core/diff.ts";
 import type { PatchView } from "../../shared/ipc.ts";
 import type { Act } from "./App.tsx";
+import { PullButton } from "./Pulls.tsx";
 
 const MARKS: Readonly<Record<string, string>> = { "+": "text-green-700 dark:text-green-400", "-": "text-destructive", "\\": "text-muted-foreground" }; // A changed line, by its first character.
 
@@ -131,8 +132,9 @@ function Review({ id, act }: { readonly id: string; readonly act: Act }): JSX.El
 
 /**
  * What has been done with a patch in the chat, and what the reader can do: who applied it to which branch, and who approved it or asked for changes, saying what, each in order; for
- * a reader with a checkout of its repo, Apply, to the branch it is on, and Apply to a new branch, made from the commit the patch was made on; and for anyone, Review. The desk checks a
- * patch's paths and whether git takes it, then asks in a dialog of the system's own; the buttons wait until it has its answer.
+ * a reader with a checkout of its repo, Apply, to the branch it is on, and Apply to a new branch, made from the commit the patch was made on, after which Push and open a pull request
+ * opens one from that branch; and for anyone, Review. The desk checks a patch's paths and whether git takes it, then asks in a dialog of the system's own; the buttons wait until it
+ * has its answer.
  */
 export function PatchActions({ id, patch, me, act }: { readonly id: string; readonly patch: PatchView; readonly me: string; readonly act: Act }): JSX.Element {
   const [busy, setBusy] = useState(false);
@@ -187,6 +189,11 @@ export function PatchActions({ id, patch, me, act }: { readonly id: string; read
             >
               Apply to a new branch
             </Button>
+            {patch.applied.some((each) => each.who === me && each.branch === `player-two/${id.slice(0, 8)}`) && (
+              <PullButton from={{ patch: id }} act={act}>
+                Push and open a pull request
+              </PullButton>
+            )}
           </>
         )}
         <Review id={id} act={act} />
