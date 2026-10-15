@@ -741,6 +741,7 @@ await test("each kind's content is read by its kind, and anything else is unknow
     ["channel.join", {}],
     ["channel.leave", {}],
     ["channel.pin", { repo: { name: "uploader", key: "dev.azure.com/acme/platform/uploader", url: "https://dev.azure.com/acme/Platform/_git/uploader" }, branch: null }],
+    ["channel.pin", { repo: { name: "uploader", key: "dev.azure.com/acme/platform/uploader", url: "https://dev.azure.com/acme/Platform/_git/uploader" }, branch: "feature/retry" }], // From phase 6.
     ["channel.pin", { repo: null, branch: null }],
     ["job.accepted", accepted],
     ["job.declined", { repo: "uploader", reason: "" }],
@@ -764,7 +765,7 @@ await test("each kind's content is read by its kind, and anything else is unknow
   assert.equal(read("message", [{ text: "hi", via: "window" }]), "unknown");
   assert.equal(read("job.accepted", { ...accepted, mode: "supervised" }), `job.accepted ${JSON.stringify({ ...accepted, mode: "supervised" })}`); // Every permission mode, from phase 3.
   assert.equal(read("job.accepted", { ...accepted, mode: "everything" }), "unknown");
-  assert.equal(read("channel.pin", { repo: null, branch: "main" }), "unknown"); // Not until phase 6.
+  assert.equal(read("channel.pin", { repo: null, branch: "main" }), "unknown"); // A branch goes with a repo.
   assert.equal(read("job.withdrawn", { agent: "uploader" }), "unknown");
   assert.equal(read("job.progress", { repo: "uploader", summary: "running npm test" }), "unknown"); // Never a command, a path or output.
   assert.equal(read("agent.register", { repo: "uploader", pubkey: "AB".repeat(32) }), "unknown"); // A key in lowercase hex, as every key is written.

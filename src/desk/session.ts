@@ -368,7 +368,7 @@ export class Session {
           await this.leaveChannel(command.chat);
           break;
         case "pin":
-          await this.pin(command.chat, command.repo);
+          await this.pin(command.chat, command.repo, command.branch);
           break;
         case "unpin":
           await this.publish(command.chat, "channel.pin", { repo: null, branch: null });
@@ -1342,13 +1342,13 @@ export class Session {
     this.hooks.changed();
   }
 
-  /** Say which repo a channel is about: one the user has a checkout of. */
-  private async pin(chat: string, repo: string): Promise<void> {
+  /** Say which repo a channel is about, one the user has a checkout of, and with a branch, which branch of it: a branch room. */
+  private async pin(chat: string, repo: string, branch: string | null): Promise<void> {
     const checkout = this.checkouts.get(repo);
     if (checkout === undefined) {
       throw new PlayerTwoError(`you have no checkout of ${repo} to pin`);
     }
-    await this.publish(chat, "channel.pin", { repo: refOf(checkout.remote), branch: null });
+    await this.publish(chat, "channel.pin", { repo: refOf(checkout.remote), branch });
     await this.refreshChannels();
   }
 

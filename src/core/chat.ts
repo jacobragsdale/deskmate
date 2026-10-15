@@ -89,7 +89,7 @@ export interface Message {
 /** One thing in a chat, in the order the hub stored it. Replies are under their thread's root, not here. */
 export type Item =
   | { readonly kind: "message"; readonly message: Message }
-  | { readonly kind: "line"; readonly entry: Entry; readonly did: "joined" | "left" | "pinned" | "unpinned"; readonly repo: string } // Someone joined, left, or pinned a repo (named) or unpinned one.
+  | { readonly kind: "line"; readonly entry: Entry; readonly did: "joined" | "left" | "pinned" | "unpinned"; readonly repo: string } // Someone joined, left, or pinned a repo (named, with the branch when the pin names one) or unpinned one.
   | { readonly kind: "untrusted"; readonly entry: Entry }; // Its signature does not hold under the key first seen for its author: shown as a warning, never with what it says.
 
 /** One agent tagged in one message, and how far its owner has got with it. */
@@ -443,7 +443,8 @@ function apply(folded: Folded, entry: Entry): void {
   } else if (said.kind === "channel.join" || said.kind === "channel.leave") {
     folded.items.push({ kind: "line", entry, did: said.kind === "channel.join" ? "joined" : "left", repo: "" });
   } else if (said.kind === "channel.pin") {
-    folded.items.push({ kind: "line", entry, did: said.content.repo === null ? "unpinned" : "pinned", repo: said.content.repo?.name ?? "" });
+    const { repo, branch } = said.content;
+    folded.items.push({ kind: "line", entry, did: repo === null ? "unpinned" : "pinned", repo: repo === null ? "" : `${repo.name}${branch === null ? "" : ` on ${branch}`}` });
   }
 }
 

@@ -13,6 +13,7 @@ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/componen
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
+import { isBranch } from "../../core/rooms.ts";
 import type { Agent } from "../../core/wire.ts";
 import { noticeSchema, outcomeSchema, viewSchema } from "../../shared/ipc.ts";
 import type { ChatView, Check, Command, Notice, View } from "../../shared/ipc.ts";
@@ -264,11 +265,11 @@ function Chat({ view, act, tell, onSetup, onAgents }: ChatProps): JSX.Element {
       {dialog === "pin" && current !== null && (
         <PickRepo
           title={`Which repo is ${current.chat} about?`}
-          repos={view.myRepos}
-          onDone={(repo) => {
+          choices={view.checkouts.flatMap(({ repo, branch }) => [{ repo, branch: null }, ...(isBranch(branch) ? [{ repo, branch }] : [])])}
+          onDone={(pick) => {
             setDialog("");
-            if (repo !== "") {
-              act({ do: "pin", chat: current.chat, repo });
+            if (pick !== null) {
+              act({ do: "pin", chat: current.chat, ...pick });
             }
           }}
         />

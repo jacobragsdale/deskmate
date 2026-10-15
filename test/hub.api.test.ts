@@ -283,12 +283,13 @@ await test("joining, leaving and pinning are events the hub acts on, and one it 
     422,
     "side-project is not under dev.azure.com/acme, so this hub does not share it"
   ]);
-  assert.deepEqual(await post(hub, "alice", signed(hub, "alice", "#backend", "channel.pin", { repo: uploader, branch: "main" })), [422, "invalid content: not what channel.pin holds"]); // Not until phase 6.
+  assert.deepEqual(await post(hub, "alice", signed(hub, "alice", "#backend", "channel.pin", { repo: uploader, branch: "feature/retry" })), [201, 6]); // A branch room, from phase 6.
+  assert.deepEqual(await channel(), { name: "#backend", members: ["alice"], repo: uploader, branch: "feature/retry" });
   assert.deepEqual(await post(hub, "alice", signed(hub, "alice", "#backend", "channel.join", "not JSON")), [422, "invalid content: not what channel.join holds"]);
   assert.deepEqual(await post(hub, "alice", signed(hub, "alice", "bob", "channel.join")), [422, "channel.join is sent to the channel it is about"]);
   assert.deepEqual(await post(hub, "bob", signed(hub, "bob", "#backend", "channel.leave")), [403, "join #backend before posting to it"]);
-  assert.deepEqual(await channel(), { name: "#backend", members: ["alice"], repo: null, branch: null });
-  assert.deepEqual(await post(hub, "alice", signed(hub, "alice", "#backend", "message", { text: "still here", via: "cli" })), [201, 6]); // Nothing refused was stored.
+  assert.deepEqual(await channel(), { name: "#backend", members: ["alice"], repo: uploader, branch: "feature/retry" });
+  assert.deepEqual(await post(hub, "alice", signed(hub, "alice", "#backend", "message", { text: "still here", via: "cli" })), [201, 7]); // Nothing refused was stored.
 });
 
 await test("a direct event reaches the two people in it and nobody else, and a chat with one person holds both directions", async (t) => {

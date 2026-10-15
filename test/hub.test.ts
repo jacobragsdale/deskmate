@@ -416,7 +416,7 @@ await test("two people, their agents and a channel, through the real hub", { tim
 
   // A channel, pinned to a repo: both are members and both have it.
   await jacob.session.handle({ do: "joinChannel", name: "backend" });
-  await jacob.session.handle({ do: "pin", chat: "#backend", repo: "uploader" });
+  await jacob.session.handle({ do: "pin", chat: "#backend", repo: "uploader", branch: null });
   await jacob.session.handle({ do: "send", chat: "#backend", text: "who owns the uploader?" });
   await until(bob.session, "bob can join it", (view) => view.otherChannels.some((channel) => channel.name === "#backend"));
   await bob.session.handle({ do: "joinChannel", name: "#backend" });

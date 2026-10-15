@@ -1,4 +1,4 @@
-/** What the window asks in a dialog: which channel to join, which repo a channel is about, and, on Cmd+K or Ctrl+K, which chat or message to open. */
+/** What the window asks in a dialog: which channel to join, which repo, or branch of one, a channel is about, and, on Cmd+K or Ctrl+K, which chat or message to open. */
 
 import { cn } from "cn";
 import { useEffect, useState } from "react";
@@ -86,27 +86,34 @@ export function JoinChannel({ others, onDone }: { readonly others: readonly { re
   );
 }
 
-export function PickRepo({ title, repos, onDone }: { readonly title: string; readonly repos: readonly string[]; readonly onDone: (repo: string) => void }): JSX.Element {
+/** A repo to pin, the whole of it or with `branch` the branch the user's checkout is on. */
+export interface Pick {
+  readonly repo: string;
+  readonly branch: string | null;
+}
+
+export function PickRepo({ title, choices, onDone }: { readonly title: string; readonly choices: readonly Pick[]; readonly onDone: (pick: Pick | null) => void }): JSX.Element {
   return (
     <Modal
       title={title}
       onDismiss={() => {
-        onDone("");
+        onDone(null);
       }}
     >
-      {repos.length === 0 && <p className="text-muted-foreground">You have no team repos checked out to pin.</p>}
+      {choices.length === 0 && <p className="text-muted-foreground">You have no team repos checked out to pin.</p>}
       <ul className="mt-2 max-h-60 overflow-y-auto">
-        {repos.map((repo) => (
-          <li key={repo}>
+        {choices.map((pick) => (
+          <li key={`${pick.repo} ${pick.branch ?? ""}`}>
             <Button
               type="button"
               variant="ghost"
               className={CHOICE}
               onClick={() => {
-                onDone(repo);
+                onDone(pick);
               }}
             >
-              {repo}
+              {pick.repo}
+              {pick.branch !== null && <span className="truncate text-muted-foreground">on {pick.branch}</span>}
             </Button>
           </li>
         ))}

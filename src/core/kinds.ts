@@ -27,7 +27,14 @@ export const contentSchema = z
     z.object({ kind: z.literal("reaction"), content: z.object({ emoji: z.string().min(1).max(32), on: z.boolean() }).readonly() }), // `on: false` takes it back.
     z.object({ kind: z.literal("channel.join"), content: nothing }),
     z.object({ kind: z.literal("channel.leave"), content: nothing }),
-    z.object({ kind: z.literal("channel.pin"), content: z.object({ repo: repoRefSchema.nullable(), branch: z.null() }).readonly() }), // `repo: null` unpins. A branch from phase 6.
+    // `repo: null` unpins. `branch` makes the channel a room about that branch, from phase 6; null is about the whole repo, and unpinning. A reader before phase 6 cannot read one with a branch.
+    z.object({
+      kind: z.literal("channel.pin"),
+      content: z
+        .object({ repo: repoRefSchema.nullable(), branch: branchSchema.nullable() })
+        .refine((pin) => pin.repo !== null || pin.branch === null, "a branch goes with a repo")
+        .readonly()
+    }),
     z.object({
       kind: z.literal("job.accepted"),
       content: z
