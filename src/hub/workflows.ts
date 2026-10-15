@@ -7,6 +7,7 @@ import type { KeyObject } from "node:crypto";
 
 import { Cron } from "croner";
 
+import { mentions, spans } from "../core/chat.ts";
 import { readContent } from "../core/kinds.ts";
 import type { Content, ContentOf, RunStatus } from "../core/kinds.ts";
 import { signEvent } from "../core/sign.ts";
@@ -47,6 +48,17 @@ interface Place {
 interface Firing {
   readonly fires: (on: Trigger) => boolean;
   readonly values: Values;
+}
+
+/**
+ * `text`, which a workflow's `template` was filled into, with every tag in it but those the template wrote made no tag by writing its "@" as a fullwidth "＠": so a value filled in, from
+ * a webhook's body or someone's message, never tags an agent, and what a workflow can tag is in its file. It reads as it did, and is no longer.
+ */
+function untagged(template: string, text: string): string {
+  const written = new Set(mentions(template).map(([owner, repo]) => `${owner}/${repo}`));
+  return spans(text)
+    .map((part) => (part.tag && !written.has(part.text.slice(1).toLowerCase()) ? `＠${part.text.slice(1)}` : part.text))
+    .join("");
 }
 
 /** Run the workflows live in the hub's database, signing what they do with `key` as the hub, and calling `wake` once something is stored. */
@@ -91,9 +103,9 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, wa
     return { step: at + 1, state: at + 1 < going.file.steps.length ? "running" : "ended" };
   }
 
-  /** What a message the hub posts for a run says: its template filled in, cut to fit an event. */
+  /** What a message the hub posts for a run says: its template filled in, cut to fit an event, tagging only the agents its template names; cut first, as cutting can leave part of a tag at the end. */
   function told(template: string, values: Values): string {
-    return fitText(fill(template, values));
+    return untagged(template, fitText(fill(template, values)));
   }
 
   /** Take a run's steps one at a time from `from`, each recorded as it ends. */
@@ -105,8 +117,9 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, wa
       }
       if (step.if !== undefined && !holds(step.if, going.values)) {
         record(going, at, "skipped", "", onward(going, at));
-      } else if (step.kind === "post") {
-        record(going, at, "done", "", onward(going, at), told(step.post, going.values));
+      } else if (step.kind === "post" || step.kind === "tag") {
+        // A tag is a message like a person's, and the step ends once it is stored: the job it makes waits for the agent's owner, or a grant naming the workflow, on their own desk.
+        record(going, at, "done", "", onward(going, at), told(step.kind === "post" ? step.post : `${step.tag} ${step.text}`, going.values));
       } else {
         record(going, at, "failed", `this hub does not yet take ${step.kind} steps`, { step: at, state: "ended" });
         return;

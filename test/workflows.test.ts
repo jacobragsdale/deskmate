@@ -10,7 +10,9 @@ import { test } from "node:test";
 import { scheduledJobs } from "croner";
 import { z } from "zod";
 
+import { mentions } from "../src/core/chat.ts";
 import { readContent } from "../src/core/kinds.ts";
+import { fitText } from "../src/core/wire.ts";
 import type { Client } from "../src/desk/client.ts";
 import { startHub } from "./startHub.ts";
 import type { Hub } from "./startHub.ts";
@@ -232,4 +234,44 @@ await test("the hook compares the secret it is given with the workflow's by timi
     compared.mock.calls.map((call) => call.result),
     [false, true, false]
   );
+});
+
+const TAGS = `name: ci-failure
+on:
+  webhook: {}
+steps:
+  - post: "The build failed on {{body.branch}}, pushed by @{{body.who}}/uploader"
+  - tag: "@bob/uploader"
+    text: "The build at {{body.url}} failed. What broke? Ask @alice/billing too."
+  - post: "{{body.pad}} @bob/uploader {{body.more}}"
+`;
+
+await test("post and tag publish the hub's messages, a tag's step ending once its message is stored; an agent is tagged only as the file writes it, never by a value filled in or by cutting a long text short", async (t) => {
+  const hub = await startHub(t);
+  const [alice] = await team(hub, "alice");
+  assert.ok(alice !== undefined);
+  const { event: definition } = await alice.publish("#ops", "workflow.define", { name: "ci-failure", yaml: TAGS });
+  const cut = fitText("x".repeat(100_000)).length; // Where a long text is cut to fit an event.
+  const body = { branch: "main @carol/secrets", who: "carol", url: "https://ci/1 @carol/secrets", pad: "x".repeat(cut - " @bob/u".length), more: "y".repeat(10_000) };
+
+  const answer = await fetch(`${hub.url}/hooks/${definition.id.slice(0, 32)}`, { method: "POST", body: JSON.stringify(body) });
+
+  assert.equal(answer.status, 202);
+  const posted = (await alice.events({ chat: "#ops" })).flatMap(({ event }) => {
+    const said = readContent(event);
+    return event.author === "hub" && said.kind === "message" ? [said.content.text] : [];
+  });
+  assert.deepEqual(
+    posted.reverse().map((text) => [text.length > 200 ? `${String(text.length)} characters` : text, mentions(text).map((tag) => tag.join("/"))]),
+    [
+      ["The build failed on main ＠carol/secrets, pushed by ＠carol/uploader", []],
+      ["@bob/uploader The build at https://ci/1 ＠carol/secrets failed. What broke? Ask @alice/billing too.", ["bob/uploader", "alice/billing"]],
+      [`${String(cut)} characters`, []] // It ended "@bob/u", which would tag someone else's agent.
+    ]
+  );
+  assert.deepEqual(
+    (await channel(alice)).filter((line) => line.startsWith("hub: ci-failure")),
+    ["hub: ci-failure run 1 step 0 done", "hub: ci-failure run 1 step 1 done", "hub: ci-failure run 1 step 2 done"]
+  );
+  assert.deepEqual(runs(hub), ["ci-failure 1 3 ended"]);
 });
