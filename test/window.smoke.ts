@@ -728,6 +728,22 @@ async function workflows(page: Page, bob: Client, hub: string, home: string): Pr
   await choose("asker", "workflow:");
   await choose("channel", "#ops");
   await page.type('[role="dialog"] input[name="workflow"]', "ci-failure");
+  // Full access for a workflow is warned of as for anyone on the hub, and posted directly asks the same second yes: whatever sets it off could then run her agent.
+  await choose("mode", "full");
+  await page.until(
+    "the warning about full access for a workflow",
+    `${form}.innerText.includes("Whatever sets workflow ci-failure in #ops off, anyone with its webhook’s address among them, could have your billing agent do anything your account can")`
+  );
+  await choose("delivery", "post");
+  await page.click('[role="dialog"] button[type="submit"]');
+  await page.until(
+    "the second yes for a workflow",
+    `document.querySelector('[role="dialog"]')?.innerText.includes("Let workflow ci-failure in #ops run your billing agent with full access?") === true`
+  );
+  assert.equal(await page.eval(`[...document.querySelectorAll('[role="dialog"] button')].some((each) => each.textContent === "Grant full access to this workflow")`), true);
+  await page.click('[role="dialog"] button', "Back");
+  await page.until("the grant's dialog again", `${form}?.querySelector('select[name="mode"]')?.value === "full"`);
+  await choose("delivery", "review");
   await choose("mode", "read-only");
   await page.until("what the grant names", `${form}.innerText.includes("The grant names workflow ci-failure in #ops.")`);
   await page.shot("grant-workflow");

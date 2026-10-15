@@ -39,6 +39,21 @@ function askersOf(asker: string, workflow: Parameters<typeof workflowAsker>[0]):
 }
 
 /**
+ * Who could run the agent under a grant to `asker` that is not one person, as the dialog warns of full access for them: anyone on the hub, or whatever sets the workflow named off, a webhook's
+ * caller from outside the hub among them; and who they are, in the second yes's question and its button. All "" for a person.
+ */
+function openTo(asker: string, workflow: Parameters<typeof workflowAsker>[0]): { readonly whoever: string; readonly them: string; readonly grantee: string } {
+  if (asker === "*") {
+    return { whoever: "Anyone on the hub, and anyone who joins it later,", them: "anyone", grantee: "anyone" };
+  }
+  if (asker !== A_WORKFLOW) {
+    return { whoever: "", them: "", grantee: "" };
+  }
+  const named = askerWords(workflowAsker({ ...workflow, name: workflow.name === "" ? "…" : workflow.name }));
+  return { whoever: `Whatever sets ${named} off, anyone with its webhook’s address among them,`, them: named, grantee: "this workflow" };
+}
+
+/**
  * While "Who may ask" is a workflow, the fields that name it: one of the user's channels and the workflow's name there, and what the grant then names, in words, from `workflowAsker`, which
  * makes the asker itself; and that whatever sets the workflow off can then run the agent.
  */
@@ -136,8 +151,9 @@ function NewGrant({ repo, people, channels, cannot, untested, act, onDone }: New
   const [delivery, setDelivery] = useState<GrantView["delivery"]>("review");
   const [lasts, setLasts] = useState<number>(LASTS[0].seconds);
   const [runs, setRuns] = useState(RUNS);
-  const [confirming, setConfirming] = useState(false); // Asking the second yes, for full access posted directly for everyone.
-  const anyoneFull = mode === "full" && asker === "*"; // Said whatever the delivery: a review reads the answer only after the agent has acted.
+  const [confirming, setConfirming] = useState(false); // Asking the second yes, for full access posted directly for anyone on the hub or a workflow.
+  const { whoever, them, grantee } = openTo(asker, workflow);
+  const anyoneFull = mode === "full" && whoever !== ""; // Said whatever the delivery: a review reads the answer only after the agent has acted.
   const described = [untested === "" ? "" : "untested", anyoneFull ? "anyone-full" : ""].filter((id) => id !== "").join(" "); // What the mode's field points a screen reader to.
   const [sending, setSending] = useState(false); // While the desk makes the grant: Grant does nothing more, so a second click, or a double click, makes no second grant.
   const grant = (): void => {
@@ -154,7 +170,7 @@ function NewGrant({ repo, people, channels, cannot, untested, act, onDone }: New
   };
   const submit = (event: SyntheticEvent<HTMLFormElement>): void => {
     event.preventDefault();
-    if (mode === "full" && delivery === "post" && asker === "*") {
+    if (mode === "full" && delivery === "post" && whoever !== "") {
       setConfirming(true);
     } else {
       grant();
@@ -162,14 +178,14 @@ function NewGrant({ repo, people, channels, cannot, untested, act, onDone }: New
   };
   if (confirming) {
     return (
-      <Modal title={`Let anyone run your ${repo} agent with full access?`} className="sm:max-w-md" onDismiss={onDone}>
+      <Modal title={`Let ${them} run your ${repo} agent with full access?`} className="sm:max-w-md" onDismiss={onDone}>
         <p>
-          Anyone on the hub, and anyone who joins it later, could then have your {repo} agent do anything your account can on this machine, change any file and run any command, without asking you.
-          What it writes is posted to the chat before you have read it. Up to {runs} times a day, for {LASTS.find((each) => each.seconds === lasts)?.label.toLowerCase()}, with nobody at your desk.
+          {whoever} could then have your {repo} agent do anything your account can on this machine, change any file and run any command, without asking you. What it writes is posted to the chat before
+          you have read it. Up to {runs} times a day, for {LASTS.find((each) => each.seconds === lasts)?.label.toLowerCase()}, with nobody at your desk.
         </p>
         <p className="flex gap-2">
           <Button type="button" variant="destructive" disabled={sending} onClick={grant}>
-            Grant full access to anyone
+            Grant full access to {grantee}
           </Button>
           <Button
             type="button"
@@ -233,7 +249,7 @@ function NewGrant({ repo, people, channels, cannot, untested, act, onDone }: New
         )}
         {anyoneFull && (
           <p id="anyone-full" className="-mt-2 text-xs text-warn">
-            Anyone on the hub, and anyone who joins it later, could have your {repo} agent do anything your account can on this machine, change any file and run any command, without asking you
+            {whoever} could have your {repo} agent do anything your account can on this machine, change any file and run any command, without asking you
             {delivery === "review" ? ": you would review its answer, but only once it has acted." : "."}
           </p>
         )}
