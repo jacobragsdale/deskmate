@@ -1,6 +1,7 @@
 /** The hub running workflows: what sets a run off, each step, approvals across a restart, the webhook allow list and the limits, against a hub in this process on a clock the test moves. */
 
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import dns from "node:dns";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -938,14 +939,15 @@ await test("the hub's own messages set nothing off, though they hold a workflow'
 });
 
 await test(
-  "a workflow's tag of an agent, set off by its hook, waits for the agent's owner, and runs at once under a grant naming the workflow, whose answer is posted",
+  "a workflow's tag of an agent in a branch room, set off by its hook, waits for the agent's owner and runs once they let it, and runs at once under a grant naming the workflow, each answer posted in the room",
   { timeout: 30_000 },
   async (t) => {
     const hub = await startHub(t);
     const [alice, owner] = await team(hub, "alice", "bob");
     assert.ok(alice !== undefined && owner !== undefined);
     const dev = join(hub.dir, "dev-bob");
-    checkout(dev, "uploader"); // A real one: a teammate's request above read-only runs on a clean copy of it.
+    const uploader = checkout(dev, "uploader"); // A real one: a teammate's request above read-only runs on a clean copy of it.
+    execFileSync("git", ["-C", uploader, "checkout", "-q", "-b", "fix/retry"]);
     const ran: string[] = [];
     const bob = new Session(
       owner,
@@ -953,7 +955,7 @@ await test(
       { changed: () => undefined, notice: () => undefined, arrived: () => undefined, confirmClone: () => Promise.resolve(false) },
       {
         presence: 1,
-        describe: () => Promise.resolve({ branch: "main", commit: "c0ffee".padEnd(40, "0"), dirty: false }),
+        describe: () => Promise.resolve({ branch: "fix/retry", commit: "c0ffee".padEnd(40, "0"), dirty: false }),
         runner: (argv) => {
           ran.push(argv.at(-1) ?? "");
           return Promise.resolve("the cache was cold");
@@ -975,7 +977,10 @@ await test(
       throw new Error(`never shown: ${what}`);
     };
     await shown("bob's checkout", () => bob.view().loaded && bob.view().myRepos.includes("uploader"));
+    // #ops is the room of uploader's fix/retry, which bob's checkout is on, and the workflow lives there.
+    await alice.publish("#ops", "channel.pin", { repo: { name: "uploader", key: "dev.azure.com/acme/platform/uploader", url: `${TEAM_REPOS}Platform/_git/uploader` }, branch: "fix/retry" });
     await bob.handle({ do: "open", chat: "#ops" });
+    await shown("the branch room, with bob on its branch", () => bob.view().current?.pinned?.branch === "fix/retry" && bob.view().current?.pinned?.on.includes("bob"));
     const yaml = hooked("ci-failure", 'tag: "@bob/uploader"\n    text: "The build {{body.id}} failed. What broke?"');
     const { event: definition } = await alice.publish("#ops", "workflow.define", { name: "ci-failure", yaml });
     const request = async (id: number, hook = definition.id): Promise<string> => {
@@ -1011,5 +1016,20 @@ await test(
       setTimeout(resolve, 300);
     });
     assert.deepEqual([status(third), ran.length], ["ready", 1]);
+
+    // The first, which waited for bob, runs once he lets it, and its answer is posted in the room too.
+    await bob.handle({ do: "open", chat: "#ops" });
+    const text = bob.view().current?.messages.find((message) => message.id === first)?.body ?? "";
+    await bob.handle({ do: "run", id: first, repo: "uploader", post: true, mode: "full", text });
+    await shown("the run bob let go", () => ran.length === 2);
+    assert.match(ran[1] ?? "", /The build 1 failed\. What broke\?/);
+    let answers = 0;
+    for (let tries = 0; tries < 200 && answers === 0; tries += 1) {
+      answers = (await alice.events({ chat: "#ops" })).filter(({ event }) => event.kind === "job.result" && event.refs[0] === first).length;
+      await new Promise((resolve) => {
+        setTimeout(resolve, 50);
+      });
+    }
+    assert.equal(answers, 1);
   }
 );
