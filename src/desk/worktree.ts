@@ -98,8 +98,9 @@ export async function lock(worktree: Worktree): Promise<void> {
 }
 
 /**
- * Remove the worktrees a desk that stopped without closing them left behind, in the checkouts under `dev`, and git's record of one whose folder is gone already.
- * One its owner locked (`git worktree lock`) is kept: neither command touches it. The checkouts' other worktrees are left alone. Nothing here throws.
+ * Remove the worktrees a desk that stopped without closing them left behind, in the checkouts under `dev`, and git's record of one whose folder is gone already, which
+ * `git worktree remove` forgets as well. One its owner locked (`git worktree lock`) is kept, as one --force leaves it. The checkouts' other worktrees, and git's records of them, are
+ * left alone: git worktree prune would forget every one whose folder is gone, the user's own among them. Nothing here throws.
  */
 export async function sweep(dev: string): Promise<void> {
   const ours = `${existsSync(root()) ? realpathSync(root()) : root()}/`; // git writes a worktree's path with every link in it followed.
@@ -111,13 +112,8 @@ export async function sweep(dev: string): Promise<void> {
   }
   for (const repo of folders.map((folder) => join(dev, folder)).filter((path) => existsSync(join(path, ".git", "worktrees")))) {
     const listed = await git(["-C", repo, "worktree", "list", "--porcelain", "-z"], LIMIT);
-    const paths = listed.stdout.split("\0").flatMap((field) => (field.startsWith(`worktree ${ours}`) ? [field.slice("worktree ".length)] : []));
-    const gone = paths.filter((path) => !existsSync(path));
-    for (const path of paths.filter((each) => !gone.includes(each))) {
+    for (const path of listed.stdout.split("\0").flatMap((field) => (field.startsWith(`worktree ${ours}`) ? [field.slice("worktree ".length)] : []))) {
       await git(["-C", repo, "worktree", "remove", "--force", path], LIMIT);
-    }
-    if (gone.length > 0) {
-      await git(["-C", repo, "worktree", "prune"], LIMIT); // It also forgets any other worktree of the repo's whose folder is gone and that is not locked, as `git gc` would.
     }
   }
 }

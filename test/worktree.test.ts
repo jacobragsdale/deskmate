@@ -214,7 +214,7 @@ await test("a change that records another repository's commit, a new submodule o
   await close(worktree);
 });
 
-await test("on start, the worktrees left in ~/.player-two/worktrees are removed and git forgets one whose folder is gone; one kept, locked with its .git git's own again, and the checkout's own stay", async () => {
+await test("on start, the worktrees left in ~/.player-two/worktrees are removed and git forgets one whose folder is gone; one kept, locked with its .git git's own again, and the checkout's own stay, git's record of one whose folder is gone too", async () => {
   const { dev, repo } = checkout();
   const left = await open(repo, jobId());
   const deleted = await open(repo, jobId());
@@ -226,11 +226,14 @@ await test("on start, the worktrees left in ~/.player-two/worktrees are removed 
   assert.equal(readFileSync(join(kept.path, ".git"), "utf8"), `gitdir: ${kept.gitDir}\n`);
   const own = join(dir, "own-worktree");
   git(repo, ["worktree", "add", "-q", "--detach", own]);
+  const ownGone = join(dir, "own-worktree-gone"); // The user's own, whose folder they took away: forgetting it is for them, or for git gc in months.
+  git(repo, ["worktree", "add", "-q", "--detach", ownGone]);
+  rmSync(ownGone, { recursive: true });
   mkdirSync(join(dir, "not-a-checkout"), { recursive: true });
 
   await sweep(dev);
   assert.equal(existsSync(left.path), false);
-  assert.deepEqual(worktrees(repo), [repo, kept.path, own].sort(byCodeUnit));
+  assert.deepEqual(worktrees(repo), [repo, kept.path, own, ownGone].sort(byCodeUnit));
   await sweep(join(dir, "no-such-folder"));
 });
 
