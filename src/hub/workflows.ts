@@ -55,6 +55,8 @@ const THUMBS_UP = /^👍[\u{1F3FB}-\u{1F3FF}]?$/u; // In any skin tone.
 const CALL_TIME = 10; // Seconds a webhook step's call may take, answer and all.
 const MAX_ANSWER = 1024 * 1024; // Most bytes of a webhook's answer the hub reads, and throws away: nothing of it goes into the chat.
 const ALLOW = "PLAYER_TWO_WEBHOOK_ALLOW";
+const HOURLY = 30; // Most runs one workflow may start in an hour.
+const WAITING = 50; // Most runs of one workflow that may wait for a 👍 at once.
 
 // Where the hub's own machine, and a cloud's metadata service, answer: loopback, link-local and "this network". A name may lead there only when the allow list names the address itself.
 const NEARBY = new BlockList();
@@ -359,11 +361,33 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, al
     }
   }
 
-  /** Set off a run of a live workflow with the values its templates are filled from. A failure is the hub's to log: whatever set the run off is not told. */
+  /** Why a workflow may not start a run at `ts`, as it has started as many as it may in the hour before or has as many waiting as it may, "" when it may; and whether its newest run was throttled. */
+  function limit(live: Live, ts: number): { readonly full: string; readonly again: boolean } {
+    const { lately, waiting, last } = db.runCounts(live.channel, live.name, ts - 3_600);
+    const most = "the most it may";
+    const full =
+      lately >= HOURLY ? `${live.name} has started ${String(HOURLY)} runs in the last hour, ${most}` : waiting >= WAITING ? `${live.name} has ${String(WAITING)} runs waiting for a 👍, ${most}` : "";
+    return { full, again: last === "throttled" };
+  }
+
+  /**
+   * Set off a run of a live workflow with the values its templates are filled from; or, past a limit, record it as throttled, having done nothing. Only the first run throttled since one
+   * last started is recorded, so that calling a hook again and again cannot fill the channel; those after it leave no trace. A failure is the hub's to log: whatever set the run off is not told.
+   */
   function start(live: Live, values: Values): void {
     try {
-      const going = { run: db.addRun(live, values, Math.floor(now()), "running"), channel: live.channel, name: live.name, definition: live.event, file: fileOf(live), values };
-      go(going, 0).catch(failed);
+      const ts = Math.floor(now());
+      const { full, again } = limit(live, ts);
+      if (full !== "" && again) {
+        return;
+      }
+      const run = db.addRun(live, full === "" ? values : {}, ts, full === "" ? "running" : "throttled");
+      const going = { run, channel: live.channel, name: live.name, definition: live.event, file: fileOf(live), values };
+      if (full === "") {
+        go(going, 0).catch(failed);
+      } else {
+        record(going, 0, "throttled", full, { step: 0, state: "throttled" });
+      }
     } catch (error) {
       failed(error);
     }

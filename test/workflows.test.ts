@@ -613,3 +613,55 @@ await test(
     );
   }
 );
+
+await test("a workflow starts at most 30 runs an hour; one past that is recorded as throttled and does nothing, and those after it, until a run starts again, leave no trace", async (t) => {
+  let clock = NOW;
+  const hub = await startHub(t, () => clock);
+  const [alice] = await team(hub, "alice");
+  assert.ok(alice !== undefined);
+  const { event: often } = await alice.publish("#ops", "workflow.define", { name: "often", yaml: hooked("often", 'post: "ran"') });
+
+  for (let n = 0; n < 33; n += 1) {
+    await setOff(hub, often.id);
+  }
+  clock += 3_600; // The first 30 started an hour ago, to the second.
+  await setOff(hub, often.id);
+  await setOff(hub, often.id);
+
+  const lines = (await channel(alice)).filter((line) => line.startsWith("hub: often"));
+  assert.equal(lines.length, 33);
+  assert.deepEqual(lines.slice(29), [
+    "hub: often run 30 step 0 done",
+    "hub: often run 31 step 0 throttled: often has started 30 runs in the last hour, the most it may",
+    "hub: often run 32 step 0 done",
+    "hub: often run 33 step 0 done"
+  ]);
+  assert.deepEqual(runs(hub).slice(29), ["often 30 1 ended", "often 31 0 throttled", "often 32 1 ended", "often 33 1 ended"]);
+});
+
+await test("a workflow has at most 50 runs waiting for a 👍; one past that is recorded as throttled and does nothing, until one of them moves on", async (t) => {
+  let clock = NOW;
+  const hub = await startHub(t, () => clock);
+  const [alice, bob] = await team(hub, "alice", "bob");
+  assert.ok(alice !== undefined && bob !== undefined);
+  const { event: gated } = await alice.publish("#ops", "workflow.define", { name: "gated", yaml: hooked("gated", 'approve: { from: anyone, text: "go?" }', 'post: "went"') });
+
+  for (let n = 0; n < 50; n += 1) {
+    clock += n === 30 ? 3_600 : 0; // Not past the hourly limit.
+    await setOff(hub, gated.id);
+  }
+  await setOff(hub, gated.id);
+  await setOff(hub, gated.id);
+  await bob.publish("#ops", "reaction", { emoji: "👍", on: true }, [await newestFromHub(alice)]);
+  await setOff(hub, gated.id);
+
+  const lines = (await channel(alice)).filter((line) => line.startsWith("hub: gated"));
+  assert.equal(lines.filter((line) => line.endsWith("waiting: for a 👍 from anyone in #ops")).length, 51);
+  assert.deepEqual(lines.slice(49), [
+    "hub: gated run 50 step 0 waiting: for a 👍 from anyone in #ops",
+    "hub: gated run 51 step 0 throttled: gated has 50 runs waiting for a 👍, the most it may",
+    "hub: gated run 50 step 0 approved: by bob",
+    "hub: gated run 50 step 1 done",
+    "hub: gated run 52 step 0 waiting: for a 👍 from anyone in #ops"
+  ]);
+});
