@@ -681,6 +681,42 @@ await test("a message stored while one chat's page is asked for again arrives, t
   await until(session, "alice's second message", (view) => messages(view).some((message) => message.body === "while carol's page is asked for again"));
 });
 
+await test("a repo list the hub gave before the desk told it of a change does not put the user's old part back", { timeout: 30_000 }, async (t) => {
+  const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+  await hub.join("bob");
+  const dev = join(hub.dir, "dev");
+  checkout(dev, "uploader");
+  let answered = (): void => undefined;
+  let release = (): void => undefined;
+  const heldBack = new Promise<void>((resolve) => {
+    answered = resolve;
+  });
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let holding = true;
+  // The first beat's GET /repos is answered by the hub at once, listing bob's uploader, and handed to the session only once released.
+  const late: Transport = async (method, url, headers, body) => {
+    const text = await http(method, url, headers, body);
+    if (holding && method === "GET" && new URL(url).pathname === "/repos") {
+      holding = false;
+      answered();
+      await released;
+    }
+    return text;
+  };
+  const bob = loadClient(join(hub.dir, "bob"), late, () => Date.now() / 1000);
+  assert.ok(bob !== null);
+  const { session } = deskOf(t, bob, dev, { presence: 60 }); // No second beat while the test runs.
+
+  await heldBack;
+  await session.handle({ do: "hold", repo: "uploader", held: true }); // Which tells the hub at once that bob shares nothing.
+  assert.deepEqual(session.view().team, []);
+  release();
+  await until(session, "the first beat's list taken in", (view) => view.loaded);
+  assert.deepEqual([session.view().team, await bob.repos()], [[], []]);
+});
+
 await test(
   "a link to a note shows who wrote it and its first words when it is loaded, who wrote it and where when it is not, and that the reader cannot see it when the hub will not show it or its signature fails",
   { timeout: 30_000 },

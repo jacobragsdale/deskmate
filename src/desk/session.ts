@@ -293,7 +293,7 @@ export class Session {
   private readonly revocations = new Map<string, Entry>(); // Every revocation, by id.
   private readonly acceptances = new Map<string, Entry>(); // The user's own job.accepted events of the last day, by id, wherever they were sent: what each grant let go, for its daily limit.
   private prefix = ""; // The key every repo this hub shares starts with; "" until the hub has said.
-  private advertised: string | null = null; // What the hub was last told about the user's repos.
+  private advertised: readonly TeamRepo[] | null = null; // What the hub was last told about the user's repos, as the team lists them; null until it has been told.
   private current = ""; // The open chat; "" until one exists.
   private newAfter: number | null = null;
   private focus: CurrentView["focus"] = null; // The message the user last opened a link to, while its chat stays open.
@@ -962,12 +962,11 @@ export class Session {
     const found = await repos.scan(this.dev, this.prefix);
     const shared = found.filter((checkout) => !this.isHeld(checkout.remote.name));
     const adverts = shared.map((checkout) => ({ ...checkout.remote, branch: checkout.branch }));
-    if (JSON.stringify(adverts) !== this.advertised) {
+    const mine = adverts.map((advert) => ({ ...advert, user: this.me }));
+    if (JSON.stringify(mine) !== JSON.stringify(this.advertised)) {
       await this.client.advertise(adverts);
-      this.advertised = JSON.stringify(adverts);
-      // The user's own part of the team is what the hub was just told, in the hub's order, rather than what it said on the last beat: a branch room shows them on their new branch at once.
-      const mine = adverts.map((advert) => ({ ...advert, user: this.me }));
-      this.team = [...this.team.filter((repo) => repo.user !== this.me), ...mine].sort((a, b) => byCodeUnit(`${a.name} ${a.user}`, `${b.name} ${b.user}`));
+      this.advertised = mine;
+      this.team = this.withMine(this.team);
     }
     await this.register(shared);
     this.checkouts = new Map(found.map((checkout) => [checkout.remote.name, checkout]));
@@ -1009,11 +1008,20 @@ export class Session {
     }
     this.people = people;
     this.channels = channels;
-    this.team = team;
+    this.team = this.withMine(team);
     this.connected = true;
     this.problem = "";
     this.openFirst();
     this.hooks.changed();
+  }
+
+  /**
+   * The team as the hub listed it, with the user's own part as this desk last told the hub, in the hub's order: a branch room shows them on their new branch at once, rather than on the next
+   * beat, and a list the hub gave before it was told, which a beat's `refresh` may hand over after a command's `share` (holding a repo back, a clone), does not put the old part back.
+   */
+  private withMine(team: readonly TeamRepo[]): readonly TeamRepo[] {
+    const mine = this.advertised;
+    return mine === null ? team : [...team.filter((repo) => repo.user !== this.me), ...mine].sort((a, b) => byCodeUnit(`${a.name} ${a.user}`, `${b.name} ${b.user}`));
   }
 
   /** Load the newest page of each chat in the list that has not had one: every chat at start-up, and later a channel joined elsewhere or a person new to the hub. */
