@@ -691,10 +691,12 @@ await test(
     const events = async (): Promise<Delivered[]> => (await bob.client.events({ chat, limit: 200 })).reverse();
     /** Bob asks, in the case's channel. */
     const ask = async (text: string): Promise<string> => (await bob.client.publish(chat, "message", { text, via: "cli" })).event.id;
+    const clicked = new Set<string>(); // Each run its owner let go here, as the request's id and the agent.
     /** The owner of the agent `id` asks lets it run, read-only and posted, asking others when `delegate`. */
     const run = async (id: string, agent: string, delegate: boolean): Promise<void> => {
       const desk = deskFor(agent);
       const shown = await eventually(`${agent} can run it`, () => (desk.shown(id)?.requests[0]?.status.kind === "ready" ? desk.shown(id) : undefined));
+      clicked.add(`${id} ${agent}`);
       await desk.session.handle({ do: "run", id, repo: agent.slice(agent.indexOf("/") + 1), post: true, mode: "read-only", text: shown.body, delegate });
     };
     /** The request of `target` an agent made under `parent`, once it is in the chat. */
@@ -811,11 +813,19 @@ await test(
     await jacob.session.handle({ do: "stop", id: unlet, repo: "uploader" });
     await ended(unlet, "jacob/uploader", "job.cancelled");
 
-    // No agent ran on any machine without a job.accepted from its own owner in the log: every event an agent signed about a request comes after its owner let it run on that request.
+    // No agent ran on any machine without a job.accepted from its own owner in the log: every event an agent signed about a request comes after its owner let it run on that request,
+    // and every acceptance is one of the clicks above, as nothing here runs under a grant: a desk publishes one before it starts any run, so the log alone cannot tell a click from a start of its own.
     let checked = 0;
+    const accepted: string[] = [];
     for (const where of chats) {
       chat = where;
       const log = await events();
+      accepted.push(
+        ...log.flatMap(({ event }) => {
+          const said = readContent(event);
+          return said.kind === "job.accepted" ? [`${event.refs[0] ?? ""} ${event.author}/${said.content.repo} ${JSON.stringify(said.content.by)}`] : [];
+        })
+      );
       for (const [at, { event }] of log.entries()) {
         const said = readContent(event);
         if (!event.author.includes("/") || said.kind === "unknown") {
@@ -832,5 +842,7 @@ await test(
       }
     }
     assert.ok(checked > 30);
+    const order = (a: string, b: string): number => a.localeCompare(b);
+    assert.deepEqual(accepted.toSorted(order), [...clicked].map((each) => `${each} "owner"`).toSorted(order));
   }
 );
