@@ -11,8 +11,11 @@ import { problemOf } from "../core/text.ts";
 import { deliveredSchema, HIT_CLOSE, HIT_OPEN, isChannel, personSchema, teamRepoSchema } from "../core/wire.ts";
 import type { Delivered, Event, Person, Repo, RepoRef, TeamRepo } from "../core/wire.ts";
 
-const SCHEMA_VERSION = 6; // 3 was the notes alone, from the Python hub to 0.4.
-const UPGRADABLE = 5; // 0.5's events, which lack only the search index: a hub that finds it adds the index and fills it from the events.
+const SCHEMA_VERSION = 7; // 3 was the notes alone, from the Python hub to 0.4.
+// The versions a hub brings forward: 5, 0.5's events, lacks the search index, which is added and filled from the events; 6 lacks the agents table, which is added empty,
+// since a hub of schema 6 refused every event to "*", the only agent.register it learns a key from.
+const UPGRADABLE: ReadonlySet<number> = new Set([5, 6]);
+const INDEXED_FROM = 6; // The first version with the search index.
 const BUSY_WAIT = 5; // Seconds to wait for another program that holds the file, such as a backup, before giving up.
 const FIRST_CHAIN = "0".repeat(64); // The chain value before the first event.
 
@@ -44,6 +47,8 @@ CREATE INDEX IF NOT EXISTS events_by_author ON events (author, seq);
 CREATE TABLE IF NOT EXISTS event_refs (ref TEXT NOT NULL, seq INTEGER NOT NULL, PRIMARY KEY (ref, seq));
 -- The words of each message and answer as last edited, under the event's seq as its rowid. It keeps its own copy of the text: snippet() reads nothing from a contentless table.
 CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(text);
+-- The key each person's agent in each repo signs with, from their newest agent.register, at seq.
+CREATE TABLE IF NOT EXISTS agents (owner TEXT NOT NULL, repo TEXT NOT NULL, pubkey TEXT NOT NULL, seq INTEGER NOT NULL, PRIMARY KEY (owner, repo));
 `;
 const INDEXED = "('message', 'job.result', 'message.edit', 'message.delete')"; // The kinds that change what the search index holds.
 
@@ -141,12 +146,12 @@ export function verifyChain(path: string): { readonly events: number; readonly h
 export class Database {
   private readonly db: DatabaseSync;
 
-  /** Open the database at `path`, laying down the schema when the file is new, and the search index, filled from the events, when 0.5 made it. Throws when any other version of Player Two made it. */
+  /** Open the database at `path`, laying down the schema when the file is new, and what an older schema lacks when 0.5 or phase 2 made it (see UPGRADABLE). Throws when any other version of Player Two made it. */
   constructor(path: string) {
     this.db = new DatabaseSync(path, { timeout: BUSY_WAIT * 1000 });
     const version = versionSchema.parse(this.db.prepare("PRAGMA user_version").get()).user_version;
     const { tables } = tablesSchema.parse(this.db.prepare("SELECT count(*) AS tables FROM sqlite_master WHERE type = 'table'").get());
-    if (tables > 0 && version !== SCHEMA_VERSION && version !== UPGRADABLE) {
+    if (tables > 0 && version !== SCHEMA_VERSION && !UPGRADABLE.has(version)) {
       this.db.close();
       throw new Error(`${path} was made by another version of Player Two (schema ${String(version)}, this one uses ${String(SCHEMA_VERSION)}); start with an empty database`);
     }
@@ -154,7 +159,8 @@ export class Database {
     if (version !== SCHEMA_VERSION) {
       // The index starts empty, and is filled in the same transaction that says the schema is this one's, so a hub stopped halfway fills it again from the start.
       this.transaction(() => {
-        for (const row of this.db.prepare(`SELECT ${EVENT_COLUMNS} FROM events WHERE kind IN ${INDEXED} ORDER BY seq`).iterate()) {
+        const rows = version < INDEXED_FROM ? this.db.prepare(`SELECT ${EVENT_COLUMNS} FROM events WHERE kind IN ${INDEXED} ORDER BY seq`).iterate() : [];
+        for (const row of rows) {
           const stored = eventRowSchema.parse(row);
           this.index(stored.seq, stored.event);
         }
@@ -184,6 +190,16 @@ export class Database {
 
   public users(): readonly Person[] {
     return peopleSchema.parse(this.db.prepare("SELECT name, pubkey, seen FROM users ORDER BY name").all());
+  }
+
+  /** The key `owner`'s agent in `repo` signs with, or null when they have never registered one. */
+  public agentKeyOf(owner: string, repo: string): string | null {
+    return pubkeySchema.parse(this.db.prepare("SELECT pubkey FROM agents WHERE owner = ? AND repo = ?").get(owner, repo))?.pubkey ?? null;
+  }
+
+  /** Set the key `owner`'s agent in `repo` signs with, as their agent.register at `seq` says, in place of any before it. */
+  public setAgentKey(owner: string, repo: string, pubkey: string, seq: number): void {
+    this.db.prepare("INSERT OR REPLACE INTO agents (owner, repo, pubkey, seq) VALUES (?, ?, ?, ?)").run(owner, repo, pubkey, seq);
   }
 
   /** Do all of `work` or, when it throws, none of it. */

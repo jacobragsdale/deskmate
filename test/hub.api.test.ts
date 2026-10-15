@@ -654,7 +654,89 @@ await test("the hub refuses to start on a database from another version, such as
   made.exec("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT); PRAGMA user_version = 3;");
   made.close();
 
-  assert.throws(() => createHub({ joinToken: TOKEN, db: old, repos: TEAM_REPOS, downloads: "" }), /another version of Player Two \(schema 3, this one uses 6\)/);
+  assert.throws(() => createHub({ joinToken: TOKEN, db: old, repos: TEAM_REPOS, downloads: "" }), /another version of Player Two \(schema 3, this one uses 7\)/);
+});
+
+await test("anyone may send the public kinds to everyone, and everyone reads them, but nothing else may be sent to everyone", async (t) => {
+  const hub = await startHub(t);
+  const alice = await hub.join("alice");
+  await hub.join("bob");
+  const grant = { agent: "alice/uploader", askers: ["bob"], mode: "read-only", delivery: "review", expires: NOW + 86_400, runsPerDay: 20 } as const;
+
+  const granted = await alice.publish("*", "grant", grant); // Signed with the time the grant's 30 days are counted from.
+  assert.deepEqual(await post(hub, "alice", signed(hub, "alice", "*", "grant.revoke", {}, { refs: [granted.event.id] })), [201, 2]);
+  assert.deepEqual(await post(hub, "alice", signed(hub, "alice", "*", "agent.register", { repo: "uploader", pubkey: "ab".repeat(32) })), [201, 3]);
+  assert.deepEqual(await post(hub, "alice", signed(hub, "alice", "*", "message", { text: "hello, everyone", via: "cli" })), [403, "message cannot be sent to everyone"]);
+  assert.deepEqual(await post(hub, "alice", signed(hub, "alice", "*", "channel.join")), [403, "channel.join cannot be sent to everyone"]);
+  await assert.rejects(alice.publish("*", "grant", { ...grant, expires: NOW + 31 * 86_400 }), z.ZodError); // Never signed: no reader would take it for a grant.
+
+  assert.deepEqual(await said(hub, "bob"), ["grant", "grant.revoke", "agent.register"]);
+});
+
+await test("an agent's key is the one in its owner's newest agent.register, sent to everyone; one sent elsewhere or holding anything else is refused and not stored", async (t) => {
+  const hub = await startHub(t);
+  await hub.join("alice");
+  await hub.join("bob");
+  const register = (author: string, to: string, content: unknown): Promise<readonly [number, number | string]> => post(hub, author, signed(hub, author, to, "agent.register", content));
+  const agents = (): unknown[] => {
+    const db = new DatabaseSync(join(hub.dir, "hub.db"), { readOnly: true });
+    try {
+      return db
+        .prepare("SELECT owner, repo, pubkey, seq FROM agents ORDER BY owner, repo")
+        .all()
+        .map((row) => ({ ...row }));
+    } finally {
+      db.close();
+    }
+  };
+
+  assert.deepEqual(await register("alice", "*", { repo: "uploader", pubkey: "aa".repeat(32) }), [201, 1]);
+  assert.deepEqual(await register("bob", "*", { repo: "uploader", pubkey: "bb".repeat(32) }), [201, 2]);
+  assert.deepEqual(await register("alice", "*", { repo: "uploader", pubkey: "cc".repeat(32) }), [201, 3]); // A new key replaces the one before.
+  assert.deepEqual(await register("alice", "bob", { repo: "billing", pubkey: "dd".repeat(32) }), [422, 'agent.register is sent to everyone, "*"']);
+  assert.deepEqual(await register("alice", "*", { repo: "billing", pubkey: "not a key" }), [422, "invalid content: not what agent.register holds"]);
+  assert.deepEqual(await register("alice", "*", { repo: "Billing/../x", pubkey: "dd".repeat(32) }), [422, "invalid content: not what agent.register holds"]);
+
+  assert.deepEqual(agents(), [
+    { owner: "alice", repo: "uploader", pubkey: "cc".repeat(32), seq: 3 },
+    { owner: "bob", repo: "uploader", pubkey: "bb".repeat(32), seq: 2 }
+  ]);
+  assert.deepEqual(await said(hub, "bob"), ["agent.register", "agent.register", "agent.register"]); // Nothing refused was stored.
+});
+
+await test("a database phase 2 made, schema 6, is brought forward with what it holds, gaining the agents table", async (t) => {
+  const hub = await startHub(t);
+  await hub.join("alice");
+  await hub.join("bob");
+  await say(hub, "alice", "bob", "words from before");
+  await say(hub, "bob", "alice", "and a reply");
+  const file = join(hub.dir, "hub.db");
+  const older = new DatabaseSync(file); // What phase 2 left: the same users and events, and no agents table.
+  older.exec("DROP TABLE agents; PRAGMA user_version = 6;");
+  older.close();
+
+  const db = new Database(file);
+  db.setAgentKey("alice", "uploader", "aa".repeat(32), 3);
+  assert.deepEqual([db.agentKeyOf("alice", "uploader"), db.agentKeyOf("bob", "uploader")], ["aa".repeat(32), null]);
+  assert.deepEqual(
+    db.eventsAfter("alice", 0, 10).map(({ event }) => readContent(event)),
+    [
+      { kind: "message", content: { text: "words from before", via: "cli" } },
+      { kind: "message", content: { text: "and a reply", via: "cli" } }
+    ]
+  );
+  assert.deepEqual(
+    db.search("bob", ["before"], null, 10).map((hit) => hit.seq),
+    [1]
+  ); // The index is kept, not filled again.
+  assert.deepEqual(
+    db.users().map((person) => person.name),
+    ["alice", "bob"]
+  );
+  db.close();
+  const version = new DatabaseSync(file, { readOnly: true });
+  assert.deepEqual({ ...version.prepare("PRAGMA user_version").get() }, { user_version: 7 });
+  version.close();
 });
 
 await test("the search index holds each message and answer as its author last edited it, and is filled from the events of a database 0.5 made", async (t) => {

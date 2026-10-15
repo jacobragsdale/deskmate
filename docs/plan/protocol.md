@@ -108,7 +108,7 @@ The hub gives each stored event a sequence number, `seq`, and a chain value: `ch
 | `job.error` | 1 | the request | `{ repo }` | Only the fact. Why stays with the owner. |
 | `job.cancelled` | 1 | the request | `{ repo }` | The owner stopped it. |
 | `job.withdrawn` | 1 | the request | `{ agent }` | Counts only from the asker. |
-| `agent.register` | 4 | | `{ repo, pubkey }` | Public. Structural: the hub learns the key for `author/repo`. |
+| `agent.register` | 4 | | `{ repo, pubkey }` | Public, and sent to `*` only. Structural: the hub learns the key for `author/repo`, the newest registration winning. |
 | `grant` | 4 | | `{ agent, askers, mode, delivery, expires, runsPerDay }` | Public. `agent` is one of the author's. `askers`: names, or `"*"` for anyone on the hub. `mode`: a permission mode. `delivery`: `review` or `post`. `expires`: Unix seconds, at most 30 days after the event's own `ts`, or the event is not read as a grant. `runsPerDay`: 1 to 1000. |
 | `grant.revoke` | 4 | the grant | `{}` | Public. Counts only from the grant's author. |
 | `job.request` | 5 | the root request | `{ target, text, chain }` | Authored by an agent. `chain` lists the agents it came through. |
@@ -245,4 +245,4 @@ Inside WSL (or the home folder on Linux and macOS):
 | 0.4 | 1 | Phase 0. Auth header version 2. `/info` reports version and protocol. |
 | 0.5 | 2 | Phase 1. Events replace notes. Fresh database. |
 
-From 0.5 on, a new kind is not a protocol change. The hub refuses to start on a database made by another schema version, except 0.5's (schema 5): to that it adds the search index of phase 2 (schema 6), filled from the events it holds.
+From 0.5 on, a new kind is not a protocol change. The hub refuses to start on a database made by another schema version, except 0.5's (schema 5) and phase 2's (schema 6): to 5 it adds the search index of phase 2, filled from the events it holds, and to both the agents table of phase 4 (schema 7), empty.

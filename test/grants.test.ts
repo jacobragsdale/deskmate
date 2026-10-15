@@ -31,7 +31,7 @@ await test("a grant is read when it lasts at most 30 days from its own time and 
   assert.ok(!fits({ agent: "uploader" })); // Whose agent it is is part of its name.
   assert.ok(!fits({ askers: ["Bob"] }));
   assert.ok(!fits({ delivery: "email" }));
-  assert.deepEqual(PUBLIC_KINDS, new Set(["grant", "grant.revoke"])); // What may be sent to everyone.
+  assert.deepEqual(PUBLIC_KINDS, new Set(["agent.register", "grant", "grant.revoke"])); // What may be sent to everyone.
 });
 
 let lastSeq = 0;

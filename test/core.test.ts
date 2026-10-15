@@ -630,7 +630,8 @@ await test("each kind's content is read by its kind, and anything else is unknow
     ["job.result", { repo: "uploader", branch: "main", text: "in queue.py", reviewed: true }],
     ["job.error", { repo: "uploader" }],
     ["job.cancelled", { repo: "uploader" }],
-    ["job.withdrawn", { agent: "jacob/uploader" }]
+    ["job.withdrawn", { agent: "jacob/uploader" }],
+    ["agent.register", { repo: "uploader", pubkey: "ab".repeat(32) }]
   ];
 
   for (const [kind, content] of known) {
@@ -648,6 +649,7 @@ await test("each kind's content is read by its kind, and anything else is unknow
   assert.equal(read("channel.pin", { repo: null, branch: "main" }), "unknown"); // Not until phase 6.
   assert.equal(read("job.withdrawn", { agent: "uploader" }), "unknown");
   assert.equal(read("job.progress", { repo: "uploader", summary: "running npm test" }), "unknown"); // Never a command, a path or output.
+  assert.equal(read("agent.register", { repo: "uploader", pubkey: "AB".repeat(32) }), "unknown"); // A key in lowercase hex, as every key is written.
 });
 
 await test("a text is cut so the event carrying it fits what the hub accepts, however much writing it as JSON adds, without splitting a character", () => {

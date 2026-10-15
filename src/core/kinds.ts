@@ -2,7 +2,7 @@
 
 import { z } from "zod";
 
-import { branchSchema, NAME, nameSchema, permissionModeSchema, REPO_NAME, repoNameSchema, repoRefSchema } from "./wire.ts";
+import { branchSchema, NAME, nameSchema, permissionModeSchema, pubKeySchema, REPO_NAME, repoNameSchema, repoRefSchema } from "./wire.ts";
 import type { Event } from "./wire.ts";
 
 // Content travels as a string and the signature covers the string, so reading it with z.object, which passes over a field it does not know, changes nothing that was signed.
@@ -46,6 +46,7 @@ export const contentSchema = z
     z.object({ kind: z.literal("job.error"), content: z.object({ repo }).readonly() }), // Only the fact: why stays with the owner.
     z.object({ kind: z.literal("job.cancelled"), content: z.object({ repo }).readonly() }),
     z.object({ kind: z.literal("job.withdrawn"), content: z.object({ agent: z.string().regex(new RegExp(`^${NAME}/${REPO_NAME}$`)) }).readonly() }),
+    z.object({ kind: z.literal("agent.register"), content: z.object({ repo, pubkey: pubKeySchema }).readonly() }), // The key of its author's agent in `repo`, which then signs as "author/repo": the newest wins.
     // A standing yes from an agent's owner. It is read with its event's time, which bounds how long it may last; src/core/grants.ts says when it applies.
     z
       .object({
@@ -68,7 +69,7 @@ export const contentSchema = z
   .readonly();
 
 /** The kinds that may be sent to everyone, "*". */
-export const PUBLIC_KINDS: ReadonlySet<string> = new Set(["grant", "grant.revoke"]);
+export const PUBLIC_KINDS: ReadonlySet<string> = new Set(["agent.register", "grant", "grant.revoke"]);
 
 export type Content = z.infer<typeof contentSchema>;
 export type Summary = (typeof SUMMARIES)[number];

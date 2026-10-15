@@ -10,7 +10,7 @@ import { pipeline } from "node:stream";
 import { z } from "zod";
 
 import { digestIn, hubInstallScript } from "../core/install.ts";
-import { readContent } from "../core/kinds.ts";
+import { PUBLIC_KINDS, readContent } from "../core/kinds.ts";
 import { isUnder, prefixKey } from "../core/remotes.ts";
 import { authClaim, authIsValid, eventId, eventIsAuthentic, isFresh } from "../core/sign.ts";
 import { VERSION } from "../core/version.ts";
@@ -248,12 +248,13 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     return [200, mine];
   }
 
-  /** The fourth of the checks an event passes: whether its author may write to whom it is for. */
+  /** The fourth of the checks an event passes: whether its author may write to whom it is for. Anyone may write to everyone, "*", but only the public kinds. */
   function mayWrite(event: Event): void {
     if (event.to === "*") {
-      throw new Refusal(403, `${event.kind} cannot be sent to everyone`); // Phase 4's public kinds are the ones that will be.
-    }
-    if (isChannel(event.to)) {
+      if (!PUBLIC_KINDS.has(event.kind)) {
+        throw new Refusal(403, `${event.kind} cannot be sent to everyone`);
+      }
+    } else if (isChannel(event.to)) {
       if (event.kind !== "channel.join" && !db.members(event.to).includes(event.author)) {
         throw new Refusal(403, `join ${event.to} before posting to it`);
       }
@@ -262,11 +263,28 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     }
   }
 
+  /** Act on agent.register, stored at `seq`: from now on its author's agent in its repo signs with its key, whatever key it had before. It is sent to everyone, so that every reader can learn the key from it. */
+  function register(event: Event, seq: number): void {
+    const said = readContent(event);
+    if (event.to !== "*") {
+      throw new Refusal(422, `${event.kind} is sent to everyone, "*"`);
+    }
+    if (said.kind !== "agent.register") {
+      throw new Refusal(422, `invalid content: not what ${event.kind} holds`);
+    }
+    db.setAgentKey(event.author, said.content.repo, said.content.pubkey, seq);
+    log("agent registered", { agent: `${event.author}/${said.content.repo}` });
+  }
+
   /**
-   * Act on a structural kind: joining and leaving change who is in the channel, and a pin sets or clears the repo it is about. Anything else the hub only stores.
+   * Act on a structural kind, stored at `seq`: joining and leaving change who is in the channel, a pin sets or clears the repo it is about, and a registration sets an agent's key. Anything else the hub only stores.
    * Run in the event's transaction, and refuses an event it cannot act on, so that what the hub keeps and what its tables say never disagree.
    */
-  function apply(event: Event): void {
+  function apply(event: Event, seq: number): void {
+    if (event.kind === "agent.register") {
+      register(event, seq);
+      return;
+    }
     if (event.kind !== "channel.join" && event.kind !== "channel.leave" && event.kind !== "channel.pin") {
       return;
     }
@@ -312,8 +330,9 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     }
     mayWrite(event);
     const seq = db.transaction(() => {
-      apply(event);
-      return db.addEvent(event);
+      const stored = db.addEvent(event);
+      apply(event, stored);
+      return stored;
     });
     waiting.forEach((wake) => {
       wake();
