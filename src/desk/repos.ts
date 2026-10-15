@@ -265,10 +265,11 @@ export async function subjects(path: string, rev: string, target: string): Promi
 }
 
 /**
- * How origin's `branch` stands beside `rev` in the checkout, as git ls-remote says now: "absent" when origin has no such branch, "ahead" when `rev` holds commits origin's branch
- * lacks, and null when origin has all of them, ahead of it or not. The branch is never put on git's command line: every branch origin has is listed, and it is looked for among them.
+ * How origin's `branch` stands beside `rev` in the checkout, as git ls-remote says now: "absent" when origin has no such branch; "ahead" when `rev` holds commits origin's lacks, and
+ * origin's none that `rev` lacks; "behind" when the other way round, as far as git has fetched; "diverged" when each holds commits the other lacks, or origin's is a commit git has not
+ * fetched, which `rev` cannot hold; and null when they are the same commit. The branch is never put on git's command line: every branch origin has is listed, and it is looked for among them.
  */
-export async function aheadOfOrigin(path: string, rev: string, branch: string): Promise<"absent" | "ahead" | null> {
+export async function againstOrigin(path: string, rev: string, branch: string): Promise<"absent" | "ahead" | "behind" | "diverged" | null> {
   const ours = await git(["-C", path, "rev-parse", "--verify", "--quiet", `${rev}^{commit}`], STATUS_TIMEOUT);
   if (!ours.ok) {
     throw new Error(`git cannot say which commit ${rev} is in ${path}`);
@@ -277,6 +278,7 @@ export async function aheadOfOrigin(path: string, rev: string, branch: string): 
   if (!heads.ok) {
     throw new Error(`git could not ask origin which branches it has: ${heads.timedOut ? `no answer within ${String(REMOTE_TIMEOUT)} seconds` : (heads.stderr.trim().split("\n").at(-1) ?? "")}`);
   }
+  const mine = ours.stdout.trim();
   const theirs = heads.stdout
     .split("\n")
     .map((line) => line.split("\t"))
@@ -284,11 +286,17 @@ export async function aheadOfOrigin(path: string, rev: string, branch: string): 
   if (theirs === undefined) {
     return "absent";
   }
-  if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(theirs) || theirs === ours.stdout.trim()) {
+  if (theirs === mine) {
     return null;
   }
-  // Ahead when origin's commit is one of ours: one git does not have, or that has commits ours lacks, is not, and pushing would be refused.
-  return (await git(["-C", path, "merge-base", "--is-ancestor", theirs, ours.stdout.trim()], STATUS_TIMEOUT)).ok ? "ahead" : null;
+  const isAncestor = async (older: string, newer: string): Promise<boolean> => (await git(["-C", path, "merge-base", "--is-ancestor", older, newer], STATUS_TIMEOUT)).ok;
+  if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(theirs)) {
+    return "diverged"; // Not a commit id, which ls-remote always gives: nothing can be told of it, and git is not handed it.
+  }
+  if (await isAncestor(theirs, mine)) {
+    return "ahead";
+  }
+  return (await isAncestor(mine, theirs)) ? "behind" : "diverged";
 }
 
 /** Where git pushes the checkout's origin to, as its configuration says, rewrites and all. */

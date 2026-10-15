@@ -99,6 +99,7 @@ function OpenPull({ from, act, onDone }: { readonly from: From; readonly act: Ac
           <p className="text-muted-foreground">
             From {form.branch} into {form.target}, in {form.repo}
           </p>
+          {form.behind && <p>Origin&rsquo;s {form.branch} has commits yours lacks: the pull request is opened from origin&rsquo;s, and holds them too.</p>}
           <Label className={FIELD}>
             Title
             <Input className="font-normal" name="title" defaultValue={form.title} maxLength={PULL_TITLE} required autoFocus />

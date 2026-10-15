@@ -2082,24 +2082,38 @@ export class Session {
 
   /**
    * What a pull request from `from` would be, for the dialog that opens one: into the repo's default branch, titled as its patch is or else with its first commit's subject, and described
-   * by all of them when there are more.
+   * by all of them when there are more; and whether origin's branch, which it is opened from, is ahead of the user's.
    */
   public async pullForm(from: PullFrom): Promise<Form> {
     const { checkout, branch, rev, title } = await this.pullSource(from);
     const target = await this.targetOf(checkout);
+    const standing = await this.againstOrigin(checkout, rev, branch);
     const said = await repos.subjects(checkout.path, rev, target);
-    return { repo: checkout.remote.name, branch, target, title: titled(title ?? said[0] ?? branch), description: said.length > 1 ? described(said) : "" };
+    return { repo: checkout.remote.name, branch, target, title: titled(title ?? said[0] ?? branch), description: said.length > 1 ? described(said) : "", behind: standing === "behind" };
+  }
+
+  /**
+   * How origin's `branch` stands beside `rev` in `checkout`. A pull request is opened from origin's, so when it has commits the user's lacks and they have commits it lacks, or it has
+   * one git has not fetched, it is refused, saying to pull first: theirs would be left out without a word, and a push refused.
+   */
+  private async againstOrigin(checkout: Checkout, rev: string, branch: string): Promise<"absent" | "ahead" | "behind" | null> {
+    const standing = await repos.againstOrigin(checkout.path, rev, branch);
+    if (standing === "diverged") {
+      throw new PlayerTwoError(`origin's ${plain(branch)} has commits yours lacks: pull first`);
+    }
+    return standing;
   }
 
   /**
    * Open a pull request from `from` into the repo's default branch: when origin lacks the branch, or lacks commits of it, first ask the user, in a dialog of the system's own that names
-   * the repo, the branch and where origin is, to push it, and push it only on yes; then say so where it was asked from, with its address, and look at the room again.
+   * the repo, the branch and where origin is, to push it, and push it only on yes; then say so where it was asked from, with its address, and look at the room again. Origin's branch
+   * ahead of theirs, as the dialog said, it is opened from that.
    */
   private async openPull(from: PullFrom, pull: Pick<NewPullRequest, "title" | "description" | "draft">): Promise<void> {
     const { checkout, branch, rev, chat } = await this.pullSource(from);
     const target = await this.targetOf(checkout);
-    const ahead = await repos.aheadOfOrigin(checkout.path, rev, branch);
-    if (ahead !== null) {
+    const ahead = await this.againstOrigin(checkout, rev, branch);
+    if (ahead === "absent" || ahead === "ahead") {
       const question = {
         message: `Push ${plain(branch)} to origin?`,
         detail: [

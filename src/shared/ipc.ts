@@ -431,8 +431,11 @@ const hitSchema = z
 /** One item of the setup check: what was looked at, how it stands, what was found, and the command or instruction that fixes it ("" when there is nothing to do). Nothing runs a fix: the user copies it. */
 export const checkSchema = z.strictObject({ id: z.string(), title: z.string(), status: z.enum(["ok", "warn", "fail", "skip"]), detail: z.string(), fix: z.string() }).readonly();
 
-/** What a pull request would be: from which branch of which repo into which, with the title and description its commits suggest. */
-const formSchema = z.strictObject({ repo: z.string(), branch: z.string(), target: z.string(), title: z.string(), description: z.string() }).readonly();
+/**
+ * What a pull request would be: from which branch of which repo into which, with the title and description its commits suggest; and whether origin's branch, which it is opened from,
+ * has commits the user's lacks, which it then holds too.
+ */
+const formSchema = z.strictObject({ repo: z.string(), branch: z.string(), target: z.string(), title: z.string(), description: z.string(), behind: z.boolean() }).readonly();
 
 /**
  * A file in a repo's workflow folder, as the desk read it: its name, its text ("" when it could not be read), and the workflow it holds in words, its templates as written, or the line that is

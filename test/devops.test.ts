@@ -339,7 +339,14 @@ await test("a pull request from a branch room's branch is filled from its commit
   const { session, questions, reply } = await deskOf(t, jacob, join(hub.dir, "dev-jacob"), "#room", { rooms: 0.2 });
 
   const from = { room: "#room" };
-  assert.deepEqual(await session.pullForm(from), { repo: "uploader", branch: "feature/retry", target: "master", title: "Retry once more", description: "- Retry once more\n- Back off longer" });
+  assert.deepEqual(await session.pullForm(from), {
+    repo: "uploader",
+    branch: "feature/retry",
+    target: "master",
+    title: "Retry once more",
+    description: "- Retry once more\n- Back off longer",
+    behind: false
+  });
 
   // Origin has no feature/retry, so the user is asked first: no, and nothing is pushed or opened.
   const opened = { do: "openPull", from, title: "Retry once more", description: "Two commits.", draft: true } as const;
@@ -383,6 +390,24 @@ await test("a pull request from a branch room's branch is filled from its commit
   assert.equal(questions.length, 3);
   assert.match(questions[2]?.detail ?? "", /^Origin's branch lacks commits of your feature\/retry, /);
   assert.equal(project.made.length, 2);
+
+  // Origin's branch with a commit of bob's that jacob's lacks, beside his own that origin lacks: refused, saying to pull first, before git has fetched bob's and after, nothing asked or opened.
+  const bobs = mkdtempSync(join(tmpdir(), "player-two-bob-"));
+  execFileSync("git", ["clone", "-q", "-b", "feature/retry", origin, bobs]);
+  git(bobs, "commit", "-q", "--allow-empty", "-m", "Bob's fix");
+  git(bobs, "push", "-q", "origin", "feature/retry");
+  const diverged = { message: "origin's feature/retry has commits yours lacks: pull first" };
+  await assert.rejects(session.pullForm(from), diverged);
+  await assert.rejects(session.handle(opened), diverged);
+  git(mine, "fetch", "-q", "origin");
+  await assert.rejects(session.handle(opened), diverged);
+  assert.deepEqual([questions.length, project.made.length], [3, 2]);
+
+  // Without his own, origin's is ahead of his: the dialog says so, and the pull request is opened from it, nothing pushed or asked.
+  git(mine, "reset", "-q", "--hard", "HEAD~1");
+  assert.equal((await session.pullForm(from)).behind, true);
+  await session.handle(opened);
+  assert.deepEqual([questions.length, project.made.length], [3, 3]);
 });
 
 await test("a long subject, or a branch of many commits, fills the dialog with no more than it may send back: the title cut, and the subjects that fit with how many more", async (t) => {
@@ -470,7 +495,7 @@ await test("a patch applied to a new branch opens its pull request from that bra
   await session.handle({ do: "applyPatch", id, newBranch: true });
   const branch = `player-two/${id.slice(0, 8)}`;
   await until("applied to its branch", () => shownTo(session, id)?.patch?.applied.some((each) => each.branch === branch));
-  assert.deepEqual(await session.pullForm(from), { repo: "uploader", branch, target: "master", title: "Add a note", description: "" });
+  assert.deepEqual(await session.pullForm(from), { repo: "uploader", branch, target: "master", title: "Add a note", description: "", behind: false });
   await session.handle({ do: "openPull", from, title: "Add a note", description: "", draft: false });
   assert.equal(questions.at(-1)?.message, `Push ${branch} to origin?`);
   assert.equal(git(origin, "rev-parse", branch), git(mine, "rev-parse", branch));
