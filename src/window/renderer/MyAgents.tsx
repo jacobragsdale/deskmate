@@ -234,6 +234,7 @@ function Grants({ grants, act }: { readonly grants: readonly GrantView[]; readon
 
 export function MyAgents({ view, act, onClose }: { readonly view: ChatView; readonly act: Act; readonly onClose: () => void }): JSX.Element {
   const [granting, setGranting] = useState(""); // The repo a grant is being made on; "" while none is.
+  const [holding, setHolding] = useState<readonly string[]>([]); // The repos being held back, or let answer again: their button does nothing more until the desk answers.
   const answering = view.agents.find((agent) => agent.id === view.defaultAgent)?.label ?? "";
   const people = view.rows.flatMap((row) => (row.here === null ? [] : [row.chat]));
   // Repos with a grant that stands but no checkout here: nothing answers under it now, but it is still the user's to revoke, and answers again if the repo is checked out again.
@@ -258,8 +259,17 @@ export function MyAgents({ view, act, onClose }: { readonly view: ChatView; read
                 type="button"
                 size="xs"
                 variant="outline"
-                onClick={() => {
-                  act({ do: "hold", repo, held: !held });
+                disabled={holding.includes(repo)}
+                onClick={(event) => {
+                  // The second click of a double click lands on the button the first one turned around, and would undo it.
+                  if (event.detail > 1) {
+                    return;
+                  }
+                  setHolding((each) => [...each, repo]);
+                  // What the button says is what is asked for: held back from "Hold back", answering from "Let it answer".
+                  act({ do: "hold", repo, held: !held }, () => {
+                    setHolding((each) => each.filter((one) => one !== repo));
+                  });
                 }}
               >
                 {held ? "Let it answer" : "Hold back"}
