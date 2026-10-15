@@ -10,6 +10,7 @@ import type { JSX } from "react";
 
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 import { runOf } from "../../shared/ipc.ts";
 import type { ActivityItem, AskView, CurrentView } from "../../shared/ipc.ts";
@@ -64,9 +65,15 @@ export function AskCard({ ask, who, act }: { readonly ask: AskView; readonly who
         <Button type="button" size="xs" onClick={answer("allow-once")}>
           Allow once
         </Button>
-        <Button type="button" size="xs" variant="outline" title={`Allow every ${ask.action} without asking until this run ends`} onClick={answer("allow-run")}>
-          Allow for this run
-        </Button>
+        {/* What it goes on allowing shows on focus as well as on hover, and is read out with it. */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button type="button" size="xs" variant="outline" onClick={answer("allow-run")}>
+              Allow for this run
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Allow every {ask.action} without asking until this run ends</TooltipContent>
+        </Tooltip>
         <Button type="button" size="xs" variant="outline" onClick={answer("refuse")}>
           Refuse
         </Button>
@@ -88,7 +95,18 @@ function Row({ item }: { readonly item: ActivityItem }): JSX.Element {
   const outcome = item.outcome.toLowerCase() === item.title.toLowerCase() ? "" : item.outcome; // "Timed out" says how it ended once.
   const line = (
     <>
-      <span className="w-4 flex-none text-center">{item.status === "running" ? <Spinner /> : item.status === "failed" ? "✗" : MARKS[item.kind]}</span>
+      <span className="w-4 flex-none text-center">
+        {item.status === "running" ? (
+          <>
+            <Spinner />
+            <span className="sr-only">running</span>
+          </>
+        ) : item.status === "failed" ? (
+          "✗"
+        ) : (
+          MARKS[item.kind]
+        )}
+      </span>
       <span className="min-w-0 flex-1 truncate" title={item.title}>
         {item.title}
       </span>
@@ -177,7 +195,8 @@ export function ActivityPanel({ panel, act, onClose }: { readonly panel: Panel; 
           {asks.map((ask) => (
             <AskCard key={ask.id} ask={ask} who={who} act={act} />
           ))}
-          {running && items.length > 0 && asks.length === 0 && stalled === step && <p className="pl-1.5 text-muted-foreground">waiting…</p>}
+          {/* There all along, so that a screen reader announces "waiting…" when it comes. The cards are announced in the chat, where each is too. */}
+          <div aria-live="polite">{running && items.length > 0 && asks.length === 0 && stalled === step && <p className="pl-1.5 text-muted-foreground">waiting…</p>}</div>
         </div>
       </ScrollArea>
     </aside>

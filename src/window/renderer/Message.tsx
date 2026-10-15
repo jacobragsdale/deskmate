@@ -2,7 +2,7 @@
 
 import { cn } from "cn";
 import { ActivityIcon, ChevronDownIcon, EllipsisIcon, LinkIcon, PencilIcon, ReplyIcon, SmilePlusIcon, Trash2Icon } from "lucide-react";
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useId, useState } from "react";
 import type { JSX, ReactNode, SyntheticEvent } from "react";
 import Markdown, { defaultUrlTransform } from "react-markdown";
 import { toast } from "sonner";
@@ -78,15 +78,17 @@ function runLabel(choice: Choice): string {
 
 /**
  * The menu of other ways to run a request: how the answer is delivered, and a run at each mode the agent that answers can be held to, saying why it cannot be held to the others.
- * `first` is whether the line has a first button beside it; when it does not, the menu's own button says what it is for.
+ * `first` is whether the line has a first button beside it; when it does not, the menu's own button says what it is for, which is then its name.
+ * Each mode offered points a screen reader to the reasons, which it would otherwise pass over, as they are not items of the menu.
  */
 function RunMenu({ cannot, first, offer, run }: { readonly cannot: Runs["cannot"]; readonly first: boolean; readonly offer: Choice; readonly run: (choice: Choice) => void }): JSX.Element {
   const [post, setPost] = useState(offer.post); // The delivery chosen here, for a run at a mode chosen here.
   const why = [...new Set(MODES.map((mode) => cannot[mode]).filter((reason) => reason !== ""))];
+  const reasons = useId();
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button size={first ? "icon-xs" : "xs"} variant="outline" className="text-foreground" type="button" aria-label="Choose how to run it" title="Choose how to run it">
+        <Button size={first ? "icon-xs" : "xs"} variant="outline" className="text-foreground" type="button" aria-label={first ? "Choose how to run it" : undefined} title="Choose how to run it">
           {!first && "▶ Run…"}
           <ChevronDownIcon />
         </Button>
@@ -113,6 +115,7 @@ function RunMenu({ cannot, first, offer, run }: { readonly cannot: Runs["cannot"
           <DropdownMenuItem
             key={mode}
             data-mode={mode}
+            aria-describedby={reasons}
             onSelect={() => {
               run({ mode, post });
             }}
@@ -121,11 +124,13 @@ function RunMenu({ cannot, first, offer, run }: { readonly cannot: Runs["cannot"
             <span className="text-muted-foreground">{ACCESS[mode]}</span>
           </DropdownMenuItem>
         ))}
-        {why.map((reason) => (
-          <DropdownMenuLabel key={reason} className="font-normal">
-            {reason}.
-          </DropdownMenuLabel>
-        ))}
+        <div id={reasons}>
+          {why.map((reason) => (
+            <DropdownMenuLabel key={reason} className="font-normal">
+              {reason}.
+            </DropdownMenuLabel>
+          ))}
+        </div>
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -308,11 +313,14 @@ function RequestLine({ request, text, asker, runs, act }: { readonly request: Re
               ■ Stop
             </Button>
           </p>
-          {runs.asks
-            .filter((ask) => ask.run === runOf(id, repo))
-            .map((ask) => (
-              <AskCard key={ask.id} ask={ask} who={who} act={act} />
-            ))}
+          {/* There before any card, so that a screen reader announces each card that comes. */}
+          <div aria-live="polite">
+            {runs.asks
+              .filter((ask) => ask.run === runOf(id, repo))
+              .map((ask) => (
+                <AskCard key={ask.id} ask={ask} who={who} act={act} />
+              ))}
+          </div>
         </>
       );
     case "noCheckout":
@@ -877,27 +885,31 @@ export function Message({
         }
       />
       {!open && last !== undefined && (
-        <p className="my-0.5 truncate text-xs">
-          <Button
-            variant="link"
-            size="xs"
-            className="h-auto p-0 text-tag"
-            type="button"
-            onClick={() => {
-              setOpen(true);
-            }}
-          >
-            {message.replyCount} {message.replyCount === 1 ? "reply" : "replies"}
-          </Button>
-          <span className="text-muted-foreground">
-            {" "}
-            · last from {last.sender === me ? "you" : last.sender}: {last.deleted ? "message deleted" : oneLine(last.body, 80)}
-          </span>
-        </p>
+        <>
+          <p className="my-0.5 truncate text-xs">
+            <Button
+              variant="link"
+              size="xs"
+              className="h-auto p-0 text-tag"
+              type="button"
+              onClick={() => {
+                setOpen(true);
+              }}
+            >
+              {message.replyCount} {message.replyCount === 1 ? "reply" : "replies"}
+            </Button>
+            <span className="text-muted-foreground">
+              {" "}
+              · last from {last.sender === me ? "you" : last.sender}: {last.deleted ? "message deleted" : oneLine(last.body, 80)}
+            </span>
+          </p>
+          <div aria-live="polite">
+            {asked.map(({ ask, who }) => (
+              <AskCard key={ask.id} ask={ask} who={who} act={act} />
+            ))}
+          </div>
+        </>
       )}
-      {asked.map(({ ask, who }) => (
-        <AskCard key={ask.id} ask={ask} who={who} act={act} />
-      ))}
       {open && (
         <section className="my-1 ml-3 border-l-2 pl-3" aria-label="Thread">
           {message.replies.map((reply) => (

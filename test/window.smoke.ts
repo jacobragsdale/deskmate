@@ -590,15 +590,18 @@ await test(
     await page.click("nav button", "dave");
     await page.until("the thread's summary", `document.querySelector("main h1")?.textContent === "dave" && document.querySelector("main").innerText.includes("1 reply")`);
     await page.click("main button", "1 reply");
-    const inThread = `document.querySelector('main section[aria-label="Thread"] button[aria-label="Choose how to run it"]')`;
+    const inThread = `document.querySelector('main section[aria-label="Thread"] button[title="Choose how to run it"]')`;
     await page.until("the request in the thread", `${inThread} !== null`);
     await page.eval(`${inThread}.focus()`);
     await page.press("Enter");
     await page.until("the menu", `document.querySelector('[role="menuitem"][data-mode="supervised"]') !== null`);
     await page.click('[role="menuitem"][data-mode="supervised"]');
     await page.until("the card under the reply", `${card('main section[aria-label="Thread"]')}?.innerText.includes("Edit edited.txt") === true`);
+    const announced = `${card("main")}.parentElement.getAttribute("aria-live") === "polite"`; // A screen reader says it: it comes into a region there before it.
+    assert.equal(await page.eval(announced), true);
     await page.click("main button", "Hide replies");
     await page.until("the card under the closed thread", `document.querySelector('main section[aria-label="Thread"]') === null && ${card("main")}?.innerText.includes("Edit edited.txt") === true`);
+    assert.equal(await page.eval(announced), true);
     await page.click("nav button", "bob");
     await page.until("the chat with bob", `document.querySelector("main h1")?.textContent === "bob" && ${card("main")} === null`);
     await page.click("nav button", "dave");
@@ -626,7 +629,10 @@ await test(
     const next = `main section[aria-label="Permission"]:not([data-answered])`;
     await page.until("the next card", `document.querySelector('${next}') !== null`);
     await inChat(page, next, "the new card");
-    await page.eval(`[...document.querySelector('${next}').querySelectorAll("button")].find((each) => each.textContent === "Allow for this run").click()`);
+    const forTheRun = `[...document.querySelector('${next}').querySelectorAll("button")].find((each) => each.textContent === "Allow for this run")`;
+    await page.eval(`${forTheRun}.focus()`);
+    await page.until("what it allows, on focus", `document.querySelector('[role="tooltip"]')?.textContent === "Allow every edit without asking until this run ends"`);
+    await page.eval(`${forTheRun}.click()`);
     await page.until("its draft, every edit allowed", `document.querySelector('textarea[aria-label="Draft answer"]')?.value.includes("edit allowed; edit allowed; edit allowed") === true`);
     rmSync(join(home, "dev", "billing", "edited.txt")); // Written, and taken away for carol's run to write again.
     await page.click("main button", "Discard");
@@ -635,7 +641,7 @@ await test(
     // Carol asks again, and alice runs it from the menu: the answer posted directly, at supervised, where the agent asks before it edits. "Allow once" on the card under the request
     // lets it write the file and answer, and the chat's record says it ran supervised. Carol's next request is offered as alice ran this one, from app-state.json.
     const newest = `[...document.querySelectorAll("main article")].at(-1)`;
-    const another = `${newest}.querySelector('button[aria-label="Choose how to run it"]')`;
+    const another = `${newest}.querySelector('button[title="Choose how to run it"]')`;
     await carol.publish("alice", "message", { text: "@alice/billing edit the README", via: "cli" });
     await page.click("nav button", "carol");
     await page.until("carol's second request, ready to run", `document.querySelector("main h1")?.textContent === "carol" && ${newest}.innerText.includes("edit the README") && ${another} !== null`);
@@ -650,6 +656,7 @@ await test(
     assert.match(String(await page.eval(`${newest}.innerText`)), /your billing agent is working on main at [0-9a-f]{7} · supervised · /);
     await page.eval(`[...${newest}.querySelectorAll("button")].find((each) => each.textContent.includes("Show activity")).click()`);
     await page.until("the card in the panel", `${card("aside")}?.innerText.includes("Edit edited.txt") === true`);
+    assert.equal(await page.eval(`${panel}.querySelector("li .sr-only")?.textContent`), "running");
     await page.eval(`[...${card("main")}.querySelectorAll("button")].find((each) => each.textContent === "Allow once").click()`);
     await page.until("the answer posted", `[...document.querySelectorAll("main article")].some((each) => each.innerText.includes("turn 1: read; edit allowed"))`);
     await page.until("the run to its end in the panel", `${rows}.at(-1) === "plain Answered"`);
@@ -706,10 +713,11 @@ await test(
       await page.until("the menu", `document.querySelector('[role="menuitem"][data-mode]') !== null`);
     };
     await chooseAgent("Copilot one-shot");
-    await page.until("no first button", `document.querySelector("main h1")?.textContent === "carol" && ${another}?.textContent === "▶ Run…"`);
+    await page.until("no first button", `document.querySelector("main h1")?.textContent === "carol" && ${another}?.textContent === "▶ Run…" && !${another}.hasAttribute("aria-label")`);
     await openMenu();
     assert.deepEqual(await page.eval(menuModes), ["full"]);
-    assert.ok(String(await page.eval(`document.querySelector('[role="menu"]').innerText`)).includes("Copilot one-shot runs as a single command and cannot be limited: it runs only with full access."));
+    const described = `document.getElementById(document.querySelector('[role="menuitem"][data-mode="full"]').getAttribute("aria-describedby")).textContent`;
+    assert.equal(await page.eval(described), "Copilot one-shot runs as a single command and cannot be limited: it runs only with full access.");
     await page.shot("cannot");
     await page.press("Escape");
     await page.until("the menu closed", `document.querySelector('[role="menu"]') === null`);
