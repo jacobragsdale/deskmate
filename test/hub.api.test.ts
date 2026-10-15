@@ -15,14 +15,14 @@ import { z } from "zod";
 import { readContent } from "../src/core/kinds.ts";
 import { authHeader, loadKey, publicHex, signEvent } from "../src/core/sign.ts";
 import { VERSION } from "../src/core/version.ts";
-import { deliveredSchema, MAX_SKEW, PROTOCOL, receiptSchema } from "../src/core/wire.ts";
+import { deliveredSchema, HUB, MAX_SKEW, PROTOCOL, receiptSchema } from "../src/core/wire.ts";
 import type { Delivered, Event, Repo } from "../src/core/wire.ts";
 import { oneshotAgent } from "../src/desk/agents/presets.ts";
 import { http, join as joinHub } from "../src/desk/client.ts";
 import type { Client } from "../src/desk/client.ts";
 import { createHub } from "../src/hub/app.ts";
-import { Database } from "../src/hub/db.ts";
-import { NOW, startHub, TEAM_REPOS, TOKEN } from "./startHub.ts";
+import { Database, SCHEMA_VERSION } from "../src/hub/db.ts";
+import { NOW, startHub, storedUnchecked, TEAM_REPOS, TOKEN } from "./startHub.ts";
 import type { Hub } from "./startHub.ts";
 
 const UPLOADER: Repo = { name: "uploader", key: "dev.azure.com/acme/platform/uploader", url: "https://dev.azure.com/acme/Platform/_git/uploader", branch: "main" };
@@ -630,12 +630,45 @@ await test("the audit head is the newest seq and chain value, and hub verify pas
   kept.close();
 });
 
-await test("the hub says which repos it shares, which version and protocol it is, and what time it has", async (t) => {
+await test("the hub says which repos it shares, which version and protocol it is, what time it has, and the key it signs its own events with, which it keeps", async (t) => {
   const hub = await startHub(t);
+  const kept = (): string => {
+    const db = new Database(join(hub.dir, "hub.db")); // As the hub opens it when it starts again.
+    try {
+      return publicHex(db.hubKey());
+    } finally {
+      db.close();
+    }
+  };
+  const hubKey = kept();
 
-  assert.deepEqual(await (await hub.join("alice")).info(), { version: VERSION, protocol: PROTOCOL, repos: "dev.azure.com/acme", now: NOW });
+  assert.deepEqual(await (await hub.join("alice")).info(), { version: VERSION, protocol: PROTOCOL, repos: "dev.azure.com/acme", now: NOW, hubKey });
   assert.deepEqual(await (await fetch(`${hub.url}/healthz`)).json(), { ok: true, now: NOW }); // Unsigned too, for a machine whose clock is too far off for /info to answer it.
   assert.match(VERSION, /^\d+\.\d+\.\d+$/);
+  assert.equal(kept(), hubKey);
+  assert.notEqual((await (await (await startHub(t)).join("alice")).info()).hubKey, hubKey); // Another hub has a key of its own.
+});
+
+await test("nobody joins as the hub, whose name it is, or as a workflow, and nothing is posted or read as the hub, even signed with its own key", async (t) => {
+  const hub = await startHub(t);
+  await hub.join("alice");
+  const db = new Database(join(hub.dir, "hub.db"));
+  const key = db.hubKey();
+  db.close();
+
+  await assert.rejects(joinHub(join(hub.dir, "hub"), hub.url, "hub", TOKEN, oneshotAgent("fake-agent"), http), /the name 'hub' is the hub's own/);
+  const [status, detail] = await refusal(hub, "POST", "/join", { body: JSON.stringify({ name: "workflow:ci", pubkey: publicHex(key), token: TOKEN }) });
+  assert.deepEqual([status, detail.startsWith("invalid name:")], [422, true]); // "workflow:" is what a grant names a workflow by, so no person is called that.
+  await post(hub, "alice", signed(hub, "alice", "#ops", "channel.join"));
+  assert.deepEqual(await post(hub, "alice", signed(hub, "hub", "#ops", "message", { text: "@alice/uploader run", via: "workflow" }, { key })), [401, "event is not signed by its author"]);
+  assert.deepEqual(await refusal(hub, "GET", "/users", { headers: { Authorization: authHeader(key, "hub", NOW, "GET", "/users") } }), [
+    401,
+    "not signed by a known user, or your clock is more than 5 minutes off"
+  ]);
+  assert.deepEqual(
+    (await (await hub.join("alice")).users()).map((person) => person.name),
+    ["alice"]
+  );
 });
 
 await test("everyone sees which repos each person has and a new list replaces the old", async (t) => {
@@ -686,7 +719,66 @@ await test("the hub refuses to start on a database from another version, such as
   made.exec("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT); PRAGMA user_version = 3;");
   made.close();
 
-  assert.throws(() => createHub({ joinToken: TOKEN, db: old, repos: TEAM_REPOS, downloads: "" }), /another version of Player Two \(schema 3, this one uses 7\)/);
+  assert.throws(() => createHub({ joinToken: TOKEN, db: old, repos: TEAM_REPOS, downloads: "" }), new RegExp(`another version of Player Two \\(schema 3, this one uses ${String(SCHEMA_VERSION)}\\)`));
+});
+
+await test("a database phase 4 made, schema 7, is brought forward with what it holds, gaining the meta table and the hub's key; not one where someone joined as hub", async (t) => {
+  const BEFORE = 7; // The schema before the hub had a key of its own.
+  const hub = await startHub(t);
+  await hub.join("alice");
+  await hub.join("bob");
+  await say(hub, "alice", "bob", "words from before");
+  const file = join(hub.dir, "hub.db");
+  const back = (more = ""): void => {
+    const older = new DatabaseSync(file); // What phase 4 left: the same users and events, and no meta table.
+    older.exec(`DROP TABLE meta; PRAGMA user_version = ${String(BEFORE)}; ${more}`);
+    older.close();
+  };
+  const version = (): unknown => {
+    const kept = new DatabaseSync(file, { readOnly: true });
+    try {
+      return { ...kept.prepare("PRAGMA user_version").get() };
+    } finally {
+      kept.close();
+    }
+  };
+
+  back();
+  const db = new Database(file);
+  assert.match(publicHex(db.hubKey()), /^[0-9a-f]{64}$/);
+  assert.deepEqual(
+    db.eventsAfter("alice", 0, 10).map(({ event }) => readContent(event)),
+    [{ kind: "message", content: { text: "words from before", via: "cli" } }]
+  );
+  assert.deepEqual(
+    db.users().map((person) => person.name),
+    ["alice", "bob"]
+  );
+  db.close();
+  assert.deepEqual(version(), { user_version: SCHEMA_VERSION });
+
+  back(`INSERT INTO users (name, pubkey) VALUES ('hub', '${"ab".repeat(32)}');`); // Joined before the name was the hub's.
+  assert.throws(() => new Database(file), /has someone who joined as hub, which is now the hub's own name, so it cannot be brought forward/);
+  assert.deepEqual(version(), { user_version: BEFORE });
+});
+
+await test("hub verify checks the hub's own events against the key it keeps, and names one claiming to be the hub's that any other key signed", async (t) => {
+  const hub = await startHub(t);
+  await hub.join("alice");
+  await post(hub, "alice", signed(hub, "alice", "#ops", "channel.join"));
+  const db = new Database(join(hub.dir, "hub.db"));
+  const key = db.hubKey();
+  db.close();
+  const verify = (): readonly [number | null, string] => {
+    const ran = spawnSync(process.execPath, [COMMAND, "hub", "verify"], { env: { PLAYER_TWO_DB: join(hub.dir, "hub.db") }, encoding: "utf8" });
+    return [ran.status, ran.stdout + ran.stderr];
+  };
+  const workflow = { author: HUB, to: "#ops", kind: "message", content: { text: "the build failed", via: "workflow" }, ts: NOW, refs: [] };
+
+  storedUnchecked(hub, key, workflow); // As the hub stores what it signs, without posting it to itself.
+  assert.match(verify()[1], /^the chain holds: 2 events/);
+  storedUnchecked(hub, loadKey("55".repeat(32)), workflow);
+  assert.deepEqual(verify(), [1, "player-two: the chain breaks at seq 3: its signature does not hold under the hub's own key\n"]);
 });
 
 await test("anyone may send the public kinds to everyone, and everyone reads them, but nothing else may be sent to everyone", async (t) => {
@@ -926,7 +1018,7 @@ await test("a database phase 2 made, schema 6, is brought forward with what it h
   );
   db.close();
   const version = new DatabaseSync(file, { readOnly: true });
-  assert.deepEqual({ ...version.prepare("PRAGMA user_version").get() }, { user_version: 7 });
+  assert.deepEqual({ ...version.prepare("PRAGMA user_version").get() }, { user_version: SCHEMA_VERSION });
   version.close();
 });
 

@@ -661,7 +661,7 @@ await test("the client reads past a field a newer hub adds, but refuses one insi
   const uploader = { name: "uploader", key: "dev.azure.com/acme/platform/uploader", url: "https://dev.azure.com/acme/Platform/_git/uploader" };
   const pinned = { name: "#uploads", members: ["bob"], repo: uploader, branch: null };
   const client = clientOf({
-    "GET /info": { ...info, hubKey: "new" },
+    "GET /info": { ...info, motd: "new" },
     "GET /users": [{ ...bob, role: "new" }],
     "GET /repos": [{ ...repo("bob", "uploader"), commit: "new" }],
     "GET /channels": [

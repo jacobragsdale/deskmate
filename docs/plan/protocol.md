@@ -31,6 +31,7 @@ On Linux and macOS the window starts the desk directly instead of through `wsl.e
 | Repo name | `[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?` | `acme.billing.api` |
 | Agent | person, `/`, repo name | `jacob/uploader` |
 | Everyone on the hub (phase 4 on) | `*` | |
+| The hub itself (phase 7 on) | `hub`, which nobody may join under | |
 
 These patterns live in `src/core/wire.ts` and nowhere else.
 
@@ -82,7 +83,7 @@ Signed bytes: `JSON.stringify(["player-two-event-v1", author, to, kind, content,
 The hub accepts an event when all of these hold, and checks nothing else about it:
 
 1. It matches the envelope schema, and `id` is the hash of its signed bytes.
-2. `sig` verifies against the author's key: a person's, from joining; from phase 4 an agent's, `owner/repo`, from its owner's newest `agent.register`.
+2. `sig` verifies against the author's key: a person's, from joining; from phase 4 an agent's, `owner/repo`, from its owner's newest `agent.register`. Nothing posted is accepted as the hub's own, `hub`, from phase 7, whatever key signed it: the hub stores the events it signs itself.
 3. `ts` is within 300 seconds of the hub's clock, and `id` has not been seen.
 4. The author may write to `to`: a channel they are in (or the event is `channel.join`), a person who has joined, or `*` for the kinds marked public below. An agent may write only `job.progress`, `job.result`, `job.error` and `job.cancelled`, and from phase 6 `patch`, only about its own repo, and from phase 5 `job.request`, only as the last agent in its `chain`, and `job.withdrawn`, which counts only from whoever asked, and only where its owner may: anything else from one is refused with words saying agents cannot send it, content its kind does not hold with `422`, and a report whose `repo` is not the agent's own, a `patch` whose `repo.key` is not the one its owner shares under that name (`PUT /repos`), a `job.request` whose `chain` does not end with it, or a `job.result` saying `reviewed: true`, with `403`.
 
@@ -147,8 +148,8 @@ JSON in and out. Errors are `{ "detail": "words for the user" }` with a 4xx stat
 | Route | Auth | Does |
 |---|---|---|
 | `GET /healthz` | none | `{ ok: true, now }`. `now` is the hub's clock, for the setup check on a machine too far off for `/info` to accept its signature. |
-| `GET /info` | yes | `{ version, protocol, repos, now }`. `now` is the hub's clock, for the setup check. Phase 7 adds `hubKey`. |
-| `POST /join` | join token | Registers a name and key. `201`. `409` if another key holds the name. |
+| `GET /info` | yes | `{ version, protocol, repos, now, hubKey }`. `now` is the hub's clock, for the setup check. `hubKey`, from phase 7, is the public half of the key the hub signs its own events with, made when it first starts and kept in its database; a hub before phase 7 does not send it. |
+| `POST /join` | join token | Registers a name and key. `201`. `409` if another key holds the name, and for `hub`, the hub's own name. |
 | `GET /users` | yes | Everyone, with key and last-seen time. |
 | `PUT /repos`, `GET /repos` | yes | Replace my advertised checkouts; list everyone's. |
 | `GET /channels` | yes | Channels with members, pinned repo, and (phase 1 on) the branch the pin names, `null` until phase 6. |
@@ -250,4 +251,4 @@ Inside WSL (or the home folder on Linux and macOS):
 | 0.5 | 2 | Phase 1. Events replace notes. Fresh database. |
 | 0.6 | 3 | Phase 4. An event's author may be an agent, `owner/repo`, which a client of protocol 2 cannot read. Schema 7. |
 
-From 0.6 the `player-two` command and `player-two mcp` ask `/info` for the hub's protocol before their first request, and while it is another than theirs fail that request with `this hub speaks protocol N; this command speaks protocol M: update` and which side; the window's desk has done the same since 0.4. From 0.5 on, a new kind is not a protocol change, and neither was phase 6's branch on `channel.pin`: a reader before it reads a pin that names a branch as content it does not know and draws no line for it, while `GET /channels` has reported a pin's branch since phase 1; a hub before it refuses such a pin with `422`. The hub refuses to start on a database made by another schema version, except 0.5's (schema 5) and phase 2's (schema 6): to 5 it adds the search index of phase 2, filled from the events it holds, and to both the agents table of phase 4 (schema 7), empty.
+From 0.6 the `player-two` command and `player-two mcp` ask `/info` for the hub's protocol before their first request, and while it is another than theirs fail that request with `this hub speaks protocol N; this command speaks protocol M: update` and which side; the window's desk has done the same since 0.4. From 0.5 on, a new kind is not a protocol change, and neither was phase 6's branch on `channel.pin`: a reader before it reads a pin that names a branch as content it does not know and draws no line for it, while `GET /channels` has reported a pin's branch since phase 1; a hub before it refuses such a pin with `422`. The hub refuses to start on a database made by another schema version, except 0.5's (schema 5), phase 2's (schema 6) and phase 4's (schema 7): to 5 it adds the search index of phase 2, filled from the events it holds; to 5 and 6 the agents table of phase 4 (schema 7), empty; and to all three the `meta` table of phase 7 (schema 8), in which it then makes its own key. It refuses one of those in which someone joined as `hub`, since that is now the hub's own name.

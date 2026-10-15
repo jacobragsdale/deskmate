@@ -13,6 +13,7 @@ export const HIT_CLOSE = "\u0003";
 export const REPO_NAME = "[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?";
 export const NAME = "[a-z0-9][a-z0-9_-]{0,31}";
 export const AUTHOR = `${NAME}(?:/${REPO_NAME})?`; // Who signs: a person, or one of their agents, "owner/repo".
+export const HUB = "hub"; // The hub's own name from phase 7, which nobody may join under: it signs what a workflow posts with a key of its own.
 
 /** A string of `min` to `max` characters, counted the way the hub counts them: by code point, not UTF-16 unit. */
 function sized(min: number, max: number): z.ZodString {
@@ -62,8 +63,11 @@ export const joinSchema = z.strictObject({ name: nameSchema, pubkey: pubKeySchem
 /** Someone who has joined, and the Unix seconds of their last signed request; 0 if they have never made one. */
 export const personSchema = z.object({ name: nameSchema, pubkey: pubKeySchema, seen: z.int() }).readonly();
 
-/** What the hub says about itself. `repos` is the key every shareable repo starts with, such as "dev.azure.com/acme"; `now` is the hub's clock in Unix seconds. */
-export const hubInfoSchema = z.object({ version: z.string(), protocol: z.int(), repos: z.string(), now: z.int() }).readonly();
+/**
+ * What the hub says about itself. `repos` is the key every shareable repo starts with, such as "dev.azure.com/acme"; `now` is the hub's clock in Unix seconds;
+ * `hubKey`, from phase 7, the key the hub signs its own events with, which a hub before it does not send.
+ */
+export const hubInfoSchema = z.object({ version: z.string(), protocol: z.int(), repos: z.string(), now: z.int(), hubKey: pubKeySchema.optional() }).readonly();
 
 /**
  * A repo as everyone can refer to it. Its name is the last part of its key, as every client makes both from a remote (src/core/remotes.ts), so that one cannot be named while the other

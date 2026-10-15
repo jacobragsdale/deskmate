@@ -1,21 +1,23 @@
 /** The hub's database: opening it, its schema, and one function for each thing the hub asks of it. */
 
 import { createHash } from "node:crypto";
+import type { KeyObject } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 
 import { z } from "zod";
 
 import { readContent } from "../core/kinds.ts";
-import { eventId, eventIsAuthentic } from "../core/sign.ts";
+import { eventId, eventIsAuthentic, loadKey, newKey, privateHex, publicHex } from "../core/sign.ts";
 import { byCodeUnit, problemOf } from "../core/text.ts";
-import { deliveredSchema, HIT_CLOSE, HIT_OPEN, isAgent, isChannel, ownerOf, personSchema, teamRepoSchema } from "../core/wire.ts";
+import { deliveredSchema, HIT_CLOSE, HIT_OPEN, HUB, isAgent, isChannel, ownerOf, personSchema, teamRepoSchema } from "../core/wire.ts";
 import type { Delivered, Event, Person, Repo, RepoRef, TeamRepo } from "../core/wire.ts";
 
-const SCHEMA_VERSION = 7; // 3 was the notes alone, from the Python hub to 0.4.
+export const SCHEMA_VERSION = 8; // 3 was the notes alone, from the Python hub to 0.4.
 // The versions a hub brings forward: 5, 0.5's events, lacks the search index, which is added and filled from the events; 6 lacks the agents table, which is added empty,
-// since a hub of schema 6 refused every event to "*", the only agent.register it learns a key from.
-const UPGRADABLE: ReadonlySet<number> = new Set([5, 6]);
+// since a hub of schema 6 refused every event to "*", the only agent.register it learns a key from; 7 lacks the meta table, which the hub's own key is then made in.
+const UPGRADABLE: ReadonlySet<number> = new Set([5, 6, 7]);
 const INDEXED_FROM = 6; // The first version with the search index.
+const HUB_FROM = 8; // The first version in which "hub" is the hub's own name: one made before it is brought forward only when nobody joined under that name.
 const BUSY_WAIT = 5; // Seconds to wait for another program that holds the file, such as a backup, before giving up.
 const FIRST_CHAIN = "0".repeat(64); // The chain value before the first event.
 
@@ -54,6 +56,8 @@ CREATE TABLE IF NOT EXISTS event_refs (ref TEXT NOT NULL, seq INTEGER NOT NULL, 
 CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(text);
 -- The key each person's agent in each repo signs with, from their newest agent.register, at seq.
 CREATE TABLE IF NOT EXISTS agents (owner TEXT NOT NULL, repo TEXT NOT NULL, pubkey TEXT NOT NULL, seq INTEGER NOT NULL, PRIMARY KEY (owner, repo));
+-- What the hub keeps of its own: 'hub_key', the private half of the key it signs its own events with, in hex.
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 `;
 const INDEXED = "('message', 'job.result', 'message.edit', 'message.delete')"; // The kinds that change what the search index holds.
 
@@ -76,6 +80,18 @@ const eventRowsSchema = z.array(eventRowSchema);
 const linkSchema = z.object({ seq: z.int(), chain: z.string() });
 const keysSchema = z.array(z.strictObject({ name: z.string(), pubkey: z.string() }));
 const agentKeysSchema = z.array(z.strictObject({ owner: z.string(), repo: z.string(), pubkey: z.string() }));
+const metaSchema = z.strictObject({ value: z.string() });
+
+/** Whether the database has a table of this name: what a version before it lacks. */
+function hasTable(db: DatabaseSync, name: string): boolean {
+  return foundSchema.parse(db.prepare("SELECT 1 AS found FROM sqlite_master WHERE type = 'table' AND name = ?").get(name)) !== undefined;
+}
+
+/** The hub's own key, as `meta` holds it; undefined before the hub has made one. */
+function hubKeyIn(db: DatabaseSync): KeyObject | undefined {
+  const row = hasTable(db, "meta") ? metaSchema.optional().parse(db.prepare("SELECT value FROM meta WHERE key = 'hub_key'").get()) : undefined;
+  return row === undefined ? undefined : loadKey(row.value);
+}
 
 /** JSON text as a value; undefined for text that is not JSON, which the schema it goes on to then refuses, as it refuses any other row it cannot read. */
 function parseJson(text: string): unknown {
@@ -121,7 +137,8 @@ function eventIn(row: Record<string, unknown>, chain: string, previous: string, 
     return `its author, ${event.author}, has no key on this hub to check its signature against`; // The hub stores nobody's event before they have joined, or their agent's before they registered it, and never forgets a key.
   }
   if (!eventIsAuthentic(event, pubkey)) {
-    return `its signature does not hold under the key ${isAgent(event.author) ? `${ownerOf(event.author)} last registered for it before then` : `${event.author} joined with`}`;
+    const key = isAgent(event.author) ? `the key ${ownerOf(event.author)} last registered for it before then` : `the key ${event.author} joined with`;
+    return `its signature does not hold under ${event.author === HUB ? "the hub's own key" : key}`;
   }
   return event;
 }
@@ -151,6 +168,10 @@ export function verifyChain(path: string): { readonly events: number; readonly h
   const db = new DatabaseSync(path, { readOnly: true });
   try {
     const keys = new Map(keysSchema.parse(db.prepare("SELECT name, pubkey FROM users").all()).map((user) => [user.name, user.pubkey]));
+    const hubKey = hubKeyIn(db);
+    if (hubKey !== undefined) {
+      keys.set(HUB, publicHex(hubKey)); // Nobody has joined under its name since the hub has had a key.
+    }
     let previous = FIRST_CHAIN;
     let events = 0;
     for (const row of db.prepare(`SELECT ${EVENT_COLUMNS}, chain FROM events ORDER BY seq`).iterate()) {
@@ -166,8 +187,8 @@ export function verifyChain(path: string): { readonly events: number; readonly h
       previous = chain;
       events += 1;
     }
-    const tabled = foundSchema.parse(db.prepare("SELECT 1 AS found FROM sqlite_master WHERE type = 'table' AND name = 'agents'").get()) !== undefined; // Not before schema 7.
-    const table = new Map(agentKeysSchema.parse(tabled ? db.prepare("SELECT owner, repo, pubkey FROM agents").all() : []).map((row) => [`${row.owner}/${row.repo}`, row.pubkey]));
+    const rows = hasTable(db, "agents") ? db.prepare("SELECT owner, repo, pubkey FROM agents").all() : []; // Not before schema 7.
+    const table = new Map(agentKeysSchema.parse(rows).map((row) => [`${row.owner}/${row.repo}`, row.pubkey]));
     const named = [...new Set([...table.keys(), ...[...keys.keys()].filter(isAgent)])].sort(byCodeUnit);
     const agents = named.map((agent) => disagreement(agent, table.get(agent), keys.get(agent))).find((why) => why !== "") ?? null;
     return { events, head: previous, broken: null, agents };
@@ -179,7 +200,10 @@ export function verifyChain(path: string): { readonly events: number; readonly h
 export class Database {
   private readonly db: DatabaseSync;
 
-  /** Open the database at `path`, laying down the schema when the file is new, and what an older schema lacks when 0.5 or phase 2 made it (see UPGRADABLE). Throws when any other version of Player Two made it. */
+  /**
+   * Open the database at `path`, laying down the schema when the file is new, and what an older schema lacks when 0.5, phase 2 or phase 4 made it (see UPGRADABLE).
+   * Throws when any other version of Player Two made it, or when one before HUB_FROM has someone who joined under the hub's own name.
+   */
   constructor(path: string) {
     this.db = new DatabaseSync(path, { timeout: BUSY_WAIT * 1000 });
     const version = versionSchema.parse(this.db.prepare("PRAGMA user_version").get()).user_version;
@@ -187,6 +211,10 @@ export class Database {
     if (tables > 0 && version !== SCHEMA_VERSION && !UPGRADABLE.has(version)) {
       this.db.close();
       throw new Error(`${path} was made by another version of Player Two (schema ${String(version)}, this one uses ${String(SCHEMA_VERSION)}); start with an empty database`);
+    }
+    if (tables > 0 && version < HUB_FROM && this.pubkeyOf(HUB) !== null) {
+      this.db.close(); // Their events would be read as the hub's, and checked against the hub's key.
+      throw new Error(`${path} has someone who joined as ${HUB}, which is now the hub's own name, so it cannot be brought forward to schema ${String(SCHEMA_VERSION)}; start with an empty database`);
     }
     this.db.exec(SCHEMA);
     if (version !== SCHEMA_VERSION) {
@@ -209,6 +237,12 @@ export class Database {
   /** The key a name was registered with, or null when nobody has joined under it. */
   public pubkeyOf(name: string): string | null {
     return pubkeySchema.parse(this.db.prepare("SELECT pubkey FROM users WHERE name = ?").get(name))?.pubkey ?? null;
+  }
+
+  /** The hub's own key, which it signs its own events with: made the first time it is asked for, and kept in `meta` from then on. Its private half is never sent anywhere. */
+  public hubKey(): KeyObject {
+    this.db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('hub_key', ?)").run(privateHex(newKey()));
+    return loadKey(metaSchema.parse(this.db.prepare("SELECT value FROM meta WHERE key = 'hub_key'").get()).value);
   }
 
   /** Register a name with its key. A name already taken keeps the key it has. */

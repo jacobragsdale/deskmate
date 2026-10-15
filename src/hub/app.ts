@@ -12,9 +12,9 @@ import { z } from "zod";
 import { digestIn, hubInstallScript } from "../core/install.ts";
 import { AGENT_KINDS, PUBLIC_KINDS, readContent, repoOf } from "../core/kinds.ts";
 import { isUnder, prefixKey } from "../core/remotes.ts";
-import { authClaim, authIsValid, eventId, eventIsAuthentic, isFresh } from "../core/sign.ts";
+import { authClaim, authIsValid, eventId, eventIsAuthentic, isFresh, publicHex } from "../core/sign.ts";
 import { VERSION } from "../core/version.ts";
-import { addressSchema, eventSchema, isAgent, isChannel, joinSchema, ownerOf, PROTOCOL, repoSchema } from "../core/wire.ts";
+import { addressSchema, eventSchema, HUB, isAgent, isChannel, joinSchema, ownerOf, PROTOCOL, repoSchema } from "../core/wire.ts";
 import type { ChannelInfo, Event, RepoRef } from "../core/wire.ts";
 import { Database } from "./db.ts";
 
@@ -202,6 +202,7 @@ function installPage(hub: string): string {
 export function createHub(settings: HubSettings, now: () => number = () => Date.now() / 1000, log: Log = () => undefined): Server {
   const prefix = prefixKey(settings.repos);
   const db = new Database(settings.db);
+  const hubKey = publicHex(db.hubKey()); // Made on the first start, and the same on every start after it: clients pin it as they pin a teammate's.
   const waiting = new Set<() => void>(); // Streams open for the next event; each is called when one is stored.
 
   /** Who signed the request, a person or one of their agents, once their header is seen to be signed for this very request: its method, and its path and query as they arrived. */
@@ -231,6 +232,9 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     const { name, pubkey, token } = jsonBody(joinSchema, ask.body);
     if (!sameSecret(token, settings.joinToken)) {
       throw new Refusal(403, "wrong join token");
+    }
+    if (name === HUB) {
+      throw new Refusal(409, `the name '${HUB}' is the hub's own`); // What it signs is a workflow's, which a tag in counts.
     }
     db.addUser(name, pubkey);
     if (db.pubkeyOf(name) !== pubkey) {
@@ -457,7 +461,7 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
   const routes: readonly Route[] = [
     { method: "GET", path: "/healthz", open: true, answer: () => [200, { ok: true, now: Math.floor(now()) }] }, // The clock is here as well as in /info for the setup check: once the clocks differ by five minutes, /info refuses the signature that asks for it.
     { method: "POST", path: "/join", open: true, answer: join },
-    { method: "GET", path: "/info", answer: () => [200, { version: VERSION, protocol: PROTOCOL, repos: prefix, now: Math.floor(now()) }] },
+    { method: "GET", path: "/info", answer: () => [200, { version: VERSION, protocol: PROTOCOL, repos: prefix, now: Math.floor(now()), hubKey }] },
     { method: "GET", path: "/users", answer: () => [200, db.users()] },
     { method: "PUT", path: "/repos", answer: putRepos },
     { method: "GET", path: "/repos", answer: () => [200, db.repos()] },
