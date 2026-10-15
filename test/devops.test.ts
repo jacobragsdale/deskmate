@@ -156,7 +156,7 @@ await test("!123 in a channel pinned to a repo on Azure DevOps, and a pasted add
   t.mock.timers.reset();
 });
 
-await test("no more than a hundred answers are kept fresh at once, and while they are, nothing more is asked", async (t) => {
+await test("no more than a hundred answers are kept fresh at once, and while they are, nothing more is asked; the newest message's are asked first, and none while the user looks away", async (t) => {
   const { calls } = await azure(t);
   const hub = await startHub(t, () => Date.now() / 1000);
   const [bob, jacob] = [await hub.join("bob"), await hub.join("jacob")];
@@ -164,15 +164,31 @@ await test("no more than a hundred answers are kept fresh at once, and while the
     await person.publish("#team", "channel.join", {});
   }
   await bob.publish("#team", "channel.pin", { repo: UPLOADER, branch: null });
-  for (let message = 0; message < 21; message += 1) {
+  for (let message = 0; message < 20; message += 1) {
     await bob.publish("#team", "message", { text: [1, 2, 3, 4, 5].map((each) => `!${String(1000 + message * 5 + each)}`).join(" "), via: "cli" });
   }
+  const newest = await bob.publish("#team", "message", { text: "!22 is the one on screen", via: "cli" });
   const { session } = await deskOf(t, jacob, join(hub.dir, "dev-jacob"), "#team");
   await until("a hundred asked", () => session.view().current !== null && asked(calls).length === 100);
   await delay(300);
   session.view();
   await delay(300);
   assert.equal(asked(calls).length, 100);
+  // The newest message's first, so it has its chip; what is left over is the oldest message's last.
+  await until("the newest message's chip", () => shownTo(session, newest.event.id)?.pulls.length === 1);
+  assert.deepEqual([asked(calls).includes("uploader 1004"), asked(calls).includes("uploader 1005")], [true, false]);
+
+  // Looking away, a minute on, nothing is asked however often the view is drawn, and what was found stays; back, it is all asked again.
+  session.attend(false);
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() + 61_000 });
+  for (let drawn = 0; drawn < 3; drawn += 1) {
+    session.view();
+    await delay(100);
+  }
+  assert.deepEqual([asked(calls).length, shownTo(session, newest.event.id)?.pulls.length], [100, 1]);
+  session.attend(true);
+  await until("asked again", () => asked(calls).length === 200);
+  t.mock.timers.reset();
 });
 
 await test("a branch room on Azure DevOps shows its branch's pull request, an active one first, and its latest build, looked at again while it is open and the user looks, and not otherwise", async (t) => {

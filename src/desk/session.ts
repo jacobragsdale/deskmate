@@ -427,10 +427,11 @@ export class Session {
     settled.abort(); // Take the timer down with it, so a desk that has stopped is free to exit at once.
   }
 
-  /** Say whether the user is looking at the window. Coming back marks the open chat read, with a line where they left off. */
+  /** Say whether the user is looking at the window. Coming back marks the open chat read, with a line where they left off, and asks again what its messages refer to. */
   public attend(attentive: boolean): void {
     this.attentive = attentive;
     this.watchRoom();
+    this.askPulls(this.current);
     const mark = this.read[this.current] ?? 0;
     if (attentive && this.current !== "" && this.chats.unread(this.current, mark) > 0) {
       this.newAfter = mark;
@@ -652,6 +653,7 @@ export class Session {
   private currentView(now: number): CurrentView {
     const azure = this.watchRoom();
     const chat = this.current;
+    this.askPulls(chat);
     const info = this.channels.find((channel) => channel.name === chat);
     const members = info?.members ?? [];
     return {
@@ -838,33 +840,53 @@ export class Session {
   }
 
   /**
-   * The pull requests a text refers to that Azure DevOps has answered for, by the text that refers to each: "!123" in a chat pinned to a repo there, which is that repo's, and a pasted
-   * address in any chat. Only the first PULLS_EACH references are looked up; one Azure DevOps has not answered for yet is asked, and one it could not find is left out.
+   * The pull requests a text refers to, by the text that refers to each, with the repo and id of each: "!123" in a chat pinned to a repo on Azure DevOps, which is that repo's, and a
+   * pasted address in any chat. Only the first PULLS_EACH are looked up.
    */
-  private pullsOf(text: string, chat: string): ReplyView["pulls"] {
+  private pullRefs(text: string, chat: string): { readonly ref: string; readonly repo: RepoRef; readonly id: number }[] {
     const pinned = this.channels.find((channel) => channel.name === chat)?.repo ?? null;
     const here = pinned === null ? null : onAzure(pinned.key);
     const refs = pullsIn(text).flatMap(({ text: ref, pull }) => {
       const repo = pull === null ? null : (pull.repo ?? here);
       return pull === null || repo === null ? [] : [{ ref, repo, id: pull.id }];
     });
-    const first = refs.filter((each, at) => refs.findIndex((other) => other.ref === each.ref) === at).slice(0, PULLS_EACH);
-    return first.flatMap(({ ref, repo, id }) => {
-      const pull = this.pullRequest(repo, id);
+    return refs.filter((each, at) => refs.findIndex((other) => other.ref === each.ref) === at).slice(0, PULLS_EACH);
+  }
+
+  /** The pull requests a text refers to as Azure DevOps last answered for each, however long ago; one it has not answered for, or could not find, is left out. Nothing is asked here. */
+  private pullsOf(text: string, chat: string): ReplyView["pulls"] {
+    return this.pullRefs(text, chat).flatMap(({ ref, repo, id }) => {
+      const pull = this.pulls.get(`${repo.key} ${String(id)}`)?.found ?? null;
       return pull === null ? [] : [{ ref, pull }];
     });
   }
 
   /**
-   * A pull request as Azure DevOps last answered for it within PULL_KEPT seconds; null when it could not say, and while it is asked. One not answered for within that time is asked
-   * now, what was found before shown meanwhile, unless PULLS answers fresher than that are kept: then it is not asked, and is null.
+   * While the user looks at the window, ask Azure DevOps again for the pull requests the messages of `chat` refer to, newest message first, so that what is on screen has the
+   * PULLS answers that may be fresh at once. Away from it, what was found stays shown and nothing is asked, however long the window waits in the tray.
    */
-  private pullRequest(repo: RepoRef, id: number): PullRequest | null {
+  private askPulls(chat: string): void {
+    if (!this.attentive || chat === "") {
+      return;
+    }
+    const said = this.chats.items(chat).flatMap((item) => (item.kind === "message" ? [item.message, ...item.message.replies] : []));
+    for (const message of said.sort((a, b) => b.entry.seq - a.entry.seq)) {
+      for (const { repo, id } of this.pullRefs(message.text, chat)) {
+        this.askPull(repo, id);
+      }
+    }
+  }
+
+  /**
+   * Ask Azure DevOps for a pull request not answered for within PULL_KEPT seconds, what was found before kept meanwhile, unless PULLS answers fresher than that are kept: then it is
+   * not asked.
+   */
+  private askPull(repo: RepoRef, id: number): void {
     const key = `${repo.key} ${String(id)}`;
     const now = Date.now();
     const kept = this.pulls.get(key);
     if (kept !== undefined && now - kept.at < PULL_KEPT * 1000) {
-      return kept.found;
+      return;
     }
     for (const [each, { at }] of this.pulls) {
       if (now - at >= PULL_KEPT * 1000) {
@@ -872,7 +894,7 @@ export class Session {
       }
     }
     if (this.pulls.size >= PULLS) {
-      return null;
+      return;
     }
     this.pulls.set(key, { at: now, found: kept?.found ?? null });
     this.azure.pullRequest(repo, id).then(
@@ -882,7 +904,6 @@ export class Session {
       },
       () => undefined // It answers with a problem rather than failing.
     );
-    return kept?.found ?? null;
   }
 
   /**
