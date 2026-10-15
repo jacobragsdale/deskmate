@@ -83,6 +83,11 @@ await test("the desk by lines: the join form, joining, the chats, a message sent
   };
   assert.deepEqual(await checked(10), ["node", "dev", "git"]);
 
+  // A token for Azure DevOps is saved before anyone has joined too, and the reply says only that it was.
+  say({ t: "command", id: 9, command: { do: "saveAzureToken", token: "a-token" } });
+  assert.deepEqual(await reply(9), { ok: true });
+  assert.deepEqual(JSON.parse(readFileSync(join(hub.dir, "desk", "azure.json"), "utf8")), { token: "a-token" });
+
   // Joining starts the session: the chats arrive as a view, with bob's open.
   say({ t: "command", id: 2, command: { do: "join", hub: hub.url, name: "alice", token: TOKEN, agent: DEFAULT_PRESET } });
   assert.deepEqual(await reply(2), { ok: true });
@@ -138,6 +143,7 @@ await test("the desk by lines: the join form, joining, the chats, a message sent
     "agent-keys",
     "git",
     "git-auth",
+    "azure",
     "agent",
     "agent-acp:custom",
     "agent-permissions:custom"

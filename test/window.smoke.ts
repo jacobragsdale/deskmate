@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import type { KeyObject } from "node:crypto";
@@ -328,6 +328,10 @@ await test(
     delete env["PLAYER_TWO_HOME"];
     delete env["PLAYER_TWO_DEV"];
     delete env["DBUS_SESSION_BUS_ADDRESS"]; // With no session bus no notification can be shown, wherever this runs: see where the window is closed with a grant live.
+    // No Azure DevOps token from where the test runs: not in the environment, and not from a credential helper in git's configuration outside her home.
+    delete env["AZURE_DEVOPS_EXT_PAT"];
+    delete env["GIT_CONFIG_GLOBAL"];
+    env["GIT_CONFIG_NOSYSTEM"] = "1";
     // On a virtual display with no window manager, as in CI, Chromium may take the window for hidden and stop drawing frames, which freezes every
     // transition at its start: a toast that never slides in is "out of place". These are the switches Playwright starts Chromium with for the same reason.
     const unthrottled = ["--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding", "--disable-background-timer-throttling"];
@@ -614,6 +618,26 @@ await test(
     await page.click("button", "Setup");
     const snippets = `[...document.querySelectorAll("pre")].map((each) => JSON.stringify(JSON.parse(each.textContent).mcpServers["player-two"].args)).join(" ")`;
     await page.until("the editor agents' snippets", `document.body.innerText.includes("Editor agents") && ${snippets} === '["mcp"] ["mcp"]'`);
+
+    // The team's repos are on Azure DevOps and she has no token, so its check fails and says how to give one, with a field for one under it. Saving keeps the token in azure.json,
+    // readable only by her, and empties the field, and the token is nowhere in the page. It is not tried, which would ask the real Azure DevOps; test/doctor.test.ts tries one against a fake.
+    const azureRow = `[...document.querySelectorAll("li")].find((each) => each.textContent.includes("Azure DevOps answers to your token"))`;
+    await page.until(
+      "the Azure DevOps check, failed for want of a token",
+      `${azureRow}?.querySelector('[title="fail"]') !== null && ${azureRow}?.innerText.includes("no Azure DevOps token was found") === true && ${azureRow}.innerText.includes("Code (read and write) and Build (read)")`
+    );
+    await page.eval(`${azureRow}.scrollIntoView()`);
+    await page.shot("azure");
+    const secret = "a-token-the-page-must-never-show-0123456789";
+    await page.type('input[aria-label="Azure DevOps token"]', secret);
+    await page.click("button", "Save token");
+    await page.until("the token saved", `document.querySelector('input[aria-label="Azure DevOps token"]')?.value === "" && document.body.innerText.includes("Token saved.")`);
+    const azureFile = join(home, ".config", "player-two", "azure.json");
+    assert.deepEqual(JSON.parse(readFileSync(azureFile, "utf8")), { token: secret });
+    assert.equal(statSync(azureFile).mode & 0o777, 0o600);
+    const shown = `document.documentElement.outerHTML.includes(${JSON.stringify(secret)}) || [...document.querySelectorAll("input")].some((each) => each.value.includes(${JSON.stringify(secret)}))`;
+    assert.equal(await page.eval(shown), false);
+    rmSync(azureFile); // The Setup page is opened again later, and its check would try a token on the real Azure DevOps.
 
     // Above them, the agent chosen when joining answers. Cursor over ACP, the next preset offered, is added and chosen, and config.json says so.
     await page.until("the agent chosen when joining", `document.querySelector('input[aria-label="Cursor one-shot answers"]')?.checked === true`);

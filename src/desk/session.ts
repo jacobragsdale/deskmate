@@ -118,7 +118,7 @@ interface AgentRun {
   tellAt: number; // When it is to be told, Unix milliseconds.
 }
 
-type ChatCommand = Exclude<Command, { do: "join" | "doctor" | "search" | "testPermissions" }>;
+type ChatCommand = Exclude<Command, { do: "join" | "doctor" | "search" | "testPermissions" | "saveAzureToken" }>;
 type MessageDo = "send" | "reply" | "react" | "edit" | "delete";
 type JobDo = "sendDraft" | "discardDraft" | "run" | "stop" | "stopAll" | "permit" | "decline" | "withdraw" | "grant" | "revoke";
 

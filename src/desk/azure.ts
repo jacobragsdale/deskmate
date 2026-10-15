@@ -4,7 +4,8 @@
  */
 
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { z } from "zod";
@@ -163,6 +164,23 @@ function savedToken(home: string): string | null {
     return savedSchema.parse(saved).token;
   } catch {
     return null; // None saved, or not as the setup page writes one.
+  }
+}
+
+/** Save a token where findToken looks second, as the setup page does: azure.json in `home`, readable by nobody else, and written whole or not at all. What fails never says the token. */
+export function saveToken(home: string, token: string): void {
+  const secret = token.trim();
+  if (!/^\S+$/.test(secret)) {
+    throw new Error("a token is one word, with no spaces in it: nothing was saved");
+  }
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  const file = join(home, TOKEN_FILE);
+  const draft = `${file}.${randomBytes(6).toString("hex")}`; // Made with its mode, then put in place in one step, so no reader sees half a file or one others can read.
+  try {
+    writeFileSync(draft, JSON.stringify(savedSchema.parse({ token: secret })), { mode: 0o600, flag: "wx" });
+    renameSync(draft, file);
+  } finally {
+    rmSync(draft, { force: true });
   }
 }
 

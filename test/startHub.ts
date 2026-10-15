@@ -26,10 +26,13 @@ export interface Hub {
   readonly drop: () => void; // Cut every connection open to the hub, as a proxy that gives up on them would.
 }
 
-/** A hub of its own for one test, listening on a port the system picked. A test of something that reads the real clock, as the desk does, passes that clock as `now`; one of what a teammate installs passes the folder it serves. */
-export async function startHub(t: TestContext, now: () => number = () => NOW, downloads = ""): Promise<Hub> {
+/**
+ * A hub of its own for one test, listening on a port the system picked. A test of something that reads the real clock, as the desk does, passes that clock as `now`; one of what a teammate installs
+ * passes the folder it serves; one of a team whose repos are somewhere else passes where.
+ */
+export async function startHub(t: TestContext, now: () => number = () => NOW, downloads = "", repos = TEAM_REPOS): Promise<Hub> {
   const dir = mkdtempSync(join(tmpdir(), "player-two-hub-"));
-  const server = createHub({ joinToken: TOKEN, db: join(dir, "hub.db"), repos: TEAM_REPOS, downloads }, now);
+  const server = createHub({ joinToken: TOKEN, db: join(dir, "hub.db"), repos, downloads }, now);
   await new Promise<void>((resolve) => {
     server.listen(0, "127.0.0.1", resolve);
   });

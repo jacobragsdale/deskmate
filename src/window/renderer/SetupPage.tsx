@@ -1,15 +1,17 @@
 /**
  * The setup check as a page: each item with how it stands and what was found, its fix with a button to copy it, "Check again", and on Windows the distribution the desk runs in.
+ * Under the Azure DevOps check, while it fails, a field that saves a token for the desk, which never sends it back.
  * Below it, once someone has joined, their agents (Agents.tsx); then what to add to an editor's agent so it can use Player Two's MCP server, to copy; the page never writes those files.
  */
 
 import { cn } from "cn";
 import { useCallback, useEffect, useState } from "react";
-import type { JSX, ReactNode } from "react";
+import type { JSX, ReactNode, SyntheticEvent } from "react";
 
 import { z } from "zod";
 
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 import { checkSchema, distroChoiceSchema, outcomeSchema } from "../../shared/ipc.ts";
@@ -30,6 +32,53 @@ const EDITORS = [
 /** Ask for the setup check. With `again`, a desk that is not up is started afresh first, so what the user fixed is tried. */
 export async function runSetupCheck(again: boolean): Promise<readonly Check[]> {
   return checksSchema.parse(await window.playerTwo.doctor(again));
+}
+
+/** Where a token for Azure DevOps is saved, under the check that found none that works. The desk keeps it in azure.json; nothing sends it back, and the field is emptied once it is saved. */
+function TokenField({ tell }: { readonly tell: (notice: Notice) => void }): JSX.Element {
+  const [token, setToken] = useState("");
+  const [saving, setSaving] = useState(false);
+  const save = (event: SyntheticEvent<HTMLFormElement>): void => {
+    event.preventDefault();
+    setSaving(true);
+    window.playerTwo
+      .command({ do: "saveAzureToken", token })
+      .then((raw) => {
+        const outcome = outcomeSchema.parse(raw);
+        if (outcome.ok) {
+          setToken("");
+          tell({ title: "", body: "Token saved. Check again to try it.", severity: "info" });
+        } else {
+          tell({ title: "could not save the token", body: outcome.problem, severity: "error" });
+        }
+      })
+      .catch((error: unknown) => {
+        tell({ title: "could not save the token", body: error instanceof Error ? error.message : String(error), severity: "error" });
+      })
+      .finally(() => {
+        setSaving(false);
+      });
+  };
+  return (
+    <form className="mt-1.5 flex items-center gap-2" onSubmit={save}>
+      <Input
+        className="max-w-xs"
+        type="password"
+        aria-label="Azure DevOps token"
+        placeholder="Azure DevOps token"
+        autoComplete="off"
+        spellCheck={false}
+        maxLength={1000}
+        value={token}
+        onChange={(event) => {
+          setToken(event.currentTarget.value);
+        }}
+      />
+      <Button type="submit" size="sm" disabled={saving || token.trim() === ""}>
+        Save token
+      </Button>
+    </form>
+  );
 }
 
 interface Props {
@@ -155,6 +204,7 @@ export function SetupPage({ children, problem, initial, onClose, tell }: Props):
                     </Button>
                   </p>
                 )}
+                {item.id === "azure" && item.status === "fail" && <TokenField tell={tell} />}
               </div>
             </li>
           ))}

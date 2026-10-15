@@ -8,6 +8,7 @@ import { PROTOCOL } from "../core/wire.ts";
 import { readLine, windowLineSchema } from "../shared/ipc.ts";
 import type { Command, DeskLine, Outcome, Question, View } from "../shared/ipc.ts";
 import { PRESETS } from "./agents/presets.ts";
+import { saveToken } from "./azure.ts";
 import { defaultDev, defaultHome, http, join, loadClient, PlayerTwoError } from "./client.ts";
 import { runChecks, WITHOUT_IDENTITY } from "./doctor.ts";
 import { Session } from "./session.ts";
@@ -108,6 +109,10 @@ class Desk {
     if (command.do === "doctor") {
       const checks = await runChecks(this.home, defaultDev(), this.stopping.signal);
       return { ok: true, data: this.session === null ? checks.filter((check) => WITHOUT_IDENTITY.has(check.id)) : checks }; // Before anyone has joined, nothing that needs an identity is worth showing.
+    }
+    if (command.do === "saveAzureToken") {
+      saveToken(this.home, command.token); // Before anyone has joined too: it is for this machine, not an identity on the hub.
+      return { ok: true };
     }
     if (command.do === "join") {
       if (this.session === null) {

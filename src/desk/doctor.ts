@@ -15,6 +15,7 @@ import type { Check } from "../shared/ipc.ts";
 import { agentKeyFile } from "./agentKeys.ts";
 import { acpRunner, greet, SignInNeeded } from "./agents/acp.ts";
 import type { RunHandlers } from "./agents/runner.ts";
+import { AZURE, Azure, findToken } from "./azure.ts";
 import { http, loadClient, readConfig } from "./client.ts";
 import type { Client } from "./client.ts";
 import { git, origin, scan } from "./repos.ts";
@@ -35,6 +36,8 @@ const CERTIFICATE = /CERT|SELF_SIGNED|UNABLE_TO_VERIFY|UNABLE_TO_GET_ISSUER/; //
 const JOIN = "Join from the window, or run: player-two join HUB NAME TOKEN";
 const ADD_CA = "sudo cp team-ca.crt /usr/local/share/ca-certificates/ && sudo update-ca-certificates";
 const REGISTER = "Quit Player Two and open it again: when it shares a repo, it makes the repo's agent a key if it has none, and tells the hub the key";
+const GIVE_TOKEN =
+  "Give Player Two an Azure DevOps token in one of three ways: export AZURE_DEVOPS_EXT_PAT in ~/.profile, inside WSL on Windows; save one below, which keeps it in azure.json, readable only by you; or sign in to dev.azure.com once with git, whose credential helper keeps it. A personal access token needs the scopes Code (read and write) and Build (read)";
 const SET_CLOCK = "Set this machine's clock. In WSL, run `wsl --shutdown` in PowerShell and open Player Two again: WSL takes Windows' time when it starts";
 // How to install the agents the join form offers, by the program each one runs.
 const INSTALL = new Map([
@@ -275,6 +278,25 @@ async function gitAuth(checkout: Checkout): Promise<Outcome> {
   );
 }
 
+/** Whether a token is found for the team's repos on Azure DevOps, and lets the desk look up one of them. `base` is where Azure DevOps is, when a test moves it. */
+async function azure(home: string, info: HubInfo | null, checkout: Checkout | undefined, base: string | undefined): Promise<Outcome> {
+  if (info === null) {
+    return skip("the hub did not say where the team's repos are");
+  }
+  if (info.repos.split("/")[0] !== new URL(AZURE).host) {
+    return skip(`the team's repos are under ${info.repos}, not on Azure DevOps`);
+  }
+  if (checkout === undefined) {
+    return skip("no team repo is checked out to try a token on");
+  }
+  const token = await findToken(home, checkout.remote.url);
+  if (token === null) {
+    return fail("no Azure DevOps token was found", GIVE_TOKEN);
+  }
+  const found = await new Azure(home, base).repository(checkout.remote);
+  return found.ok ? ok(`Azure DevOps let the token from ${token.source} look up ${checkout.remote.name}`) : fail(found.problem, GIVE_TOKEN);
+}
+
 function agent(home: string, config: Config): Outcome {
   const program = defaultAgentOf(config).command;
   const where = findProgram(program, process.env["PATH"] ?? "");
@@ -376,11 +398,11 @@ function either(found: Found<Outcome>): Outcome {
 }
 
 /**
- * Check what Player Two needs here, in order: Node, the identity in `home`, the hub and the way to it, the clocks, the repos under `dev` and their agents' keys, git, the agent, and each agent over ACP and how it did
- * in the permission test, which runs only when asked for.
+ * Check what Player Two needs here, in order: Node, the identity in `home`, the hub and the way to it, the clocks, the repos under `dev` and their agents' keys, git, a token for Azure DevOps, the agent,
+ * and each agent over ACP and how it did in the permission test, which runs only when asked for.
  * A check that needs what an earlier one could not find is skipped and says why. Nothing here throws, and nothing waits for long. Aborting `stop` ends every agent it started.
  */
-export async function runChecks(home: string, dev: string, stop: AbortSignal = new AbortController().signal): Promise<Check[]> {
+export async function runChecks(home: string, dev: string, stop: AbortSignal = new AbortController().signal, azureBase?: string): Promise<Check[]> {
   const config = value(await attempt(() => readConfig(home)));
   const client = value(await attempt(() => loadClient(home, http, () => Date.now() / 1000)));
   const reached = await hub(config);
@@ -426,6 +448,7 @@ export async function runChecks(home: string, dev: string, stop: AbortSignal = n
       title: "git reaches the team's repos without asking",
       ...(version.ok && checkout !== undefined ? await gitAuth(checkout) : skip(version.ok ? "no team repo is checked out to try" : "git does not run"))
     },
+    { id: "azure", title: "Azure DevOps answers to your token", ...either(await attempt(() => azure(home, asked.info, checkout, azureBase))) },
     { id: "agent", title: "The agent's command is found", ...(config === null ? skip("not joined, so no agent is chosen yet") : either(await attempt(() => agent(home, config)))) },
     ...(
       await Promise.all(
