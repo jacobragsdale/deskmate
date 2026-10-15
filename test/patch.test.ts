@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -58,10 +58,20 @@ async function until<T>(what: string, find: () => T | undefined | false | Promis
   throw new Error(`never happened: ${what}`);
 }
 
+/** The files under `root`, as paths from it, never looking inside its .git: a run's clean copy is made and removed there while a test looks. */
+function filesIn(root: string, under = ""): string[] {
+  return readdirSync(join(root, under), { withFileTypes: true }).flatMap((entry) => {
+    const name = join(under, entry.name);
+    if (under === "" && entry.name === ".git") {
+      return [];
+    }
+    return entry.isDirectory() ? filesIn(root, name) : entry.isFile() ? [name] : [];
+  });
+}
+
 /** Every file in a checkout but .git, with what it holds, and what git says of its index and working tree: what nobody else's request may change. */
 function snapshot(path: string): string {
-  const files = readdirSync(path, { recursive: true, encoding: "utf8" })
-    .filter((name) => name !== ".git" && !name.startsWith(".git/") && statSync(join(path, name)).isFile())
+  const files = filesIn(path)
     .sort(byCodeUnit)
     .map((name) => [name, readFileSync(join(path, name), "utf8")]);
   return JSON.stringify([files, git(path, "status", "--porcelain=v1", "-uall"), git(path, "diff", "--cached"), git(path, "rev-parse", "HEAD"), git(path, "branch", "--show-current")]);
