@@ -399,6 +399,8 @@ app.on("open-url", (event, url) => {
   event.preventDefault();
   follow(noteOf(url));
 });
+// On macOS opening the app again while it runs, from the Dock or the Finder, starts no second copy: it says this instead, and a window hidden to the tray comes back.
+app.on("activate", bringUp);
 
 app.on("window-all-closed", () => {
   app.quit(); // With no window there is nobody to approve a run, so the desk and its agents go too.
