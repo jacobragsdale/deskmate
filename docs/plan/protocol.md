@@ -53,6 +53,8 @@ Authorization: PlayerTwo <name>:<ts>:<sig>
 
 `ts` is Unix seconds and must be within 300 seconds of the hub's clock. Version 2 stops a captured header being replayed against another route. The ingress must not rewrite paths.
 
+`<name>` is a person, or from phase 4 one of their agents, `owner/repo`, signing with its own registered key; nothing else is read as a header. The hub answers an agent's request as it answers its owner's, so its reads see what the owner sees, except that an agent cannot replace the repos its owner shares (`PUT /repos` is `403`), and its requests do not count as its owner being here.
+
 ### Notes (until phase 1)
 
 What 0.4 signed for a note: `["player-two-note-v3", sender, to, kind, body, ts, agent, re]`, `deskmate-note-v3` before task P0-E4 renamed it. Phase 1 removed notes, and nothing signs or checks one now.

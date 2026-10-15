@@ -71,7 +71,8 @@ const searchQuerySchema = z.object({
 
 /** One request as a route sees it. */
 interface Ask {
-  readonly me: string; // Who is asking, proved by their signature; "" on the routes open to anyone.
+  readonly me: string; // Who is asking, proved by their signature, or the owner of the agent asking, who sees what its owner sees; "" on the routes open to anyone.
+  readonly signer: string; // Whose signature it is: `me`, or one of their agents, "me/repo".
   readonly id: string; // The event id the path names; "" on a route that names none.
   readonly query: URLSearchParams;
   readonly body: string; // What the request carried, not yet parsed.
@@ -203,14 +204,16 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
   const db = new Database(settings.db);
   const waiting = new Set<() => void>(); // Streams open for the next event; each is called when one is stored.
 
-  /** Who is asking, once their header is seen to be signed for this very request: its method, and its path and query as they arrived. */
+  /** Who signed the request, a person or one of their agents, once their header is seen to be signed for this very request: its method, and its path and query as they arrived. */
   function caller(request: IncomingMessage): string {
     const claim = authClaim(request.headers.authorization ?? "");
-    const pubkey = claim === null ? null : db.pubkeyOf(claim.name);
+    const pubkey = claim === null ? null : keyOf(claim.name);
     if (claim === null || pubkey === null || !authIsValid(claim, pubkey, now(), request.method ?? "", request.url ?? "")) {
       throw new Refusal(401, "not signed by a known user, or your clock is more than 5 minutes off");
     }
-    db.sawUser(claim.name, Math.floor(now())); // Every signed request doubles as "I am here".
+    if (!isAgent(claim.name)) {
+      db.sawUser(claim.name, Math.floor(now())); // Every signed request doubles as "I am here". An agent at work says nothing of whether its owner is.
+    }
     return claim.name;
   }
 
@@ -239,6 +242,9 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
 
   /** Replace the list of repos the caller has checked out. */
   function putRepos(ask: Ask): Answer {
+    if (ask.signer !== ask.me) {
+      throw new Refusal(403, "agents cannot change which repos their owner shares");
+    }
     const mine = jsonBody(advertsSchema, ask.body);
     mine.forEach(shareable);
     if (new Set(mine.map((repo) => repo.name)).size !== mine.length) {
@@ -499,8 +505,8 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     if (hit === undefined) {
       throw there.length === 0 ? new Refusal(404, "Not Found") : new Refusal(405, "Method Not Allowed");
     }
-    const me = hit.route.open === true ? "" : caller(request);
-    return hit.route.answer({ me, id: hit.id, query: new URLSearchParams(query.join("?")), body: await bodyText(request), response });
+    const signer = hit.route.open === true ? "" : caller(request);
+    return hit.route.answer({ me: ownerOf(signer), signer, id: hit.id, query: new URLSearchParams(query.join("?")), body: await bodyText(request), response });
   }
 
   const server = createServer((request, response) => {

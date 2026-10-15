@@ -3,7 +3,7 @@
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, sign, verify } from "node:crypto";
 import type { KeyObject } from "node:crypto";
 
-import { eventSchema, MAX_SKEW } from "./wire.ts";
+import { AUTHOR, eventSchema, MAX_SKEW } from "./wire.ts";
 import type { Event } from "./wire.ts";
 
 const AUTH_SCHEME = "PlayerTwo";
@@ -97,11 +97,11 @@ export interface AuthClaim {
   readonly sig: string;
 }
 
-/** Split an auth header into its claim without trusting it yet. Null when it is not one. */
+/** Split an auth header into its claim without trusting it yet: `name` is a person, or from phase 4 one of their agents, "owner/repo". Null when it is not one. */
 export function authClaim(header: string): AuthClaim | null {
   const space = header.indexOf(" ");
   const [name = "", ts = "", sig = ""] = (space === -1 ? "" : header.slice(space + 1)).split(":");
-  if (space === -1 || header.slice(0, space) !== AUTH_SCHEME || !/^\d{1,12}$/.test(ts)) {
+  if (space === -1 || header.slice(0, space) !== AUTH_SCHEME || !new RegExp(`^${AUTHOR}$`).test(name) || !/^\d{1,12}$/.test(ts)) {
     return null;
   }
   return { name, ts: Number(ts), sig };

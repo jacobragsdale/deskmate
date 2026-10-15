@@ -748,6 +748,42 @@ await test("an agent's event is stored when its registered key signs it, it is a
   assert.deepEqual(await said(hub, "alice", "chat=%23backend"), ["job.progress", "channel.join"]);
 });
 
+await test("a request an agent signs reads what its owner sees, may post its events, and changes nothing else of its owner's, not even when they were last here", async (t) => {
+  const hub = await startHub(t);
+  for (const name of ["alice", "bob", "carol"]) {
+    await hub.join(name);
+  }
+  const agent = loadKey("33".repeat(32));
+  await post(hub, "bob", signed(hub, "alice", "*", "agent.register", { repo: "uploader", pubkey: publicHex(agent) })); // Posted by bob, so alice has not been seen.
+  await post(hub, "bob", signed(hub, "carol", "#ops", "channel.join"));
+  await post(hub, "bob", signed(hub, "carol", "#ops", "message", { text: "for #ops only", via: "cli" }));
+  await post(hub, "bob", signed(hub, "bob", "alice", "message", { text: "@alice/uploader where?", via: "cli" }));
+  const as = (name: string, key: KeyObject, method: string, path: string): Readonly<Record<string, string>> => ({ Authorization: authHeader(key, name, NOW, method, path) });
+  const status = async (path: string, headers: Readonly<Record<string, string>>, more: RequestInit = {}): Promise<number> => (await fetch(hub.url + path, { ...more, headers })).status;
+  const visible = async (path: string): Promise<unknown> => (await fetch(hub.url + path, { headers: as("alice/uploader", agent, "GET", path) })).json();
+
+  for (const path of ["/events?after=0", "/events?chat=bob", "/search?q=where", "/channels", "/users", "/info"]) {
+    assert.equal(await status(path, as("alice/uploader", agent, "GET", path)), 200, path);
+  }
+  assert.deepEqual(
+    z
+      .array(deliveredSchema)
+      .parse(await visible("/events?after=0"))
+      .map(({ event }) => event.kind),
+    ["agent.register", "message"]
+  ); // Not carol's channel, which alice is not in.
+  const progress = signed(hub, "alice/uploader", "bob", "job.progress", { repo: "uploader", summary: "reading" }, { key: agent });
+  assert.equal(await status("/events", { ...as("alice/uploader", agent, "POST", "/events"), "Content-Type": "application/json" }, { method: "POST", body: JSON.stringify(progress) }), 201);
+  assert.deepEqual(await refusal(hub, "PUT", "/repos", { headers: as("alice/uploader", agent, "PUT", "/repos"), body: "[]" }), [403, "agents cannot change which repos their owner shares"]);
+
+  const unsigned = [401, "not signed by a known user, or your clock is more than 5 minutes off"];
+  assert.deepEqual(await refusal(hub, "GET", "/users", { headers: as("alice/uploader", keyOf(hub, "alice"), "GET", "/users") }), unsigned); // Its owner's key is not its key.
+  assert.deepEqual(await refusal(hub, "GET", "/users", { headers: as("alice/billing", agent, "GET", "/users") }), unsigned); // Nobody registered that one.
+  assert.deepEqual(await refusal(hub, "GET", "/users", { headers: as("alice/uploader/more", agent, "GET", "/users") }), unsigned); // Not a name at all.
+  const seen = Object.fromEntries((await (await hub.join("bob")).users()).map((person) => [person.name, person.seen]));
+  assert.deepEqual(seen, { alice: 0, bob: NOW, carol: 0 });
+});
+
 await test("hub verify checks an agent's events against the key its owner had registered for it then, and names one signed with any other", async (t) => {
   const hub = await startHub(t);
   await hub.join("alice");
