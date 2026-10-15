@@ -328,6 +328,23 @@ await test(
   }
 );
 
+await test("a patch that holds the owner's private key is not posted with nobody reviewing it: it is kept as a draft with its answer, and the owner is told why", { timeout: 60_000 }, async (t) => {
+  const { bob, jacob, owner, notices, asks } = await two(t);
+  const key = join(jacob.home, "key");
+  const id = await asks(`@jacob/uploader leak:${key}`, "auto-edits", true);
+  const draft = await until("jacob's draft", () => owner.view().current?.drafts.find((each) => each.id === id));
+  assert.match(draft.text, /leak allowed$/);
+  assert.equal(draft.patch?.diff.includes(`+${readFileSync(key, "utf8").trim()}`), true);
+  assert.deepEqual(notices, [
+    {
+      title: "your uploader agent's answer was not posted; it is kept as a draft",
+      body: `The change that goes with it holds the private key in ${key}, which would let whoever reads it sign as its owner. Read it before you send it: the agent read that file, and may have put the key elsewhere too.`,
+      severity: "error"
+    }
+  ]);
+  assert.deepEqual([await said(bob, id, "patch"), await said(bob, id, "job.result")], [[], []]);
+});
+
 await test(
   "a change too large for a patch event is not sent: the answer says so, and the clean copy is kept, locked, where its owner is told it is, and is still there after a sweep",
   { timeout: 60_000 },
@@ -491,15 +508,15 @@ await test(
     // A file made executable, which a diff shows as no line changed, and a new one, are named in a warning, and the change of mode beside the file.
     await asker.handle({
       do: "applyPatch",
-      id: await sends(`diff --git a/notes.txt b/notes.txt\nold mode 100644\nnew mode 100755\n${adding("run.sh").replace("new file mode 100644", "new file mode 100755")}`)
+      id: await sends(`diff --git a/notes.txt b/notes.txt\nold mode 100644\nnew mode 100755\n${adding("run\u202ehs.sh").replace("new file mode 100644", "new file mode 100755")}`)
     });
     assert.deepEqual(questions.at(-1)?.detail.split("\n").slice(5), [
       "⚠ Your checkout has changes you have not committed. The patch goes in beside them, and is added to the index.",
-      "⚠ It makes files executable, which run whatever they hold when anything starts them: notes.txt, run.sh.",
+      "⚠ It makes files executable, which run whatever they hold when anything starts them: notes.txt, run\\u{202e}hs.sh.", // A name drawn plain, its text not turned around.
       "",
       "Files:",
       "  notes.txt  +0 −0  mode 100644 → 100755",
-      "  run.sh  +1 −0  executable"
+      "  run\\u{202e}hs.sh  +1 −0  executable"
     ]);
     assert.equal(snapshot(theirs), withMine);
 

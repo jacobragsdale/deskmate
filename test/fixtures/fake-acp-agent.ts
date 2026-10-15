@@ -4,7 +4,8 @@
  * `switch` asks to switch its session to a mode in which it edits without asking, as ACP lets an agent's modes differ in what they ask; each `edit` asks to edit and writes edited.txt only if allowed,
  * and `big` big.txt, 600,000 characters, more than a patch carries; each `aim:PATH` asks to edit PATH, from its folder unless it starts with "/", and writes it, and the folders to it, if allowed,
  * and `blind` does the same for unnamed.txt without saying which file; `nest` asks to edit nested/README.md and, if allowed, makes nested a repository with that file committed,
- * as an agent that runs git without asking might. Every other request to edit names the file it writes in its folder;
+ * as an agent that runs git without asking might; each `leak:PATH` asks to edit leaked.txt and writes what PATH holds there, as an agent that read a file and pasted it.
+ * Every other request to edit names the file it writes in its folder;
  * `run` asks to run `npm test` in its folder; `takeback` asks to edit and takes the request back 300 ms later; `leave` asks to edit and ends its turn without waiting for the answer;
  * `stray` asks under another session's id; `long` asks to edit under a title of two lines and over 300 characters; `mcp` says which MCP servers its session has; `whoami` says the agent its environment names in PLAYER_TWO_AGENT, the one chat PLAYER_TWO_ONLY_CHAT names, and the request PLAYER_TWO_JOB names, if they do;
  * `slow` waits until cancelled, with a child process of its own; `deaf` does the same but takes no notice of a cancel. Each `ask:OWNER/REPO` asks that agent "read" with the `ask_agent` tool of the
@@ -191,6 +192,14 @@ async function changes(client: acp.AgentContext, sessionId: string, session: Ses
   }
   if (has("blind")) {
     did.push(await aim(client, sessionId, session, null, 0));
+  }
+  for (const [, from = ""] of text.matchAll(/(?<!\S)leak:(\S+)/g)) {
+    const path = join(session.cwd, "leaked.txt");
+    const allowed = await permitted(client, sessionId, "leak", "edit", "Edit leaked.txt", undefined, [{ path }]);
+    if (allowed) {
+      writeFileSync(path, readFileSync(from));
+    }
+    did.push(allowed ? "leak allowed" : "leak refused");
   }
   return did;
 }

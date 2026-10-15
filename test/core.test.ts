@@ -201,6 +201,39 @@ await test("a job's event counts only from the agent's owner, and a withdrawal o
   assert.deepEqual(states(logOf("jacob", [ask, acceptedLongAgo, doing("jacob", long - 10)]), ask, long + STALE), ["jacob/uploader working", "carol/uploader waiting"]); // Never back in time.
 });
 
+await test("of an agent's say about patches only its own repo's patch counts: one about another repo, a review and a patch.applied from it count for nothing, and a person's do", () => {
+  const ask = say("bob", "jacob", "@jacob/uploader shout the notes");
+  const about = (target: Entry): { readonly refs: readonly string[] } => ({ refs: [target.event.id] });
+  const patch = (author: string, name: string): Entry =>
+    entry(
+      author,
+      "bob",
+      "patch",
+      {
+        repo: { name, key: `dev.azure.com/acme/platform/${name}`, url: `https://dev.azure.com/acme/Platform/_git/${name}` },
+        base: "a".repeat(40),
+        branch: "main",
+        title: `${name}, by ${author}`,
+        diff: "diff --git a/x b/x\n"
+      },
+      about(ask)
+    );
+  const own = patch("jacob/uploader", "uploader");
+  const log = logOf("bob", [
+    ask,
+    entry("jacob", "bob", "job.accepted", { repo: "uploader", ...ACCEPTED }, about(ask)),
+    own,
+    patch("jacob/uploader", "billing"), // Not its repo.
+    entry("jacob/uploader", "bob", "review", { verdict: "approve", text: "my own work is fine" }, about(own)),
+    entry("jacob/uploader", "bob", "patch.applied", { branch: "main" }, about(own)),
+    entry("bob", "jacob", "review", { verdict: "changes", text: "" }, about(own)),
+    entry("bob", "jacob", "patch.applied", { branch: "player-two/12345678" }, about(own))
+  ]);
+  assert.deepEqual(shown(log, "jacob"), ["bob: @jacob/uploader shout the notes", "jacob/uploader/uploader: uploader, by jacob/uploader"]);
+  const shownPatch = log.message(own.event.id)?.patch;
+  assert.deepEqual([shownPatch?.reviews, shownPatch?.applied], [[{ who: "bob", verdict: "changes", text: "" }], [{ who: "bob", branch: "player-two/12345678" }]]);
+});
+
 await test("a job's event from an agent, owner/repo, counts exactly as one from its owner does, for that repo only, and nothing else from an agent counts at all", () => {
   const ask = say("bob", "jacob", "@jacob/uploader and @jacob/billing, where do we retry?");
   const by = (author: string, kind: string, content: object, about: Entry = ask): Entry => entry(author, "bob", kind, content, { refs: [about.event.id] });
