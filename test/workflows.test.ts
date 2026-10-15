@@ -658,6 +658,38 @@ await test("a post or an approval whose text is empty once filled in fails its s
   assert.deepEqual(runs(hub), ["says 1 0 ended", "asks 2 0 ended"]);
 });
 
+await test("a live workflow whose file does not read in this hub, as one another version took might not, sets nothing off and holds up no other, at start or after", async (t) => {
+  const hub = await startHub(t);
+  const [alice] = await team(hub, "alice");
+  assert.ok(alice !== undefined);
+  const { event: echo } = await alice.publish("#ops", "workflow.define", { name: "echo", yaml: hooked("echo", 'post: "echo"') });
+  const later = signEvent(newKey(), {
+    author: "alice",
+    to: "#ops",
+    kind: "workflow.define",
+    content: JSON.stringify({ name: "later", yaml: "name: later\non:\n  webhook: {}\nsteps: []\n" }),
+    ts: NOW,
+    refs: []
+  });
+  const db = new Database(join(hub.dir, "hub.db"));
+  db.transaction(() => {
+    db.addEvent(later);
+    db.setWorkflow("#ops", "later", later.id); // Live, as a hub that read it took it.
+  });
+  db.close();
+
+  await hub.restart();
+  await setOff(hub, echo.id);
+  const { event: ci } = await alice.publish("#ops", "workflow.define", { name: "ci", yaml: hooked("ci", 'post: "ci"') });
+  await setOff(hub, ci.id);
+
+  assert.equal((await fetch(`${hub.url}/hooks/${later.id.slice(0, 32)}`, { method: "POST", body: "{}" })).status, 404);
+  assert.deepEqual(
+    (await channel(alice)).filter((line) => line.startsWith("hub:")),
+    ["hub: echo", "hub: echo run 1 step 0 done", "hub: ci", "hub: ci run 2 step 0 done"]
+  );
+});
+
 /**
  * Have every name looked up in this process, until the test ends, answered by `answer` with its addresses or the error the system would give, and no resolver asked: an IP address,
  * which a server listening is looked up by, is itself. The answer comes back as the system's does, with no addresses beside an error.

@@ -227,7 +227,7 @@ function isJson(text: string): boolean {
  * once something is stored.
  */
 export function runWorkflows(db: Database, key: KeyObject, now: () => number, allow: readonly string[], wake: () => void, log: Log): Workflows {
-  let files = new Map<string, Workflow>(); // Each live workflow's file as it reads, by the id of its definition, which never changes what it holds. `schedule` keeps it to those live.
+  let files = new Map<string, Workflow | null>(); // Each live workflow's file as it reads, null for one that does not, by its definition's id, which never changes. `schedule` keeps it to those live.
   let hooks = new Map<string, Live>(); // The live webhook workflows by hook, the first 32 hex of their definition's id, so a call to one looks no further. `schedule` keeps it.
   const closing = new AbortController(); // Hangs up every webhook being called once the hub stops.
   let crons: Cron[] = [];
@@ -236,10 +236,37 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, al
     log("workflow failed", { error: problemOf(error) });
   }
 
-  function fileOf(live: Live): Workflow {
-    const known = files.get(live.event) ?? parseWorkflow(live.yaml); // It read when the hub took it, or it would not be live.
-    files.set(live.event, known);
-    return known;
+  /**
+   * A live workflow's file as it reads; null for one that does not, which sets nothing off and runs nothing. Each read when the hub took it, but one taken by another version of the hub may not
+   * read in this one, and it must hold up no other: it is logged once, when first found.
+   */
+  function fileOf(live: Live): Workflow | null {
+    const known = files.get(live.event);
+    if (known !== undefined) {
+      return known;
+    }
+    let file: Workflow | null = null;
+    try {
+      file = parseWorkflow(live.yaml);
+    } catch (error) {
+      log("workflow does not read", { channel: live.channel, workflow: live.name, error: problemOf(error) });
+    }
+    files.set(live.event, file);
+    return file;
+  }
+
+  /** A croner job for a workflow on a schedule, which sets off a run each time its line comes round; none, logged, for a line croner will not time. */
+  function timed(live: Live, { cron, zone }: Extract<Trigger, { readonly kind: "schedule" }>["schedule"]): Cron[] {
+    try {
+      return [
+        new Cron(cron, { name: live.event, timezone: zone, mode: "5-part", unref: true }, () => {
+          start(live, {});
+        })
+      ];
+    } catch (error) {
+      log("workflow not timed", { channel: live.channel, workflow: live.name, error: problemOf(error) });
+      return [];
+    }
   }
 
   /** An event of the hub's own, to a channel, at `ts`. */
@@ -367,7 +394,8 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, al
   /** A run kept in workflow_runs, to go on with: null when the definition it runs is no longer live. */
   function resumed(run: Waiting): Going | null {
     const live = db.liveWorkflows(run.channel).find((each) => each.event === run.definition);
-    return live === undefined ? null : { run: run.run, channel: run.channel, name: run.name, definition: run.definition, file: fileOf(live), values: run.input };
+    const file = live === undefined ? null : fileOf(live);
+    return file === null ? null : { run: run.run, channel: run.channel, name: run.name, definition: run.definition, file, values: run.input };
   }
 
   /** A 👍 added to the message a run waits on, by the person its step names, or by anyone when it names `anyone`, moves the run on; past the step's time, it ends as expired. */
@@ -423,13 +451,17 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, al
    */
   function start(live: Live, values: Values): void {
     try {
+      const file = fileOf(live);
+      if (file === null) {
+        return;
+      }
       const ts = Math.floor(now());
       const { full, again } = limit(live, ts);
       if (full !== "" && again) {
         return;
       }
       const run = db.addRun(live, full === "" ? values : {}, ts, full === "" ? "running" : "throttled");
-      const going = { run, channel: live.channel, name: live.name, definition: live.event, file: fileOf(live), values };
+      const going = { run, channel: live.channel, name: live.name, definition: live.event, file, values };
       if (full === "") {
         go(going, 0).catch(failed);
       } else {
@@ -468,7 +500,8 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, al
     approve(event, said);
     const fired = firing(event, said);
     for (const live of fired === null ? [] : db.liveWorkflows(event.to)) {
-      if (fired?.fires(fileOf(live).on) === true) {
+      const on = fileOf(live)?.on;
+      if (on !== undefined && fired?.fires(on) === true) {
         start(live, fired.values);
       }
     }
@@ -492,16 +525,10 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, al
     }
     const lives = db.liveWorkflows();
     files = new Map(lives.map((live) => [live.event, fileOf(live)])); // Read from those kept before, so a file is parsed once while it is live.
-    hooks = new Map(lives.filter((live) => fileOf(live).on.kind === "webhook").map((live) => [live.event.slice(0, 32), live]));
+    hooks = new Map(lives.filter((live) => fileOf(live)?.on.kind === "webhook").map((live) => [live.event.slice(0, 32), live]));
     crons = lives.flatMap((live) => {
-      const { on } = fileOf(live);
-      return on.kind === "schedule"
-        ? [
-            new Cron(on.schedule.cron, { name: live.event, timezone: on.schedule.zone, mode: "5-part", unref: true }, () => {
-              start(live, {});
-            })
-          ]
-        : [];
+      const on = fileOf(live)?.on;
+      return on?.kind === "schedule" ? timed(live, on.schedule) : [];
     });
   }
 
@@ -523,7 +550,7 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, al
     seen,
     hook: (id) => {
       const live = hooks.get(id);
-      const on = live === undefined ? null : fileOf(live).on;
+      const on = live === undefined ? null : fileOf(live)?.on;
       if (live === undefined || on?.kind !== "webhook") {
         return null;
       }
