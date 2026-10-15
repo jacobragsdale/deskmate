@@ -423,13 +423,13 @@ await test(
           `Repo: uploader, in ${theirs}`,
           "Branch: main",
           "",
+          "⚠ Your checkout has changes you have not committed. The patch goes in beside them, and is added to the index.",
+          "⚠ It changes files your agents read as instructions: AGENTS.md. Read them before an agent works here again.",
+          "",
           "Files:",
           "  notes.txt  +1 −1",
           "  AGENTS.md  +1 −0",
-          "  --unsafe-paths  +1 −0",
-          "",
-          "⚠ Your checkout has changes you have not committed. The patch goes in beside them, and is added to the index.",
-          "⚠ It changes files your agents read as instructions: AGENTS.md. Read them before an agent works here again."
+          "  --unsafe-paths  +1 −0"
         ].join("\n"),
         confirm: "Apply"
       }
@@ -439,7 +439,31 @@ await test(
     // A symbolic link, which points wherever its author chose, is warned of too.
     const link = await sends("diff --git a/key b/key\nnew file mode 120000\n--- /dev/null\n+++ b/key\n@@ -0,0 +1 @@\n+/home/bob/.ssh/id_ed25519\n\\ No newline at end of file\n");
     await asker.handle({ do: "applyPatch", id: link });
-    assert.match(questions.at(-1)?.detail ?? "", /\n⚠ It makes symbolic links, which point wherever their author chose: see where each points before anything reads through one\.$/);
+    assert.match(
+      questions.at(-1)?.detail ?? "",
+      /\n⚠ It makes symbolic links, which point wherever their author chose: see where each points before anything reads through one\.\n\nFiles:\n {2}key {2}\+1 −0$/
+    );
+    assert.equal(snapshot(theirs), withMine);
+    // The warnings come before the files, however many there are, and a long name is cut to its end, so that neither puts a warning out of sight.
+    const deep = `${"d".repeat(150)}/${"e".repeat(150)}/AGENTS.md`;
+    const adding = (path: string): string => `diff --git a/${path} b/${path}\nnew file mode 100644\n--- /dev/null\n+++ b/${path}\n@@ -0,0 +1 @@\n+x\n`;
+    const many = Array.from({ length: 25 }, (_, at) => `many/${String(at)}/CLAUDE.md`);
+    await asker.handle({ do: "applyPatch", id: await sends([deep, ...many].map(adding).join("")) });
+    const cut = `…${deep.slice(-199)}`;
+    assert.deepEqual(questions.at(-1)?.detail.split("\n"), [
+      "Tidy the notes",
+      "",
+      `Repo: uploader, in ${theirs}`,
+      "Branch: main",
+      "",
+      "⚠ Your checkout has changes you have not committed. The patch goes in beside them, and is added to the index.",
+      `⚠ It changes files your agents read as instructions: ${[cut, ...many.slice(0, 4)].join(", ")} and 21 more. Read them before an agent works here again.`,
+      "",
+      "Files:",
+      `  ${cut}  +1 −0`,
+      ...many.slice(0, 19).map((path) => `  ${path}  +1 −0`),
+      "  and 6 more"
+    ]);
     assert.equal(snapshot(theirs), withMine);
 
     // Yes applies it, though the desk inherited variables that would send git to another repository, and the chat hears where.

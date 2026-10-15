@@ -56,7 +56,7 @@ import { atMost } from "./permissions.ts";
 import * as repos from "./repos.ts";
 import type { Checkout, Head } from "./repos.ts";
 import * as patches from "./patches.ts";
-import { plain } from "./patches.ts";
+import { listed, named, plain } from "./patches.ts";
 import * as worktree from "./worktree.ts";
 import type { Worktree } from "./worktree.ts";
 import { cloneFolder } from "../core/remotes.ts";
@@ -1474,9 +1474,9 @@ export class Session {
   }
 
   /**
-   * Put a patch to the user before it is applied, in a dialog of the system's own: who it is from, what it goes `onto`, its title, the repo and `where` in it, its files with what each
-   * adds and removes, and `warnings`, with one of its own when it changes files their agents read as instructions, and one when it makes symbolic links. Everything from the diff is
-   * drawn plain. Resolves with whether they said yes, on the button that reads `confirm`.
+   * Put a patch to the user before it is applied, in a dialog of the system's own: who it is from, what it goes `onto`, its title, the repo and `where` in it, then `warnings`, with one of
+   * its own when it makes symbolic links and one when it changes files their agents read as instructions, and last its files with what each adds and removes, so that no number of files,
+   * nor a long name, puts a warning out of sight. Everything from the diff is drawn plain, and each name cut to its end. Resolves with whether they said yes, on the button that reads `confirm`.
    */
   private async mayApply(
     { message, patch, checkout }: ReturnType<Session["toApply"]>,
@@ -1484,22 +1484,18 @@ export class Session {
   ): Promise<boolean> {
     const { author } = message.entry.event;
     const from = isAgent(author) ? `${agentWords(author, this.me)}, which nobody reviewed,` : author === this.me ? "you" : author;
-    const files = parseDiff(patch.diff).map((file) => `  ${plain(file.from === null ? file.path : `${file.from} → ${file.path}`)}  +${String(file.added)} −${String(file.removed)}`);
+    const files = parseDiff(patch.diff).map((file) => `  ${file.from === null ? named(file.path) : `${named(file.from)} → ${named(file.path)}`}  +${String(file.added)} −${String(file.removed)}`);
     const instructions = touchesInstructions(patch.diff);
     const warned = [
       ...warnings,
-      ...(instructions.length > 0 ? [`⚠ It changes files your agents read as instructions: ${instructions.map(plain).join(", ")}. Read them before an agent works here again.`] : []),
       // A header line, as git writes one: no line of a hunk starts so.
       ...(/^(?:new file mode|new mode) 120000$/m.test(patch.diff)
         ? ["⚠ It makes symbolic links, which point wherever their author chose: see where each points before anything reads through one."]
-        : [])
+        : []),
+      ...(instructions.length > 0 ? [`⚠ It changes files your agents read as instructions: ${listed(instructions)}. Read them before an agent works here again.`] : [])
     ];
-    const lines = [plain(patch.title), "", `Repo: ${checkout.remote.name}, in ${checkout.path}`, where, "", "Files:", ...files.slice(0, 20)];
-    const question = {
-      message: `Apply this patch from ${from} to ${onto}?`,
-      detail: [...lines, ...(files.length > 20 ? [`  and ${String(files.length - 20)} more`] : []), ...(warned.length > 0 ? ["", ...warned] : [])].join("\n"),
-      confirm
-    };
+    const lines = [plain(patch.title), "", `Repo: ${checkout.remote.name}, in ${checkout.path}`, where, "", ...(warned.length > 0 ? [...warned, ""] : []), "Files:", ...files.slice(0, 20)];
+    const question = { message: `Apply this patch from ${from} to ${onto}?`, detail: [...lines, ...(files.length > 20 ? [`  and ${String(files.length - 20)} more`] : [])].join("\n"), confirm };
     return (await this.hooks.confirm?.(question)) === true;
   }
 

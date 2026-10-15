@@ -120,3 +120,16 @@ export function refuseLinks(path: string, diff: string): void {
 export function plain(text: string): string {
   return text.replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, (character) => `\\u{${(character.codePointAt(0) ?? 0).toString(16)}}`);
 }
+
+const NAME = 200; // Characters of a file's name a dialog shows.
+
+/** A file's name from someone else's diff as a dialog shows it: plain, and when that is longer than NAME characters, its end, which says which file it is, after an ellipsis. */
+export function named(name: string): string {
+  const characters = Array.from(plain(name));
+  return characters.length <= NAME ? characters.join("") : `…${characters.slice(1 - NAME).join("")}`;
+}
+
+/** Files' names for one line of a dialog, each `named`: the first five, and how many more. */
+export function listed(names: readonly string[]): string {
+  return `${names.slice(0, 5).map(named).join(", ")}${names.length > 5 ? ` and ${String(names.length - 5)} more` : ""}`;
+}

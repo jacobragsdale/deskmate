@@ -385,12 +385,12 @@ async function patches(page: Page, erin: Client, home: string): Promise<void> {
       `Repo: billing, in ${checkout}`,
       "Branch: main",
       "",
+      "⚠ Your checkout has changes you have not committed. The patch goes in beside them, and is added to the index.",
+      "⚠ It changes files your agents read as instructions: AGENTS.md. Read them before an agent works here again.",
+      "",
       "Files:",
       "  notes.txt  +1 −0",
-      "  AGENTS.md  +1 −0",
-      "",
-      "⚠ Your checkout has changes you have not committed. The patch goes in beside them, and is added to the index.",
-      "⚠ It changes files your agents read as instructions: AGENTS.md. Read them before an agent works here again."
+      "  AGENTS.md  +1 −0"
     ].join("\n"),
     confirm: "Apply"
   };
