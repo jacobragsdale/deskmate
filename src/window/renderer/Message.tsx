@@ -20,13 +20,15 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 import { spans } from "../../core/chat.ts";
 import { noteLink, noteOf, notesIn } from "../../core/links.ts";
 import { oneLine } from "../../core/text.ts";
-import { isAgent, MODES } from "../../core/wire.ts";
+import { MAX_DEPTH } from "../../core/delegation.ts";
+import { isAgent, MODES, ownerOf } from "../../core/wire.ts";
 import type { PermissionMode } from "../../core/wire.ts";
 import { runOf } from "../../shared/ipc.ts";
 import type { AskView, ChatView, CurrentView, MessageView, ReplyView, RequestView } from "../../shared/ipc.ts";
@@ -44,6 +46,7 @@ export interface Runs {
   readonly asks: readonly AskView[]; // What they wait for the user to allow or refuse.
   readonly cannot: ChatView["cannot"]; // Why the agent that answers cannot be held to each mode, "" for each it can: the modes a request may be run at.
   readonly untested: boolean; // Whether the agent that answers is spoken to over ACP and its permissions were never tested.
+  readonly asking: string; // Why the agent that answers cannot ask other agents in a run, "" when it can.
   readonly show: (run: string, who: string, asked: string) => void; // Open the activity panel on a run, headed with whose agent and what it was asked.
 }
 
@@ -152,9 +155,36 @@ function RunMenu({
 }
 
 /**
- * One of the user's own agents, ready to run: a button that runs it as the user last ran that asker's requests of that repo, read-only with a review before they ever have,
- * unless the agent that answers cannot be held to that mode; the menu of other ways to run it; and a button that declines it.
- * A run carries `text`, the request as the user sees it here, so the desk can refuse one edited since.
+ * The switch that lets the agent ask other agents in the run, each of whose owners still decides, with what that means beside it; or, disabled, why it cannot.
+ * What it asks is posted in the chat as it asks, whatever the delivery, and the desk keeps no session of such a run for a follow-up.
+ */
+function AskOthers({ on, why, set }: { readonly on: boolean; readonly why: string; readonly set: (on: boolean) => void }): JSX.Element {
+  const id = useId();
+  return (
+    <span className="flex flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground">
+      <Switch id={`${id}switch`} size="sm" checked={on} disabled={why !== ""} aria-describedby={`${id}note`} onCheckedChange={set} />
+      <label htmlFor={`${id}switch`} className="text-foreground">
+        Let this agent ask other agents
+      </label>
+      <span id={`${id}note`}>
+        · {why === "" ? "each one's owner decides, and what it asks is posted in the chat as it asks, even when you review its answer; the run keeps no session to follow up in" : why}
+      </span>
+    </span>
+  );
+}
+
+/** Why the user's agent cannot ask others in a run on a request: the agent that answers cannot, or the request came through as many agents as there may be. "" when it can. */
+function askingWhy(runs: Runs, delegation: ReplyView["delegation"]): string {
+  if (runs.asking !== "" || delegation === null || delegation.chain.length < MAX_DEPTH) {
+    return runs.asking;
+  }
+  return `it came through ${String(MAX_DEPTH)} agents already, the most there may be, so it may ask no further`;
+}
+
+/**
+ * One of the user's own agents, ready to run:a button that runs it as the user last ran that asker's requests of that repo, read-only with a review before they ever have,
+ * unless the agent that answers cannot be held to that mode; the menu of other ways to run it; a button that declines it; and under them the switch that lets the agent ask others,
+ * on at first only for a request of the user's own, as a run of their own tag from the window is let. A run carries `text`, the request as the user sees it here, so the desk can refuse one edited since.
  */
 function ReadyLine({
   request,
@@ -163,6 +193,8 @@ function ReadyLine({
   status,
   cannot,
   untested,
+  own,
+  asking,
   act,
   children
 }: {
@@ -172,53 +204,59 @@ function ReadyLine({
   readonly status: Extract<RequestView["status"], { kind: "ready" }>;
   readonly cannot: Runs["cannot"];
   readonly untested: boolean;
+  readonly own: boolean; // Whether everyone the request runs on the say of is the user.
+  readonly asking: string; // Why the agent cannot ask others in this run, "" when it can.
   readonly act: Act;
   readonly children: ReactNode; // What else the line offers: the activity of the run before, when there is one.
 }): JSX.Element {
   const { id, repo } = request;
   const { offer } = status;
   const first = cannot[offer.mode] === "";
+  const [delegate, setDelegate] = useState(own);
   const run = (choice: Choice): void => {
-    act({ do: "run", id, repo, text, ...choice });
+    act({ do: "run", id, repo, text, ...choice, delegate: asking === "" && delegate });
   };
   return (
-    <p className={MINE}>
-      ◆ {BEFORE[status.before]}
-      {who} ·{" "}
-      {first && (
-        <>
-          <Button
-            size="xs"
-            variant="outline"
-            className="text-foreground"
-            type="button"
-            onClick={() => {
-              run(offer);
-            }}
-          >
-            {runLabel(offer)}
-          </Button>{" "}
-        </>
-      )}
-      <RunMenu cannot={cannot} untested={untested} first={first} offer={offer} run={run} />
-      {status.canDecline && (
-        <>
-          {" "}
-          <Button
-            size="xs"
-            variant="outline"
-            className="text-foreground"
-            type="button"
-            onClick={() => {
-              act({ do: "decline", id, repo });
-            }}
-          >
-            × Decline
-          </Button>
-        </>
-      )}
-      {children}
-    </p>
+    <div className={MINE}>
+      <p>
+        ◆ {BEFORE[status.before]}
+        {who} ·{" "}
+        {first && (
+          <>
+            <Button
+              size="xs"
+              variant="outline"
+              className="text-foreground"
+              type="button"
+              onClick={() => {
+                run(offer);
+              }}
+            >
+              {runLabel(offer)}
+            </Button>{" "}
+          </>
+        )}
+        <RunMenu cannot={cannot} untested={untested} first={first} offer={offer} run={run} />
+        {status.canDecline && (
+          <>
+            {" "}
+            <Button
+              size="xs"
+              variant="outline"
+              className="text-foreground"
+              type="button"
+              onClick={() => {
+                act({ do: "decline", id, repo });
+              }}
+            >
+              × Decline
+            </Button>
+          </>
+        )}
+        {children}
+      </p>
+      <AskOthers on={asking === "" && delegate} why={asking} set={setDelegate} />
+    </div>
   );
 }
 
@@ -346,8 +384,27 @@ function wordsOnly(status: RequestView["status"]): status is Extract<RequestView
   return Object.hasOwn(WORDS, status.kind);
 }
 
-/** Where one agent a message tags stands, and what the reader can do about it. `text` is the message as shown; `asker` is whether the reader wrote it. */
-function RequestLine({ request, text, asker, runs, act }: { readonly request: RequestView; readonly text: string; readonly asker: boolean; readonly runs: Runs; readonly act: Act }): JSX.Element {
+/**
+ * Where one agent a message tags, or another agent asks, stands, and what the reader can do about it. `text` is the message as shown; `asker` is whether the reader wrote it,
+ * `own` whether everyone it runs on the say of is the reader, and `delegation` where an agent's request came from.
+ */
+function RequestLine({
+  request,
+  text,
+  asker,
+  own,
+  delegation,
+  runs,
+  act
+}: {
+  readonly request: RequestView;
+  readonly text: string;
+  readonly asker: boolean;
+  readonly own: boolean;
+  readonly delegation: ReplyView["delegation"];
+  readonly runs: Runs;
+  readonly act: Act;
+}): JSX.Element {
   const { id, owner, repo, status } = request;
   const whose = request.mine ? "your" : `${owner}'s`;
   const who = `${whose} ${repo} agent`;
@@ -409,7 +466,7 @@ function RequestLine({ request, text, asker, runs, act }: { readonly request: Re
       );
     case "ready":
       return (
-        <ReadyLine request={request} text={text} who={who} status={status} cannot={runs.cannot} untested={runs.untested} act={act}>
+        <ReadyLine request={request} text={text} who={who} status={status} cannot={runs.cannot} untested={runs.untested} own={own} asking={askingWhy(runs, delegation)} act={act}>
           {activity}
         </ReadyLine>
       );
@@ -829,6 +886,8 @@ function Said({
           }
         }
       : null;
+  // Whether everyone its requests run on the say of is the user: a message of theirs, or an agent's request they asked first, through agents of their own alone.
+  const myOwn = message.delegation === null ? message.sender === me : [message.delegation.first, ...message.delegation.chain.map(ownerOf)].every((person) => person === me);
   // Using an emoji the user has already used on this message takes it back.
   const react = (emoji: string): void => {
     act({ do: "react", id: message.id, emoji, on: !message.reactions.some((each) => each.emoji === emoji && each.people.includes(me)) });
@@ -857,7 +916,7 @@ function Said({
       )}
       <Reactions message={message} me={me} react={react} />
       {message.requests.map((request) => (
-        <RequestLine key={`${request.owner}/${request.repo}`} request={request} text={message.body} asker={message.sender === me} runs={runs} act={act} />
+        <RequestLine key={`${request.owner}/${request.repo}`} request={request} text={message.body} asker={message.sender === me} own={myOwn} delegation={message.delegation} runs={runs} act={act} />
       ))}
       {!message.deleted && !editing && <Actions id={message.id} react={react} onReply={onReply} own={own} />}
     </article>

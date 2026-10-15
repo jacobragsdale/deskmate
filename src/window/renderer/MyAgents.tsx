@@ -215,6 +215,7 @@ function NewGrant({ repo, people, cannot, untested, act, onDone }: NewGrantProps
             }}
           />
         </Label>
+        <p className="text-xs text-muted-foreground">A run under a grant never asks other agents: nobody is there to see what it asks in your name.</p>
         <Button type="submit" className="self-start" disabled={sending}>
           Grant
         </Button>

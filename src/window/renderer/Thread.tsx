@@ -36,6 +36,12 @@ function Line({ line, me }: { readonly line: LineView; readonly me: string }): J
   );
 }
 
+/** Why the agent that answers cannot ask other agents in a run, "" when it can: only an agent over ACP is given the MCP server it asks through. */
+function asking(view: ChatView): string {
+  const agent = view.agents.find((each) => each.id === view.defaultAgent);
+  return agent?.protocol === "oneshot" ? `${agent.label} runs as a single command, so it cannot ask other agents` : "";
+}
+
 export function Thread({
   view,
   current,
@@ -125,7 +131,7 @@ export function Thread({
   }, [current]);
 
   const { pinned, members } = current;
-  const runs: Runs = { kept: new Set(current.activity.map((item) => item.run)), asks: current.asks, cannot: view.cannot, untested: view.untested, show: onActivity };
+  const runs: Runs = { kept: new Set(current.activity.map((item) => item.run)), asks: current.asks, cannot: view.cannot, untested: view.untested, asking: asking(view), show: onActivity };
   const firstNew = current.newAfter === null ? undefined : current.messages.find((message) => message.seq > (current.newAfter ?? 0) && message.sender !== view.me);
   return (
     <>

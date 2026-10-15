@@ -5,6 +5,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
+import type { KeyObject } from "node:crypto";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { test } from "node:test";
@@ -233,6 +234,52 @@ async function addAgent(page: Page, program: string, args: readonly string[]): P
   await page.until("the agent chosen", `document.querySelector(${JSON.stringify(answers)}).checked === true`);
 }
 
+/**
+ * Agents asking agents, in a channel of its own with bob and carol, so that no earlier message reaches a prompt. Bob's desk is played by hand: his acceptance letting his agent ask others,
+ * his agent's request of alice's, signed by it with `bobsAgent`, and the end of its run; alice's desk, her agent and the MCP server it asks through are real.
+ */
+async function askingAgents(page: Page, bob: Client, carol: Client, bobsAgent: KeyObject, commit: string): Promise<void> {
+  // Agents asking agents, in a channel of its own with bob and carol, so that no earlier message reaches a prompt. Alice asks bob's agent there, and bob lets it run read-only and ask
+  // others, as his desk would; it asks hers, signed by it. That request, a reply in her request's thread, offers the switch that lets her agent ask others too, off as for anyone else's
+  // request, beside what that means: she turns it on and runs it, her acceptance says so, and her agent asks carol's through the MCP server it is given for that, in the same thread.
+  await bob.publish("#relay", "channel.join", {});
+  await carol.publish("#relay", "channel.join", {});
+  await page.press("n", CTRL);
+  await page.until("the dialog, for #relay", `document.querySelector('[role="dialog"] input[name="name"]') !== null`);
+  await page.type('[role="dialog"] input[name="name"]', "relay");
+  await page.click('[role="dialog"] button[type="submit"]');
+  await page.until("#relay", `document.querySelector("main h1")?.textContent === "#relay"`);
+  await page.type('textarea[aria-label="Message #relay"]', "@bob/uploader who calls the retry path?");
+  await page.press("Enter");
+  const relay = `[...document.querySelectorAll("main [data-seq]")].find((each) => each.querySelector("article")?.innerText.includes("who calls the retry path?"))`; // Her request, and its thread.
+  await page.until("her request of bob's agent", `${relay}?.innerText.includes("◌ waiting for bob to approve") === true`);
+  const relayRoot = (await bob.events({ chat: "#relay" })).find((each) => each.event.content.includes("who calls the retry path?"))?.event.id;
+  assert.ok(relayRoot !== undefined);
+  await bob.publish("#relay", "job.accepted", { repo: "uploader", branch: "main", commit, dirty: false, delivery: "post", mode: "read-only", by: "owner", delegate: true }, [relayRoot]);
+  await bob.as("bob/uploader", bobsAgent).publish("#relay", "job.request", { target: "alice/billing", text: "ask:carol/api", chain: ["bob/uploader"] }, [relayRoot, relayRoot]);
+  await page.until("the thread's summary under her request", `[...${relay}.querySelectorAll("button")].some((each) => each.textContent === "1 reply")`);
+  await page.eval(`[...${relay}.querySelectorAll("button")].find((each) => each.textContent === "1 reply").click()`);
+  const replyOf = (words: string): string => `[...${relay}.querySelectorAll('section[aria-label="Thread"] article')].find((each) => each.innerText.includes(${JSON.stringify(words)}))`;
+  const ofMine = replyOf("ask:carol/api");
+  const toggle = `${ofMine}?.querySelector('button[role="switch"]')`;
+  await page.until("the switch under bob's agent's request of hers", `${toggle}?.getAttribute("aria-checked") === "false"`);
+  assert.equal(await page.eval(`${toggle}.labels[0].textContent`), "Let this agent ask other agents");
+  assert.match(String(await page.eval(`document.getElementById(${toggle}.getAttribute("aria-describedby")).textContent`)), /posted in the chat as it asks, even when you review its answer/);
+  await page.eval(`${toggle}.click()`);
+  await page.until("the switch on", `${toggle}?.getAttribute("aria-checked") === "true"`);
+  await page.shot("ask-others");
+  await page.eval(`[...${ofMine}.querySelectorAll("button")].find((each) => each.textContent === "▶ Run read-only").click()`);
+  await page.until("her agent asking carol's, in the thread", `${replyOf("waiting for carol to approve")} !== undefined`);
+  const accepted = (await carol.events({ chat: "#relay" }))
+    .map(({ event }) => ({ author: event.author, said: readContent(event) }))
+    .find((each) => each.author === "alice" && each.said.kind === "job.accepted");
+  assert.ok(accepted?.said.kind === "job.accepted" && accepted.said.content.delegate && accepted.said.content.mode === "read-only", JSON.stringify(accepted));
+
+  // Bob's agent's run ends, as his desk would say: hers, asked under it, is stopped by her desk, and what it asked is taken back.
+  await bob.publish("#relay", "job.cancelled", { repo: "uploader" }, [relayRoot]);
+  await page.until("what her agent asked taken back", `${replyOf("↩ the request was taken back")} !== undefined`);
+}
+
 await test(
   "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, keeps a card in reach in a closed thread and brings one far above the end into view, refuses and allows for the run from a card, and offers only the modes the agent that answers can keep, full alone beside its reason when that is all, and a full chosen once not again in one click when less is there, and for a grant full alone while it is untested; and on My agents makes grants from its dialog, which warns of full access for anyone however its answers go and asks a second yes when they are posted directly, one grant for each double click, revokes one with a double click and not the next, counts the run a grant lets go, and holds a repo back with a double click, unshared and answering nobody under that grant, and lets it answer again; and says under whose grant a run went ahead, to its owner while it runs and in its answer, and to whoever asked, and that an answer its agent signed was not reviewed, where it is shown and where it is found; and while a grant is live stays open on close, saying why, where it cannot say it went to the tray, and once told hides on close, answering on, until started again; lists a grant apart once its repo is not checked out here, and revokes it there; and quits on close once none is",
   { skip: NO_DISPLAY ? "no display: run it under xvfb-run" : false, timeout: 120_000 },
@@ -246,7 +293,10 @@ await test(
     mkdirSync(join(home, "dev"));
     // Alice's own checkout, of a repo nobody else has, for her agent to be asked about.
     repository(join(home, "dev", "billing"), "https://dev.azure.com/acme/Platform/_git/billing");
-    const env: Record<string, string | undefined> = { ...process.env, HOME: home, XDG_CONFIG_HOME: join(home, ".config") };
+    // A run let ask other agents gives its agent Player Two's MCP server, started as `player-two` from the PATH: here, the command just built.
+    mkdirSync(join(home, "bin"));
+    writeFileSync(join(home, "bin", "player-two"), `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(join(ROOT, "dist", "player-two.js"))} "$@"\n`, { mode: 0o755 });
+    const env: Record<string, string | undefined> = { ...process.env, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), PATH: `${join(home, "bin")}:${process.env["PATH"] ?? ""}` };
     delete env["PLAYER_TWO_HOME"];
     delete env["PLAYER_TWO_DEV"];
     delete env["DBUS_SESSION_BUS_ADDRESS"]; // With no session bus no notification can be shown, wherever this runs: see where the window is closed with a grant live.
@@ -408,6 +458,7 @@ await test(
 
     // Carol starts a channel, pins a repo to it and writes more than a page, and alice joins it from the dialog. Scrolling to the top loads the page before, and the message that was first stays where it was.
     const carol = await hub.join("carol");
+    await carol.advertise([{ name: "api", key: "dev.azure.com/acme/platform/api", url: "https://dev.azure.com/acme/Platform/_git/api", branch: "main" }]); // For alice's agent to ask, far below.
     await carol.publish("#history", "channel.join", {});
     const theFirst = await carol.publish("#history", "message", { text: "the first", via: "cli" });
     await carol.publish("#history", "channel.pin", { repo: { name: "uploader", key: "dev.azure.com/acme/platform/uploader", url: "https://dev.azure.com/acme/Platform/_git/uploader" }, branch: null });
@@ -998,6 +1049,8 @@ await test(
     );
     await page.press("Escape");
     await page.until("the search closed", `document.querySelector('[role="dialog"]') === null`);
+
+    await askingAgents(page, bob, carol, bobsAgent, commit);
 
     assert.deepEqual(page.problems, []);
 
