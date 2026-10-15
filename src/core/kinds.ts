@@ -19,10 +19,11 @@ export const SUMMARIES = ["thinking", "reading", "editing files", "running a com
 export const MAX_GRANT = 30 * 86_400; // Most seconds a grant may last after its event's time.
 
 /**
- * How a step of a workflow's run came out: done, passed over as its `if` did not hold, waiting on an approval, approved, past its approval's time, a webhook refused or failed, or the whole run
- * throttled by a limit before it started.
+ * How a step of a workflow's run came out: done, passed over as its `if` did not hold, waiting on an approval, approved, past its approval's time, a webhook refused or failed, the whole run
+ * throttled by a limit before it started, or called off as its workflow was replaced or removed.
  */
-export const RUN_STATUSES = ["done", "skipped", "waiting", "approved", "expired", "refused", "failed", "throttled"] as const;
+export const RUN_STATUSES = ["done", "skipped", "waiting", "approved", "expired", "refused", "failed", "throttled", "cancelled"] as const;
+export type RunStatus = (typeof RUN_STATUSES)[number];
 
 /** The content of each kind this version knows, tagged with the kind. */
 export const contentSchema = z
@@ -95,8 +96,9 @@ export const contentSchema = z
     // in place of any of that name; or takes the one of that name away. Both are structural.
     z.object({ kind: z.literal("workflow.define"), content: z.object({ name: nameSchema, yaml: text }).readonly() }),
     z.object({ kind: z.literal("workflow.remove"), content: z.object({ name: nameSchema }).readonly() }),
-    // What a run of a workflow did at one step, the first being 0, and why in `detail`, "" when there is nothing to add. refs[0] is what set the run off. Counts only from the hub, which runs them.
-    z.object({ kind: z.literal("workflow.run"), content: z.object({ workflow: nameSchema, step: z.int().min(0), status: z.enum(RUN_STATUSES), detail: z.string() }).readonly() })
+    // What run number `run` of a workflow did at one step, the first being 0, and why in `detail`, "" when there is nothing to add. refs[0] is the workflow.define it runs, and refs[1] the message
+    // the step posted, or for an approval's outcome the message it waited on. Counts only from the hub, which runs them.
+    z.object({ kind: z.literal("workflow.run"), content: z.object({ workflow: nameSchema, run: z.int().min(1), step: z.int().min(0), status: z.enum(RUN_STATUSES), detail: z.string() }).readonly() })
   ])
   .readonly();
 

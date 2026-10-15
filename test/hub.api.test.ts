@@ -722,7 +722,7 @@ await test("the hub refuses to start on a database from another version, such as
   assert.throws(() => createHub({ joinToken: TOKEN, db: old, repos: TEAM_REPOS, downloads: "" }), new RegExp(`another version of Player Two \\(schema 3, this one uses ${String(SCHEMA_VERSION)}\\)`));
 });
 
-await test("a database phase 4 made, schema 7, is brought forward with what it holds, gaining the meta table with the hub's key and the workflows table; not one where someone joined as hub", async (t) => {
+await test("a database phase 4 made, schema 7, is brought forward with what it holds, gaining the meta table with the hub's key and the workflows and workflow_runs tables; not one where someone joined as hub", async (t) => {
   const BEFORE = 7; // The schema before the hub had a key of its own.
   const hub = await startHub(t);
   await hub.join("alice");
@@ -730,8 +730,8 @@ await test("a database phase 4 made, schema 7, is brought forward with what it h
   await say(hub, "alice", "bob", "words from before");
   const file = join(hub.dir, "hub.db");
   const back = (more = ""): void => {
-    const older = new DatabaseSync(file); // What phase 4 left: the same users and events, and neither table.
-    older.exec(`DROP TABLE meta; DROP TABLE workflows; PRAGMA user_version = ${String(BEFORE)}; ${more}`);
+    const older = new DatabaseSync(file); // What phase 4 left: the same users and events, and none of the three tables.
+    older.exec(`DROP TABLE meta; DROP TABLE workflows; DROP TABLE workflow_runs; PRAGMA user_version = ${String(BEFORE)}; ${more}`);
     older.close();
   };
   const version = (): unknown => {
@@ -746,7 +746,7 @@ await test("a database phase 4 made, schema 7, is brought forward with what it h
   back();
   const db = new Database(file);
   assert.match(publicHex(db.hubKey()), /^[0-9a-f]{64}$/);
-  assert.deepEqual(db.workflowNames("#ops"), []);
+  assert.deepEqual([db.workflowNames("#ops"), db.runsIn("waiting")], [[], []]);
   assert.deepEqual(
     db.eventsAfter("alice", 0, 10).map(({ event }) => readContent(event)),
     [{ kind: "message", content: { text: "words from before", via: "cli" } }]

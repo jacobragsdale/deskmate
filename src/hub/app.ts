@@ -20,6 +20,7 @@ import type { Workflow } from "../core/workflow.ts";
 import { addressSchema, channelSchema, eventSchema, HUB, isAgent, isChannel, joinSchema, ownerOf, PROTOCOL, repoSchema } from "../core/wire.ts";
 import type { ChannelInfo, Event, RepoRef } from "../core/wire.ts";
 import { Database } from "./db.ts";
+import { runWorkflows } from "./workflows.ts";
 
 const PAGE = 100; // Events one read gets when it does not say how many.
 const MAX_PAGE = 200; // Most events one read may ask for.
@@ -207,8 +208,15 @@ function installPage(hub: string): string {
 export function createHub(settings: HubSettings, now: () => number = () => Date.now() / 1000, log: Log = () => undefined): Server {
   const prefix = prefixKey(settings.repos);
   const db = new Database(settings.db);
-  const hubKey = publicHex(db.hubKey()); // Made on the first start, and the same on every start after it: clients pin it as they pin a teammate's.
+  const key = db.hubKey(); // Made on the first start, and the same on every start after it: clients pin it as they pin a teammate's.
+  const hubKey = publicHex(key);
   const waiting = new Set<() => void>(); // Streams open for the next event; each is called when one is stored.
+  const wake = (): void => {
+    waiting.forEach((send) => {
+      send();
+    });
+  };
+  const workflows = runWorkflows(db, key, now, wake, log); // What it signs, it stores itself, then wakes the streams.
 
   /** Who signed the request, a person or one of their agents, once their header is seen to be signed for this very request: its method, and its path and query as they arrived. */
   function caller(request: IncomingMessage): string {
@@ -435,10 +443,9 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
       apply(event, stored);
       return stored;
     });
-    waiting.forEach((wake) => {
-      wake();
-    });
+    wake();
     log("event stored", { seq, author: event.author, recipient: event.to, kind: event.kind });
+    workflows.seen(event);
     return [201, { seq }];
   }
 

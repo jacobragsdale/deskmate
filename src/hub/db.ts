@@ -14,7 +14,8 @@ import type { Delivered, Event, Person, Repo, RepoRef, TeamRepo } from "../core/
 
 export const SCHEMA_VERSION = 8; // 3 was the notes alone, from the Python hub to 0.4.
 // The versions a hub brings forward: 5, 0.5's events, lacks the search index, which is added and filled from the events; 6 lacks the agents table, which is added empty,
-// since a hub of schema 6 refused every event to "*", the only agent.register it learns a key from; 7 lacks the meta table, which the hub's own key is then made in, and the workflows table, empty.
+// since a hub of schema 6 refused every event to "*", the only agent.register it learns a key from; 7 lacks the meta table, which the hub's own key is then made in, and the workflows and
+// workflow_runs tables, empty.
 const UPGRADABLE: ReadonlySet<number> = new Set([5, 6, 7]);
 const INDEXED_FROM = 6; // The first version with the search index.
 const HUB_FROM = 8; // The first version in which "hub" is the hub's own name: one made before it is brought forward only when nobody joined under that name.
@@ -60,6 +61,22 @@ CREATE TABLE IF NOT EXISTS agents (owner TEXT NOT NULL, repo TEXT NOT NULL, pubk
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 -- Each channel's live workflows by name, each with the id of the workflow.define that made it live, whose content holds its file.
 CREATE TABLE IF NOT EXISTS workflows (channel TEXT NOT NULL, name TEXT NOT NULL, event TEXT NOT NULL, PRIMARY KEY (channel, name));
+-- Each run of a workflow, numbered: the channel and name it runs under, the id of the workflow.define it runs, the values its templates are filled from as JSON, when it started,
+-- the step it is at, and its state: 'running', 'waiting' for a 👍 on the message 'approval' until the Unix second 'until', 'ended', or 'throttled', stopped by a limit before it began.
+CREATE TABLE IF NOT EXISTS workflow_runs (
+    run INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel TEXT NOT NULL,
+    name TEXT NOT NULL,
+    definition TEXT NOT NULL,
+    input TEXT NOT NULL,
+    started INTEGER NOT NULL,
+    step INTEGER NOT NULL DEFAULT 0,
+    state TEXT NOT NULL,
+    approval TEXT NOT NULL DEFAULT '',
+    until INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS workflow_runs_by_workflow ON workflow_runs (channel, name, started);
+CREATE INDEX IF NOT EXISTS workflow_runs_by_state ON workflow_runs (state);
 `;
 const INDEXED = "('message', 'job.result', 'message.edit', 'message.delete')"; // The kinds that change what the search index holds.
 
@@ -84,6 +101,42 @@ const keysSchema = z.array(z.strictObject({ name: z.string(), pubkey: z.string()
 const agentKeysSchema = z.array(z.strictObject({ owner: z.string(), repo: z.string(), pubkey: z.string() }));
 const metaSchema = z.strictObject({ value: z.string() });
 const namesSchema = z.array(z.strictObject({ name: z.string() }));
+const liveSchema = z.array(
+  z
+    .strictObject({
+      channel: z.string(),
+      name: z.string(),
+      event: z.string(),
+      content: z
+        .string()
+        .transform(parseJson)
+        .pipe(z.object({ yaml: z.string() }))
+    })
+    .transform(({ content, ...live }) => ({ ...live, yaml: content.yaml }))
+);
+
+/** Where a run of a workflow stands, as workflow_runs keeps it. */
+export const RUN_STATES = ["running", "waiting", "ended", "throttled"] as const;
+export type RunState = (typeof RUN_STATES)[number];
+const RUN_COLUMNS = "run, channel, name, definition, input, started, step, state, approval, until";
+const runSchema = z.strictObject({
+  run: z.int(),
+  channel: z.string(),
+  name: z.string(),
+  definition: z.string(),
+  input: z.string().transform(parseJson).pipe(z.record(z.string(), z.unknown())),
+  started: z.int(),
+  step: z.int(),
+  state: z.enum(RUN_STATES),
+  approval: z.string(),
+  until: z.int()
+});
+const runCountsSchema = z.strictObject({ lately: z.int(), waiting: z.int(), last: z.enum(RUN_STATES).nullable() });
+
+/** A live workflow: the channel and name it is live under, the id of the workflow.define that made it live, and the file that holds. */
+export type Live = z.infer<typeof liveSchema>[number];
+/** One run of a workflow, as workflow_runs keeps it, with the values its templates are filled from. */
+export type Run = z.infer<typeof runSchema>;
 
 /** Whether the database has a table of this name: what a version before it lacks. */
 function hasTable(db: DatabaseSync, name: string): boolean {
@@ -353,6 +406,46 @@ export class Database {
       .prepare(`SELECT ${EVENT_COLUMNS} FROM workflows JOIN events ON events.id = workflows.event WHERE workflows.channel = :chat AND ${VISIBLE} ORDER BY seq`)
       .all({ me, chat: channel });
     return eventRowsSchema.parse(rows);
+  }
+
+  /** The live workflows of one channel, or of every channel, with their files. */
+  public liveWorkflows(channel: string | null = null): readonly Live[] {
+    const where = channel === null ? "" : "WHERE workflows.channel = ?";
+    const rows = this.db
+      .prepare(
+        `SELECT workflows.channel, workflows.name, workflows.event, events.content FROM workflows JOIN events ON events.id = workflows.event ${where} ORDER BY workflows.channel, workflows.name`
+      )
+      .all(...(channel === null ? [] : [channel]));
+    return liveSchema.parse(rows);
+  }
+
+  /** Keep a new run of `live`, set off with `input` at `started`, in `state`; its number. */
+  public addRun(live: Live, input: unknown, started: number, state: RunState): number {
+    const added = this.db
+      .prepare("INSERT INTO workflow_runs (channel, name, definition, input, started, state) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(live.channel, live.name, live.event, JSON.stringify(input), started, state);
+    return Number(added.lastInsertRowid);
+  }
+
+  /** Save where a run is: the step it is at, its state, and for one waiting, the message it waits on and until when. */
+  public saveRun(run: number, step: number, state: RunState, approval = "", until = 0): void {
+    this.db.prepare("UPDATE workflow_runs SET step = ?, state = ?, approval = ?, until = ? WHERE run = ?").run(step, state, approval, until, run);
+  }
+
+  /** The runs in one state, oldest first. */
+  public runsIn(state: RunState): readonly Run[] {
+    return z.array(runSchema).parse(this.db.prepare(`SELECT ${RUN_COLUMNS} FROM workflow_runs WHERE state = ? ORDER BY run`).all(state));
+  }
+
+  /** Of one workflow's runs: how many started after `since` and were not throttled, how many are waiting, and the state of the newest, null when it has none. */
+  public runCounts(channel: string, name: string, since: number): z.infer<typeof runCountsSchema> {
+    const these = "FROM workflow_runs WHERE channel = :channel AND name = :name";
+    const counts = this.db
+      .prepare(
+        `SELECT (SELECT count(*) ${these} AND started > :since AND state != 'throttled') AS lately, (SELECT count(*) ${these} AND state = 'waiting') AS waiting, (SELECT state ${these} ORDER BY started DESC, run DESC LIMIT 1) AS last`
+      )
+      .get({ channel, name, since });
+    return runCountsSchema.parse(counts);
   }
 
   /** Whether an event with this id is already kept. */
