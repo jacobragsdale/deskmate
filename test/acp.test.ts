@@ -24,6 +24,7 @@ import type { FollowUp, PermissionAsk, RunHandlers } from "../src/desk/agents/ru
 import { AgentCancelledError, AgentTimedOutError } from "../src/desk/client.ts";
 import type { Client } from "../src/desk/client.ts";
 import { Session } from "../src/desk/session.ts";
+import type { Options } from "../src/desk/session.ts";
 import { runOf } from "../src/shared/ipc.ts";
 import type { ActivityItem, Arrival, RequestView } from "../src/shared/ipc.ts";
 import { startHub, TEAM_REPOS } from "./startHub.ts";
@@ -200,6 +201,11 @@ await test(
     const { handlers, asks } = recorder();
     await runner.run("edit", folder(t), "supervised", handlers, never);
     assert.deepEqual(asks, [{ action: "edit", title: "Edit edited.txt", detail: JSON.stringify({ title: "Edit edited.txt" }, null, 1) }]);
+    // The agent switching its own mode, which may take it to one that asks about less, is refused below full without asking the owner.
+    const switching = recorder("allow-once");
+    assert.equal(await runner.run("switch", folder(t), "auto-edits", switching.handlers, never), "turn 1: switch refused");
+    assert.deepEqual(switching.asks, []);
+    assert.equal(await runner.run("switch", folder(t), "full", switching.handlers, never), "turn 1: switched");
   }
 );
 
@@ -336,6 +342,97 @@ await test(
     assert.equal((await answer(carol, "@bob/uploader read it too", first.id)).said, "turn 1: read"); // Another asker.
     assert.equal((await answer(alice, "@bob/uploader read once more")).said, "turn 1: read"); // Another thread.
     assert.equal(alive(checkout).length, 3);
+    await session.stop();
+    assert.deepEqual(await left(checkout), []);
+  }
+);
+
+/** Try `find` every 50 ms, for ten seconds, until it finds something. */
+async function until<T>(what: string, find: () => T | undefined | false): Promise<T> {
+  for (let tries = 0; tries < 200; tries += 1) {
+    const found = find();
+    if (found !== undefined && found !== false) {
+      return found;
+    }
+    await delay(50);
+  }
+  throw new Error(`never happened: ${what}`);
+}
+
+/** What bobsDesk gives a test. */
+interface Desk {
+  readonly alice: Client;
+  readonly session: Session; // Bob's.
+  readonly checkout: string; // Bob's checkout of uploader, where his agent works.
+  // Alice asks in #team, in the thread of `root` when given, and bob lets his agent run it at `mode`, posting its answer or reviewing it. Resolves with the request's id.
+  readonly ask: (text: string, mode: PermissionMode, post: boolean, root?: string) => Promise<string>;
+  // What bob's agent answered a request: the answer posted, or the draft, which is then thrown away.
+  readonly answer: (id: string, post: boolean) => Promise<string>;
+}
+
+/** Alice and bob in #team on a hub of their own, and bob's desk, with his checkout of uploader, answering with the scripted agent started with `args`. */
+async function bobsDesk(t: TestContext, args: readonly string[] = [], options: Options = {}, now: () => number = () => Date.now() / 1000): Promise<Desk> {
+  const hub = await startHub(t, now);
+  const [alice, bob] = [await hub.join("alice"), await hub.join("bob")];
+  bob.saveAgents([fake(...args)], "fake");
+  for (const person of [alice, bob]) {
+    await person.publish("#team", "channel.join", {});
+  }
+  const dev = join(hub.dir, "dev-bob");
+  const checkout = join(dev, "uploader");
+  mkdirSync(join(checkout, ".git"), { recursive: true });
+  writeFileSync(join(checkout, ".git", "config"), `[remote "origin"]\n\turl = ${TEAM_REPOS}Platform/_git/uploader\n`);
+  writeFileSync(join(checkout, ".git", "HEAD"), "ref: refs/heads/main\n");
+  const hooks = { changed: () => undefined, notice: () => undefined, arrived: () => undefined, confirmClone: () => Promise.resolve(false) };
+  const session = new Session(bob, dev, hooks, { presence: 1, describe: () => Promise.resolve({ branch: "main", commit: "c0ffee".padEnd(40, "0"), dirty: false }), ...options });
+  session.start();
+  t.after(() => session.stop());
+  await until("bob's chats loaded", () => session.view().rows.some((row) => row.chat === "#team"));
+  await session.handle({ do: "open", chat: "#team" });
+  const ask = async (text: string, mode: PermissionMode, post: boolean, root?: string): Promise<string> => {
+    const { id } = (await alice.publish("#team", "message", { text, via: "cli" }, root === undefined ? [] : [root])).event;
+    await until("bob can run it", () =>
+      session
+        .view()
+        .current?.messages.flatMap((message) => [message, ...message.replies])
+        .some((message) => message.id === id && message.requests[0]?.status.kind === "ready")
+    );
+    await session.handle({ do: "run", id, repo: "uploader", post, mode, text });
+    return id;
+  };
+  const answer = async (id: string, post: boolean): Promise<string> => {
+    if (!post) {
+      const draft = await until("bob's draft", () => session.view().current?.drafts.find((each) => each.id === id));
+      await session.handle({ do: "discardDraft", chat: "#team", id, repo: "uploader" });
+      return draft.text;
+    }
+    for (let tries = 0; tries < 200; tries += 1) {
+      const result = (await alice.events({ chat: "#team" })).find((delivered) => delivered.event.kind === "job.result" && delivered.event.refs[0] === id);
+      const said = result === undefined ? null : readContent(result.event);
+      if (said?.kind === "job.result") {
+        return said.content.text;
+      }
+      await delay(50);
+    }
+    throw new Error(`no answer to ${id}`);
+  };
+  return { alice, session, checkout, ask, answer };
+}
+
+await test(
+  "a follow-up goes on in its thread's session only at the mode and delivery its earlier run had: an agent that switched its own mode at full cannot carry that into a read-only run, nor a reply told it is posted into one reviewed",
+  { timeout: 60_000 },
+  async (t) => {
+    const { session, checkout, ask, answer } = await bobsDesk(t);
+    const first = await ask("@bob/uploader switch", "full", true);
+    assert.match(await answer(first, true), /^turn 1: .*switched$/);
+    const readOnly = await ask("@bob/uploader edit", "read-only", true, first);
+    assert.match(await answer(readOnly, true), /^turn 1: .*edit refused$/); // Afresh, so asked, and refused; in the session switched at full it would have edited without asking.
+    assert.equal(existsSync(join(checkout, "edited.txt")), false);
+    const reviewed = await ask("@bob/uploader read", "read-only", false, first);
+    assert.match(await answer(reviewed, false), /^turn 1: /); // Afresh: the read-only run before it posted.
+    const again = await ask("@bob/uploader read", "read-only", false, first);
+    assert.equal(await answer(again, false), "turn 2: read"); // The same mode and delivery go on.
     await session.stop();
     assert.deepEqual(await left(checkout), []);
   }

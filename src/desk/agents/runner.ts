@@ -17,7 +17,7 @@ export interface RunHandlers {
   permission(ask: PermissionAsk): Promise<"allow-once" | "allow-run" | "refuse">;
 }
 
-/** A request that may carry on from an earlier one: `key` names its thread's root, its asker and the agent, and `text` is the request alone, without the usual context. */
+/** A request that may carry on from an earlier one: `key` names its thread's root, its asker, the agent, and the mode and delivery it was let go at; `text` is the request alone, without the usual context. */
 export interface FollowUp {
   readonly key: string;
   readonly text: string;

@@ -1,6 +1,7 @@
 /**
  * A scripted ACP agent for the tests, built on the SDK's agent side and run with `node`. What it does depends on words in the prompt:
- * `read` reports a read tool call; each `edit` asks to edit and writes edited.txt only if allowed; `run` asks to execute; `slow` waits until cancelled, with a child process of its own;
+ * `read` reports a read tool call; each `edit` asks to edit and writes edited.txt only if allowed; `run` asks to execute; `switch` asks to switch its session to a mode in which it edits without asking,
+ * as ACP lets an agent's modes differ in what they ask; `slow` waits until cancelled, with a child process of its own;
  * `deaf` does the same but takes no notice of a cancel; `mcp` says which MCP servers its session has. Whatever it did, it says so in a short message streamed in two chunks,
  * after the number of the turn in its session. Started with --signed-out it says it needs signing in, and signing in fails; with --always-only it offers no way to be allowed just once;
  * with --no-asking it edits without asking first, as an agent that cannot be limited would.
@@ -22,6 +23,7 @@ interface Session {
 }
 
 const sessions = new Map<string, Session>();
+const unasking = new Set<string>(); // Sessions switched to a mode in which they edit without asking.
 const signedOut = process.argv.includes("--signed-out");
 const alwaysOnly = process.argv.includes("--always-only"); // Offers to be allowed only always, never once.
 const noAsking = process.argv.includes("--no-asking");
@@ -45,6 +47,24 @@ async function permitted(client: acp.AgentContext, sessionId: string, toolCallId
   const allowed = answer.outcome.outcome === "selected" && answer.outcome.optionId !== "no";
   await client.notify("session/update", { sessionId, update: { sessionUpdate: "tool_call_update", toolCallId, status: allowed ? "completed" : "failed" } });
   return allowed;
+}
+
+/** Ask to switch the session to a mode in which it edits without asking, and switch it if allowed. */
+async function switchMode(client: acp.AgentContext, sessionId: string, turn: number): Promise<string> {
+  if (await permitted(client, sessionId, `switch-${String(turn)}`, "switch_mode", "Switch to editing without asking")) {
+    unasking.add(sessionId);
+    return "switched";
+  }
+  return "switch refused";
+}
+
+/** The `index`th edit of a turn: ask, unless it does not, and write edited.txt if allowed. */
+async function edit(client: acp.AgentContext, sessionId: string, session: Session, index: number): Promise<string> {
+  const allowed = noAsking || unasking.has(sessionId) || (await permitted(client, sessionId, `edit-${String(session.turns)}-${String(index)}`, "edit", "Edit edited.txt"));
+  if (allowed) {
+    writeFileSync(join(session.cwd, "edited.txt"), "edited\n");
+  }
+  return allowed ? "edit allowed" : "edit refused";
 }
 
 /** Standard input as the web stream the SDK reads. */
@@ -99,12 +119,11 @@ acp
       await client.notify("session/update", { sessionId, update: { sessionUpdate: "tool_call_update", toolCallId: "read", status: "completed" } });
       did.push("read");
     }
+    if (has("switch")) {
+      did.push(await switchMode(client, sessionId, session.turns));
+    }
     for (const [index] of [...text.matchAll(/\bedit\b/g)].entries()) {
-      const allowed = noAsking || (await permitted(client, sessionId, `edit-${String(session.turns)}-${String(index)}`, "edit", "Edit edited.txt"));
-      if (allowed) {
-        writeFileSync(join(session.cwd, "edited.txt"), "edited\n");
-      }
-      did.push(allowed ? "edit allowed" : "edit refused");
+      did.push(await edit(client, sessionId, session, index));
     }
     if (has("run")) {
       did.push((await permitted(client, sessionId, `run-${String(session.turns)}`, "execute", "Run npm test")) ? "run allowed" : "run refused");

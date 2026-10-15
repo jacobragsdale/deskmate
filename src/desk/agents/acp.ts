@@ -22,7 +22,7 @@ import type { Summary } from "../../core/kinds.ts";
 import type { ActivityItem } from "../../shared/ipc.ts";
 import { AgentCancelledError, AgentTimedOutError, PlayerTwoError } from "../client.ts";
 import { decide } from "../permissions.ts";
-import type { Action, PermissionMode } from "../permissions.ts";
+import type { Action, Decision, PermissionMode } from "../permissions.ts";
 import { actionOf, Feed, summaryOf } from "./activity.ts";
 import { AGENT_TIMEOUT } from "./oneshot.ts";
 import { signInFor } from "./presets.ts";
@@ -81,6 +81,17 @@ function optionFor(options: readonly acp.PermissionOption[], decision: "allow" |
     return { outcome: { outcome: "selected", optionId: option.optionId } };
   }
   return decision === "allow" ? optionFor(options, "refuse") : CANCELLED;
+}
+
+/**
+ * What a turn answers a request to act: what the owner allowed for the run, or else what its mode says. Switching the agent's own mode is refused below full, whatever the owner allowed:
+ * the mode switched to may ask about less for the rest of the run, which only a run at full, asking nothing, may do.
+ */
+function decisionOf(turn: Turn, kind: acp.ToolKind | null, action: Action): Decision {
+  if (kind === "switch_mode" && turn.mode !== "full") {
+    return "refuse";
+  }
+  return turn.allowed.has(action) ? "allow" : decide(turn.mode, action);
 }
 
 /** Resolves once `signal` is aborted. */
@@ -328,12 +339,13 @@ class Conversation {
       return CANCELLED;
     }
     const call = request.toolCall;
-    const action = actionOf(call.kind) ?? turn.feed.actionOf(call.toolCallId) ?? "other";
+    const kind = call.kind ?? turn.feed.kindOf(call.toolCallId);
+    const action = actionOf(kind) ?? "other";
     const ask = { action, title: call.title ?? turn.feed.titleOf(call.toolCallId) ?? action, detail: turn.feed.detailOf(call) };
     const item = (outcome: string, status: ActivityItem["status"], doing: Summary): void => {
       turn.handlers.activity({ id: `permission ${call.toolCallId}`, run: "", kind: "permission", title: ask.title, outcome, status, quiet: false, loud: false, detail: ask.detail }, doing);
     };
-    let decision = turn.allowed.has(action) ? "allow" : decide(turn.mode, action);
+    let decision = decisionOf(turn, kind, action);
     if (decision === "ask") {
       item("", "running", "waiting for approval");
       turn.clock.pause();

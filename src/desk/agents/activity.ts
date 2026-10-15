@@ -138,9 +138,9 @@ export class Feed {
     this.report = report;
   }
 
-  /** The kind of action a tool call is, as the agent first said it: for a permission request that leaves it out. */
-  public actionOf(toolCallId: string): Action | null {
-    return actionOf(this.calls.get(toolCallId)?.kind);
+  /** The kind a tool call is, as the agent first said it: for a permission request that leaves it out. */
+  public kindOf(toolCallId: string): acp.ToolKind | null {
+    return this.calls.get(toolCallId)?.kind ?? null;
   }
 
   /** The agent's own title for a tool call it has announced. */

@@ -1139,8 +1139,9 @@ export class Session {
     }
     const agent = defaultAgentOf(this.client.config);
     const prompt = agentPrompt(message, this.me, repo, this.chats.earlier(message), !post, agent.protocol === "acp");
-    // A reply in a thread from the same asker to the same agent goes on in the session the thread's last such request left open, if one is.
-    const followUp = { key: [message.root ?? message.entry.event.id, message.entry.event.author, repo].join(" "), text: message.text };
+    // A reply in a thread from the same asker to the same agent goes on in the session the thread's last such request left open, if one is and it ran at the same mode and delivery:
+    // an agent may have made its own session more permissive than another mode allows, and was told who reads its reply.
+    const followUp = { key: [message.root ?? message.entry.event.id, message.entry.event.author, repo, mode, post ? "post" : "review"].join(" "), text: message.text };
     const run: AgentRun = {
       entry: message.entry,
       repo,
