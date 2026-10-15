@@ -5,9 +5,9 @@
 
 import { spawn } from "node:child_process";
 import type { ChildProcessByStdio } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { lstatSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { Writable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Readable } from "node:stream";
@@ -74,6 +74,52 @@ interface Turn {
   readonly clock: Clock; // The run's time limit, which waiting for the owner does not count against.
   readonly feed: Feed;
   readonly allowed: Set<Action>; // Kinds of action the owner allowed for this run. Never kept past it.
+  readonly folder: string; // The folder the run is in, links followed: below full, it changes no file outside it.
+}
+
+const CHANGES: ReadonlySet<Action> = new Set(["edit", "delete", "move"]);
+
+/**
+ * Where writing `path`, as an agent in `folder` names it, would land: the nearest part of it that is there, with links followed, and the rest as named. Null when that cannot be said:
+ * a ".." in it, which a link before it would take somewhere other than it reads, or a part that is there and cannot be followed, as a link to nothing, which writing creates wherever it points.
+ */
+function landing(folder: string, path: string): string | null {
+  if (path.split("/").includes("..")) {
+    return null;
+  }
+  const rest: string[] = [];
+  for (let at = isAbsolute(path) ? path : join(folder, path); ; at = dirname(at)) {
+    try {
+      return join(realpathSync(at), ...rest);
+    } catch {
+      // Not there, or there and not to be followed, which lstat tells apart.
+    }
+    try {
+      lstatSync(at);
+      return null;
+    } catch {
+      // Not there: it is made in the folder it names, if that is there.
+    }
+    if (dirname(at) === at) {
+      return null;
+    }
+    rest.unshift(basename(at));
+  }
+}
+
+/**
+ * Whether a run below full may change what a request to change files names, by the rules of its mode: only when it names at least one file and each is inside the run's folder and outside
+ * any .git folder, whatever its case, there. A run on a clean copy shares the checkout's .git, whose configuration names commands git runs; and a file outside its folder is the owner's.
+ */
+function staysIn(folder: string, paths: readonly string[]): boolean {
+  return (
+    paths.length > 0 &&
+    paths.every((path) => {
+      const landed = landing(folder, path);
+      const inside = landed === null ? ".." : relative(folder, landed);
+      return inside !== "" && inside !== ".." && !inside.startsWith(`..${sep}`) && !isAbsolute(inside) && !inside.split(sep).some((part) => part.toLowerCase() === ".git");
+    })
+  );
 }
 
 /**
@@ -90,11 +136,12 @@ function optionFor(options: readonly acp.PermissionOption[], decision: "allow" |
 }
 
 /**
- * What a turn answers a request to act: what the owner allowed for the run, or else what its mode says. Switching the agent's own mode is refused below full, whatever the owner allowed:
- * the mode switched to may ask about less for the rest of the run, which only a run at full, asking nothing, may do.
+ * What a turn answers a request to act: what the owner allowed for the run, or else what its mode says. Below full, two things are refused whatever the owner allowed, and never put to them,
+ * since an "Allow" would lift the run above its mode: switching the agent's own mode, which may then ask about less for the rest of the run; and changing a file that is not in the run's
+ * folder, is in a .git there, or is not named at all (see `staysIn`). `paths` are the files the request names.
  */
-function decisionOf(turn: Turn, kind: acp.ToolKind | null, action: Action): Decision {
-  if (kind === "switch_mode" && turn.mode !== "full") {
+function decisionOf(turn: Turn, kind: acp.ToolKind | null, action: Action, paths: readonly string[]): Decision {
+  if (turn.mode !== "full" && (kind === "switch_mode" || (CHANGES.has(action) && !staysIn(turn.folder, paths)))) {
     return "refuse";
   }
   return turn.allowed.has(action) ? "allow" : decide(turn.mode, action);
@@ -361,7 +408,7 @@ class Conversation {
     const item = (outcome: string, status: ActivityItem["status"], doing: Summary): void => {
       turn.handlers.activity({ id: `permission ${call.toolCallId}`, run: "", kind: "permission", title: ask.title, outcome, status, quiet: false, loud: false, detail: ask.detail }, doing);
     };
-    let decision = decisionOf(turn, kind, action);
+    let decision = decisionOf(turn, kind, action, turn.feed.pathsOf(call));
     if (decision === "ask") {
       item("", "running", "waiting for approval");
       turn.clock.pause();
@@ -500,7 +547,7 @@ export function acpRunner(agent: Agent, { limit = AGENT_TIMEOUT, idle = IDLE }: 
         const feed = new Feed(cwd, (item, doing) => {
           handlers.activity(item, doing);
         });
-        const turn: Turn = { mode, handlers, cancel, clock, feed, allowed: new Set() };
+        const turn: Turn = { mode, handlers, cancel, clock, feed, allowed: new Set(), folder: realpathSync(cwd) };
         const answer = await conversation.prompt(reused === null || followUp === undefined ? prompt : followUp.text, turn);
         answered = true;
         return answer;

@@ -156,6 +156,13 @@ export class Feed {
     return head(diffs.length > 0 ? diffs.map((diff) => diff.text).join("\n\n") : call.rawInput === undefined ? "" : JSON.stringify(call.rawInput, null, 1), DETAIL);
   }
 
+  /** Every file a request to act names, as it says it or as its tool call was announced: each location, and the file of each change it carries. */
+  public pathsOf(call: acp.ToolCallUpdate): string[] {
+    const announced = this.calls.get(call.toolCallId) ?? NO_CALL;
+    const content = [...(call.content ?? []), ...announced.content];
+    return [...(call.locations ?? []), ...announced.locations].map((location) => location.path).concat(content.flatMap((each) => (each.type === "diff" ? [each.path] : [])));
+  }
+
   /** What the agent has said: every one of its messages, narration and all, a blank line between each. */
   public answer(): string {
     return this.messages

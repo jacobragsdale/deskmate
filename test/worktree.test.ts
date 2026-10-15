@@ -157,6 +157,28 @@ await test("git reads the worktree's folder in the checkout's .git and never a .
   assert.deepEqual(worktrees(repo), [repo]);
 });
 
+await test("git run on a clean copy after its run starts no fsmonitor and no hook that the checkout's .git, which the copy shares, names, whatever put them there", async () => {
+  const { repo } = checkout();
+  const kept = await open(repo, jobId());
+  const worktree = await open(repo, jobId());
+  writeFileSync(join(worktree.path, "notes.txt"), "changed\n");
+  // As a run that could write to the checkout's .git would leave it: a command for git to start when it looks at files, and each hook git add, git diff or git worktree might run.
+  const ran = join(dir, "ran-shared");
+  const command = `#!/bin/sh\necho "$0" >> '${ran}'\nexit 1\n`;
+  writeFileSync(join(dir, "shared-monitor"), command, { mode: 0o755 });
+  git(repo, ["config", "core.fsmonitor", join(dir, "shared-monitor")]);
+  for (const hook of ["post-index-change", "reference-transaction", "post-checkout", "pre-auto-gc"]) {
+    writeFileSync(join(repo, ".git", "hooks", hook), command, { mode: 0o755 });
+  }
+
+  assert.match(await collect(worktree), /^\+changed$/m);
+  await lock(kept);
+  await close(worktree);
+  assert.equal(existsSync(ran), false);
+  git(repo, ["status", "--porcelain"]); // What git does, told nothing.
+  assert.equal(existsSync(ran), true);
+});
+
 await test("on start, the worktrees left in ~/.player-two/worktrees are removed and git forgets one whose folder is gone; one kept, locked with its .git git's own again, and the checkout's own stay", async () => {
   const { dev, repo } = checkout();
   const left = await open(repo, jobId());

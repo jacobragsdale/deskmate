@@ -60,6 +60,7 @@ Install the Windows installer from the release run.
 - [ ] A branch room's header shows the branch's pull request and latest build.
 - [ ] "Create pull request" on a scratch repo pushes the branch and opens one.
 - [ ] Save one real response from each Azure call into `test/fixtures/azure/`, with names and addresses replaced, and run `npm test`.
+- [ ] Accept a teammate's request at `auto-edits` with Cursor over ACP, and with Copilot: its edits on the clean copy go ahead and come back as a patch. If the activity panel shows every edit refused, the agent does not say which file it changes, which a run below `full` needs; record it.
 
 ## Findings
 

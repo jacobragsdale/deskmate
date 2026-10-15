@@ -16,6 +16,10 @@ const JOB_ID = /^[0-9a-f]{64}$/;
 // whose output git apply cannot take, three lines of context, since git apply refuses a patch with none, and a submodule as its commit ids.
 const DIFF = ["diff", "--cached", "--binary", "--no-color", "--no-ext-diff", "--no-textconv", "--unified=3", "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/"];
 
+// The worktree shares the checkout's .git/config, which the run may not write (see `staysIn` in agents/acp.ts) but might have got at. So whatever it says, the git called after the run
+// runs no fsmonitor, which git add and git diff would start, and no hook, as git add runs post-index-change. A filter it names for a file still runs: see the phase 6 Notes.
+const UNHOOKED = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"];
+
 /**
  * A worktree made for a run: where it is, the commit it was made at, and its folder inside the checkout's .git. git is pointed at that folder by name, never through the worktree's
  * own .git file, which the run could have replaced with a repository whose configuration runs a command.
@@ -55,7 +59,7 @@ export async function open(checkout: string, jobId: string): Promise<Worktree> {
 /** Everything changed in the worktree since it was made, committed by the run or not, as a diff from that commit; "" when nothing changed. */
 export async function collect(worktree: Worktree): Promise<string> {
   // A user's core.quotePath or diff.suppressBlankEmpty changes how names and empty lines are written, and neither has a flag of its own.
-  const at = ["-C", worktree.path, `--git-dir=${worktree.gitDir}`, `--work-tree=${worktree.path}`, "-c", "core.quotePath=true", "-c", "diff.suppressBlankEmpty=false"];
+  const at = ["-C", worktree.path, `--git-dir=${worktree.gitDir}`, `--work-tree=${worktree.path}`, ...UNHOOKED, "-c", "core.quotePath=true", "-c", "diff.suppressBlankEmpty=false"];
   await run([...at, "add", "-A"], `git add in ${worktree.path}`);
   const diff = await run([...at, ...DIFF, worktree.base, "--"], `git diff in ${worktree.path}`);
   if (diff.includes("�")) {
@@ -76,7 +80,7 @@ function restore(worktree: Worktree): void {
 /** Remove the worktree, its files and git's record of it. */
 export async function close(worktree: Worktree): Promise<void> {
   restore(worktree); // git removes no worktree whose .git file is not the one it wrote, and the run may have replaced it.
-  await run([`--git-dir=${worktree.gitDir}`, "worktree", "remove", "--force", worktree.path], `git worktree remove ${worktree.path}`);
+  await run([`--git-dir=${worktree.gitDir}`, ...UNHOOKED, "worktree", "remove", "--force", worktree.path], `git worktree remove ${worktree.path}`);
 }
 
 /**
@@ -85,7 +89,7 @@ export async function close(worktree: Worktree): Promise<void> {
  */
 export async function lock(worktree: Worktree): Promise<void> {
   restore(worktree);
-  await run([`--git-dir=${worktree.gitDir}`, "worktree", "lock", "--reason", "kept by Player Two for its owner to look at", worktree.path], `git worktree lock ${worktree.path}`);
+  await run([`--git-dir=${worktree.gitDir}`, ...UNHOOKED, "worktree", "lock", "--reason", "kept by Player Two for its owner to look at", worktree.path], `git worktree lock ${worktree.path}`);
 }
 
 /**

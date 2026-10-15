@@ -2,7 +2,8 @@
  * A scripted ACP agent for the tests, built on the SDK's agent side and run with `node`. What it does depends on words in the prompt:
  * `twice` says something in a message of its own first, with a step after it; `read` reports reading README.md in its folder, by its path; `many` reports 600 reads;
  * `switch` asks to switch its session to a mode in which it edits without asking, as ACP lets an agent's modes differ in what they ask; each `edit` asks to edit and writes edited.txt only if allowed,
- * and `big` big.txt, 600,000 characters, more than a patch carries;
+ * and `big` big.txt, 600,000 characters, more than a patch carries; each `aim:PATH` asks to edit PATH, from its folder unless it starts with "/", and writes it, and the folders to it, if allowed,
+ * and `blind` does the same for unnamed.txt without saying which file. Every other request to edit names the file it writes in its folder;
  * `run` asks to run `npm test` in its folder; `takeback` asks to edit and takes the request back 300 ms later; `leave` asks to edit and ends its turn without waiting for the answer;
  * `stray` asks under another session's id; `long` asks to edit under a title of two lines and over 300 characters; `mcp` says which MCP servers its session has; `whoami` says the agent its environment names in PLAYER_TWO_AGENT, the one chat PLAYER_TWO_ONLY_CHAT names, and the request PLAYER_TWO_JOB names, if they do;
  * `slow` waits until cancelled, with a child process of its own; `deaf` does the same but takes no notice of a cancel. Each `ask:OWNER/REPO` asks that agent "read" with the `ask_agent` tool of the
@@ -13,8 +14,8 @@
  */
 
 import { spawn } from "node:child_process";
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { Writable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -49,12 +50,24 @@ if (pids !== null) {
   appendFileSync(pids, `${String(process.pid)}\n`);
 }
 
-/** Ask to do something, as a tool call that waits for the client's answer, and report how it went. Resolves with whether it was allowed; rejects with Cancelled when the turn is. */
-async function permitted(client: acp.AgentContext, sessionId: string, toolCallId: string, kind: acp.ToolKind, title: string, rawInput: unknown = { title }): Promise<boolean> {
-  await client.notify("session/update", { sessionId, update: { sessionUpdate: "tool_call", toolCallId, title, kind, status: "pending", rawInput } });
+/**
+ * Ask to do something, as a tool call that waits for the client's answer, naming the files at `locations` in the request, or in the tool call it announces first when `announced`, and report
+ * how it went. Resolves with whether it was allowed; rejects with Cancelled when the turn is.
+ */
+async function permitted(
+  client: acp.AgentContext,
+  sessionId: string,
+  toolCallId: string,
+  kind: acp.ToolKind,
+  title: string,
+  rawInput: unknown = { title },
+  locations: acp.ToolCallLocation[] = [],
+  announced = false
+): Promise<boolean> {
+  await client.notify("session/update", { sessionId, update: { sessionUpdate: "tool_call", toolCallId, title, kind, status: "pending", rawInput, ...(announced ? { locations } : {}) } });
   const answer = await client.request("session/request_permission", {
     sessionId,
-    toolCall: { toolCallId, title, kind, rawInput },
+    toolCall: { toolCallId, title, kind, rawInput, ...(announced ? {} : { locations }) },
     options: [
       ...(alwaysOnly ? [] : [{ optionId: "yes", name: "Allow", kind: "allow_once" } as const]),
       { optionId: "always", name: "Always allow", kind: "allow_always" },
@@ -80,18 +93,32 @@ async function switchMode(client: acp.AgentContext, sessionId: string, turn: num
 
 /** The `index`th edit of a turn: ask, unless it does not, and write edited.txt if allowed. */
 async function edit(client: acp.AgentContext, sessionId: string, session: Session, index: number): Promise<string> {
-  const allowed = noAsking || unasking.has(sessionId) || (await permitted(client, sessionId, `edit-${String(session.turns)}-${String(index)}`, "edit", "Edit edited.txt"));
+  const path = join(session.cwd, "edited.txt");
+  const allowed = noAsking || unasking.has(sessionId) || (await permitted(client, sessionId, `edit-${String(session.turns)}-${String(index)}`, "edit", "Edit edited.txt", undefined, [{ path }]));
   if (allowed) {
-    writeFileSync(join(session.cwd, "edited.txt"), "edited\n");
+    writeFileSync(path, "edited\n");
   }
   return allowed ? "edit allowed" : "edit refused";
 }
 
+/** The `index`th aim of a turn: ask to edit `path`, naming it in the tool call announced before it asks, or `null` for unnamed.txt in its folder without naming it, and write it if allowed. */
+async function aim(client: acp.AgentContext, sessionId: string, session: Session, path: string | null, index: number): Promise<string> {
+  const target = path === null ? join(session.cwd, "unnamed.txt") : path.startsWith("/") ? path : `${session.cwd}/${path}`; // Not joined, which would take a ".." out.
+  const locations = path === null ? [] : [{ path: target }];
+  const allowed =
+    noAsking || unasking.has(sessionId) || (await permitted(client, sessionId, `aim-${String(session.turns)}-${String(index)}`, "edit", `Edit ${path ?? "a file"}`, undefined, locations, true));
+  if (allowed) {
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, "aimed\n");
+  }
+  return `${path ?? "unnamed"} ${allowed ? "allowed" : "refused"}`;
+}
+
 /** Ask to edit as `edit` does, and write big.txt in the session's folder: 6,000 lines of 100 characters. */
 async function big(client: acp.AgentContext, sessionId: string): Promise<string> {
-  const allowed = noAsking || unasking.has(sessionId) || (await permitted(client, sessionId, "big", "edit", "Edit big.txt"));
-  const cwd = sessions.get(sessionId)?.cwd;
-  if (allowed && cwd !== undefined) {
+  const cwd = sessions.get(sessionId)?.cwd ?? "";
+  const allowed = noAsking || unasking.has(sessionId) || (await permitted(client, sessionId, "big", "edit", "Edit big.txt", undefined, [{ path: join(cwd, "big.txt") }]));
+  if (allowed) {
     writeFileSync(join(cwd, "big.txt"), `${"x".repeat(99)}\n`.repeat(6000));
   }
   return allowed ? "big allowed" : "big refused";
@@ -99,7 +126,7 @@ async function big(client: acp.AgentContext, sessionId: string): Promise<string>
 
 /** Ask to edit, and take the request back 300 ms later, as an agent that thinks better of it may. */
 async function takeBack(client: acp.AgentContext, sessionId: string): Promise<string> {
-  const toolCall = { toolCallId: "takeback", title: "Edit taken-back.txt", kind: "edit" } as const;
+  const toolCall = { toolCallId: "takeback", title: "Edit taken-back.txt", kind: "edit", locations: [{ path: join(sessions.get(sessionId)?.cwd ?? "", "taken-back.txt") }] } as const;
   await client.notify("session/update", { sessionId, update: { sessionUpdate: "tool_call", ...toolCall, status: "pending" } });
   const answered = await client.request("session/request_permission", { sessionId, toolCall, options: OPTIONS }, { cancellationSignal: AbortSignal.timeout(300) }).then(
     () => true,
@@ -120,7 +147,8 @@ async function read(client: acp.AgentContext, sessionId: string, session: Sessio
 
 /** Ask to edit and go on without waiting for the answer, ending the turn while the client still has the request. */
 async function leave(client: acp.AgentContext, sessionId: string): Promise<string> {
-  client.request("session/request_permission", { sessionId, toolCall: { toolCallId: "leave", title: "Edit left.txt", kind: "edit" }, options: OPTIONS }).catch(() => undefined);
+  const locations = [{ path: join(sessions.get(sessionId)?.cwd ?? "", "left.txt") }];
+  client.request("session/request_permission", { sessionId, toolCall: { toolCallId: "leave", title: "Edit left.txt", kind: "edit", locations }, options: OPTIONS }).catch(() => undefined);
   await delay(200); // Long enough for the request to reach the owner.
   return "left";
 }
@@ -133,7 +161,23 @@ async function stray(client: acp.AgentContext, sessionId: string): Promise<strin
 
 /** Ask to edit under a title too long for one line, and on two. */
 async function long(client: acp.AgentContext, sessionId: string): Promise<string> {
-  return (await permitted(client, sessionId, "long", "edit", `Edit ${"x".repeat(300)}\nand more`)) ? "long allowed" : "long refused";
+  const title = `Edit ${"x".repeat(300)}\nand more`;
+  return (await permitted(client, sessionId, "long", "edit", title, undefined, [{ path: join(sessions.get(sessionId)?.cwd ?? "", "long.txt") }])) ? "long allowed" : "long refused";
+}
+
+/** Each `edit` of a prompt, then each `aim:`, then `blind`, and what came of each. */
+async function changes(client: acp.AgentContext, sessionId: string, session: Session, text: string, has: (word: string) => boolean): Promise<string[]> {
+  const did: string[] = [];
+  for (const [index] of [...text.matchAll(/\bedit\b/g)].entries()) {
+    did.push(await edit(client, sessionId, session, index));
+  }
+  for (const [index, [, path = ""]] of [...text.matchAll(/(?<!\S)aim:(\S+)/g)].entries()) {
+    did.push(await aim(client, sessionId, session, path, index));
+  }
+  if (has("blind")) {
+    did.push(await aim(client, sessionId, session, null, 0));
+  }
+  return did;
 }
 
 /** Everything the agent does for the words of one prompt, but wait, and what it says it did. */
@@ -155,9 +199,7 @@ async function act(client: acp.AgentContext, sessionId: string, session: Session
   if (has("switch")) {
     did.push(await switchMode(client, sessionId, session.turns));
   }
-  for (const [index] of [...text.matchAll(/\bedit\b/g)].entries()) {
-    did.push(await edit(client, sessionId, session, index));
-  }
+  did.push(...(await changes(client, sessionId, session, text, has)));
   if (has("run")) {
     const command = { command: "npm test", cwd: session.cwd };
     did.push((await permitted(client, sessionId, `run-${String(session.turns)}`, "execute", "Run npm test", command)) ? "run allowed" : "run refused");

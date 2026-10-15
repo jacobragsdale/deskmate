@@ -5,9 +5,9 @@
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import type { TestContext } from "node:test";
@@ -18,6 +18,7 @@ import { z } from "zod";
 
 import { ChatLog, STALE } from "../src/core/chat.ts";
 import { readContent, SUMMARIES } from "../src/core/kinds.ts";
+import { byCodeUnit } from "../src/core/text.ts";
 import type { Summary } from "../src/core/kinds.ts";
 import { eventIsAuthentic, publicHex } from "../src/core/sign.ts";
 import type { Agent, Delivered, PermissionMode } from "../src/core/wire.ts";
@@ -101,6 +102,12 @@ await test("the feed names each step as a person would: one item for a message a
   assert.equal(feed.detailOf({ toolCallId: "t9", content: [{ type: "diff", path: "/elsewhere/notes.txt", newText: "one\n" }] }), "+++ /elsewhere/notes.txt (new)\n+one");
   feed.update({ sessionUpdate: "tool_call", toolCallId: "t6", title: "Terminal", kind: "execute", status: "completed", rawOutput: "x".repeat(10_000) });
   assert.equal(detail("t6"), "x".repeat(8_000)); // At most 8 KB of it.
+  // The files a request about a tool call names: in the request, and the change the call was announced with.
+  assert.deepEqual(feed.pathsOf({ toolCallId: "t2", locations: [{ path: "/elsewhere/a.txt" }], content: [{ type: "diff", path: "/elsewhere/b.txt", newText: "" }] }), [
+    "/elsewhere/a.txt",
+    "/elsewhere/b.txt",
+    `${checkout}/src/queue.py`
+  ]);
 });
 
 /** A checkout of its own for one test, removed when the test ends. */
@@ -224,6 +231,33 @@ await test(
     assert.equal(await runner.run("switch", folder(t), "auto-edits", switching.handlers, never), "turn 1: switch refused");
     assert.deepEqual(switching.asks, []);
     assert.equal(await runner.run("switch", folder(t), "full", switching.handlers, never), "turn 1: switched");
+  }
+);
+
+await test(
+  "below full, a change to a file is refused without asking, whatever was allowed for the run, unless each file it names is in the run's folder, links followed, and out of any .git; one that names none is refused too; at full each goes ahead",
+  { timeout: 60_000 },
+  async (t) => {
+    const runner = acpRunner(fake());
+    const dir = folder(t);
+    const outside = folder(t); // Beside it, as a checkout is beside its clean copy's folder.
+    symlinkSync(outside, join(dir, "link"));
+    const astray = [join(outside, "x.txt"), `../${basename(outside)}/y.txt`, ".git/config", "src/.GIT/hooks/post-checkout", "link/z.txt"];
+    for (const mode of ["supervised", "auto-edits"] as const) {
+      const { handlers, asks, items } = recorder("allow-run");
+      const said = await runner.run(`aim:inside.txt ${astray.map((path) => `aim:${path}`).join(" ")} blind`, dir, mode, handlers, never);
+      assert.equal(said, `turn 1: inside.txt allowed; ${astray.map((path) => `${path} refused`).join("; ")}; unnamed refused`, mode);
+      assert.deepEqual(
+        asks.map((ask) => ask.title),
+        mode === "supervised" ? ["Edit inside.txt"] : [],
+        mode
+      ); // Only the change in the folder is put to the owner, whose "Allow for this run" lets no other through.
+      assert.equal(items.filter((item) => item.kind === "permission" && item.outcome === "refused").length, astray.length + 1, mode);
+    }
+    assert.deepEqual(readdirSync(outside), []);
+    assert.deepEqual(readdirSync(dir).sort(byCodeUnit), ["inside.txt", "link", "pids"]);
+    assert.equal(await runner.run(`aim:${join(outside, "x.txt")} blind`, dir, "full", recorder().handlers, never), `turn 1: ${join(outside, "x.txt")} allowed; unnamed allowed`);
+    assert.deepEqual(readdirSync(outside), ["x.txt"]);
   }
 );
 

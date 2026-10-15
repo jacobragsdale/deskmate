@@ -218,7 +218,8 @@ Rules:
 2. A grant names a mode. A delegated job's mode is at most its parent's.
 3. The order is `read-only` < `supervised` < `auto-edits` < `full`.
 4. Enforcement is the desk answering the agent's permission requests over ACP. An agent that never asks cannot be held to a mode. The setup check tests each configured agent for this, and an agent that fails it, or runs as a one-shot command, is labelled "cannot be restricted" wherever a mode is chosen.
-5. With nobody watching, an agent over ACP is not taken at its word: a grant below `full` lets it run only once it has passed that test, and, when the test recorded a version, only while the agent says it is that version as the run is let go. Otherwise the request waits for its owner, who is told to test it. A run its owner starts by hand is theirs to watch, and the window says the agent is untested.
+5. Below `full`, a run changes files only in the folder it runs in: an edit, deletion or move is allowed or asked about only when the request names at least one file and every file it names, with links followed, is inside that folder and in no `.git` folder there, whatever its case. Any other is refused without asking, as is the agent switching its own mode: an "Allow" would lift the run above its mode.
+6. With nobody watching, an agent over ACP is not taken at its word: a grant below `full` lets it run only once it has passed that test, and, when the test recorded a version, only while the agent says it is that version as the run is let go. Otherwise the request waits for its owner, who is told to test it. A run its owner starts by hand is theirs to watch, and the window says the agent is untested.
 
 `src/desk/permissions.ts` holds the table as one pure function from mode and kind of action to `allow`, `ask` or `refuse`.
 

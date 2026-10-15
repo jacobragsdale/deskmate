@@ -220,6 +220,27 @@ await test(
 );
 
 await test(
+  "a teammate's request run on a clean copy changes nothing outside it: the scripted agent asking to write the checkout's .git/config, which the copy shares, or a hook in the copy's .git, is refused, and only its change in the copy is handed over",
+  { timeout: 60_000 },
+  async (t) => {
+    const { bob, mine, asks } = await two(t);
+    const config = join(mine, ".git", "config");
+    const before = readFileSync(config, "utf8");
+    const id = await asks(`@jacob/uploader edit, aim:${config} aim:.git/hooks/post-checkout`, "auto-edits", true);
+    const [answer] = await until("the answer", async () => {
+      const found = await said(bob, id, "job.result");
+      return found.length > 0 && found;
+    });
+    assert.ok(answer?.kind === "job.result");
+    assert.match(answer.content.text, /edit allowed; \S+\/\.git\/config refused; \.git\/hooks\/post-checkout refused$/);
+    assert.equal(readFileSync(config, "utf8"), before);
+    const [patch] = await said(bob, id, "patch");
+    assert.ok(patch?.kind === "patch");
+    assert.deepEqual(patch.content.diff.match(/^diff --git .*$/gm), ["diff --git a/edited.txt b/edited.txt"]);
+  }
+);
+
+await test(
   "a run on a clean copy that changed something hands it over as a patch, refers to the request, before the answer: posted signed by the agent, or kept beside the draft until its owner sends both; a run that changed nothing hands over none",
   { timeout: 60_000 },
   async (t) => {
