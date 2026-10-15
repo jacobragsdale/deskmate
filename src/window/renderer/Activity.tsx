@@ -55,7 +55,7 @@ export function AskCard({ ask, who, act }: { readonly ask: AskView; readonly who
     act({ do: "permit", ask: ask.id, answer });
   };
   return (
-    <section aria-label="Permission" className="my-1.5 rounded-lg border border-warn px-2.5 py-2">
+    <section aria-label="Permission" data-ask={ask.id} className="my-1.5 rounded-lg border border-warn px-2.5 py-2">
       <p className="text-warn">
         ? {who} asks before it acts: <strong className="wrap-anywhere text-foreground">{ask.title}</strong>
       </p>

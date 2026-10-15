@@ -180,6 +180,12 @@ function repository(dir: string, origin: string): void {
   }
 }
 
+/** Check that the first element `selector` finds lies wholly within what the open chat shows, once both have stopped moving. */
+async function inChat(page: Page, selector: string, what: string): Promise<void> {
+  const [found, frame] = [await page.rect(selector), await page.rect("main [data-radix-scroll-area-viewport]")];
+  assert.ok(found.height > 0 && found.top >= frame.top && found.bottom <= frame.bottom, `${what} is out of view: ${JSON.stringify({ found, frame })}`);
+}
+
 /** The mode the newest run in a chat was let go at, as its job.accepted records it, read by someone in the chat; "" when there is none. */
 async function acceptedAt(client: Client, chat: string): Promise<string> {
   const said = (await client.events({ chat })).map((each) => readContent(each.event)).find((each) => each.kind === "job.accepted"); // Newest first.
@@ -457,8 +463,7 @@ await test(
       "its chat open, with it highlighted",
       `document.querySelector("main h1")?.textContent === "#history" && document.querySelector('${focused}')?.innerText.includes("the first") === true`
     );
-    const [note, frame] = [await page.rect(focused), await page.rect("main [data-radix-scroll-area-viewport]")];
-    assert.ok(note.height > 0 && note.top >= frame.top && note.bottom <= frame.bottom, `the message opened is out of view: ${JSON.stringify({ note, frame })}`);
+    await inChat(page, focused, "the message opened");
     await page.click("nav button", "bob");
     await page.until("the chat with bob again", `document.querySelector("main h1")?.textContent === "bob"`);
 
@@ -603,6 +608,29 @@ await test(
     assert.ok(!existsSync(join(home, "dev", "billing", "edited.txt")));
     await page.click("main button", "Discard");
     await page.until("the draft gone", `document.querySelector('textarea[aria-label="Draft answer"]') === null`);
+
+    // Dave asks for two edits, three asks with the prompt's "may edit", and alice runs it as she ran his last. While she reads at the end of the chat, he writes on below the request:
+    // the next card, under the request far above, is brought into view. "Allow for this run" on it allows the third edit without asking.
+    await dave.publish("alice", "message", { text: "@alice/billing edit this, then edit that", via: "cli" });
+    const daves = `[...document.querySelectorAll("main article")].find((each) => each.innerText.includes("edit this, then edit that"))`;
+    const supervised = `[...(${daves}?.querySelectorAll("button") ?? [])].find((each) => each.textContent === "▶ Run supervised")`;
+    await page.until("dave's request, offered as alice ran his last", `${supervised} !== undefined`);
+    await page.eval(`${supervised}.click()`);
+    await page.until("the first card", `${card("main")} !== null`);
+    for (let count = 1; count <= 40; count += 1) {
+      await dave.publish("alice", "message", { text: `and another thing ${String(count)}`, via: "cli" });
+    }
+    await page.until("dave's last word, at the end of the chat", `document.querySelector("main").innerText.includes("and another thing 40")`);
+    await page.eval(`${card("main")}.dataset.answered = "yes"`);
+    await page.eval(`[...${card("main")}.querySelectorAll("button")].find((each) => each.textContent === "Allow once").click()`);
+    const next = `main section[aria-label="Permission"]:not([data-answered])`;
+    await page.until("the next card", `document.querySelector('${next}') !== null`);
+    await inChat(page, next, "the new card");
+    await page.eval(`[...document.querySelector('${next}').querySelectorAll("button")].find((each) => each.textContent === "Allow for this run").click()`);
+    await page.until("its draft, every edit allowed", `document.querySelector('textarea[aria-label="Draft answer"]')?.value.includes("edit allowed; edit allowed; edit allowed") === true`);
+    rmSync(join(home, "dev", "billing", "edited.txt")); // Written, and taken away for carol's run to write again.
+    await page.click("main button", "Discard");
+    await page.until("the draft gone again", `document.querySelector('textarea[aria-label="Draft answer"]') === null`);
 
     // Carol asks again, and alice runs it from the menu: the answer posted directly, at supervised, where the agent asks before it edits. "Allow once" on the card under the request
     // lets it write the file and answer, and the chat's record says it ran supervised. Carol's next request is offered as alice ran this one, from app-state.json.
