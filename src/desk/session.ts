@@ -24,6 +24,7 @@ import type {
   NoteView,
   Notice,
   PatchView,
+  PullRequest,
   ReplyView,
   Question,
   RequestView,
@@ -38,12 +39,14 @@ import { DAY, liveGrant, revoked, standing } from "../core/grants.ts";
 import type { Standing } from "../core/grants.ts";
 import { readContent } from "../core/kinds.ts";
 import { notesIn } from "../core/links.ts";
+import { onAzure, pullsIn } from "../core/pulls.ts";
 import { roomName, suggestions } from "../core/rooms.ts";
 import type { Room } from "../core/rooms.ts";
 import type { Content, ContentOf, Summary } from "../core/kinds.ts";
 import { publicHex } from "../core/sign.ts";
 import { acpRunner, greet } from "./agents/acp.ts";
 import { agentEnv, agentKey, keyIn } from "./agentKeys.ts";
+import { Azure } from "./azure.ts";
 import { endedItem, startedItem } from "./agents/activity.ts";
 import { AGENT_TIMEOUT, oneshotRunner, runAgent } from "./agents/oneshot.ts";
 import { PRESETS } from "./agents/presets.ts";
@@ -74,6 +77,11 @@ const HEARTBEAT = 300; // Seconds after which the chat is told again what a run 
 const ITEMS = 500; // Items of one run's activity kept, the newest.
 const FEEDS = 20; // Runs that have ended whose activity is kept, the newest.
 const EVERYONE = 200; // Events to everyone read at a time when the desk starts: the most the hub gives at once.
+// A message from anyone can have the desk ask Azure DevOps, with the user's token, for the pull requests it refers to: so each answer, a failure too, is kept and not asked again
+// for PULL_KEPT seconds, at most PULLS are kept at once and no more are asked while that many are fresh, and only a message's first PULLS_EACH references are looked up.
+const PULL_KEPT = 60;
+const PULLS = 100;
+const PULLS_EACH = 5;
 
 /**
  * How the user last ran a request: at which mode, whether its answer was posted without a review, and the agent that answered, by its id and command line.
@@ -282,6 +290,8 @@ export class Session {
   private dismissed: readonly Room[]; // Branch rooms the user said not to suggest.
   private readonly paged = new Map<string, boolean>(); // Chats whose newest page has been loaded, and whether there may be events before what is loaded.
   private readonly linked = new Map<string, NoteView | null>(); // Notes linked to that are not loaded here, as the hub answered for each; null while it is being asked.
+  private readonly azure: Azure; // Every call to Azure DevOps, with the user's own token.
+  private readonly pulls = new Map<string, { readonly at: number; readonly found: PullRequest | null }>(); // Pull requests referred to, by repo key and id, as Azure DevOps answered when, Unix milliseconds.
   private lastChat: string | null; // The chat that was open when the session last ran.
   private people: readonly Person[] = [];
   private channels: readonly ChannelInfo[] = [];
@@ -329,6 +339,7 @@ export class Session {
     this.dismissed = saved.dismissed;
     this.lastChat = saved.chat;
     this.tested = permissionTests(client.home);
+    this.azure = new Azure(client.home);
   }
 
   public start(): void {
@@ -658,6 +669,7 @@ export class Session {
       deleted: message.deleted,
       reactions: [...message.reactions].map(([emoji, people]) => ({ emoji, people: [...people] })),
       notes: this.notesOf(message.text),
+      pulls: this.pullsOf(message.text, chatOf(event, this.me)),
       quote: answered === null ? "" : `${answered.entry.event.author}: ${oneLine(answered.text)}`,
       header: !continues(previous, message),
       requests: (message.deleted ? this.stillMine(message, now) : this.chats.requests(message, now)).flatMap((request) => this.requestView(request)),
@@ -691,6 +703,7 @@ export class Session {
       deleted: false,
       reactions: [],
       notes: [],
+      pulls: [],
       quote: "",
       requests: [],
       delegation: null,
@@ -735,6 +748,54 @@ export class Session {
     } catch {
       this.linked.delete(id);
     }
+  }
+
+  /**
+   * The pull requests a text refers to that Azure DevOps has answered for, by the text that refers to each: "!123" in a chat pinned to a repo there, which is that repo's, and a pasted
+   * address in any chat. Only the first PULLS_EACH references are looked up; one Azure DevOps has not answered for yet is asked, and one it could not find is left out.
+   */
+  private pullsOf(text: string, chat: string): ReplyView["pulls"] {
+    const pinned = this.channels.find((channel) => channel.name === chat)?.repo ?? null;
+    const here = pinned === null ? null : onAzure(pinned.key);
+    const refs = pullsIn(text).flatMap(({ text: ref, pull }) => {
+      const repo = pull === null ? null : (pull.repo ?? here);
+      return pull === null || repo === null ? [] : [{ ref, repo, id: pull.id }];
+    });
+    const first = refs.filter((each, at) => refs.findIndex((other) => other.ref === each.ref) === at).slice(0, PULLS_EACH);
+    return first.flatMap(({ ref, repo, id }) => {
+      const pull = this.pullRequest(repo, id);
+      return pull === null ? [] : [{ ref, pull }];
+    });
+  }
+
+  /**
+   * A pull request as Azure DevOps last answered for it within PULL_KEPT seconds; null when it could not say, and while it is asked. One not answered for within that time is asked
+   * now, what was found before shown meanwhile, unless PULLS answers fresher than that are kept: then it is not asked, and is null.
+   */
+  private pullRequest(repo: RepoRef, id: number): PullRequest | null {
+    const key = `${repo.key} ${String(id)}`;
+    const now = Date.now();
+    const kept = this.pulls.get(key);
+    if (kept !== undefined && now - kept.at < PULL_KEPT * 1000) {
+      return kept.found;
+    }
+    for (const [each, { at }] of this.pulls) {
+      if (now - at >= PULL_KEPT * 1000) {
+        this.pulls.delete(each);
+      }
+    }
+    if (this.pulls.size >= PULLS) {
+      return null;
+    }
+    this.pulls.set(key, { at: now, found: kept?.found ?? null });
+    this.azure.pullRequest(repo, id).then(
+      (found) => {
+        this.pulls.set(key, { at: Date.now(), found: found.ok ? found.data : null });
+        this.hooks.changed();
+      },
+      () => undefined // It answers with a problem rather than failing.
+    );
+    return kept?.found ?? null;
   }
 
   /** Someone joined, left, pinned or unpinned in the open chat, in order. */

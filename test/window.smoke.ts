@@ -17,6 +17,7 @@ import { noteLink } from "../src/core/links.ts";
 import { newKey, publicHex } from "../src/core/sign.ts";
 import { commandLineOf } from "../src/core/wire.ts";
 import type { Client } from "../src/desk/client.ts";
+import { fakeAzure, platform } from "./fakeAzure.ts";
 import { startHub, TOKEN } from "./startHub.ts";
 
 const ROOT = join(import.meta.dirname, "..");
@@ -31,6 +32,7 @@ const KEYS = {
   n: { code: "KeyN", keyCode: 78 },
   w: { code: "KeyW", keyCode: 87 }
 } as const;
+const SECRET = "a-token-the-page-must-never-show-0123456789"; // The Azure DevOps token she saves on the Setup page, the one the fake Azure DevOps lets in.
 const ALT = 1; // The DevTools protocol's bits for the Alt and Ctrl keys.
 const CTRL = 2;
 
@@ -508,8 +510,26 @@ async function branchRooms(page: Page, carol: Client, home: string): Promise<voi
   await page.type(box, "");
 }
 
+/**
+ * Azure DevOps, played by the fake in this process, with the token she saved on the Setup page. In the branch room, pinned to widgets, "!22" is widgets' pull request 22 and a pasted
+ * address the one it names, each a chip of what Azure DevOps answered, in plain text and Markdown alike, whose link opens on dev.azure.com; "!999", which it cannot find, stays text.
+ */
+async function pullRequests(page: Page, carol: Client): Promise<void> {
+  const room = "#widgets-feature-retry";
+  assert.equal(await page.eval(`document.querySelector("main h1")?.textContent`), room);
+  const pasted = "https://dev.azure.com/acme/Platform/_git/api/pullrequest/20";
+  await carol.publish(room, "message", { text: `!22 is in, see ${pasted}; !999 is not`, via: "cli" });
+  await carol.publish(room, "message", { text: "```\nfenced\n```\n\nand in Markdown, !22", via: "cli" });
+  const chips = `[...document.querySelectorAll("main [data-pull]")].map((each) => each.textContent + " " + each.querySelector("a")?.href)`;
+  await page.until("the chips", `${chips}.length === 3`);
+  const widgets = "!22 A new feature · active · 1 waiting https://dev.azure.com/acme/platform/_git/widgets/pullrequest/22";
+  assert.deepEqual(await page.eval(chips), [widgets, "!20 Updated pull request title · completed · 1 approved https://dev.azure.com/acme/platform/_git/api/pullrequest/20", widgets]);
+  assert.ok(String(await page.eval(`document.querySelector("main").innerText`)).includes("; !999 is not"));
+  await page.shot("pull-requests");
+}
+
 await test(
-  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, keeps a card in reach in a closed thread and brings one far above the end into view, refuses and allows for the run from a card, and offers only the modes the agent that answers can keep, full alone beside its reason when that is all, and a full chosen once not again in one click when less is there, and for a grant full alone while it is untested; and on My agents makes grants from its dialog, which warns of full access for anyone however its answers go and asks a second yes when they are posted directly, one grant for each double click, revokes one with a double click and not the next, counts the run a grant lets go, and holds a repo back with a double click, unshared and answering nobody under that grant, and lets it answer again; and says under whose grant a run went ahead, to its owner while it runs and in its answer, and to whoever asked, and that an answer its agent signed was not reviewed, where it is shown and where it is found; and while a grant is live stays open on close, saying why, where it cannot say it went to the tray, and once told hides on close, answering on, until started again; lists a grant apart once its repo is not checked out here, and revokes it there; lets the user's agent, asked by another, ask others from a switch beside what that means, says before its buttons how that request came, draws under the message that started it the tree of jobs under it, folded once all are done, and ends it all with that message's one Withdraw, after which what was asked under it is not offered again, saying why; draws a patch as a card beside the draft it goes with and in the chat, each file folded with what it adds and removes, and every word of a hostile one as text, and applies one, to her branch or a new one, only once a dialog of the system's own, naming the repo, the branch, the files and what to beware of, has had a yes, and shows who approved one or asked for changes, saying what; suggests a room for a branch she and a teammate are on, not the default, and none she dismissed, which is remembered; starts one, pinned to the branch and saying who is on it and which members are elsewhere, and pins one to a branch from the dialog, where the tag list leads with the agents on that branch; and quits on close once none is",
+  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, keeps a card in reach in a closed thread and brings one far above the end into view, refuses and allows for the run from a card, and offers only the modes the agent that answers can keep, full alone beside its reason when that is all, and a full chosen once not again in one click when less is there, and for a grant full alone while it is untested; and on My agents makes grants from its dialog, which warns of full access for anyone however its answers go and asks a second yes when they are posted directly, one grant for each double click, revokes one with a double click and not the next, counts the run a grant lets go, and holds a repo back with a double click, unshared and answering nobody under that grant, and lets it answer again; and says under whose grant a run went ahead, to its owner while it runs and in its answer, and to whoever asked, and that an answer its agent signed was not reviewed, where it is shown and where it is found; and while a grant is live stays open on close, saying why, where it cannot say it went to the tray, and once told hides on close, answering on, until started again; lists a grant apart once its repo is not checked out here, and revokes it there; lets the user's agent, asked by another, ask others from a switch beside what that means, says before its buttons how that request came, draws under the message that started it the tree of jobs under it, folded once all are done, and ends it all with that message's one Withdraw, after which what was asked under it is not offered again, saying why; draws a patch as a card beside the draft it goes with and in the chat, each file folded with what it adds and removes, and every word of a hostile one as text, and applies one, to her branch or a new one, only once a dialog of the system's own, naming the repo, the branch, the files and what to beware of, has had a yes, and shows who approved one or asked for changes, saying what; suggests a room for a branch she and a teammate are on, not the default, and none she dismissed, which is remembered; starts one, pinned to the branch and saying who is on it and which members are elsewhere, and pins one to a branch from the dialog, where the tag list leads with the agents on that branch; draws each pull request a message refers to, by !123 in a room pinned to a repo on Azure DevOps or by its address, as a chip of what a fake Azure DevOps answered; and quits on close once none is",
   { skip: NO_DISPLAY ? "no display: run it under xvfb-run" : false, timeout: 120_000 },
   async (t) => {
     assert.ok(existsSync(join(ROOT, "dist", "main.js")), "dist/ is not built: run `npm run build` first");
@@ -525,6 +545,9 @@ await test(
     // A run let ask other agents gives its agent Player Two's MCP server, started as `player-two` from the PATH: here, the command just built.
     mkdirSync(join(home, "bin"));
     writeFileSync(join(home, "bin", "player-two"), `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(join(ROOT, "dist", "player-two.js"))} "$@"\n`, { mode: 0o755 });
+    // Azure DevOps is a fake in this process, which her desk asks in place of dev.azure.com, as it does for nothing but a loopback address: see azure.ts.
+    const azure = platform(SECRET);
+    const azureAt = await fakeAzure(t, azure.answer);
     const env: Record<string, string | undefined> = { ...process.env, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), PATH: `${join(home, "bin")}:${process.env["PATH"] ?? ""}` };
     delete env["PLAYER_TWO_HOME"];
     delete env["PLAYER_TWO_DEV"];
@@ -534,6 +557,7 @@ await test(
     delete env["GIT_CONFIG_GLOBAL"];
     env["GIT_CONFIG_NOSYSTEM"] = "1";
     env["PLAYER_TWO_TEST_ASKS"] = join(home, "asks.jsonl"); // The native dialog Apply asks in is answered by the main process from there: see main.ts.
+    env["PLAYER_TWO_TEST_AZURE"] = azureAt.base;
     // On a virtual display with no window manager, as in CI, Chromium may take the window for hidden and stop drawing frames, which freezes every
     // transition at its start: a toast that never slides in is "out of place". These are the switches Playwright starts Chromium with for the same reason.
     const unthrottled = ["--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding", "--disable-background-timer-throttling"];
@@ -830,7 +854,7 @@ await test(
     await page.until("the editor agents' snippets", `document.body.innerText.includes("Editor agents") && ${snippets} === '["mcp"] ["mcp"]'`);
 
     // The team's repos are on Azure DevOps and she has no token, so its check fails and says how to give one, with a field for one under it. Saving keeps the token in azure.json,
-    // readable only by her, and empties the field, and the token is nowhere in the page. It is not tried, which would ask the real Azure DevOps; test/doctor.test.ts tries one against a fake.
+    // readable only by her, and empties the field, and the token is nowhere in the page. It is not tried until the check runs again; from then on her desk uses it with the fake.
     const azureRow = `[...document.querySelectorAll("li")].find((each) => each.textContent.includes("Azure DevOps answers to your token"))`;
     await page.until(
       "the Azure DevOps check, failed for want of a token",
@@ -838,7 +862,7 @@ await test(
     );
     await page.eval(`${azureRow}.scrollIntoView()`);
     await page.shot("azure");
-    const secret = "a-token-the-page-must-never-show-0123456789";
+    const secret = SECRET;
     await page.type('input[aria-label="Azure DevOps token"]', secret);
     await page.click("button", "Save token");
     await page.until("the token saved", `document.querySelector('input[aria-label="Azure DevOps token"]')?.value === "" && document.body.innerText.includes("Token saved.")`);
@@ -847,7 +871,6 @@ await test(
     assert.equal(statSync(azureFile).mode & 0o777, 0o600);
     const shown = `document.documentElement.outerHTML.includes(${JSON.stringify(secret)}) || [...document.querySelectorAll("input")].some((each) => each.value.includes(${JSON.stringify(secret)}))`;
     assert.equal(await page.eval(shown), false);
-    rmSync(azureFile); // The Setup page is opened again later, and its check would try a token on the real Azure DevOps.
 
     // Above them, the agent chosen when joining answers. Cursor over ACP, the next preset offered, is added and chosen, and config.json says so.
     await page.until("the agent chosen when joining", `document.querySelector('input[aria-label="Cursor one-shot answers"]')?.checked === true`);
@@ -1326,6 +1349,7 @@ await test(
     await askingAgents(page, bob, carol, bobsAgent, commit);
     await patches(page, await hub.join("erin"), home);
     await branchRooms(page, carol, home);
+    await pullRequests(page, carol);
 
     assert.deepEqual(page.problems, []);
 

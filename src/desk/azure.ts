@@ -12,8 +12,12 @@ import { z } from "zod";
 
 import { problemOf } from "../core/text.ts";
 import type { RepoRef } from "../core/wire.ts";
+import type { PullRequest } from "../shared/ipc.ts";
 
 export const AZURE = "https://dev.azure.com";
+// For the window's smoke test alone, which has a fake Azure DevOps of its own: where Azure DevOps is, taken only when it names a port on this machine's loopback address, so that a
+// variable left set by mistake can send a token nowhere else. Nothing but that test sets it.
+const TEST_BASE = "PLAYER_TWO_TEST_AZURE";
 const API_VERSION = "7.1";
 const CALL_LIMIT = 10; // Seconds one call may take, its answer read to the end.
 const GIT_LIMIT = 10; // Seconds git's credential helper gets to answer.
@@ -100,7 +104,6 @@ const failureSchema = z.object({ message: z.string() }); // What Azure DevOps an
 
 // Every web address is made from the repo's own and an id: Microsoft documents none for a pull request, and does not name the links a build carries.
 export type Repository = z.output<typeof repositorySchema> & { readonly web: string };
-export type PullRequest = z.output<typeof pullRequestSchema> & { readonly web: string };
 export type Build = z.output<typeof buildListSchema>["value"][number] & { readonly web: string };
 
 /** What a new pull request is: from which branch into which, with what words, and whether it is a draft. */
@@ -114,6 +117,12 @@ export interface NewPullRequest {
 
 function withWeb(ref: RepoRef, pr: z.output<typeof pullRequestSchema>): PullRequest {
   return { ...pr, web: `${ref.url}/pullrequest/${String(pr.id)}` };
+}
+
+/** Where Azure DevOps is: dev.azure.com, unless PLAYER_TWO_TEST_AZURE names `http://127.0.0.1:` and a port, as the smoke test's fake. Anything else it names is passed over. */
+export function azureBase(env: NodeJS.ProcessEnv = process.env): string {
+  const test = env[TEST_BASE] ?? "";
+  return /^http:\/\/127\.0\.0\.1:[0-9]{1,5}$/.test(test) ? test : AZURE;
 }
 
 /**
@@ -238,7 +247,7 @@ export class Azure {
   private kept: Credential | null = null; // What got the last call in, used for the rest of the session.
 
   /** `home` is the identity's folder; `base` is where Azure DevOps is, which only a test changes. */
-  constructor(home: string, base = AZURE, limitSeconds = CALL_LIMIT) {
+  constructor(home: string, base = azureBase(), limitSeconds = CALL_LIMIT) {
     this.home = home;
     this.base = base;
     this.limit = limitSeconds;

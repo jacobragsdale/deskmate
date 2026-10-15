@@ -82,6 +82,24 @@ const patchSchema = z
   })
   .readonly();
 
+/**
+ * A pull request on Azure DevOps, as the desk read it with the user's token: its title, status, whether it is a draft, its branches, who made it and how each reviewer voted, all as Azure
+ * gives them, and its address in the browser. Every word of it is someone else's, and is drawn as text; the window opens `web` only on dev.azure.com.
+ */
+const pullRequestSchema = z
+  .strictObject({
+    id: z.int(),
+    title: z.string(),
+    status: z.string(), // "active", "completed" or "abandoned".
+    draft: z.boolean(),
+    source: z.string(),
+    target: z.string(),
+    creator: z.string(),
+    reviewers: z.array(z.strictObject({ name: z.string(), vote: z.int() }).readonly()).readonly(), // A vote is 10, 5, 0, -5 or -10: see `votes` in src/core/pulls.ts.
+    web: z.string()
+  })
+  .readonly();
+
 /** What a message and a reply both show. */
 const said = {
   id: z.string(), // The event's id: what a command about it names.
@@ -102,6 +120,8 @@ const said = {
   deleted: z.boolean(),
   reactions: z.array(z.strictObject({ emoji: z.string(), people: z.array(z.string()).readonly() }).readonly()).readonly(), // Each emoji in the order it was first used, and who reacted with it.
   notes: z.array(noteSchema).readonly(), // The notes its text links to that the desk has looked up; a link not here is still being looked up.
+  // The pull requests its text refers to that the desk found, each by the text that refers to it, "!123" or a pasted address; one not here is drawn as the text it is.
+  pulls: z.array(z.strictObject({ ref: z.string(), pull: pullRequestSchema }).readonly()).readonly(),
   quote: z.string(), // The request an answer is to, on one line; "" when it answers nothing.
   header: z.boolean(), // Whether to say who wrote it, or let it sit under the previous message's header.
   requests: z.array(requestSchema).readonly(),
@@ -401,6 +421,7 @@ export type NoteView = z.infer<typeof noteSchema>;
 export type MessageView = z.infer<typeof messageSchema>;
 export type ReplyView = z.infer<typeof replySchema>;
 export type PatchView = z.infer<typeof patchSchema>;
+export type PullRequest = z.infer<typeof pullRequestSchema>;
 export type LineView = z.infer<typeof lineSchema>;
 export type RowView = z.infer<typeof rowSchema>;
 export type CurrentView = z.infer<typeof currentSchema>;

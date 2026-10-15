@@ -26,6 +26,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 
 import { spans } from "../../core/chat.ts";
 import { noteLink, noteOf, notesIn } from "../../core/links.ts";
+import { pullsIn } from "../../core/pulls.ts";
 import { oneLine } from "../../core/text.ts";
 import { MAX_DEPTH } from "../../core/delegation.ts";
 import { isAgent, MODES, ownerOf } from "../../core/wire.ts";
@@ -35,6 +36,7 @@ import type { AskView, ChatView, CurrentView, MessageView, ReplyView, RequestVie
 import { AskCard, Spinner } from "./Activity.tsx";
 import type { Act } from "./App.tsx";
 import { PatchActions, PatchCard } from "./Patch.tsx";
+import { PullChip } from "./Pulls.tsx";
 
 const LINE = "my-1 text-muted-foreground"; // Where a tagged agent stands, under the message.
 const MINE = "my-1 text-warn"; // The same, when it waits on the user.
@@ -652,18 +654,23 @@ interface MarkdownNode {
   readonly children?: MarkdownNode[];
 }
 
-/** A remark plugin: each link to a note written out in plain text becomes a link, so that it is drawn as a chip as one written [like this](…) is. Code, and the text of a link, are left as they are. */
-function linkNotes(): (tree: MarkdownNode) => void {
+/**
+ * A remark plugin: each link to a note written out in plain text becomes a link, so that it is drawn as a chip as one written [like this](…) is, and so does each reference to a pull
+ * request among `pulls`, the ones the desk found. Code, and the text of a link, are left as they are.
+ */
+function linkNotes(pulls: ReplyView["pulls"]): (tree: MarkdownNode) => void {
   const visit = (node: MarkdownNode): void => {
     const children = node.type === "link" || node.type === "linkReference" ? [] : (node.children ?? []);
     for (let index = children.length - 1; index >= 0; index -= 1) {
       const child = children[index];
-      const pieces = child?.type === "text" ? notesIn(child.value ?? "") : [];
-      if (pieces.some((piece) => piece.note !== null)) {
+      const pieces = (child?.type === "text" ? notesIn(child.value ?? "") : []).flatMap((piece) =>
+        piece.note === null ? pullsIn(piece.text).map((each) => ({ text: each.text, link: pulls.some((pull) => pull.ref === each.text) })) : [{ text: piece.text, link: true }]
+      );
+      if (pieces.some((piece) => piece.link)) {
         children.splice(
           index,
           1,
-          ...pieces.map((piece): MarkdownNode => (piece.note === null ? { type: "text", value: piece.text } : { type: "link", url: piece.text, children: [{ type: "text", value: piece.text }] }))
+          ...pieces.map((piece): MarkdownNode => (piece.link ? { type: "link", url: piece.text, children: [{ type: "text", value: piece.text }] } : { type: "text", value: piece.text }))
         );
       } else if (child !== undefined) {
         visit(child);
@@ -697,15 +704,19 @@ function Body({ message, me, act }: { readonly message: ReplyView; readonly me: 
   }
   if (message.agent !== null || message.body.includes("```")) {
     // Markdown from an agent is drawn as elements, never as HTML: raw tags in it stay text. Images are not fetched: a remote one would tell its host who read the message.
-    // A link to a note is a chip; every other link is as safe as react-markdown's own rule makes it, which drops a player-two: address like any it does not know.
+    // A link to a note, or to a pull request the desk found, is a chip; every other link is as safe as react-markdown's own rule makes it, which drops a player-two: address like any it does not know.
     return (
       <div className="markdown">
         <Markdown
-          remarkPlugins={[linkNotes]}
+          remarkPlugins={[() => linkNotes(message.pulls)]}
           urlTransform={(url) => (noteOf(url) === null ? defaultUrlTransform(url) : url)}
           components={{
             a: ({ href, children }) => {
               const note = noteOf(href ?? "");
+              const pull = message.pulls.find((each) => each.ref === href);
+              if (pull !== undefined) {
+                return <PullChip pull={pull.pull} />;
+              }
               return note === null ? (
                 <a href={href} target="_blank" rel="noreferrer">
                   {children}
@@ -733,11 +744,20 @@ function Body({ message, me, act }: { readonly message: ReplyView; readonly me: 
       {notesIn(message.body).map((piece, at) =>
         piece.note === null ? (
           <Fragment key={at}>
-            {spans(piece.text).map((span, index) => (
-              <span key={index} className={span.tag ? "font-semibold text-tag" : undefined}>
-                {span.text}
-              </span>
-            ))}
+            {pullsIn(piece.text).map((part, index) => {
+              const found = part.pull === null ? undefined : message.pulls.find((each) => each.ref === part.text);
+              return found === undefined ? (
+                <Fragment key={index}>
+                  {spans(part.text).map((span, nth) => (
+                    <span key={nth} className={span.tag ? "font-semibold text-tag" : undefined}>
+                      {span.text}
+                    </span>
+                  ))}
+                </Fragment>
+              ) : (
+                <PullChip key={index} pull={found.pull} />
+              );
+            })}
           </Fragment>
         ) : (
           <NoteChip key={at} id={piece.note} notes={message.notes} act={act} />

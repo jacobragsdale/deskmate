@@ -20,6 +20,7 @@ import type { Runner, Transport } from "../src/desk/client.ts";
 import type { RunHandlers } from "../src/desk/agents/runner.ts";
 import { readContent } from "../src/core/kinds.ts";
 import { noteIn, noteLink, noteOf, notesIn } from "../src/core/links.ts";
+import { azureWeb, onAzure, pullsIn, votes } from "../src/core/pulls.ts";
 import { roomName, suggestions } from "../src/core/rooms.ts";
 import type { Room } from "../src/core/rooms.ts";
 import { loadKey, publicHex, signEvent } from "../src/core/sign.ts";
@@ -435,6 +436,69 @@ await test("a link to a note names a 64-hex id and nothing else, and is found in
   ]);
   assert.deepEqual(notesIn(link), [{ text: link, note: id }]);
   assert.deepEqual(notesIn(""), []);
+});
+
+await test("a pull request is referred to as !123, or by its address pasted whole, https on dev.azure.com exactly, and found in text wherever it stands as one", () => {
+  const billing = onAzure("dev.azure.com/acme/platform/billing");
+  assert.deepEqual(billing, { key: "dev.azure.com/acme/platform/billing", name: "billing", url: "https://dev.azure.com/acme/platform/_git/billing" });
+  for (const key of ["github.com/acme/billing", "dev.azure.com/acme/platform", "dev.azure.com/acme/platform/billing/more", "dev.azure.com.example.com/acme/platform/billing", ""]) {
+    assert.equal(onAzure(key), null, key);
+  }
+  const pasted = "https://dev.azure.com/acme/Platform/_git/Billing/pullrequest/42";
+  assert.deepEqual(pullsIn(`see !12, (!3) and ${pasted}.`), [
+    { text: "see ", pull: null },
+    { text: "!12", pull: { repo: null, id: 12 } },
+    { text: ", (", pull: null },
+    { text: "!3", pull: { repo: null, id: 3 } },
+    { text: ") and ", pull: null },
+    { text: pasted, pull: { repo: billing, id: 42 } },
+    { text: ".", pull: null }
+  ]);
+  // What only looks like one: after a word or another "!", before a letter, zero, too long, and an address that is not https, not dev.azure.com exactly, or not a pull request's.
+  for (const other of [
+    "wow!12",
+    "!!12",
+    "!12a",
+    "!0",
+    "!01",
+    "!1234567890",
+    "http://dev.azure.com/acme/Platform/_git/billing/pullrequest/42",
+    "https://dev.azure.com.example.com/acme/Platform/_git/billing/pullrequest/42",
+    "https://example.com/dev.azure.com/acme/Platform/_git/billing/pullrequest/42x",
+    "https://DEV.AZURE.COM/acme/Platform/_git/billing/pullrequest/42",
+    "https://dev.azure.com/acme/Platform/_git/billing/pullrequest/42/files",
+    "https://dev.azure.com/acme/Platform/_git/billing/pullrequest/x",
+    "https://dev.azure.com/acme/Platform/_git/Bill ing/pullrequest/42",
+    "https://dev.azure.com/acme/Platform/_git/-billing/pullrequest/42"
+  ]) {
+    assert.ok(
+      pullsIn(other).every((piece) => piece.pull === null),
+      other
+    );
+  }
+  assert.deepEqual(pullsIn(""), []);
+});
+
+await test("a pull request's votes are summed up in words, and only an https address on dev.azure.com, with nobody's name in it, is one the window opens", () => {
+  assert.equal(votes([{ vote: 10 }, { vote: 0 }, { vote: 10 }]), "2 approved, 1 waiting");
+  assert.equal(votes([{ vote: -10 }, { vote: 5 }, { vote: -5 }, { vote: 7 }]), "1 approved with suggestions, 1 waiting for the author, 1 rejected, 1 voted 7");
+  assert.equal(votes([]), "");
+  assert.equal(azureWeb("https://dev.azure.com/acme/Platform/_git/billing/pullrequest/42"), "https://dev.azure.com/acme/Platform/_git/billing/pullrequest/42");
+  assert.equal(azureWeb("https://dev.azure.com:443/acme/Platform/_build/results?buildId=391"), "https://dev.azure.com/acme/Platform/_build/results?buildId=391");
+  for (const other of [
+    "http://dev.azure.com/acme",
+    "https://dev.azure.com.example.com/acme",
+    "https://dev.azure.com@example.com/acme",
+    "https://user@dev.azure.com/acme",
+    "https://dev.azure.com:8443/acme",
+    "https://example.com/https://dev.azure.com/acme",
+    "javascript:alert(1)//dev.azure.com",
+    "/acme/Platform",
+    "!42",
+    ""
+  ]) {
+    assert.equal(azureWeb(other), null, other);
+  }
 });
 
 await test("the app takes a note from the arguments it is started or handed with only when one is exactly a note link, whatever else is among them", () => {

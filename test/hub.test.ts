@@ -337,6 +337,7 @@ await test("two people, their agents and a channel, through the real hub", { tim
       deleted: false,
       reactions: [],
       notes: [],
+      pulls: [],
       quote: "bob: @jacob/uploader does your retry change handle 429s?",
       header: true,
       requests: [],

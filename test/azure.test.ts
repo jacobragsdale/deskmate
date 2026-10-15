@@ -5,9 +5,7 @@
  */
 
 import assert from "node:assert/strict";
-import { once } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer } from "node:http";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -15,8 +13,10 @@ import type { TestContext } from "node:test";
 
 import { parseRemote } from "../src/core/remotes.ts";
 import type { RepoRef } from "../src/core/wire.ts";
-import { Azure, findToken, gitPassword } from "../src/desk/azure.ts";
+import { Azure, AZURE, azureBase, findToken, gitPassword } from "../src/desk/azure.ts";
 import { defaultHome } from "../src/desk/client.ts";
+import { basic, fakeAzure, json, refusal, SIGN_IN } from "./fakeAzure.ts";
+import type { Call, Reply } from "./fakeAzure.ts";
 
 const REPO_URL = "https://dev.azure.com/acme/Platform/_git/uploader";
 const OAUTH = "an-oauth-token"; // What Git Credential Manager keeps for Azure DevOps.
@@ -26,45 +26,13 @@ const REPO_API = "/acme/platform/_apis/git/repositories/uploader";
 const BUILDS_API = "/acme/platform/_apis/build/builds";
 const REPO_ID = "5febef5a-833d-4e14-b9c0-14cb638f91e6"; // As repository.json gives it.
 
-/** A request the fake was sent. */
-interface Call {
-  readonly method: string;
-  readonly path: string;
-  readonly query: URLSearchParams;
-  readonly authorization: string;
-  readonly body: string;
-}
-
-interface Fake {
-  readonly base: string;
-  readonly calls: Call[];
-}
-
-function basic(secret: string): string {
-  return `Basic ${Buffer.from(`:${secret}`).toString("base64")}`;
-}
-
-function fixture(name: string): string {
-  return readFileSync(join(import.meta.dirname, "fixtures", "azure", name), "utf8");
-}
-
-/** Azure DevOps refusing a request: its own shape for one, with its message. */
-function refusal(status: number, message: string): { readonly status: number; readonly type: string; readonly body: string } {
-  return {
-    status,
-    type: "application/json; charset=utf-8",
-    body: JSON.stringify({ $id: "1", innerException: null, message, typeName: "Microsoft.TeamFoundation.Git.Server.GitException", typeKey: "GitException", errorCode: 0, eventId: 3000 })
-  };
-}
-
 /** What Azure DevOps would answer, for the routes azure.ts calls; null for the repo named "slow", which is never answered. */
-function answer(call: Call): { readonly status: number; readonly type: string; readonly body: string } | null {
-  const json = (name: string, status = 200): { readonly status: number; readonly type: string; readonly body: string } => ({ status, type: "application/json; charset=utf-8", body: fixture(name) });
+function answer(call: Call): Reply | null {
   if (call.query.get("api-version") !== "7.1") {
     return refusal(400, "VS800006: No api-version was supplied for the GET request.");
   }
   if (!LET_IN.has(call.authorization)) {
-    return { status: 203, type: "text/html; charset=utf-8", body: fixture("sign-in.html") };
+    return SIGN_IN;
   }
   switch (`${call.method} ${call.path}`) {
     case `GET ${REPO_API}`:
@@ -82,35 +50,6 @@ function answer(call: Call): { readonly status: number; readonly type: string; r
     default:
       return refusal(404, "TF401019: The Git repository with name or identifier missing does not exist or you do not have permissions for the operation you are attempting.");
   }
-}
-
-/** The fake, listening on a port of its own, which keeps every request it is sent. */
-async function fakeAzure(t: TestContext): Promise<Fake> {
-  const calls: Call[] = [];
-  const server = createServer((request, response) => {
-    let body = "";
-    request.setEncoding("utf8").on("data", (chunk: string) => {
-      body += chunk;
-    });
-    request.on("end", () => {
-      const url = new URL(request.url ?? "/", "http://azure.test");
-      const call = { method: request.method ?? "", path: url.pathname, query: url.searchParams, authorization: request.headers.authorization ?? "", body };
-      calls.push(call);
-      const reply = answer(call);
-      if (reply !== null) {
-        response.writeHead(reply.status, { "Content-Type": reply.type }).end(reply.body);
-      }
-    });
-  });
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  t.after(() => {
-    server.closeAllConnections(); // The request never answered, among them.
-    server.close();
-  });
-  const address = server.address();
-  assert.ok(address !== null && typeof address === "object");
-  return { base: `http://127.0.0.1:${String(address.port)}`, calls };
 }
 
 function repo(name: string): RepoRef {
@@ -199,7 +138,7 @@ await test("a token is looked for in the environment, then in azure.json in the 
 await test("each call is read from the answer Microsoft documents for it, and asks with api-version 7.1 for what the plan names", async (t) => {
   isolate(t);
   process.env["AZURE_DEVOPS_EXT_PAT"] = PAT;
-  const fake = await fakeAzure(t);
+  const fake = await fakeAzure(t, answer);
   const azure = new Azure(defaultHome(), fake.base);
   const uploader = repo("uploader");
 
@@ -272,7 +211,7 @@ await test("each call is read from the answer Microsoft documents for it, and as
 
 await test("a sign-in page in place of an answer is not being signed in, and a token from git gets in as Bearer, which is then kept", async (t) => {
   const dir = isolate(t);
-  const fake = await fakeAzure(t);
+  const fake = await fakeAzure(t, answer);
   const uploader = repo("uploader");
   const azure = new Azure(defaultHome(), fake.base);
 
@@ -299,7 +238,7 @@ await test("a sign-in page in place of an answer is not being signed in, and a t
 await test("a 404 says which repository or pull request was not found, and any other refusal carries Azure's own words", async (t) => {
   isolate(t);
   process.env["AZURE_DEVOPS_EXT_PAT"] = PAT;
-  const fake = await fakeAzure(t);
+  const fake = await fakeAzure(t, answer);
   const azure = new Azure(defaultHome(), fake.base);
   const uploader = repo("uploader");
 
@@ -317,8 +256,26 @@ await test("a 404 says which repository or pull request was not found, and any o
 await test("an answer that does not come in time is given up on", async (t) => {
   isolate(t);
   process.env["AZURE_DEVOPS_EXT_PAT"] = PAT;
-  const fake = await fakeAzure(t);
+  const fake = await fakeAzure(t, answer);
   const began = Date.now();
   assert.deepEqual(await new Azure(defaultHome(), fake.base, 0.3).repository(repo("slow")), { ok: false, problem: "Azure DevOps did not answer within 0.3 seconds" });
   assert.ok(Date.now() - began < 5000, `took ${String(Date.now() - began)} ms`);
+});
+
+await test("the smoke test's address for Azure DevOps is taken only when it is a port on this machine's loopback address, so a stray one sends a token nowhere", () => {
+  const at = (value: string): string => azureBase({ PLAYER_TWO_TEST_AZURE: value });
+  assert.equal(azureBase({}), AZURE);
+  assert.equal(at("http://127.0.0.1:43123"), "http://127.0.0.1:43123");
+  for (const elsewhere of [
+    "https://example.com",
+    "http://127.0.0.1.example.com:80",
+    "http://localhost:43123",
+    "http://127.0.0.1:43123/",
+    "http://user@127.0.0.1:1",
+    "http://10.0.0.1:80",
+    " http://127.0.0.1:1",
+    ""
+  ]) {
+    assert.equal(at(elsewhere), AZURE, elsewhere);
+  }
 });
