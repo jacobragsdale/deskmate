@@ -105,7 +105,10 @@ class Desk {
     }
   }
 
-  /** Do what the window asked, and say that it was done. Only three answer with more: the setup check with its list, the permission test with its row, and a search with what it found. */
+  /**
+   * Do what the window asked, and say that it was done. Only four answer with more: the setup check with its list, the permission test with its row, a search with what it found,
+   * and the form of a pull request.
+   */
   private async handle(command: Command): Promise<Extract<Outcome, { readonly ok: true }>> {
     if (command.do === "doctor") {
       const checks = await runChecks(this.home, defaultDev(), this.stopping.signal);
@@ -128,6 +131,9 @@ class Desk {
     }
     if (command.do === "search") {
       return { ok: true, found: await this.session.search(command.q) };
+    }
+    if (command.do === "pullForm") {
+      return { ok: true, form: await this.session.pullForm(command.from) };
     }
     if (command.do === "testPermissions") {
       return { ok: true, data: [await this.session.testPermissions(command.agent)] };

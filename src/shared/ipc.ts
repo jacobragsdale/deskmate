@@ -300,6 +300,8 @@ export const viewSchema = z.discriminatedUnion("kind", [
 const chat = z.string().min(1).max(40);
 const repo = z.string().min(1).max(64);
 const id = z.string().regex(/^[0-9a-f]{64}$/); // An event's id: for a job, its request's.
+// Where a pull request would come from: a branch room, by its chat, from the branch it is pinned to, which must be the one the user's checkout of its repo is on.
+const pullFrom = z.strictObject({ room: chat });
 
 /** Everything the window may ask the desk to do. Parsed on both sides of the line before anything acts on it. */
 export const commandSchema = z.discriminatedUnion("do", [
@@ -350,6 +352,10 @@ export const commandSchema = z.discriminatedUnion("do", [
   // on the branch the checkout is on, or with `newBranch` on a branch of its own, made from the commit the patch was made on, leaving the checkout as it is.
   z.strictObject({ do: z.literal("applyPatch"), id, newBranch: z.boolean().optional() }),
   z.strictObject({ do: z.literal("review"), id, verdict: z.enum(["approve", "changes"]), text: z.string().max(4000) }), // Approve the patch with this id, or ask for changes, with a comment, "" for none.
+  z.strictObject({ do: z.literal("pullForm"), from: pullFrom }), // What a pull request from there would be, for the dialog that opens one. The reply's `form` says.
+  // Open a pull request from there into the repo's default branch, pushing the branch first, once the user has said yes in a dialog of the system's own, when origin lacks it or
+  // lacks commits of it; then say so, with its address, where it was asked from.
+  z.strictObject({ do: z.literal("openPull"), from: pullFrom, title: z.string().min(1).max(400), description: z.string().max(4000), draft: z.boolean() }),
   z.strictObject({ do: z.literal("older") }), // Load the page before the oldest event shown in the open chat.
   z.strictObject({ do: z.literal("search"), q: z.string().min(1).max(500) }), // Search every chat the user can see. The reply's `found` is what the hub found.
   z.strictObject({ do: z.literal("openNote"), id }), // Open the chat a message or an answer is in, with it loaded, and set the view's `focus` on it.
@@ -373,9 +379,13 @@ const hitSchema = z
 /** One item of the setup check: what was looked at, how it stands, what was found, and the command or instruction that fixes it ("" when there is nothing to do). Nothing runs a fix: the user copies it. */
 export const checkSchema = z.strictObject({ id: z.string(), title: z.string(), status: z.enum(["ok", "warn", "fail", "skip"]), detail: z.string(), fix: z.string() }).readonly();
 
+/** What a pull request would be: from which branch of which repo into which, with the title and description its commits suggest. */
+const formSchema = z.strictObject({ repo: z.string(), branch: z.string(), target: z.string(), title: z.string(), description: z.string() }).readonly();
+
 /** How a command ended. A problem is worded for the user. */
 export const outcomeSchema = z.discriminatedUnion("ok", [
-  z.strictObject({ ok: z.literal(true), data: z.array(checkSchema).readonly().optional(), found: z.array(hitSchema).readonly().optional() }), // Data only for the setup check, its list; found only for a search.
+  // Data only for the setup check, its list; found only for a search; form only for pullForm.
+  z.strictObject({ ok: z.literal(true), data: z.array(checkSchema).readonly().optional(), found: z.array(hitSchema).readonly().optional(), form: formSchema.optional() }),
   z.strictObject({ ok: z.literal(false), problem: z.string() })
 ]);
 
@@ -444,6 +454,7 @@ export type GrantView = z.infer<typeof grantSchema>;
 export type ActivityItem = z.infer<typeof activityItemSchema>;
 export type AskView = z.infer<typeof askSchema>;
 export type Hit = z.infer<typeof hitSchema>;
+export type Form = z.infer<typeof formSchema>;
 export type Command = z.infer<typeof commandSchema>;
 export type Outcome = z.infer<typeof outcomeSchema>;
 export type Notice = z.infer<typeof noticeSchema>;

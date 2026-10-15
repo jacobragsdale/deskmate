@@ -201,7 +201,7 @@ export function Thread({
         )}
       </header>
       {pinned !== null && <OnBranch pinned={pinned} />}
-      {pinned !== null && <RoomLine azure={pinned.azure} />}
+      {pinned !== null && <RoomLine azure={pinned.azure} chat={current.chat} mine={pinned.mine} act={act} />}
       {pinned !== null && !pinned.mine && view.loaded && (
         <p className="border-b px-4 py-1.5 text-warn">
           ◆ This channel is about {pinned.name}, which you have no checkout of ·{" "}

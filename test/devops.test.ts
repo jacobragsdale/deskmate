@@ -1,9 +1,13 @@
 /**
  * Azure DevOps in the chat, through sessions against a real hub and the fake Azure DevOps of test/fakeAzure.ts, which the desk is pointed at by the smoke test's address:
- * pull requests a message refers to. The home folder and git's configuration are the test's own.
+ * pull requests a message refers to, a branch room's pull request and build, and opening a pull request, with real git repositories, origin a folder git's configuration names in
+ * place of dev.azure.com. The home folder and git's configuration are the test's own.
  */
 
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { TestContext } from "node:test";
@@ -12,13 +16,29 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { Client } from "../src/desk/client.ts";
 import { Session } from "../src/desk/session.ts";
 import type { Options } from "../src/desk/session.ts";
-import type { MessageView, Notice } from "../src/shared/ipc.ts";
+import { Database } from "../src/hub/db.ts";
+import type { MessageView, Notice, Question } from "../src/shared/ipc.ts";
 import { fakeAzure, platform } from "./fakeAzure.ts";
 import type { Call, Project } from "./fakeAzure.ts";
-import { ownHome, startHub, TEAM_REPOS } from "./startHub.ts";
+import { checkout, ownHome, startHub, TEAM_REPOS } from "./startHub.ts";
 
 ownHome();
 const PAT = "a-personal-access-token";
+
+// Origins on dev.azure.com are bare repositories in this folder, as git's configuration says for every git here, the desk's among them.
+const REMOTES = mkdtempSync(join(tmpdir(), "player-two-remotes-"));
+appendFileSync(process.env["GIT_CONFIG_GLOBAL"] ?? "", `[url "file://${REMOTES}/"]\n\tinsteadOf = https://dev.azure.com/acme/\n`);
+
+// Every git the desk runs is this one, which notes its arguments in CALLS before running the real git: what is never called is seen not to be.
+const SHIM = mkdtempSync(join(tmpdir(), "player-two-git-"));
+const CALLS = join(SHIM, "calls");
+writeFileSync(join(SHIM, "git"), `#!/bin/sh\necho "$*" >> '${CALLS}'\nexec ${execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim()} "$@"\n`, { mode: 0o755 });
+writeFileSync(CALLS, "");
+process.env["PATH"] = `${SHIM}:${process.env["PATH"] ?? ""}`;
+
+function git(path: string, ...args: string[]): string {
+  return execFileSync("git", ["-C", path, ...args], { encoding: "utf8" }).trim();
+}
 const UPLOADER = { name: "uploader", key: "dev.azure.com/acme/platform/uploader", url: `${TEAM_REPOS}Platform/_git/uploader` };
 
 /** Try `find` every 50 ms, for ten seconds, until it finds something. */
@@ -45,25 +65,33 @@ async function azure(t: TestContext): Promise<{ readonly calls: Call[]; readonly
 interface Desk {
   readonly session: Session;
   readonly notices: Notice[];
+  readonly questions: Question[]; // What the user was asked in a dialog of the system's own.
+  readonly reply: { yes: boolean }; // What they answer.
 }
 
 /** A session of `client`'s, with its checkouts in `dev`, started and stopped when the test ends, once it has loaded what was there and opened `chat`. */
 async function deskOf(t: TestContext, client: Client, dev: string, chat: string, options: Options = {}): Promise<Desk> {
   const notices: Notice[] = [];
+  const questions: Question[] = [];
+  const reply = { yes: false };
   const hooks = {
     changed: () => undefined,
     notice: (notice: Notice) => {
       notices.push(notice);
     },
     arrived: () => undefined,
-    confirmClone: () => Promise.resolve(false)
+    confirmClone: () => Promise.resolve(false),
+    confirm: (question: Question) => {
+      questions.push(question);
+      return Promise.resolve(reply.yes);
+    }
   };
   const session = new Session(client, dev, hooks, { presence: 1, ...options });
   session.start();
   t.after(() => session.stop());
   await until("the chats loaded", () => session.view().loaded && session.view().rows.some((row) => row.chat === chat));
   await session.handle({ do: "open", chat });
-  return { session, notices };
+  return { session, notices, questions, reply };
 }
 
 /** What a session shows of a message, once it is there. */
@@ -195,4 +223,117 @@ await test("a branch room on Azure DevOps shows its branch's pull request, an ac
   assert.equal(odd?.ok === true ? odd.pull : undefined, null);
   const asked = calls.findLast((call) => call.path.endsWith("/pullrequests"));
   assert.deepEqual([asked?.query.get("searchCriteria.sourceRefName"), asked?.query.get("$top")], ["refs/heads/x&$top=500#y", "5"]);
+});
+
+/**
+ * Jacob's checkout of uploader in `dev`, on feature/retry with two commits of his on main, and its origin, a bare repository that has main as master, which Azure DevOps names its
+ * default. Returns where each is.
+ */
+function uploader(dev: string): { readonly mine: string; readonly origin: string } {
+  const mine = checkout(dev, "uploader");
+  const origin = join(REMOTES, "Platform", "_git", "uploader");
+  execFileSync("git", ["init", "-q", "--bare", origin]);
+  git(mine, "push", "-q", origin, "main:master");
+  git(mine, "fetch", "-q", "origin");
+  git(mine, "checkout", "-q", "-b", "feature/retry");
+  git(mine, "commit", "-q", "--allow-empty", "-m", "Retry once more");
+  git(mine, "commit", "-q", "--allow-empty", "-m", "Back off longer");
+  return { mine, origin };
+}
+
+await test("a pull request from a branch room's branch is filled from its commits, into the default branch Azure DevOps names, pushed first only once the user says yes, and said in the room with its link", async (t) => {
+  const { project } = await azure(t);
+  const hub = await startHub(t, () => Date.now() / 1000);
+  const [bob, jacob] = [await hub.join("bob"), await hub.join("jacob")];
+  for (const person of [bob, jacob]) {
+    await person.publish("#room", "channel.join", {});
+  }
+  await bob.publish("#room", "channel.pin", { repo: UPLOADER, branch: "feature/retry" });
+  const { mine, origin } = uploader(join(hub.dir, "dev-jacob"));
+  const { session, questions, reply } = await deskOf(t, jacob, join(hub.dir, "dev-jacob"), "#room", { rooms: 0.2 });
+
+  const from = { room: "#room" };
+  assert.deepEqual(await session.pullForm(from), { repo: "uploader", branch: "feature/retry", target: "master", title: "Retry once more", description: "- Retry once more\n- Back off longer" });
+
+  // Origin has no feature/retry, so the user is asked first: no, and nothing is pushed or opened.
+  const opened = { do: "openPull", from, title: "Retry once more", description: "Two commits.", draft: true } as const;
+  await session.handle(opened);
+  assert.deepEqual(questions, [
+    {
+      message: "Push feature/retry to origin?",
+      detail: [
+        "Origin has no branch feature/retry, and a pull request is opened from what origin has.",
+        "",
+        `Repo: uploader, in ${mine}`,
+        "Branch: feature/retry",
+        `Remote: origin, file://${origin}`,
+        "",
+        "This runs git push -u origin feature/retry, with your own git credentials."
+      ].join("\n"),
+      confirm: "Push"
+    }
+  ]);
+  assert.deepEqual([git(origin, "branch", "--list", "feature/retry"), project.made], ["", []]);
+
+  // Yes: pushed, tracked, opened as asked, and said in the room, where its pull request is shown.
+  reply.yes = true;
+  await session.handle(opened);
+  assert.equal(git(origin, "rev-parse", "feature/retry"), git(mine, "rev-parse", "HEAD"));
+  assert.equal(git(mine, "rev-parse", "--abbrev-ref", "feature/retry@{upstream}"), "origin/feature/retry");
+  assert.deepEqual(project.made, [{ sourceRefName: "refs/heads/feature/retry", targetRefName: "refs/heads/master", title: "Retry once more", description: "Two commits.", isDraft: true }]);
+  const said = (await jacob.events({ chat: "#room" })).find(({ event }) => event.kind === "message" && event.author === "jacob");
+  assert.deepEqual(JSON.parse(said?.event.content ?? "{}"), { text: "Opened pull request 101: https://dev.azure.com/acme/Platform/_git/uploader/pullrequest/101", via: "window" });
+  await until("its pull request in the room", () => {
+    const azure = session.view().current?.pinned?.azure;
+    return azure?.ok === true && azure.pull?.id === 101;
+  });
+
+  // Pushed already, it is not asked again; with a commit origin lacks, it is.
+  await session.handle(opened);
+  assert.equal(questions.length, 2);
+  git(mine, "commit", "-q", "--allow-empty", "-m", "And once more");
+  reply.yes = false;
+  await session.handle(opened);
+  assert.equal(questions.length, 3);
+  assert.match(questions[2]?.detail ?? "", /^Origin's branch lacks commits of your feature\/retry, /);
+  assert.equal(project.made.length, 2);
+});
+
+await test("a pull request is opened only from the branch the user's checkout is on, and never from a pinned branch git would read as more than a branch, refused in words before git runs", async (t) => {
+  await azure(t);
+  const hub = await startHub(t, () => Date.now() / 1000);
+  const [bob, jacob] = [await hub.join("bob"), await hub.join("jacob")];
+  const rooms = { "#colon": ":main", "#dash": "-x", "#plus": "+feature/retry", "#other": "other" };
+  for (const room of Object.keys(rooms)) {
+    for (const person of [bob, jacob]) {
+      await person.publish(room, "channel.join", {});
+    }
+  }
+  // Stored as a hub that checked nothing about a branch would store it, as a teammate's text may say anything; the desk reads such a branch as none, a room about the whole repo.
+  const db = new Database(join(hub.dir, "hub.db"));
+  for (const [room, branch] of Object.entries(rooms)) {
+    db.setPin(room, UPLOADER, branch);
+  }
+  db.close();
+  uploader(join(hub.dir, "dev-jacob"));
+  const { session, questions } = await deskOf(t, jacob, join(hub.dir, "dev-jacob"), "#other");
+  await until("the pins read", () => session.view().current?.pinned?.branch === "other");
+  writeFileSync(CALLS, "");
+  for (const [room, branch] of Object.entries(rooms)) {
+    const why =
+      branch === "other"
+        ? "your uploader checkout is on feature/retry, not other: switch to it to open its pull request"
+        : branch.startsWith("+") // A name git takes for a branch, which a push would read as forcing it.
+          ? `${room} is pinned to ${branch}, which git would read as more than a branch: no pull request is opened from it`
+          : `${room} is not a room about a branch`;
+    await assert.rejects(session.pullForm({ room }), { message: why });
+    await assert.rejects(session.handle({ do: "openPull", from: { room }, title: "x", description: "", draft: false }), { message: why });
+  }
+  assert.deepEqual(
+    readFileSync(CALLS, "utf8")
+      .split("\n")
+      .filter((line) => / (log|push|ls-remote|remote|merge-base) /.test(` ${line} `)),
+    []
+  );
+  assert.deepEqual(questions, []);
 });

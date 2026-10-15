@@ -10,6 +10,8 @@ import { byCodeUnit } from "../core/text.ts";
 
 const CLONE_TIMEOUT = 600; // Seconds a clone may take.
 const STATUS_TIMEOUT = 20;
+const REMOTE_TIMEOUT = 60; // Seconds git may take to ask a remote which branches it has.
+const PUSH_TIMEOUT = 600; // Seconds a push may take.
 
 export interface Checkout {
   readonly remote: Remote;
@@ -65,7 +67,8 @@ async function refIn(path: string, ref: string): Promise<string | undefined> {
   return commit.ok ? commit.stdout.trim() : undefined;
 }
 
-async function branchOf(path: string): Promise<string> {
+/** The branch a checkout is on as it is now: "detached at a1b2c3d" for a detached head, and "unknown" when there is none to read. */
+export async function branchOf(path: string): Promise<string> {
   const head = await refIn(path, "HEAD");
   if (head === undefined) {
     return "unknown";
@@ -172,5 +175,77 @@ export async function clone(url: string, destination: string): Promise<void> {
   if (!done.ok) {
     const lastWords = done.stderr.trim().split("\n").at(-1) ?? "";
     throw new Error(`${lastWords === "" ? "git clone failed" : lastWords}. Try it yourself: git clone ${url} ${destination}`);
+  }
+}
+
+/**
+ * Whether git may be given `branch` to push: a name git would read as an option, or that a refspec would read as more than a branch, "+x" as forcing x and "a:b" as pushing a to b,
+ * ":main" as deleting main, never is. A branch the desk is told of is a teammate's text.
+ */
+export function pushable(branch: string): boolean {
+  return !/^[-+]/.test(branch) && !branch.includes(":");
+}
+
+/**
+ * The subjects of the commits `rev` has that origin's `target` lacks, as git last fetched it, oldest first: what a pull request from it into `target` holds. Only `rev`'s own, when
+ * git has no copy of origin's `target` to tell them by.
+ */
+export async function subjects(path: string, rev: string, target: string): Promise<string[]> {
+  const lines = (result: GitResult): string[] => result.stdout.split("\n").filter((line) => line !== "");
+  const since = await git(["-C", path, "log", "--no-show-signature", "--reverse", "--format=%s", `refs/remotes/origin/${target}..${rev}`, "--"], STATUS_TIMEOUT);
+  if (since.ok) {
+    return lines(since);
+  }
+  const last = await git(["-C", path, "log", "--no-show-signature", "-1", "--format=%s", rev, "--"], STATUS_TIMEOUT);
+  if (!last.ok) {
+    throw new Error(`git cannot read ${rev} in ${path}: ${lastWords(last)}`);
+  }
+  return lines(last);
+}
+
+/**
+ * How origin's `branch` stands beside `rev` in the checkout, as git ls-remote says now: "absent" when origin has no such branch, "ahead" when `rev` holds commits origin's branch
+ * lacks, and null when origin has all of them, ahead of it or not. The branch is never put on git's command line: every branch origin has is listed, and it is looked for among them.
+ */
+export async function aheadOfOrigin(path: string, rev: string, branch: string): Promise<"absent" | "ahead" | null> {
+  const ours = await git(["-C", path, "rev-parse", "--verify", "--quiet", `${rev}^{commit}`], STATUS_TIMEOUT);
+  if (!ours.ok) {
+    throw new Error(`git cannot say which commit ${rev} is in ${path}`);
+  }
+  const heads = await git(["-C", path, "ls-remote", "--heads", "origin"], REMOTE_TIMEOUT);
+  if (!heads.ok) {
+    throw new Error(`git could not ask origin which branches it has: ${heads.timedOut ? `no answer within ${String(REMOTE_TIMEOUT)} seconds` : (heads.stderr.trim().split("\n").at(-1) ?? "")}`);
+  }
+  const theirs = heads.stdout
+    .split("\n")
+    .map((line) => line.split("\t"))
+    .find(([, ref]) => ref === `refs/heads/${branch}`)?.[0];
+  if (theirs === undefined) {
+    return "absent";
+  }
+  if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(theirs) || theirs === ours.stdout.trim()) {
+    return null;
+  }
+  // Ahead when origin's commit is one of ours: one git does not have, or that has commits ours lacks, is not, and pushing would be refused.
+  return (await git(["-C", path, "merge-base", "--is-ancestor", theirs, ours.stdout.trim()], STATUS_TIMEOUT)).ok ? "ahead" : null;
+}
+
+/** Where git pushes the checkout's origin to, as its configuration says, rewrites and all. */
+export async function pushUrl(path: string): Promise<string> {
+  const url = await git(["-C", path, "remote", "get-url", "--push", "origin"], STATUS_TIMEOUT);
+  if (!url.ok) {
+    throw new Error(`git cannot say where ${path}'s origin is: ${lastWords(url)}`);
+  }
+  return url.stdout.trim();
+}
+
+/** Push `branch` to origin and have it track origin's, with the user's own git credentials: `git push -u origin -- <branch>`. A branch that is not `pushable` is refused. */
+export async function push(path: string, branch: string): Promise<void> {
+  if (!pushable(branch)) {
+    throw new Error(`refusing to push ${JSON.stringify(branch)}: git would read it as more than a branch`);
+  }
+  const done = await git(["-C", path, "push", "-u", "origin", "--", branch], PUSH_TIMEOUT);
+  if (!done.ok) {
+    throw new Error(`git push failed: ${done.timedOut ? `no answer within ${String(PUSH_TIMEOUT)} seconds` : (done.stderr.trim().split("\n").at(-1) ?? "")}`);
   }
 }

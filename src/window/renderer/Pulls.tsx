@@ -4,10 +4,21 @@
  */
 
 import { cn } from "cn";
-import type { JSX } from "react";
+import { useEffect, useId, useState } from "react";
+import type { JSX, SyntheticEvent } from "react";
+
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 
 import { azureWeb, buildWords, votes } from "../../core/pulls.ts";
-import type { CurrentView, PullRequest } from "../../shared/ipc.ts";
+import { outcomeSchema } from "../../shared/ipc.ts";
+import type { Command, CurrentView, Form, PullRequest } from "../../shared/ipc.ts";
+import { FIELD } from "./Agents.tsx";
+import type { Act } from "./App.tsx";
+import { Modal } from "./dialogs.tsx";
 
 const CHIP = "mx-0.5 inline-block max-w-80 truncate rounded-md border bg-muted px-1.5 align-bottom text-xs";
 
@@ -42,8 +53,89 @@ export function PullChip({ pull }: { readonly pull: PullRequest }): JSX.Element 
   );
 }
 
-/** In a branch room whose repo is on Azure DevOps, the branch's pull request and its latest build, each a link, as the desk last found them, or why it could not. */
-export function RoomLine({ azure }: { readonly azure: NonNullable<CurrentView["pinned"]>["azure"] }): JSX.Element | null {
+type From = Extract<Command, { do: "pullForm" }>["from"];
+
+/**
+ * The dialog that opens a pull request from `from`: the desk fills in its title and description from the branch's commits and names the branch it goes into, and says here why it
+ * cannot when it cannot. Open has the desk push the branch first, once the user has said yes in a dialog of the system's own, when origin lacks it; it closes once the desk is done.
+ */
+function OpenPull({ from, act, onDone }: { readonly from: From; readonly act: Act; readonly onDone: () => void }): JSX.Element {
+  const [form, setForm] = useState<Form | string>("Reading the branch…"); // The form, or what to say in its place.
+  const [draft, setDraft] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const id = useId();
+  // Asked once, as the dialog opens: what it is about does not change while it is open, though each view draws `from` afresh.
+  useEffect(() => {
+    window.playerTwo
+      .command({ do: "pullForm", from })
+      .then((raw) => {
+        const outcome = outcomeSchema.parse(raw);
+        setForm(outcome.ok ? (outcome.form ?? "the desk said nothing of the branch") : outcome.problem);
+      })
+      .catch(console.error);
+  }, []);
+  const open = (event: SyntheticEvent<HTMLFormElement>): void => {
+    event.preventDefault();
+    const field = (name: string): string => {
+      const value = new FormData(event.currentTarget).get(name);
+      return typeof value === "string" ? value : "";
+    };
+    setBusy(true);
+    act({ do: "openPull", from, title: field("title").trim(), description: field("description"), draft }, (ok) => {
+      setBusy(false);
+      if (ok) {
+        onDone();
+      }
+    });
+  };
+  return (
+    <Modal title="Open a pull request" className="sm:max-w-lg" onDismiss={onDone}>
+      {typeof form === "string" ? (
+        <p className="text-muted-foreground" data-pull-form>
+          {form}
+        </p>
+      ) : (
+        <form className="flex flex-col gap-3" onSubmit={open} data-pull-form>
+          <p className="text-muted-foreground">
+            From {form.branch} into {form.target}, in {form.repo}
+          </p>
+          <Label className={FIELD}>
+            Title
+            <Input className="font-normal" name="title" defaultValue={form.title} maxLength={400} required autoFocus />
+          </Label>
+          <Label className={FIELD}>
+            Description
+            <Textarea className="font-normal" name="description" defaultValue={form.description} maxLength={4000} rows={4} />
+          </Label>
+          <p className="flex items-center gap-2">
+            <Switch id={`${id}draft`} checked={draft} onCheckedChange={setDraft} />
+            <label htmlFor={`${id}draft`}>Draft</label>
+          </p>
+          <Button type="submit" className="self-start" disabled={busy}>
+            {busy ? "Opening…" : "Open pull request"}
+          </Button>
+        </form>
+      )}
+    </Modal>
+  );
+}
+
+/**
+ * In a branch room whose repo is on Azure DevOps, the branch's pull request and its latest build, each a link, as the desk last found them, or why it could not; and with no pull
+ * request, for a user with a checkout of the repo, "Create one".
+ */
+export function RoomLine({
+  azure,
+  chat,
+  mine,
+  act
+}: {
+  readonly azure: NonNullable<CurrentView["pinned"]>["azure"];
+  readonly chat: string;
+  readonly mine: boolean;
+  readonly act: Act;
+}): JSX.Element | null {
+  const [opening, setOpening] = useState(false);
   if (azure === null) {
     return null;
   }
@@ -52,7 +144,25 @@ export function RoomLine({ azure }: { readonly azure: NonNullable<CurrentView["p
       {azure.ok ? (
         <>
           {azure.pull === null ? (
-            "No pull request"
+            <>
+              No pull request
+              {mine && (
+                <>
+                  {" · "}
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    className="text-foreground"
+                    type="button"
+                    onClick={() => {
+                      setOpening(true);
+                    }}
+                  >
+                    Create one
+                  </Button>
+                </>
+              )}
+            </>
           ) : (
             <AzureLink web={azure.pull.web} className="underline-offset-2 hover:underline">
               {pullWords(azure.pull)}
@@ -69,6 +179,15 @@ export function RoomLine({ azure }: { readonly azure: NonNullable<CurrentView["p
         </>
       ) : (
         `Azure DevOps: ${azure.problem}`
+      )}
+      {opening && (
+        <OpenPull
+          from={{ room: chat }}
+          act={act}
+          onDone={() => {
+            setOpening(false);
+          }}
+        />
       )}
     </p>
   );

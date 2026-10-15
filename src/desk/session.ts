@@ -18,6 +18,7 @@ import type {
   Check,
   Command,
   CurrentView,
+  Form,
   GrantView,
   Hit,
   LineView,
@@ -41,7 +42,7 @@ import type { Standing } from "../core/grants.ts";
 import { readContent } from "../core/kinds.ts";
 import { notesIn } from "../core/links.ts";
 import { onAzure, pullsIn } from "../core/pulls.ts";
-import { roomName, suggestions } from "../core/rooms.ts";
+import { isBranch, roomName, suggestions } from "../core/rooms.ts";
 import type { Room } from "../core/rooms.ts";
 import type { Content, ContentOf, Summary } from "../core/kinds.ts";
 import { publicHex } from "../core/sign.ts";
@@ -50,6 +51,7 @@ import { agentEnv, agentKey, keyIn } from "./agentKeys.ts";
 import { Azure } from "./azure.ts";
 import { endedItem, startedItem } from "./agents/activity.ts";
 import { AGENT_TIMEOUT, oneshotRunner, runAgent } from "./agents/oneshot.ts";
+import type { NewPullRequest } from "./azure.ts";
 import { PRESETS } from "./agents/presets.ts";
 import type { AgentRunner, FollowUp, Pausable, PermissionAsk, RunHandlers } from "./agents/runner.ts";
 import { AgentCancelledError, AgentTimedOutError, PlayerTwoError, Refused } from "./client.ts";
@@ -181,14 +183,15 @@ interface AgentRun {
   tellAt: number; // When it is to be told, Unix milliseconds.
 }
 
-type ChatCommand = Exclude<Command, { do: "join" | "doctor" | "search" | "testPermissions" | "saveAzureToken" }>;
+type ChatCommand = Exclude<Command, { do: "join" | "doctor" | "search" | "testPermissions" | "saveAzureToken" | "pullForm" }>;
+type PullFrom = Extract<Command, { do: "pullForm" }>["from"];
 type MessageDo = "send" | "reply" | "react" | "edit" | "delete" | "applyPatch" | "review"; // What the user does to a message: a patch's among them.
 type JobDo = "sendDraft" | "discardDraft" | "run" | "stop" | "stopAll" | "permit" | "decline" | "withdraw" | "grant" | "revoke";
 
 const MESSAGE_DOS: ReadonlySet<string> = new Set<MessageDo>(["send", "reply", "react", "edit", "delete", "applyPatch", "review"]);
 const JOB_DOS: ReadonlySet<string> = new Set<JobDo>(["sendDraft", "discardDraft", "run", "stop", "stopAll", "permit", "decline", "withdraw", "grant", "revoke"]);
-type RoomDo = "pin" | "unpin" | "startRoom" | "dismissRoom";
-const ROOM_DOS: ReadonlySet<string> = new Set<RoomDo>(["pin", "unpin", "startRoom", "dismissRoom"]);
+type RoomDo = "pin" | "unpin" | "startRoom" | "dismissRoom" | "openPull";
+const ROOM_DOS: ReadonlySet<string> = new Set<RoomDo>(["pin", "unpin", "startRoom", "dismissRoom", "openPull"]);
 
 function isAboutMessages(command: ChatCommand): command is Extract<ChatCommand, { readonly do: MessageDo }> {
   return MESSAGE_DOS.has(command.do);
@@ -438,7 +441,7 @@ export class Session {
     }
   }
 
-  /** What a channel is about: pinning a repo, or a branch of one, unpinning, and the branch rooms the chat list suggests. */
+  /** What a channel is about: pinning a repo, or a branch of one, unpinning, the branch rooms the chat list suggests, and opening a branch's pull request. */
   private async handleRoom(command: Extract<ChatCommand, { readonly do: RoomDo }>): Promise<void> {
     switch (command.do) {
       case "pin":
@@ -455,6 +458,9 @@ export class Session {
         this.dismissed = [...this.dismissed, { repo: command.repo, branch: command.branch }];
         this.save();
         this.hooks.changed();
+        break;
+      case "openPull":
+        await this.openPull(command.from, { title: command.title, description: command.description, draft: command.draft });
         break;
     }
   }
@@ -1723,6 +1729,102 @@ export class Session {
     }
     await patches.commitBranch(checkout.path, patch.base, branch, patch.diff, patch.title);
     await this.publish(chatOf(message.entry.event, this.me), "patch.applied", { branch }, [id]);
+  }
+
+  // ── pull requests ─────────────────────────────────────────────────────────
+
+  /**
+   * The checkout, branch and chat a pull request from `from` comes from: in a branch room, the branch it is pinned to, which is a teammate's text, so it must be one git can be given
+   * as a branch alone and the one the user's checkout of the room's repo is on, as its HEAD says now. Refused, saying why, before any git runs, when it is not.
+   */
+  private async pullSource(from: PullFrom): Promise<{ readonly checkout: Checkout; readonly branch: string; readonly rev: string; readonly chat: string }> {
+    const info = this.channels.find((channel) => channel.name === from.room);
+    if (info?.repo === null || info === undefined || info.branch === null) {
+      throw new PlayerTwoError(`${from.room} is not a room about a branch`);
+    }
+    const checkout = this.checkoutOf(info.repo);
+    if (checkout === undefined) {
+      throw new PlayerTwoError(`you have no checkout of ${info.repo.name} under ${this.dev} to open a pull request from`);
+    }
+    if (onAzure(checkout.remote.key) === null) {
+      throw new PlayerTwoError(`${checkout.remote.name} is not on Azure DevOps`);
+    }
+    if (!repos.pushable(info.branch)) {
+      throw new PlayerTwoError(`${from.room} is pinned to ${plain(info.branch)}, which git would read as more than a branch: no pull request is opened from it`);
+    }
+    const on = await repos.branchOf(checkout.path);
+    if (on !== info.branch || !isBranch(on)) {
+      throw new PlayerTwoError(`your ${checkout.remote.name} checkout is on ${plain(on)}, not ${plain(info.branch)}: switch to it to open its pull request`);
+    }
+    return { checkout, branch: on, rev: "HEAD", chat: from.room };
+  }
+
+  /** The branch a pull request from `checkout`'s repo goes into: the default Azure DevOps names for it, or where it names none, as in an empty repo, the one its origin names. */
+  private async targetOf(checkout: Checkout): Promise<string> {
+    const found = await this.azure.repository(checkout.remote);
+    if (!found.ok) {
+      throw new PlayerTwoError(found.problem);
+    }
+    const target = found.data.defaultBranch ?? checkout.defaultBranch;
+    if (target === null) {
+      throw new PlayerTwoError(`neither Azure DevOps nor your checkout names a default branch of ${checkout.remote.name} for a pull request to go into`);
+    }
+    return target;
+  }
+
+  /** What a pull request from `from` would be, for the dialog that opens one: into the repo's default branch, titled with its first commit's subject, and described by all of them when there are more. */
+  public async pullForm(from: PullFrom): Promise<Form> {
+    const { checkout, branch, rev } = await this.pullSource(from);
+    const target = await this.targetOf(checkout);
+    const said = await repos.subjects(checkout.path, rev, target);
+    return { repo: checkout.remote.name, branch, target, title: said[0] ?? branch, description: said.length > 1 ? said.map((subject) => `- ${subject}`).join("\n") : "" };
+  }
+
+  /**
+   * Open a pull request from `from` into the repo's default branch: when origin lacks the branch, or lacks commits of it, first ask the user, in a dialog of the system's own that names
+   * the repo, the branch and where origin is, to push it, and push it only on yes; then say so where it was asked from, with its address, and look at the room again.
+   */
+  private async openPull(from: PullFrom, pull: Pick<NewPullRequest, "title" | "description" | "draft">): Promise<void> {
+    const { checkout, branch, rev, chat } = await this.pullSource(from);
+    const target = await this.targetOf(checkout);
+    const ahead = await repos.aheadOfOrigin(checkout.path, rev, branch);
+    if (ahead !== null) {
+      const question = {
+        message: `Push ${plain(branch)} to origin?`,
+        detail: [
+          `${ahead === "absent" ? "Origin has no branch" : "Origin's branch lacks commits of your"} ${plain(branch)}, and a pull request is opened from what origin has.`,
+          "",
+          `Repo: ${checkout.remote.name}, in ${checkout.path}`,
+          `Branch: ${plain(branch)}`,
+          `Remote: origin, ${plain(await repos.pushUrl(checkout.path))}`,
+          "",
+          `This runs git push -u origin ${plain(branch)}, with your own git credentials.`
+        ].join("\n"),
+        confirm: "Push"
+      };
+      if ((await this.hooks.confirm?.(question)) !== true) {
+        return;
+      }
+      await repos.push(checkout.path, branch);
+    }
+    const made = await this.azure.createPullRequest(checkout.remote, { ...pull, source: branch, target });
+    if (!made.ok) {
+      throw new PlayerTwoError(made.problem);
+    }
+    await this.publish(chat, "message", { text: `Opened pull request ${String(made.data.id)}: ${made.data.web}`, via: "window" });
+    this.lookAgain();
+  }
+
+  /** Look at the open branch room again as soon as it may be, as after a pull request was opened from it. */
+  private lookAgain(): void {
+    if (this.watched !== null) {
+      this.watched = { ...this.watched, at: 0 };
+      if (!this.watched.looking) {
+        clearTimeout(this.roomTimer);
+        this.roomTimer = undefined;
+        this.watchRoom();
+      }
+    }
   }
 
   // ── standing grants ───────────────────────────────────────────────────────
