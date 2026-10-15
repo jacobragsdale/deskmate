@@ -318,8 +318,48 @@ async function askingAgents(page: Page, bob: Client, carol: Client, bobsAgent: K
   assert.equal(await page.eval(offers), false);
 }
 
+/** Patches, from erin in her own chat with alice: one whose title, file names and lines are HTML is drawn as text, each file folded until it is opened, with what it adds and removes. */
+async function patches(page: Page, erin: Client): Promise<void> {
+  const billing = { name: "billing", key: "dev.azure.com/acme/platform/billing", url: "https://dev.azure.com/acme/Platform/_git/billing" };
+  const hostile = [
+    "diff --git a/page.html b/page.html",
+    "new file mode 100644",
+    "index 0000000..1111111",
+    "--- /dev/null",
+    "+++ b/page.html",
+    "@@ -0,0 +1,2 @@",
+    "+<script>window.pwned = 8</script>",
+    '+<img src=x onerror="window.pwned = 9">',
+    "diff --git a/<b>x</b>.md b/<b>x</b>.md",
+    "--- a/<b>x</b>.md",
+    "+++ b/<b>x</b>.md",
+    "@@ -1,2 +1,2 @@",
+    " keep",
+    "-old",
+    "+<b>new</b>",
+    ""
+  ].join("\n");
+  await erin.publish("alice", "patch", { repo: billing, base: "a".repeat(40), branch: "main", title: 'Tidy <img src=x onerror="window.pwned = 10"> up', diff: hostile });
+  await page.until("erin in the chat list", `[...document.querySelectorAll("nav button")].some((each) => each.textContent.includes("erin"))`);
+  await page.click("nav button", "erin");
+  const card = `document.querySelector('main section[aria-label="Patch"]')`;
+  await page.until("erin's patch, as a card", `document.querySelector("main h1")?.textContent === "erin" && ${card} !== null`);
+  assert.equal(await page.eval(`${card}.querySelector("p").textContent`), 'Tidy <img src=x onerror="window.pwned = 10"> up');
+  assert.deepEqual(await page.eval(`[...${card}.querySelectorAll("summary")].map((each) => each.textContent)`), ["page.html +2 −0", "<b>x</b>.md +1 −1"]);
+  assert.equal(await page.eval(`${card}.querySelector("pre")`), null); // Folded, each file.
+  await page.eval(`[...${card}.querySelectorAll("summary")].forEach((each) => { each.click(); })`);
+  await page.until("both files open", `${card}.querySelectorAll("pre").length === 2`);
+  assert.deepEqual(await page.eval(`[...${card}.querySelectorAll("pre")].map((each) => each.textContent)`), [
+    '@@ -0,0 +1,2 @@\n+<script>window.pwned = 8</script>\n+<img src=x onerror="window.pwned = 9">\n',
+    "@@ -1,2 +1,2 @@\n keep\n-old\n+<b>new</b>\n"
+  ]);
+  assert.equal(await page.eval(`document.querySelectorAll("main script, main img, main b").length`), 0);
+  assert.equal(await page.eval("window.pwned"), undefined);
+  await page.shot("patch");
+}
+
 await test(
-  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, keeps a card in reach in a closed thread and brings one far above the end into view, refuses and allows for the run from a card, and offers only the modes the agent that answers can keep, full alone beside its reason when that is all, and a full chosen once not again in one click when less is there, and for a grant full alone while it is untested; and on My agents makes grants from its dialog, which warns of full access for anyone however its answers go and asks a second yes when they are posted directly, one grant for each double click, revokes one with a double click and not the next, counts the run a grant lets go, and holds a repo back with a double click, unshared and answering nobody under that grant, and lets it answer again; and says under whose grant a run went ahead, to its owner while it runs and in its answer, and to whoever asked, and that an answer its agent signed was not reviewed, where it is shown and where it is found; and while a grant is live stays open on close, saying why, where it cannot say it went to the tray, and once told hides on close, answering on, until started again; lists a grant apart once its repo is not checked out here, and revokes it there; lets the user's agent, asked by another, ask others from a switch beside what that means, says before its buttons how that request came, draws under the message that started it the tree of jobs under it, folded once all are done, and ends it all with that message's one Withdraw, after which what was asked under it is not offered again, saying why; and quits on close once none is",
+  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, keeps a card in reach in a closed thread and brings one far above the end into view, refuses and allows for the run from a card, and offers only the modes the agent that answers can keep, full alone beside its reason when that is all, and a full chosen once not again in one click when less is there, and for a grant full alone while it is untested; and on My agents makes grants from its dialog, which warns of full access for anyone however its answers go and asks a second yes when they are posted directly, one grant for each double click, revokes one with a double click and not the next, counts the run a grant lets go, and holds a repo back with a double click, unshared and answering nobody under that grant, and lets it answer again; and says under whose grant a run went ahead, to its owner while it runs and in its answer, and to whoever asked, and that an answer its agent signed was not reviewed, where it is shown and where it is found; and while a grant is live stays open on close, saying why, where it cannot say it went to the tray, and once told hides on close, answering on, until started again; lists a grant apart once its repo is not checked out here, and revokes it there; lets the user's agent, asked by another, ask others from a switch beside what that means, says before its buttons how that request came, draws under the message that started it the tree of jobs under it, folded once all are done, and ends it all with that message's one Withdraw, after which what was asked under it is not offered again, saying why; draws a patch as a card beside the draft it goes with and in the chat, each file folded with what it adds and removes, and every word of a hostile one as text; and quits on close once none is",
   { skip: NO_DISPLAY ? "no display: run it under xvfb-run" : false, timeout: 120_000 },
   async (t) => {
     assert.ok(existsSync(join(ROOT, "dist", "main.js")), "dist/ is not built: run `npm run build` first");
@@ -784,6 +824,9 @@ await test(
     await page.until("what it allows, on focus", `document.querySelector('[role="tooltip"]')?.textContent === "Allow every edit without asking until this run ends"`);
     await page.eval(`${forTheRun}.click()`);
     await page.until("its draft, every edit allowed", `document.querySelector('textarea[aria-label="Draft answer"]')?.value.includes("edit allowed; edit allowed; edit allowed") === true`);
+    // Beside it, what the run changed on its clean copy, as a card, to go with it.
+    const beside = `[...document.querySelector('textarea[aria-label="Draft answer"]').closest("section").querySelectorAll('section[aria-label="Patch"] summary')]`;
+    assert.deepEqual(await page.eval(`${beside}.map((each) => each.textContent)`), ["edited.txt +1 −0"]);
     assert.ok(!existsSync(join(home, "dev", "billing", "edited.txt"))); // Written on a clean copy of her checkout, never in it.
     await page.click("main button", "Discard");
     await page.until("the draft gone again", `document.querySelector('textarea[aria-label="Draft answer"]') === null`);
@@ -1121,6 +1164,7 @@ await test(
     await page.until("the search closed", `document.querySelector('[role="dialog"]') === null`);
 
     await askingAgents(page, bob, carol, bobsAgent, commit);
+    await patches(page, await hub.join("erin"));
 
     assert.deepEqual(page.problems, []);
 

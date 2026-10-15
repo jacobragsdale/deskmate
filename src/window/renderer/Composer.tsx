@@ -12,6 +12,7 @@ import { candidates } from "../../core/chat.ts";
 import type { Candidate } from "../../core/chat.ts";
 import type { ChatView, CurrentView, Notice } from "../../shared/ipc.ts";
 import type { Act, Submit } from "./App.tsx";
+import { PatchCard } from "./Patch.tsx";
 
 const TAG_BEING_TYPED = /(?:^|\s)@([\w./-]*)$/;
 
@@ -69,10 +70,11 @@ function Review({ current, submit, tell, act }: Omit<Props, "view">): JSX.Elemen
         }}
       />
       {draft.patch !== null && (
-        <details className="mt-1.5 text-xs">
-          <summary className="cursor-pointer text-warn">The change it made, sent before the answer: {draft.patch.title}</summary>
-          <pre className="max-h-64 overflow-auto">{draft.patch.diff}</pre>
-        </details>
+        <div className="max-h-72 overflow-auto">
+          <PatchCard patch={draft.patch}>
+            <p className="text-xs text-warn">What it changed, on a clean copy: sent before the answer when you send it, as it is.</p>
+          </PatchCard>
+        </div>
       )}
       <div className="mt-1.5 flex gap-1.5">
         <Button type="button" size="sm" disabled={sending || text.trim() === ""} onClick={send}>

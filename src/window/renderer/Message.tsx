@@ -34,6 +34,7 @@ import { runOf } from "../../shared/ipc.ts";
 import type { AskView, ChatView, CurrentView, MessageView, ReplyView, RequestView } from "../../shared/ipc.ts";
 import { AskCard, Spinner } from "./Activity.tsx";
 import type { Act } from "./App.tsx";
+import { PatchCard } from "./Patch.tsx";
 
 const LINE = "my-1 text-muted-foreground"; // Where a tagged agent stands, under the message.
 const MINE = "my-1 text-warn"; // The same, when it waits on the user.
@@ -1041,8 +1042,10 @@ function Said({
             setEditing(false);
           }}
         />
-      ) : (
+      ) : message.patch === null ? (
         <Body message={message} me={me} act={act} />
+      ) : (
+        <PatchCard patch={message.patch} />
       )}
       <Reactions message={message} me={me} react={react} />
       {message.requests.map((request) => (
