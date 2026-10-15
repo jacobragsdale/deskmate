@@ -521,9 +521,19 @@ await test(
       const message = log.message(id);
       return message === null ? [] : log.requests(message, clock).map((request) => [request.state, request.summary]);
     };
+    /** Whether the chat has been told what bob's agent is doing, `summary` when given, at `since` or later. */
+    const told = async (since: number, summary?: string): Promise<boolean> =>
+      (await alice.events({ chat: "#team" })).some((each) => {
+        const said = readContent(each.event);
+        return each.event.ts >= since && said.kind === "job.progress" && (summary === undefined || said.content.summary === summary);
+      });
+    // Told that it waits before the clock moves, so that what the chat is told after that can only be the same again.
+    for (let tries = 0; tries < 200 && !(await told(NOW, "waiting for approval")); tries += 1) {
+      await delay(50);
+    }
     const later = NOW + STALE - 60; // Bob has left the card for fifteen minutes.
     clock = later;
-    for (let tries = 0; tries < 200 && !(await alice.events({ chat: "#team" })).some((each) => each.event.kind === "job.progress" && each.event.ts >= later); tries += 1) {
+    for (let tries = 0; tries < 200 && !(await told(later)); tries += 1) {
       await delay(50);
     }
     clock = NOW + STALE + 60;
