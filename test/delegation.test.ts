@@ -14,6 +14,7 @@ import { readContent } from "../src/core/kinds.ts";
 import { loadKey, publicHex, signEvent } from "../src/core/sign.ts";
 import type { Delivered, PermissionMode } from "../src/core/wire.ts";
 import { agentKey } from "../src/desk/agentKeys.ts";
+import { askUnder } from "../src/desk/notes.ts";
 import type { Client } from "../src/desk/client.ts";
 import { Session } from "../src/desk/session.ts";
 import type { Notice, ReplyView } from "../src/shared/ipc.ts";
@@ -391,5 +392,41 @@ await test(
     assert.deepEqual((await offered(mine)).delegation?.words, "you asked your api agent, which is asking your billing agent");
     await delay(500);
     assert.ok(!(await bob.events({ chat: "#team" })).some(({ event }) => event.refs[0] === mine && event.kind === "job.accepted"));
+  }
+);
+
+await test(
+  "an agent's answer to another reaches the agent that asked only once it is posted in the chat: kept for its owner to review, it waits until they send it, as they edited it",
+  { timeout: 60_000 },
+  async (t) => {
+    const hub = await startHub(t, () => Date.now() / 1000);
+    const carol = await deskOf(t, hub, "carol", ["billing"]);
+    const [bob, jacob] = [await hub.join("bob"), await hub.join("jacob")];
+    for (const who of [bob, jacob]) {
+      await who.publish("#team", "channel.join", {});
+    }
+    const key = agentKey(join(hub.dir, "jacob"), "uploader");
+    await jacob.publish("*", "agent.register", { repo: "uploader", pubkey: publicHex(key) });
+    const { id: root } = (await bob.publish("#team", "message", { text: "@jacob/uploader does removing `retries` break anything?", via: "cli" })).event;
+    await jacob.publish("#team", "job.accepted", { repo: "uploader", branch: "main", commit: COMMIT, dirty: false, delivery: "post", mode: "full", delegate: true, by: "owner" }, [root]);
+
+    let settled = false;
+    const asking = askUnder(jacob.as("jacob/uploader", key), root, "carol/billing", "does it break your caller?", 30).finally(() => {
+      settled = true;
+    });
+    const request = await eventually("jacob's agent's request", async () => (await bob.events({ chat: "#team" })).find(({ event }) => event.kind === "job.request"));
+    const { id } = request.event;
+    await eventually("carol is offered it", () => carol.shown(id)?.requests[0]?.status.kind === "ready");
+    await carol.session.handle({ do: "run", id, repo: "billing", post: false, mode: "read-only", text: "does it break your caller?" });
+    const draft = await eventually("carol's draft", () => carol.session.view().current?.drafts.find((each) => each.id === id));
+    assert.match(draft.text, /^turn 1: /);
+    await delay(500);
+    assert.equal(settled, false); // Nothing of it is in the chat, so jacob's agent has nothing.
+    assert.ok(!(await bob.events({ chat: "#team" })).some(({ event }) => event.kind === "job.result"));
+
+    await carol.session.handle({ do: "sendDraft", chat: "#team", id, repo: "billing", text: "No: nothing passes it." });
+    const asked = await asking;
+    assert.ok(!("refused" in asked));
+    assert.deepEqual([asked.state, asked.answer?.text, asked.answer?.entry.event.author], ["answered", "No: nothing passes it.", "carol"]); // As carol sent it, under her name.
   }
 );
