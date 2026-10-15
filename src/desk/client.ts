@@ -8,7 +8,8 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import { z } from "zod";
 
-import { contentSchema } from "../core/kinds.ts";
+import type { Entry } from "../core/chat.ts";
+import { contentSchema, readContent } from "../core/kinds.ts";
 import type { Content, ContentOf } from "../core/kinds.ts";
 import { authHeader, eventIsAuthentic, loadKey, newKey, privateHex, publicHex, signEvent } from "../core/sign.ts";
 import {
@@ -116,6 +117,9 @@ export class Client {
   private readonly key: KeyObject;
   private readonly transport: Transport;
   private settings: Config;
+  private readonly registrations = new Map<string, Entry>(); // Every agent.register read from the hub, by id, with whether it holds under the key pinned for its author.
+  private registeredTo = 0; // The seq of the newest event to everyone read: every agent.register up to it is in `registrations`.
+  private learning: Promise<void> | null = null; // Reading the registrations newer than that, while it goes on.
 
   constructor(home: string, config: Config, key: KeyObject, transport: Transport, now: () => number) {
     this.home = home;
@@ -265,8 +269,56 @@ export class Client {
     }
   }
 
+  /** The key `agent` ("owner/repo") signs with now, as its owner last registered it in the log; null when they never have. */
+  public async registeredKey(agent: string): Promise<string | null> {
+    await this.learnRegistrations();
+    return this.keyAt(agent, Infinity);
+  }
+
   /** Check an event against the key first seen for its author, so a hub that later swaps a key cannot forge one. */
   public async isTrusted(event: Event): Promise<boolean> {
+    return this.pinned(event);
+  }
+
+  /**
+   * The key `agent` ("owner/repo") signs with as of `seq`: its owner's newest registration of it before then, to everyone, among those whose signature holds under the key pinned for the owner.
+   * Null when there is none: an agent's key is never taken from anything its owner did not sign.
+   */
+  private keyAt(agent: string, seq: number): string | null {
+    let newest: { readonly seq: number; readonly pubkey: string } | null = null;
+    for (const { seq: at, event, trusted } of this.registrations.values()) {
+      const said = readContent(event);
+      if (trusted && at < seq && at > (newest?.seq ?? 0) && event.to === "*" && said.kind === "agent.register" && `${event.author}/${said.content.repo}` === agent) {
+        newest = { seq: at, pubkey: said.content.pubkey };
+      }
+    }
+    return newest?.pubkey ?? null;
+  }
+
+  /** Read the registrations stored since the newest event to everyone read before, from the events to everyone, a page at a time from the newest back. One reading at a time: a second call waits for the first. */
+  private learnRegistrations(): Promise<void> {
+    this.learning ??= (async (): Promise<void> => {
+      const found: Delivered[] = [];
+      for (let before: number | undefined; ;) {
+        const page = await this.events(before === undefined ? { chat: "*", limit: CATCH_UP_PAGE } : { chat: "*", before, limit: CATCH_UP_PAGE });
+        found.push(...page.filter((delivered) => delivered.seq > this.registeredTo));
+        before = page.at(-1)?.seq;
+        if (page.length < CATCH_UP_PAGE || (before ?? 0) <= this.registeredTo) {
+          break;
+        }
+      }
+      for (const delivered of found.filter((each) => each.event.kind === "agent.register")) {
+        this.registrations.set(delivered.event.id, { ...delivered, trusted: await this.pinned(delivered.event) });
+      }
+      this.registeredTo = Math.max(this.registeredTo, found[0]?.seq ?? 0);
+    })().finally(() => {
+      this.learning = null;
+    });
+    return this.learning;
+  }
+
+  /** Whether an event holds under the key first seen for its author, a person: the one the hub said when this client first asked, or the one in known.json when it did before. */
+  private async pinned(event: Event): Promise<boolean> {
     const { author } = event;
     const pinFile = joinPath(this.home, "known.json");
     let pins = existsSync(pinFile) ? pinsSchema.parse(parseJson(readFileSync(pinFile, "utf8"))) : {};

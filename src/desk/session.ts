@@ -1,5 +1,6 @@
 /** One person's Player Two session: follows the hub, shares their repos, runs their agents when they say so, and keeps what the window shows. No window code. */
 
+import type { KeyObject } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join as joinPath } from "node:path";
@@ -13,7 +14,9 @@ import type { Accepted, Entry, Message, Request } from "../core/chat.ts";
 import { readContent } from "../core/kinds.ts";
 import { notesIn } from "../core/links.ts";
 import type { Content, ContentOf, Summary } from "../core/kinds.ts";
+import { publicHex } from "../core/sign.ts";
 import { acpRunner } from "./agents/acp.ts";
+import { agentKey } from "./agentKeys.ts";
 import { endedItem, startedItem } from "./agents/activity.ts";
 import { oneshotRunner, runAgent } from "./agents/oneshot.ts";
 import { PRESETS } from "./agents/presets.ts";
@@ -185,6 +188,7 @@ export class Session {
   private channels: readonly ChannelInfo[] = [];
   private team: readonly TeamRepo[] = []; // Every repo anyone has checked out.
   private checkouts = new Map<string, Checkout>(); // The user's own, by repo name.
+  private readonly agentKeys = new Map<string, KeyObject>(); // The key of the agent in each of them, by repo name, once everyone has been told it this run.
   private prefix = ""; // The key every repo this hub shares starts with; "" until the hub has said.
   private advertised: string | null = null; // What the hub was last told about the user's repos.
   private current = ""; // The open chat; "" until one exists.
@@ -682,7 +686,7 @@ export class Session {
     this.prefix = info.repos;
   }
 
-  /** Look under ~/dev for the team's repos and tell the hub when the list or a branch has changed. */
+  /** Look under ~/dev for the team's repos, tell the hub when the list or a branch has changed, and tell everyone the key of each one's agent. */
   private async share(): Promise<void> {
     const found = repos.scan(this.dev, this.prefix);
     const adverts = found.map((checkout) => ({ ...checkout.remote, branch: checkout.branch }));
@@ -690,8 +694,24 @@ export class Session {
       await this.client.advertise(adverts);
       this.advertised = JSON.stringify(adverts);
     }
+    await this.register(found);
     this.checkouts = new Map(found.map((checkout) => [checkout.remote.name, checkout]));
     this.hooks.changed();
+  }
+
+  /**
+   * Tell everyone, once each run of the session, the key of the agent in each checkout, unless the newest registration of mine for its repo already holds that key.
+   * So the first time a repo is shared its agent is registered, and replacing its key file and starting again rotates its key.
+   */
+  private async register(found: readonly Checkout[]): Promise<void> {
+    for (const { remote } of found.filter((checkout) => !this.agentKeys.has(checkout.remote.name))) {
+      const key = agentKey(this.client.home, remote.name);
+      const pubkey = publicHex(key);
+      if ((await this.client.registeredKey(`${this.me}/${remote.name}`)) !== pubkey) {
+        await this.client.publish("*", "agent.register", { repo: remote.name, pubkey });
+      }
+      this.agentKeys.set(remote.name, key);
+    }
   }
 
   /** Ask who is here, which channels there are and who has which repo. */
@@ -1008,7 +1028,10 @@ export class Session {
     }
   }
 
-  /** Join a channel, which makes it if nobody is in it, and load its newest page: its earlier events are behind the stream's place in the log. */
+  /**
+   * Join a channel, which makes it if nobody is in it, and load its newest page: its earlier events are behind the stream's place in the log.
+   * Before the stream is followed, that place is not fixed yet, and what is stored between a page and it would be in neither; the first pages loaded once it is take the channel in with every other chat.
+   */
   private async joinChannel(name: string): Promise<void> {
     const bare = nameSchema.safeParse(name.trim().replace(/^#/, ""));
     if (!bare.success) {
@@ -1018,7 +1041,9 @@ export class Session {
     await this.publish(channel, "channel.join", {});
     this.linked.clear(); // A note in the channel that the hub would not show before, it shows now.
     await this.refreshChannels();
-    await this.page(channel);
+    if (this.streaming !== null) {
+      await this.page(channel);
+    }
     this.open(channel);
   }
 

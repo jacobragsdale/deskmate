@@ -82,9 +82,9 @@ function parseJson(text: string): unknown {
 const hitRowSchema = z.object({ snippet: z.string() }); // Read beside the event's own columns, which eventRowSchema reads strictly.
 const headSchema = z.strictObject({ seq: z.int(), chain: z.string() }).optional();
 
-/** Which events are in one chat: a channel's, or those between `:me` and one other person, either way. */
+/** Which events are in one chat: a channel's, those to everyone when it is "*", or those between `:me` and one other person, either way. */
 function inChat(chat: string): string {
-  return isChannel(chat) ? "recipient = :chat" : "((author = :me AND recipient = :chat) OR (author = :chat AND recipient = :me))";
+  return isChannel(chat) || chat === "*" ? "recipient = :chat" : "((author = :me AND recipient = :chat) OR (author = :chat AND recipient = :me))";
 }
 
 /** The text of a message or an answer as the index keeps it: without the characters that mark what a search found, so that every one in a snippet is a mark. */

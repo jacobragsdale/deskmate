@@ -9,8 +9,9 @@ import type { TestContext } from "node:test";
 
 import { readContent } from "../src/core/kinds.ts";
 import { noteLink, notesIn } from "../src/core/links.ts";
-import { authHeader, loadKey, signEvent } from "../src/core/sign.ts";
+import { authHeader, loadKey, publicHex, signEvent } from "../src/core/sign.ts";
 import type { PermissionMode } from "../src/core/wire.ts";
+import { agentKey } from "../src/desk/agentKeys.ts";
 import { CURSOR_ONESHOT, oneshotAgent } from "../src/desk/agents/presets.ts";
 import { runAgent } from "../src/desk/agents/oneshot.ts";
 import { AgentCancelledError, http, join as joinHub, loadClient, PlayerTwoError } from "../src/desk/client.ts";
@@ -371,6 +372,50 @@ await test("two people, their agents and a channel, through the real hub", { tim
     []
   );
 });
+
+await test(
+  "a session tells everyone the key of each checkout's agent when it first shares it, not again while its newest registration holds that key, and again once the key file is replaced",
+  { timeout: 30_000 },
+  async (t) => {
+    const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+    const alice = await hub.join("alice");
+    const owner = await hub.join("bob");
+    const dev = join(hub.dir, "dev-bob");
+    checkout(dev, "uploader");
+    checkout(dev, "billing");
+    const keyOf = (repo: string): string => publicHex(agentKey(join(hub.dir, "bob"), repo)); // Made here, as the desk would make it, when there is none.
+    const registered = async (): Promise<string[]> =>
+      (await alice.events({ chat: "*" }))
+        .map(({ event }) => {
+          const said = readContent(event);
+          return said.kind === "agent.register" ? `${event.author}/${said.content.repo} ${said.content.pubkey}` : event.kind;
+        })
+        .reverse();
+    const started = async (): Promise<void> => {
+      const { session } = deskOf(t, owner, dev);
+      await until(session, "both checkouts shared", (view) => view.myRepos.length === 2);
+      await session.stop();
+    };
+
+    await started();
+    const first = [`bob/billing ${keyOf("billing")}`, `bob/uploader ${keyOf("uploader")}`];
+    assert.deepEqual(
+      (await registered()).toSorted((a, b) => a.localeCompare(b)),
+      first
+    );
+    await started();
+    assert.deepEqual(
+      (await registered()).toSorted((a, b) => a.localeCompare(b)),
+      first
+    ); // The same keys: nothing to say.
+
+    rmSync(join(hub.dir, "bob", "agents", "uploader.key"));
+    const rotated = keyOf("uploader");
+    await started();
+    assert.deepEqual((await registered()).slice(2), [`bob/uploader ${rotated}`]);
+    assert.deepEqual([await alice.registeredKey("bob/uploader"), await alice.registeredKey("bob/billing"), await alice.registeredKey("alice/uploader")], [rotated, keyOf("billing"), null]);
+  }
+);
 
 await test("a session loads each chat's newest page when it starts, and the page before that when asked", { timeout: 30_000 }, async (t) => {
   const hub = await hubOfItsOwn(t, () => Date.now() / 1000);

@@ -51,7 +51,7 @@ const numeric = z
   .regex(/^\d+(\.\d+)?$/)
   .transform(Number);
 const eventsQuerySchema = z.object({
-  chat: addressSchema.optional(),
+  chat: z.union([addressSchema, z.literal("*")]).optional(), // "*" is the events to everyone: agents' registrations and grants.
   before: numeric.pipe(z.int()).optional(),
   after: numeric.pipe(z.int()).optional(),
   around: numeric.pipe(z.int()).optional(),
