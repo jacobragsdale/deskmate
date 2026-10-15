@@ -18,9 +18,10 @@ import { z } from "zod";
 import { ChatLog, STALE } from "../src/core/chat.ts";
 import { readContent, SUMMARIES } from "../src/core/kinds.ts";
 import type { Summary } from "../src/core/kinds.ts";
+import { eventIsAuthentic, publicHex } from "../src/core/sign.ts";
 import type { Agent, PermissionMode } from "../src/core/wire.ts";
 import { acpRunner } from "../src/desk/agents/acp.ts";
-import { agentEnv } from "../src/desk/agentKeys.ts";
+import { agentEnv, agentKey } from "../src/desk/agentKeys.ts";
 import { permissionTests } from "../src/desk/doctor.ts";
 import { Feed } from "../src/desk/agents/activity.ts";
 import type { FollowUp, PermissionAsk, RunHandlers } from "../src/desk/agents/runner.ts";
@@ -29,7 +30,7 @@ import type { Client } from "../src/desk/client.ts";
 import { Session } from "../src/desk/session.ts";
 import type { Options } from "../src/desk/session.ts";
 import { runOf } from "../src/shared/ipc.ts";
-import type { ActivityItem, Arrival, RequestView } from "../src/shared/ipc.ts";
+import type { ActivityItem, Arrival, Notice, RequestView } from "../src/shared/ipc.ts";
 import { NOW, startHub, TEAM_REPOS } from "./startHub.ts";
 
 const FAKE = join(import.meta.dirname, "fixtures", "fake-acp-agent.ts");
@@ -856,5 +857,131 @@ await test(
         leak
       );
     }
+  }
+);
+
+/**
+ * Phase 4's part of the two-session scenario: jacob lets bob ask his agent, the scripted one, with a grant from his window, and from then on nobody touches jacob's session while bob's requests
+ * run, or wait. Each step is in a channel of its own, so that no earlier request reaches the agent's prompt as context.
+ */
+await test(
+  "two sessions and the scripted agent under a grant: bob's request runs read-only with nobody at jacob's desk, drafted for jacob's review or posted signed by the agent as the grant says, and a write in it is refused; once jacob revokes the grant, under a grant that names only carol, under one bob made himself, and once the grant has expired, bob's next request waits for jacob",
+  { timeout: 60_000 },
+  async (t) => {
+    let clock = NOW; // Everyone's, and the hub's: it moves only when the test says.
+    const hub = await startHub(t, () => clock);
+    const [bob, jacob] = [await hub.join("bob"), await hub.join("jacob")];
+    jacob.saveAgents([fake()], "fake");
+    for (const person of [bob, jacob]) {
+      for (const channel of ["#review", "#revoked", "#post", "#carol", "#theirs", "#expired"]) {
+        await person.publish(channel, "channel.join", {});
+      }
+    }
+    const dev = join(hub.dir, "dev-jacob");
+    const checkout = join(dev, "uploader");
+    mkdirSync(join(checkout, ".git"), { recursive: true });
+    writeFileSync(join(checkout, ".git", "config"), `[remote "origin"]\n\turl = ${TEAM_REPOS}Platform/_git/uploader\n`);
+    writeFileSync(join(checkout, ".git", "HEAD"), "ref: refs/heads/main\n");
+    const hooks = { changed: () => undefined, notice: () => undefined, arrived: () => undefined, confirmClone: () => Promise.resolve(false) };
+    const arrivals: Arrival[] = [];
+    const notices: Notice[] = [];
+    const told = {
+      ...hooks,
+      arrived: (arrival: Arrival) => {
+        arrivals.push(arrival);
+      },
+      notice: (notice: Notice) => {
+        notices.push(notice);
+      }
+    };
+    const owner = new Session(jacob, dev, told, { presence: 1, describe: () => Promise.resolve({ branch: "main", commit: "c0ffee".padEnd(40, "0"), dirty: false }) });
+    const asker = new Session(bob, join(hub.dir, "dev-bob"), hooks, { presence: 1 });
+    for (const session of [owner, asker]) {
+      session.start();
+      t.after(() => session.stop());
+    }
+    await until("both loaded, and jacob's checkout shared", () => owner.view().loaded && owner.view().myRepos.includes("uploader") && asker.view().loaded);
+    const edited = join(checkout, "edited.txt");
+
+    /** Jacob grants from his window: read-only, to `askers`, for `lasts` seconds. Resolves with the grant's id. */
+    const grant = async (askers: readonly string[], delivery: "review" | "post", lasts = 3600): Promise<string> => {
+      await owner.handle({ do: "grant", repo: "uploader", askers, mode: "read-only", delivery, lasts, runsPerDay: 20 });
+      return owner.view().grants.at(-1)?.id ?? "";
+    };
+    /** Bob asks in `chat` from his window. Resolves with the request's id. */
+    const asks = async (chat: string, text: string): Promise<string> => {
+      await until(`bob has ${chat}`, () => asker.view().rows.some((row) => row.chat === chat));
+      await asker.handle({ do: "open", chat });
+      await asker.handle({ do: "send", chat, text });
+      return until("bob's request", () => asker.view().current?.messages.find((message) => message.body === text)?.id);
+    };
+    /** The job's events in the hub's log, oldest first, but for what the run said it was doing: who sent each, an acceptance with what it let go at and who let it, an answer whether reviewed. */
+    const job = async (chat: string, id: string): Promise<string[]> =>
+      (await bob.events({ chat, limit: 100 }))
+        .filter(({ event }) => event.refs[0] === id && event.kind.startsWith("job.") && event.kind !== "job.progress")
+        .map(({ event }) => {
+          const said = readContent(event);
+          let what = "";
+          if (said.kind === "job.accepted") {
+            what = ` ${said.content.mode} ${said.content.delivery} ${said.content.by === "owner" ? "by hand" : `under ${said.content.by.grant}`}`;
+          } else if (said.kind === "job.result") {
+            what = ` reviewed ${String(said.content.reviewed)}`;
+          }
+          return `${event.kind}${what} by ${event.author}`;
+        })
+        .reverse();
+    /** Bob asks, and the request waits for jacob: nothing runs, the chat is told nothing, and bob sees it waiting. */
+    const waits = async (chat: string, waiting: number): Promise<void> => {
+      const id = await asks(chat, "@jacob/uploader have a look");
+      await until("jacob's desk has it waiting", () => owner.view().waiting === waiting);
+      await delay(300);
+      assert.deepEqual([owner.view().busy.working, await job(chat, id)], [0, []], chat);
+      assert.equal(asker.view().current?.messages.find((message) => message.id === id)?.requests[0]?.status.kind, "waiting", chat);
+    };
+
+    // Read-only, for review: bob's request runs, refused every edit it tries, and its answer waits as a draft for jacob, who reads it and sends it.
+    const review = await grant(["bob"], "review");
+    const first = await asks("#review", "@jacob/uploader edit the README");
+    await until("jacob's draft", () => owner.view().busy.unsent === 1);
+    assert.deepEqual([arrivals.at(-1)?.chat, arrivals.at(-1)?.title], ["#review", "Your uploader agent's draft is ready to review"]);
+    assert.equal(existsSync(edited), false);
+    assert.deepEqual(await job("#review", first), [`job.accepted read-only review under ${review} by jacob`]);
+    await owner.handle({ do: "open", chat: "#review" });
+    const draft = owner.view().current?.drafts[0];
+    assert.match(draft?.text ?? "", /^turn 1: read; edit refused; edit refused$/); // One edit is the request's, one the prompt's "may edit".
+    await owner.handle({ do: "sendDraft", chat: "#review", id: first, repo: "uploader", text: draft?.text ?? "" });
+    const reviewed = await until("bob sees the answer", () => asker.view().current?.messages.find((message) => message.agent === "uploader"));
+    assert.deepEqual(reviewed.grant, { id: review, mode: "read-only", expires: NOW + 3600 }); // Bob sees whose grant it ran under, and until when.
+
+    // Revoked from his window, it lets nothing more go.
+    await owner.handle({ do: "revoke", id: review });
+    await waits("#revoked", 1);
+
+    // Read-only, posted directly: bob's request runs, refused its edit and its command, and the answer goes out at once, signed by jacob's agent and not by jacob.
+    const post = await grant(["bob"], "post");
+    const second = await asks("#post", "@jacob/uploader edit the README, then run the tests");
+    const posted = await until("the answer, posted", () => asker.view().current?.messages.find((message) => message.agent === "uploader"));
+    assert.match(posted.body, /^turn 1: read; edit refused; run refused$/);
+    assert.equal(existsSync(edited), false);
+    assert.deepEqual(await job("#post", second), [`job.accepted read-only post under ${post} by jacob`, "job.result reviewed false by jacob/uploader"]);
+    const answer = (await bob.events({ chat: "#post" })).find(({ event }) => event.kind === "job.result")?.event;
+    assert.ok(answer !== undefined);
+    const keys = { agent: publicHex(agentKey(jacob.home, "uploader")), jacob: (await bob.users()).find((person) => person.name === "jacob")?.pubkey ?? "" };
+    assert.deepEqual([eventIsAuthentic(answer, keys.agent), eventIsAuthentic(answer, keys.jacob)], [true, false]);
+
+    // A grant that names carol does nothing for bob.
+    await owner.handle({ do: "revoke", id: post });
+    await grant(["carol"], "post");
+    await waits("#carol", 2);
+
+    // Nor does one bob makes of jacob's agent himself: only its owner can grant it.
+    await bob.publish("*", "grant", { agent: "jacob/uploader", askers: ["bob"], mode: "full", delivery: "post", expires: NOW + 3600, runsPerDay: 20 });
+    await waits("#theirs", 3);
+
+    // Nor one jacob made for bob, once it has expired.
+    await grant(["bob"], "post", 60);
+    clock += 60;
+    await waits("#expired", 4);
+    assert.deepEqual(notices, []);
   }
 );
