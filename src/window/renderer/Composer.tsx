@@ -115,7 +115,7 @@ export function Composer({ view, current, act, submit, tell }: Props): JSX.Eleme
   const beforeCaret = text.slice(0, caret);
   const tag = TAG_BEING_TYPED.exec(beforeCaret)?.[1];
   const partner = current.members === null ? chat : null;
-  const picks = tag === undefined || `${chat} ${tag}` === closedFor ? { rows: [], more: 0 } : candidates(tag, view.team, view.me, current.pinned?.name ?? null, partner);
+  const picks = tag === undefined || `${chat} ${tag}` === closedFor ? { rows: [], more: 0 } : candidates(tag, view.team, view.me, current.pinned, partner);
   const highlighted = Math.min(picked, picks.rows.length - 1);
 
   const take = (pick: Candidate | undefined): void => {

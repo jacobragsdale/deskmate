@@ -444,14 +444,16 @@ await test("the app takes a note from the arguments it is started or handed with
   assert.equal(noteIn([]), null);
 });
 
-await test("the tag list leads with the pinned repo, then my agents, then my partner's, and offers a clone once a repo is named", () => {
-  const team = [repo("bob", "uploader"), repo("carol", "billing"), repo("jacob", "uploader"), repo("jacob", "theme"), repo("bob", "theme")];
-  const tags = (query: string, pinned: string | null, partner: string | null): string[] =>
+await test("the tag list leads with the agents on a branch room's branch, then the pinned repo, then my agents, then my partner's, and offers a clone once a repo is named", () => {
+  const team = [repo("bob", "uploader"), repo("carol", "billing"), repo("jacob", "uploader"), repo("jacob", "theme"), repo("bob", "theme"), { ...repo("carol", "uploader"), branch: "retry" }];
+  const tags = (query: string, pinned: { readonly name: string; readonly branch: string | null } | null, partner: string | null): string[] =>
     candidates(query, team, "jacob", pinned, partner).rows.map((pick) => `${pick.clone ? "clone " : ""}${pick.owner}/${pick.repo}`);
-  assert.deepEqual(tags("", null, "bob"), ["jacob/theme", "jacob/uploader", "bob/theme", "bob/uploader", "carol/billing"]);
-  assert.deepEqual(tags("", "uploader", null), ["jacob/uploader", "bob/uploader", "jacob/theme", "bob/theme", "carol/billing"]);
+  assert.deepEqual(tags("", null, "bob"), ["jacob/theme", "jacob/uploader", "bob/theme", "bob/uploader", "carol/uploader", "carol/billing"]);
+  assert.deepEqual(tags("", { name: "uploader", branch: null }, null), ["jacob/uploader", "bob/uploader", "carol/uploader", "jacob/theme", "bob/theme", "carol/billing"]);
+  assert.deepEqual(tags("", { name: "uploader", branch: "retry" }, null), ["carol/uploader", "jacob/uploader", "bob/uploader", "jacob/theme", "bob/theme", "carol/billing"]);
+  assert.deepEqual(tags("", { name: "theme", branch: "retry" }, null), ["jacob/theme", "bob/theme", "jacob/uploader", "bob/uploader", "carol/uploader", "carol/billing"]); // Nobody is on it.
   assert.deepEqual(tags("bill", null, null), ["carol/billing", "clone jacob/billing"]);
-  assert.deepEqual(candidates("", team, "jacob", null, null, 2).more, 3);
+  assert.deepEqual(candidates("", team, "jacob", null, null, 2).more, 4);
 });
 
 /** A client whose hub is a table of answers, by method and path. Nothing is sent anywhere; what was asked is added to `asked`. */

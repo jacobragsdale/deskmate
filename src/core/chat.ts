@@ -187,15 +187,16 @@ export function rings(entry: Entry, me: string): boolean {
 /**
  * Agents whose "owner/repo" contains what was typed, most likely first.
  *
- * The channel's own repo leads, then the user's agents, then those of the person they are talking to, then repos
- * the user also has, then the rest by name. Once part of a repo's name has been typed, a matching repo the user
- * has no copy of also gets an offer to clone it.
+ * In a branch room, the agents on its branch lead. Then the channel's own repo, then the user's agents, then those
+ * of the person they are talking to, then repos the user also has, then the rest by name. Once part of a repo's
+ * name has been typed, a matching repo the user has no copy of also gets an offer to clone it.
  */
-export function candidates(query: string, team: readonly TeamRepo[], me: string, pinned: string | null, partner: string | null, limit = 8): Picks {
+export function candidates(query: string, team: readonly TeamRepo[], me: string, pinned: { readonly name: string; readonly branch: string | null } | null, partner: string | null, limit = 8): Picks {
   const wanted = query.toLowerCase();
   const mine = new Set(team.filter((repo) => repo.user === me).map((repo) => repo.name));
+  const onBranch = (repo: TeamRepo): boolean => repo.name === pinned?.name && repo.branch === pinned.branch;
   const rank = (repo: TeamRepo): string =>
-    [repo.name !== pinned, repo.user !== me, repo.user !== partner, !mine.has(repo.name)].map((later) => (later ? "1" : "0")).join("") + `${repo.name} ${repo.user}`;
+    [!onBranch(repo), repo.name !== pinned?.name, repo.user !== me, repo.user !== partner, !mine.has(repo.name)].map((later) => (later ? "1" : "0")).join("") + `${repo.name} ${repo.user}`;
   const matching = team.filter((repo) => `${repo.user}/${repo.name}`.includes(wanted)).sort((a, b) => byCodeUnit(rank(a), rank(b)));
   const named = wanted.slice(wanted.lastIndexOf("/") + 1); // What has been typed of a repo's name: the text after the slash, or all of it when there is none.
   const lacking = new Set(matching.filter((repo) => named !== "" && repo.name.includes(named) && !mine.has(repo.name)).map((repo) => repo.name));

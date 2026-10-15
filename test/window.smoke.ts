@@ -442,6 +442,7 @@ async function patches(page: Page, erin: Client, home: string): Promise<void> {
  * Branch rooms. Bob has been on widgets' feature-retry and worker's fix-retry, and carol on widgets' main, since early on; alice checks both out on bob's branches, which her desk sees as
  * soon as it looks under ~/dev again. The chat list suggests a room for each. She dismisses worker's, which app-state.json keeps, and starts widgets': it opens pinned to the branch, says
  * who is on it, and once carol joins, that she is on main. Unpinned, the suggestion is back; pinned again from the dialog, which offers widgets whole and on the branch, it is the same room.
+ * Its tag list leads with the agents on its branch.
  */
 async function branchRooms(page: Page, carol: Client, home: string): Promise<void> {
   for (const { repo, branch } of [
@@ -452,7 +453,8 @@ async function branchRooms(page: Page, carol: Client, home: string): Promise<voi
     repository(dir, `https://dev.azure.com/acme/Platform/_git/${repo}`);
     execFileSync("git", ["-C", dir, "checkout", "-q", "-b", branch]);
   }
-  await page.eval(`window.playerTwo.command({ do: "hold", repo: "billing", held: false })`); // Which looks under ~/dev again at once.
+  const lookAgain = `window.playerTwo.command({ do: "hold", repo: "billing", held: false })`; // Which looks under ~/dev again at once.
+  await page.eval(lookAgain);
   const suggested = (room: string): string => `document.querySelector('nav [data-room="${room}"]')`;
   await page.until(
     "a room suggested for each branch",
@@ -485,10 +487,26 @@ async function branchRooms(page: Page, carol: Client, home: string): Promise<voi
     (await carol.channels()).map((channel) => channel.name).filter((name) => name.startsWith("#widgets")),
     ["#widgets-feature-retry"]
   ); // The double click above started no second room.
+
+  // Her tag list there leads with the agents on the branch, hers and bob's, then carol's. Once her checkout is on another branch, bob's alone leads, and the room says she is elsewhere.
+  const box = 'textarea[aria-label="Message #widgets-feature-retry"]';
+  const tags = `[...document.querySelectorAll('[role="listbox"] [cmdk-item]')].map((each) => each.textContent)`;
+  await page.type(box, "@wid");
+  await page.until("the tag list", `${tags}.length === 3`);
+  assert.deepEqual(await page.eval(tags), ["@alice/widgets feature-retry", "@bob/widgets feature-retry", "@carol/widgets main"]);
+  await page.type(box, "");
+  execFileSync("git", ["-C", join(home, "dev", "widgets"), "checkout", "-q", "-b", "retry-later"]);
+  await page.eval(lookAgain);
+  await page.until("her checkout elsewhere", `${onBranch} === "on this branch: bob · elsewhere: alice on retry-later, carol on main"`);
+  await page.type(box, "@wid");
+  await page.until("the tag list, bob's first", `${tags}[0] === "@bob/widgets feature-retry"`);
+  assert.deepEqual(await page.eval(tags), ["@bob/widgets feature-retry", "@alice/widgets retry-later", "@carol/widgets main"]);
+  await page.shot("branch-tags");
+  await page.type(box, "");
 }
 
 await test(
-  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, keeps a card in reach in a closed thread and brings one far above the end into view, refuses and allows for the run from a card, and offers only the modes the agent that answers can keep, full alone beside its reason when that is all, and a full chosen once not again in one click when less is there, and for a grant full alone while it is untested; and on My agents makes grants from its dialog, which warns of full access for anyone however its answers go and asks a second yes when they are posted directly, one grant for each double click, revokes one with a double click and not the next, counts the run a grant lets go, and holds a repo back with a double click, unshared and answering nobody under that grant, and lets it answer again; and says under whose grant a run went ahead, to its owner while it runs and in its answer, and to whoever asked, and that an answer its agent signed was not reviewed, where it is shown and where it is found; and while a grant is live stays open on close, saying why, where it cannot say it went to the tray, and once told hides on close, answering on, until started again; lists a grant apart once its repo is not checked out here, and revokes it there; lets the user's agent, asked by another, ask others from a switch beside what that means, says before its buttons how that request came, draws under the message that started it the tree of jobs under it, folded once all are done, and ends it all with that message's one Withdraw, after which what was asked under it is not offered again, saying why; draws a patch as a card beside the draft it goes with and in the chat, each file folded with what it adds and removes, and every word of a hostile one as text, and applies one, to her branch or a new one, only once a dialog of the system's own, naming the repo, the branch, the files and what to beware of, has had a yes, and shows who approved one or asked for changes, saying what; suggests a room for a branch she and a teammate are on, not the default, and none she dismissed, which is remembered; starts one, pinned to the branch and saying who is on it and which members are elsewhere, and pins one to a branch from the dialog; and quits on close once none is",
+  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, keeps a card in reach in a closed thread and brings one far above the end into view, refuses and allows for the run from a card, and offers only the modes the agent that answers can keep, full alone beside its reason when that is all, and a full chosen once not again in one click when less is there, and for a grant full alone while it is untested; and on My agents makes grants from its dialog, which warns of full access for anyone however its answers go and asks a second yes when they are posted directly, one grant for each double click, revokes one with a double click and not the next, counts the run a grant lets go, and holds a repo back with a double click, unshared and answering nobody under that grant, and lets it answer again; and says under whose grant a run went ahead, to its owner while it runs and in its answer, and to whoever asked, and that an answer its agent signed was not reviewed, where it is shown and where it is found; and while a grant is live stays open on close, saying why, where it cannot say it went to the tray, and once told hides on close, answering on, until started again; lists a grant apart once its repo is not checked out here, and revokes it there; lets the user's agent, asked by another, ask others from a switch beside what that means, says before its buttons how that request came, draws under the message that started it the tree of jobs under it, folded once all are done, and ends it all with that message's one Withdraw, after which what was asked under it is not offered again, saying why; draws a patch as a card beside the draft it goes with and in the chat, each file folded with what it adds and removes, and every word of a hostile one as text, and applies one, to her branch or a new one, only once a dialog of the system's own, naming the repo, the branch, the files and what to beware of, has had a yes, and shows who approved one or asked for changes, saying what; suggests a room for a branch she and a teammate are on, not the default, and none she dismissed, which is remembered; starts one, pinned to the branch and saying who is on it and which members are elsewhere, and pins one to a branch from the dialog, where the tag list leads with the agents on that branch; and quits on close once none is",
   { skip: NO_DISPLAY ? "no display: run it under xvfb-run" : false, timeout: 120_000 },
   async (t) => {
     assert.ok(existsSync(join(ROOT, "dist", "main.js")), "dist/ is not built: run `npm run build` first");
