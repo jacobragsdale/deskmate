@@ -489,3 +489,47 @@ await test(
     await assert.rejects(owner.handle({ do: "review", id: said, verdict: "approve", text: "" }), { message: "only a patch is approved, or changes asked for" });
   }
 );
+
+/**
+ * Phase 6's two-session scenario, P6-B10, with the scripted agent, and Done when 2 seen from the other side: nobody's uncommitted work is touched along the way, jacob's by his agent's
+ * run for bob, nor bob's by applying what it made.
+ */
+await test(
+  "two sessions: bob asks jacob's agent for a change; jacob lets it run at auto-edits; the scripted agent writes a file, and jacob's own working tree is as it was; the patch reaches bob as a card; bob applies it and the file is in his checkout, his own work left alone; and a patch with a ../ path is refused before git is called",
+  { timeout: 60_000 },
+  async (t) => {
+    const { jacob, asker, mine, theirs, questions, reply, asks } = await two(t);
+    writeFileSync(join(theirs, "notes.txt"), "one\ntwo\nthree\nbob's own, not committed\n");
+    const jacobs = snapshot(mine);
+
+    const id = await asks("@jacob/uploader edit the README", "auto-edits", true);
+    const card = await until("the patch, as a card for bob", () =>
+      asker.view().current?.messages.find((message) => message.patch !== null && message.quote === "bob: @jacob/uploader edit the README")
+    );
+    assert.equal(snapshot(mine), jacobs);
+    assert.equal(existsSync(join(mine, "edited.txt")), false);
+    assert.deepEqual([card.signer, card.patch?.checkout, card.patch?.applied], ["jacob/uploader", true, []]);
+
+    reply.yes = true;
+    await asker.handle({ do: "applyPatch", id: card.id });
+    assert.equal(questions[0]?.message, "Apply this patch from jacob's uploader agent, which nobody reviewed, to your uploader checkout?");
+    assert.equal(readFileSync(join(theirs, "edited.txt"), "utf8"), "edited\n");
+    assert.equal(readFileSync(join(theirs, "notes.txt"), "utf8"), "one\ntwo\nthree\nbob's own, not committed\n");
+    assert.equal(snapshot(mine), jacobs);
+    await until("bob sees it applied", () => asker.view().current?.messages.find((message) => message.id === card.id)?.patch?.applied.length === 1);
+
+    // One of jacob's agent's that reaches out of the repo: refused, and git never hears of it.
+    const calls = applies().length;
+    const out = {
+      repo: UPLOADER,
+      base: card.patch?.base ?? "",
+      branch: "main",
+      title: "Tidy up",
+      diff: "diff --git a/../../.bashrc b/../../.bashrc\n--- a/../../.bashrc\n+++ b/../../.bashrc\n@@ -1 +1 @@\n-x\n+y\n"
+    };
+    const { id: evil } = (await jacob.as("jacob/uploader", agentKey(jacob.home, "uploader")).publish("#team", "patch", out, [id])).event;
+    await until("bob sees it", () => asker.view().current?.messages.find((message) => message.id === evil));
+    await assert.rejects(asker.handle({ do: "applyPatch", id: evil }), /^Error: not applied: it names a\/\.\.\/\.\.\/\.bashrc, b\/\.\.\/\.\.\/\.bashrc, which is outside the repo/);
+    assert.deepEqual([applies().length, questions.length], [calls, 1]);
+  }
+);

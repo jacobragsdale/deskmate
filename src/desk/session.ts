@@ -1419,7 +1419,7 @@ export class Session {
     { onto, where, warnings, confirm }: { readonly onto: string; readonly where: string; readonly warnings: readonly string[]; readonly confirm: string }
   ): Promise<boolean> {
     const { author } = message.entry.event;
-    const from = isAgent(author) ? `${agentWords(author, this.me)}, which nobody reviewed` : author === this.me ? "you" : author;
+    const from = isAgent(author) ? `${agentWords(author, this.me)}, which nobody reviewed,` : author === this.me ? "you" : author;
     const files = parseDiff(patch.diff).map((file) => `  ${plain(file.from === null ? file.path : `${file.from} → ${file.path}`)}  +${String(file.added)} −${String(file.removed)}`);
     const instructions = touchesInstructions(patch.diff);
     const warned = [
