@@ -325,7 +325,7 @@ function aboutJob(said: ReturnType<typeof readContent>): said is Extract<Content
 
 /**
  * Whether an event may come from its author: anything from a person, as far as this goes; from an agent, only a report of its own run about its own repo, which then counts exactly as its owner's would.
- * Anything else from one counts for nothing, as the hub refuses it: a message, whose tags would start jobs, among them. What shows an event outside the fold (search, notifications, the command, the MCP server)
+ * Anything else from one counts for nothing, as the hub refuses it: a message, whose tags would start jobs, among them, and an answer said to be reviewed, which only its owner can send. What shows an event outside the fold (search, notifications, the command, the MCP server)
  * asks this too, so that one a hub let through is shown nowhere, rather than hidden in the chat and credited to another agent everywhere else.
  */
 export function mayCome(event: Event, said: ReturnType<typeof readContent> = readContent(event)): boolean {
@@ -333,7 +333,7 @@ export function mayCome(event: Event, said: ReturnType<typeof readContent> = rea
     return true;
   }
   const own = event.author.slice(ownerOf(event.author).length + 1);
-  return AGENT_KINDS.has(said.kind) && said.kind !== "unknown" && "repo" in said.content && said.content.repo === own;
+  return AGENT_KINDS.has(said.kind) && said.kind !== "unknown" && "repo" in said.content && said.content.repo === own && !(said.kind === "job.result" && said.content.reviewed);
 }
 
 /** Apply one event whose signature holds. A kind this version does not know, content its kind does not hold, or anything an agent may not send, changes nothing. */

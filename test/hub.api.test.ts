@@ -740,6 +740,10 @@ await test("an agent's event is stored when its registered key signs it, it is a
     assert.deepEqual(await post(hub, "alice", elsewhere), [403, "alice/uploader reports only on its own repo, uploader"], kind);
   }
   assert.deepEqual(await post(hub, "alice", signed(hub, "alice/uploader", "bob", "job.progress", { repo: "uploader" }, about)), [422, "invalid content: not what job.progress holds"]);
+  assert.deepEqual(await post(hub, "alice", signed(hub, "alice/uploader", "bob", "job.result", { ...reports[1][1], reviewed: true }, about)), [
+    403,
+    "an agent cannot say its answer was reviewed: one its owner reviewed is sent by its owner"
+  ]);
   assert.deepEqual(await post(hub, "alice", signed(hub, "alice/uploader", "bob", "job.error", { repo: "uploader" }, { ...about, key: keyOf(hub, "alice") })), [
     401,
     "event is not signed by its author"

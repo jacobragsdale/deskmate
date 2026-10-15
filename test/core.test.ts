@@ -210,7 +210,8 @@ await test("a job's event from an agent, owner/repo, counts exactly as one from 
     by("jacob/uploader", "job.progress", { repo: "uploader", summary: "reading" }),
     by("jacob/uploader", "job.progress", { repo: "billing", summary: "editing files" }), // Not its repo.
     answer("jacob/uploader", "billing", "an answer for another agent"),
-    by("jacob/uploader", "job.error", { repo: "billing" })
+    by("jacob/uploader", "job.error", { repo: "billing" }),
+    by("jacob/uploader", "job.result", { repo: "uploader", branch: "main", text: "said to be reviewed", reviewed: true }) // Only its owner can send one they reviewed.
   ]);
   assert.deepEqual(states(log, ask), ["jacob/uploader working", "jacob/billing working"]);
   assert.deepEqual(summaries(log), ["reading", ""]);

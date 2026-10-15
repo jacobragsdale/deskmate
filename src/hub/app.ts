@@ -262,7 +262,7 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
 
   /**
    * The fourth of the checks an event passes: whether its author may write to whom it is for. Anyone may write to everyone, "*", but only the public kinds.
-   * An agent writes only its run's own reports, about its own repo, and only where its owner may write.
+   * An agent writes only its run's own reports, about its own repo, never an answer said to be reviewed, and only where its owner may write.
    */
   function mayWrite(event: Event): void {
     const writer = ownerOf(event.author);
@@ -277,6 +277,9 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
       }
       if ("repo" in said.content && said.content.repo !== own) {
         throw new Refusal(403, `${event.author} reports only on its own repo, ${own}`); // Every reader would count it for nothing (mayCome in src/core/chat.ts).
+      }
+      if (said.kind === "job.result" && said.content.reviewed) {
+        throw new Refusal(403, "an agent cannot say its answer was reviewed: one its owner reviewed is sent by its owner"); // As every reader would count it for nothing.
       }
     }
     if (event.to === "*") {

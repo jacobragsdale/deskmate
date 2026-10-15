@@ -84,7 +84,7 @@ The hub accepts an event when all of these hold, and checks nothing else about i
 1. It matches the envelope schema, and `id` is the hash of its signed bytes.
 2. `sig` verifies against the author's key: a person's, from joining; from phase 4 an agent's, `owner/repo`, from its owner's newest `agent.register`.
 3. `ts` is within 300 seconds of the hub's clock, and `id` has not been seen.
-4. The author may write to `to`: a channel they are in (or the event is `channel.join`), a person who has joined, or `*` for the kinds marked public below. An agent may write only `job.progress`, `job.result`, `job.error` and `job.cancelled` (and from phase 5 `job.request`), only about its own repo, and only where its owner may: anything else from one is refused with words saying agents cannot send it, content its kind does not hold with `422`, and a report whose `repo` is not the agent's own with `403`.
+4. The author may write to `to`: a channel they are in (or the event is `channel.join`), a person who has joined, or `*` for the kinds marked public below. An agent may write only `job.progress`, `job.result`, `job.error` and `job.cancelled` (and from phase 5 `job.request`), only about its own repo, and only where its owner may: anything else from one is refused with words saying agents cannot send it, content its kind does not hold with `422`, and a report whose `repo` is not the agent's own, or a `job.result` saying `reviewed: true`, with `403`.
 
 The hub stores and relays kinds it has never heard of. A client skips kinds it does not know and shows the rest. This is what lets later phases add kinds without breaking older clients.
 
@@ -106,7 +106,7 @@ The hub gives each stored event a sequence number, `seq`, and a chain value: `ch
 | `job.accepted` | 1 | the request | `{ repo, branch, commit, dirty, delivery, mode, by, delegate }` | The owner let it run. `delivery`: `review` or `post`. `mode`: a permission mode. `by`: `"owner"` or `{ grant: id }`. `delegate`, from phase 5: whether the agent may ask others. |
 | `job.declined` | 1 | the request | `{ repo, reason }` | `reason` may be `""`. |
 | `job.progress` | 3 | the request | `{ repo, summary }` | Coarse: no paths, no output. From the owner, or from phase 4 the agent, while the job is working, it is also word that the run goes on (see Jobs). The owner's desk sends it, signed by the agent from phase 4, when the summary changes, at most every ten seconds, and again unchanged every five minutes while the run goes on. |
-| `job.result` | 1 | the request | `{ repo, branch, text, reviewed }` | The answer. From phase 4, signed by the agent when it is posted with nobody reviewing it (`reviewed: false`), and by its owner when they reviewed and sent it. |
+| `job.result` | 1 | the request | `{ repo, branch, text, reviewed }` | The answer. From phase 4, signed by the agent when it is posted with nobody reviewing it (`reviewed: false`), and by its owner when they reviewed and sent it. One an agent signs saying `reviewed: true` is refused, and counts for nothing. |
 | `job.error` | 1 | the request | `{ repo }` | Only the fact. Why stays with the owner. Signed by the agent from phase 4. |
 | `job.cancelled` | 1 | the request | `{ repo }` | The owner stopped it. Signed by the agent from phase 4, as the run's own report. |
 | `job.withdrawn` | 1 | the request | `{ agent }` | Counts only from the asker. |
