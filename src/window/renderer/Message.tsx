@@ -826,7 +826,8 @@ function ReplyBox({ root, act, onClose }: { readonly root: string; readonly act:
 }
 
 /**
- * A message at the top of the chat, and under it its thread: how many replies and the last one while it is closed, and every reply with a box to add one while it is open.
+ * A message at the top of the chat, and under it its thread: how many replies and the last one, and what the user's agents ask about requests in them, while it is closed,
+ * and every reply with a box to add one while it is open.
  * `focus` is the message the user opened a link to, which is highlighted; when it is a reply here, the thread opens.
  */
 export function Message({
@@ -853,6 +854,12 @@ export function Message({
   const close = (): void => {
     setOpen(false);
   };
+  // While the thread is closed, what the user's agent asks about a request in a reply is under its summary: the run waits for the answer, and the card must stay in reach.
+  const asked = open
+    ? []
+    : message.replies.flatMap((reply) =>
+        reply.requests.flatMap((request) => runs.asks.filter((ask) => ask.run === runOf(reply.id, request.repo)).map((ask) => ({ ask, who: `your ${request.repo} agent` })))
+      );
   return (
     <>
       <Said
@@ -888,6 +895,9 @@ export function Message({
           </span>
         </p>
       )}
+      {asked.map(({ ask, who }) => (
+        <AskCard key={ask.id} ask={ask} who={who} act={act} />
+      ))}
       {open && (
         <section className="my-1 ml-3 border-l-2 pl-3" aria-label="Thread">
           {message.replies.map((reply) => (

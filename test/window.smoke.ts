@@ -576,6 +576,34 @@ await test(
     assert.deepEqual(await page.eval(rows), [`plain Started ${process.execPath}, auto-edits`, "loud Run npm test", "plain Run npm test", "plain turn 1: run allowed", "plain Answered"]);
     assert.equal(await page.eval(`document.querySelectorAll('section[aria-label="Permission"]').length`), 0);
 
+    // Dave asks in a reply in a thread, and alice runs it supervised from the menu there, reviewed, where the prompt's "may edit" has the agent ask before it edits: the card is under the
+    // reply. With the replies hidden, and after going to another chat and back, which closes every thread, it is under the thread's summary, where "Refuse" keeps the file unwritten.
+    const dave = await hub.join("dave");
+    const topic = await dave.publish("alice", "message", { text: "a thread about billing", via: "cli" });
+    await dave.publish("alice", "message", { text: "@alice/billing tidy it up", via: "cli" }, [topic.event.id]);
+    await page.until("dave in the chat list", `[...document.querySelectorAll("nav button")].some((each) => each.textContent.includes("dave"))`);
+    await page.click("nav button", "dave");
+    await page.until("the thread's summary", `document.querySelector("main h1")?.textContent === "dave" && document.querySelector("main").innerText.includes("1 reply")`);
+    await page.click("main button", "1 reply");
+    const inThread = `document.querySelector('main section[aria-label="Thread"] button[aria-label="Choose how to run it"]')`;
+    await page.until("the request in the thread", `${inThread} !== null`);
+    await page.eval(`${inThread}.focus()`);
+    await page.press("Enter");
+    await page.until("the menu", `document.querySelector('[role="menuitem"][data-mode="supervised"]') !== null`);
+    await page.click('[role="menuitem"][data-mode="supervised"]');
+    await page.until("the card under the reply", `${card('main section[aria-label="Thread"]')}?.innerText.includes("Edit edited.txt") === true`);
+    await page.click("main button", "Hide replies");
+    await page.until("the card under the closed thread", `document.querySelector('main section[aria-label="Thread"]') === null && ${card("main")}?.innerText.includes("Edit edited.txt") === true`);
+    await page.click("nav button", "bob");
+    await page.until("the chat with bob", `document.querySelector("main h1")?.textContent === "bob" && ${card("main")} === null`);
+    await page.click("nav button", "dave");
+    await page.until("the card still in reach", `document.querySelector("main h1")?.textContent === "dave" && ${card("main")}?.innerText.includes("Edit edited.txt") === true`);
+    await page.eval(`[...${card("main")}.querySelectorAll("button")].find((each) => each.textContent === "Refuse").click()`);
+    await page.until("its draft", `document.querySelector('textarea[aria-label="Draft answer"]')?.value.includes("edit refused") === true`);
+    assert.ok(!existsSync(join(home, "dev", "billing", "edited.txt")));
+    await page.click("main button", "Discard");
+    await page.until("the draft gone", `document.querySelector('textarea[aria-label="Draft answer"]') === null`);
+
     // Carol asks again, and alice runs it from the menu: the answer posted directly, at supervised, where the agent asks before it edits. "Allow once" on the card under the request
     // lets it write the file and answer, and the chat's record says it ran supervised. Carol's next request is offered as alice ran this one, from app-state.json.
     const newest = `[...document.querySelectorAll("main article")].at(-1)`;
