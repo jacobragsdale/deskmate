@@ -110,7 +110,9 @@ function sendingTools(server: McpServer, client: Client): void {
   server.registerTool(
     "send_message",
     {
-      description: told("Send a message, as you, to a person or a channel. A tag of an agent in it waits for that agent's owner to let it run, even when the agent is yours."),
+      description: told(
+        "Send a message, as you, to a person or a channel. A tag of an agent in it waits for that agent's owner to let it run, or runs at once under a grant of theirs that names you; a tag of your own agent always waits for you."
+      ),
       inputSchema: z.strictObject({ to: chatArg, text: z.string() })
     },
     async ({ to, text }) => {
@@ -127,7 +129,7 @@ function sendingTools(server: McpServer, client: Client): void {
     "ask_agent",
     {
       description: told(
-        `Ask an agent, person/repo, as you: send a message that tags it, in the direct chat with its owner or in \`chat\`, a channel, and wait up to \`wait_seconds\` (${String(WAIT)} when not given) for its owner to let it run and for its answer. Returns the answer, or which of declined, failed, stopped, withdrawn or timed out happened, with the request's link; job_status checks a request later.`
+        `Ask an agent, person/repo, as you: send a message that tags it, in the direct chat with its owner or in \`chat\`, a channel, and wait up to \`wait_seconds\` (${String(WAIT)} when not given) for its owner, or a grant of theirs that names you, to let it run, and for its answer. Returns the answer, or which of declined, failed, stopped, withdrawn or timed out happened, with the request's link; job_status checks a request later.`
       ),
       inputSchema: z.strictObject({ agent: agentArg, text: z.string().min(1), chat: channelSchema.describe("A channel, with its #").optional(), wait_seconds: z.number().min(0).max(WAIT).optional() })
     },

@@ -7,6 +7,11 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import type { TestContext } from "node:test";
 
+import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { z } from "zod";
+
+import { main } from "../src/cli/main.ts";
 import { readContent } from "../src/core/kinds.ts";
 import { noteLink, notesIn } from "../src/core/links.ts";
 import { authHeader, eventIsAuthentic, loadKey, publicHex, signEvent } from "../src/core/sign.ts";
@@ -19,6 +24,7 @@ import type { Client, Runner, Transport } from "../src/desk/client.ts";
 import { Session } from "../src/desk/session.ts";
 import type { Options } from "../src/desk/session.ts";
 import { createHub } from "../src/hub/app.ts";
+import { createServer } from "../src/mcp/server.ts";
 import { runOf } from "../src/shared/ipc.ts";
 import type { Arrival, ChatView, MessageView, Notice } from "../src/shared/ipc.ts";
 import { startHub as hubOfItsOwn, ownMode } from "./startHub.ts";
@@ -1266,5 +1272,64 @@ await test(
     await until(again.session, "the request after the restart", () => status(fourth, again.session) === "ready");
     await pause(300);
     assert.deepEqual([again.ran, await jobs(fourth)], [[], []]);
+  }
+);
+
+await test(
+  "a teammate's request sent with the command's ask, the MCP server's ask_agent or by a workflow runs under a grant like one from the window, and the owner's own request sent any way but from their window waits for their click, whatever the grant says",
+  { timeout: 60_000 },
+  async (t) => {
+    const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+    const alice = await hub.join("alice");
+    const owner = await hub.join("bob");
+    const dev = join(hub.dir, "dev-bob");
+    checkout(dev, "uploader");
+    const bob = deskOf(t, owner, dev, { describe: () => Promise.resolve({ branch: "main", commit: COMMIT, dirty: false }) });
+    await until(bob.session, "the checkout shared", (view) => view.loaded && view.myRepos.includes("uploader"));
+    await owner.publish("*", "grant", { agent: "bob/uploader", askers: ["*"], mode: "full", delivery: "post", expires: Math.floor(Date.now() / 1000) + 3600, runsPerDay: 10 });
+    const command = async (who: string, words: readonly string[]): Promise<readonly [number, string]> => {
+      const out: string[] = [];
+      const status = await main(["ask", "@bob/uploader", ...words], {
+        home: join(hub.dir, who),
+        transport: http,
+        now: () => Date.now() / 1000,
+        env: {},
+        out: (line) => {
+          out.push(line);
+        },
+        err: () => undefined
+      });
+      return [status, out.join("\n")];
+    };
+
+    // Alice asks with the command, then from her editor through the MCP server: each is answered with nobody at bob's desk.
+    assert.deepEqual(await command("alice", ["from", "the", "command", "--wait", "20"]), [0, "done"]);
+    const [near, far] = InMemoryTransport.createLinkedPair();
+    const server = createServer(alice, true);
+    await server.connect(far);
+    const editor = new McpClient({ name: "test", version: "1" });
+    await editor.connect(near);
+    t.after(async () => {
+      await editor.close();
+      await server.close();
+    });
+    const asked = z
+      .object({ content: z.tuple([z.object({ text: z.string() })]) })
+      .parse(await editor.callTool({ name: "ask_agent", arguments: { agent: "bob/uploader", text: "from the editor", wait_seconds: 20 } }));
+    assert.equal(z.object({ outcome: z.string() }).parse(JSON.parse(asked.content[0].text)).outcome, "answered");
+
+    // And one a workflow sent in her name.
+    await alice.publish("bob", "message", { text: "@bob/uploader from a workflow", via: "workflow" });
+    await until(bob.session, "the workflow's request answered", () => {
+      bob.session.handle({ do: "open", chat: "alice" }).catch(() => undefined);
+      return messages(bob.session.view()).some((message) => message.agent === "uploader" && message.quote.endsWith("from a workflow"));
+    });
+
+    // Bob's own, from his command line or his editor, or in a workflow's name, wait for him: the grant names everyone, and still lets none of his own go.
+    assert.deepEqual(await command("bob", ["mine", "--wait", "1"]), [5, ""]);
+    const own = await Promise.all((["mcp", "workflow"] as const).map(async (via) => (await owner.publish("alice", "message", { text: `@bob/uploader mine, by ${via}`, via })).event.id));
+    await until(bob.session, "his own requests waiting for him", (view) => view.waiting === 3);
+    await pause(300);
+    assert.deepEqual([bob.ran.length, own.map((id) => shownTo(bob.session, id)?.requests[0]?.status.kind)], [3, ["ready", "ready"]]);
   }
 );

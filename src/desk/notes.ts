@@ -104,7 +104,7 @@ export interface Asked {
 
 /**
  * Ask an agent: publish a message in `chat` that tags it, then wait up to `seconds` for that one job to end. Nothing else said in the chat ends the wait.
- * It is a message like any other, so the tag waits for the agent's owner to act on it, even when the owner is the one asking: only a message typed in their own window runs at once.
+ * It is a message like any other, so the tag waits for the agent's owner to act on it, or runs under a grant of theirs that names whoever asks; one the owner sends this way waits for them all the same: only a message typed in their own window runs at once.
  */
 export async function ask(client: Client, agent: Agent, chat: string, text: string, via: "cli" | "mcp", seconds: number): Promise<Asked> {
   const { owner, repo } = agent;
