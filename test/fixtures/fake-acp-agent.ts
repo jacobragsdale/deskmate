@@ -1,9 +1,10 @@
 /**
  * A scripted ACP agent for the tests, built on the SDK's agent side and run with `node`. What it does depends on words in the prompt:
- * `twice` says something in a message of its own first, with a step after it; `read` reports a read tool call; each `edit` asks to edit and writes edited.txt only if allowed; `run` asks to execute; `switch` asks to switch its session to a mode in which it edits without asking,
- * as ACP lets an agent's modes differ in what they ask; `takeback` asks to edit and takes the request back 300 ms later; `slow` waits until cancelled, with a child process of its own;
- * `deaf` does the same but takes no notice of a cancel; `mcp` says which MCP servers its session has. Whatever it did, it says so in a short message streamed in two chunks,
- * after the number of the turn in its session. Started with --signed-out it says it needs signing in, and signing in fails; with --always-only it offers no way to be allowed just once;
+ * `twice` says something in a message of its own first, with a step after it; `read` reports reading README.md in its folder, by its path; `many` reports 600 reads;
+ * `switch` asks to switch its session to a mode in which it edits without asking, as ACP lets an agent's modes differ in what they ask; each `edit` asks to edit and writes edited.txt only if allowed;
+ * `run` asks to run `npm test` in its folder; `takeback` asks to edit and takes the request back 300 ms later; `leave` asks to edit and ends its turn without waiting for the answer;
+ * `stray` asks under another session's id; `mcp` says which MCP servers its session has; `slow` waits until cancelled, with a child process of its own; `deaf` does the same but takes no notice of a cancel.
+ * Whatever it did, it says so in a short message streamed in two chunks, after the number of the turn in its session. Told while it asks that its turn is cancelled, it ends the turn as cancelled, as ACP asks. Started with --signed-out it says it needs signing in, and signing in fails; with --always-only it offers no way to be allowed just once;
  * with --no-asking it edits without asking first, as an agent that cannot be limited would; with --deaf every prompt is also `deaf`.
  * It adds its pid, and its child's, to `pids` in its folder, or to the file --pids=FILE names, unless started with --no-pids, for a test of what it writes there.
  */
@@ -12,6 +13,7 @@ import { spawn } from "node:child_process";
 import { appendFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Writable } from "node:stream";
+import { setTimeout as delay } from "node:timers/promises";
 
 import * as acp from "@agentclientprotocol/sdk";
 
@@ -24,6 +26,13 @@ interface Session {
 
 const sessions = new Map<string, Session>();
 const unasking = new Set<string>(); // Sessions switched to a mode in which they edit without asking.
+const OPTIONS: acp.PermissionOption[] = [
+  { optionId: "yes", name: "Allow", kind: "allow_once" },
+  { optionId: "no", name: "Reject", kind: "reject_once" }
+];
+
+/** The client answered a request to act as cancelled: its turn is over. */
+class Cancelled extends Error {}
 const signedOut = process.argv.includes("--signed-out");
 const alwaysOnly = process.argv.includes("--always-only"); // Offers to be allowed only always, never once.
 const noAsking = process.argv.includes("--no-asking");
@@ -33,19 +42,22 @@ if (pids !== null) {
   appendFileSync(pids, `${String(process.pid)}\n`);
 }
 
-/** Ask to do something, as a tool call that waits for the client's answer, and report how it went. Resolves with whether it was allowed. */
-async function permitted(client: acp.AgentContext, sessionId: string, toolCallId: string, kind: acp.ToolKind, title: string): Promise<boolean> {
-  await client.notify("session/update", { sessionId, update: { sessionUpdate: "tool_call", toolCallId, title, kind, status: "pending", rawInput: { title } } });
+/** Ask to do something, as a tool call that waits for the client's answer, and report how it went. Resolves with whether it was allowed; rejects with Cancelled when the turn is. */
+async function permitted(client: acp.AgentContext, sessionId: string, toolCallId: string, kind: acp.ToolKind, title: string, rawInput: unknown = { title }): Promise<boolean> {
+  await client.notify("session/update", { sessionId, update: { sessionUpdate: "tool_call", toolCallId, title, kind, status: "pending", rawInput } });
   const answer = await client.request("session/request_permission", {
     sessionId,
-    toolCall: { toolCallId, title, kind, rawInput: { title } },
+    toolCall: { toolCallId, title, kind, rawInput },
     options: [
       ...(alwaysOnly ? [] : [{ optionId: "yes", name: "Allow", kind: "allow_once" } as const]),
       { optionId: "always", name: "Always allow", kind: "allow_always" },
       { optionId: "no", name: "Reject", kind: "reject_once" }
     ]
   });
-  const allowed = answer.outcome.outcome === "selected" && answer.outcome.optionId !== "no";
+  if (answer.outcome.outcome === "cancelled") {
+    throw new Cancelled();
+  }
+  const allowed = answer.outcome.optionId !== "no";
   await client.notify("session/update", { sessionId, update: { sessionUpdate: "tool_call_update", toolCallId, status: allowed ? "completed" : "failed" } });
   return allowed;
 }
@@ -72,12 +84,83 @@ async function edit(client: acp.AgentContext, sessionId: string, session: Sessio
 async function takeBack(client: acp.AgentContext, sessionId: string): Promise<string> {
   const toolCall = { toolCallId: "takeback", title: "Edit taken-back.txt", kind: "edit" } as const;
   await client.notify("session/update", { sessionId, update: { sessionUpdate: "tool_call", ...toolCall, status: "pending" } });
-  const options = [{ optionId: "yes", name: "Allow", kind: "allow_once" } as const];
-  const answered = await client.request("session/request_permission", { sessionId, toolCall, options }, { cancellationSignal: AbortSignal.timeout(300) }).then(
+  const answered = await client.request("session/request_permission", { sessionId, toolCall, options: OPTIONS }, { cancellationSignal: AbortSignal.timeout(300) }).then(
     () => true,
     () => false
   );
   return answered ? "answered" : "took it back";
+}
+
+/** Report reading a file in the session's folder, by its path there, `count` times. */
+async function read(client: acp.AgentContext, sessionId: string, session: Session, count: number): Promise<void> {
+  const path = join(session.cwd, "README.md");
+  for (let index = 0; index < count; index += 1) {
+    const toolCallId = count === 1 ? "read" : `read-${String(index)}`;
+    await client.notify("session/update", { sessionId, update: { sessionUpdate: "tool_call", toolCallId, title: "Read README.md", kind: "read", status: "in_progress", locations: [{ path }], rawInput: { path } } });
+    await client.notify("session/update", { sessionId, update: { sessionUpdate: "tool_call_update", toolCallId, status: "completed" } });
+  }
+}
+
+/** Ask to edit and go on without waiting for the answer, ending the turn while the client still has the request. */
+async function leave(client: acp.AgentContext, sessionId: string): Promise<string> {
+  client.request("session/request_permission", { sessionId, toolCall: { toolCallId: "leave", title: "Edit left.txt", kind: "edit" }, options: OPTIONS }).catch(() => undefined);
+  await delay(200); // Long enough for the request to reach the owner.
+  return "left";
+}
+
+/** Ask to edit under another session's id, which no client should allow. */
+async function stray(client: acp.AgentContext, sessionId: string): Promise<string> {
+  const answer = await client.request("session/request_permission", { sessionId: `${sessionId}-elsewhere`, toolCall: { toolCallId: "stray", title: "Edit stray.txt", kind: "edit" }, options: OPTIONS });
+  return `stray ${answer.outcome.outcome}`;
+}
+
+/** Everything the agent does for the words of one prompt, but wait, and what it says it did. */
+async function act(client: acp.AgentContext, sessionId: string, session: Session, text: string, has: (word: string) => boolean): Promise<string[]> {
+  const did: string[] = [];
+  if (has("twice")) {
+    await say(client, sessionId, "Looking at it.");
+    await client.notify("session/update", { sessionId, update: { sessionUpdate: "tool_call", toolCallId: "look", title: "Look around", kind: "think", status: "completed" } });
+    did.push("said twice");
+  }
+  if (has("read")) {
+    await read(client, sessionId, session, 1);
+    did.push("read");
+  }
+  if (has("many")) {
+    await read(client, sessionId, session, 600);
+    did.push("read many");
+  }
+  if (has("switch")) {
+    did.push(await switchMode(client, sessionId, session.turns));
+  }
+  for (const [index] of [...text.matchAll(/\bedit\b/g)].entries()) {
+    did.push(await edit(client, sessionId, session, index));
+  }
+  if (has("run")) {
+    const command = { command: "npm test", cwd: session.cwd };
+    did.push((await permitted(client, sessionId, `run-${String(session.turns)}`, "execute", "Run npm test", command)) ? "run allowed" : "run refused");
+  }
+  for (const [word, step] of [
+    ["takeback", takeBack],
+    ["leave", leave],
+    ["stray", stray]
+  ] as const) {
+    if (has(word)) {
+      did.push(await step(client, sessionId));
+    }
+  }
+  if (has("mcp")) {
+    did.push(`servers ${session.servers}`);
+  }
+  return did;
+}
+
+/** Start a child process of its own, as `slow` and `deaf` do. */
+function startChild(): void {
+  const child = spawn("sleep", ["60"], { stdio: "ignore" });
+  if (pids !== null) {
+    appendFileSync(pids, `${String(child.pid)}\n`);
+  }
 }
 
 /** One chunk of a message. */
@@ -131,46 +214,23 @@ acp
     session.turns += 1;
     const text = params.prompt.map((block) => (block.type === "text" ? block.text : "")).join(" ");
     const has = (word: string): boolean => new RegExp(`\\b${word}\\b`).test(text) || (deaf && word === "deaf");
-    const did: string[] = [];
-    if (has("twice")) {
-      await say(client, sessionId, "Looking at it.");
-      await client.notify("session/update", { sessionId, update: { sessionUpdate: "tool_call", toolCallId: "look", title: "Look around", kind: "think", status: "completed" } });
-      did.push("said twice");
-    }
-    if (has("read")) {
-      await client.notify("session/update", { sessionId, update: { sessionUpdate: "tool_call", toolCallId: "read", title: "Read README.md", kind: "read", status: "in_progress" } });
-      await client.notify("session/update", { sessionId, update: { sessionUpdate: "tool_call_update", toolCallId: "read", status: "completed" } });
-      did.push("read");
-    }
-    if (has("switch")) {
-      did.push(await switchMode(client, sessionId, session.turns));
-    }
-    for (const [index] of [...text.matchAll(/\bedit\b/g)].entries()) {
-      did.push(await edit(client, sessionId, session, index));
-    }
-    if (has("run")) {
-      did.push((await permitted(client, sessionId, `run-${String(session.turns)}`, "execute", "Run npm test")) ? "run allowed" : "run refused");
-    }
-    if (has("takeback")) {
-      did.push(await takeBack(client, sessionId));
-    }
-    if (has("mcp")) {
-      did.push(`servers ${session.servers}`);
-    }
-    if (has("slow") || has("deaf")) {
-      const child = spawn("sleep", ["60"], { stdio: "ignore" });
-      if (pids !== null) {
-        appendFileSync(pids, `${String(child.pid)}\n`);
-      }
-      if (has("slow")) {
-        await new Promise<void>((resolve) => {
-          session.cancelled = resolve;
-        });
+    let did: string[];
+    try {
+      did = await act(client, sessionId, session, text, has);
+    } catch (error) {
+      if (error instanceof Cancelled) {
         return { stopReason: "cancelled" };
       }
-      await new Promise<void>(() => {
-        // Deaf: it never ends by itself.
+      throw error;
+    }
+    if (has("slow") || has("deaf")) {
+      startChild();
+      await new Promise<void>((resolve) => {
+        if (has("slow")) {
+          session.cancelled = resolve; // Deaf, it never ends by itself.
+        }
       });
+      return { stopReason: "cancelled" };
     }
     await say(client, sessionId, `turn ${String(session.turns)}: `);
     await say(client, sessionId, did.join("; "));

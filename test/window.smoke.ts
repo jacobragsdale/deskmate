@@ -579,7 +579,7 @@ await test(
     await page.eval(`[...${card("aside")}.querySelectorAll("button")].find((each) => each.textContent === "Allow once").click()`);
     await page.until("her agent's answer", `[...document.querySelectorAll("main article")].some((each) => each.innerText.includes("turn 1: run allowed"))`);
     await page.until("the run to its end in the panel", `${rows}.at(-1) === "plain Answered"`);
-    assert.deepEqual(await page.eval(rows), [`plain Started ${process.execPath}, auto-edits`, "loud Run npm test", "plain Run npm test", "plain turn 1: run allowed", "plain Answered"]);
+    assert.deepEqual(await page.eval(rows), [`plain Started ${process.execPath}, auto-edits`, "loud Ran npm test", "plain Run npm test", "plain turn 1: run allowed", "plain Answered"]);
     assert.equal(await page.eval(`document.querySelectorAll('section[aria-label="Permission"]').length`), 0);
 
     // Dave asks in a reply in a thread, and alice runs it supervised from the menu there, reviewed, where the prompt's "may edit" has the agent ask before it edits: the card is under the

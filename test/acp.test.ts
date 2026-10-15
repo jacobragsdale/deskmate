@@ -95,6 +95,8 @@ await test("the feed names each step as a person would: one item for a message a
   assert.equal(detail("t3"), `${JSON.stringify({ command: "npm test\n  -- --watch" }, null, 1)}\n\n${JSON.stringify({ exitCode: 1 }, null, 1)}`);
   assert.equal(detail("plan"), "[x] Fix the retry\n[ ] Run the tests");
   assert.equal(feed.detailOf({ toolCallId: "t9", content: [{ type: "diff", path: "/elsewhere/notes.txt", newText: "one\n" }] }), "+++ /elsewhere/notes.txt (new)\n+one");
+  feed.update({ sessionUpdate: "tool_call", toolCallId: "t6", title: "Terminal", kind: "execute", status: "completed", rawOutput: "x".repeat(10_000) });
+  assert.equal(detail("t6"), "x".repeat(8_000)); // At most 8 KB of it.
 });
 
 /** A checkout of its own for one test, removed when the test ends. */
@@ -270,6 +272,49 @@ await test(
     }
   }
 );
+
+await test("a stop ends a wait for the owner's answer at once, telling the agent its request is cancelled", { timeout: 30_000 }, async (t) => {
+  const dir = folder(t);
+  const stop = new AbortController();
+  let gone: AbortSignal | undefined;
+  const owner: RunHandlers = {
+    activity: () => undefined,
+    permission: (_ask, signal) => {
+      gone = signal;
+      setTimeout(() => {
+        stop.abort();
+      }, 50);
+      return new Promise(() => {
+        // Bob never answers.
+      });
+    }
+  };
+  const stoppedAt = Date.now() + 50;
+  await assert.rejects(acpRunner(fake()).run("edit", dir, "supervised", owner, stop.signal), AgentCancelledError);
+  assert.ok(Date.now() - stoppedAt < 1500, `took ${String(Date.now() - stoppedAt)} ms`); // Not the two seconds after which an agent still at work is killed.
+  assert.equal(gone?.aborted, true);
+  assert.deepEqual(await left(dir), []);
+});
+
+await test("a request to act from another session than the run's is refused as cancelled, whatever the mode allows", { timeout: 20_000 }, async (t) => {
+  assert.equal(await acpRunner(fake()).run("stray", folder(t), "full", recorder("allow-once").handlers, never), "turn 1: stray cancelled");
+});
+
+await test("a run that answers after its runner was closed keeps nothing for a follow-up", { timeout: 20_000 }, async (t) => {
+  const dir = folder(t);
+  const runner = acpRunner(fake(), { limit: 60, idle: 60 });
+  let closed: Promise<void> = Promise.resolve();
+  const owner: RunHandlers = {
+    activity: () => undefined,
+    permission: () => {
+      closed = runner.close(); // While the run is going, as when the agent that answers changes or the desk stops.
+      return delay(200).then((): "allow-once" => "allow-once");
+    }
+  };
+  assert.equal(await runner.run("edit", dir, "supervised", owner, never, { key: "root alice uploader", text: "edit" }), "turn 1: edit allowed");
+  await closed;
+  assert.deepEqual(await left(dir), []);
+});
 
 await test("the time limit ends a run, and time spent waiting for the owner's answer does not count against it", { timeout: 30_000 }, async (t) => {
   const runner = acpRunner(fake(), { limit: 1, idle: 60 });
@@ -491,6 +536,49 @@ await test("an ask the agent takes back goes from its owner's view while the run
   assert.deepEqual(await left(checkout), []);
 });
 
+await test("a run that ends while its agent still asks takes the ask out of the view, refused", { timeout: 30_000 }, async (t) => {
+  const { session, ask, answer } = await bobsDesk(t);
+  const id = await ask("@bob/uploader leave", "supervised", true);
+  assert.match(await answer(id, true), /left$/);
+  await until("the run is over", () => session.view().current?.running === false);
+  assert.deepEqual(session.view().current?.asks, []);
+  await until("the ask, refused", () => session.view().current?.activity.some((item) => item.kind === "permission" && item.title === "Edit left.txt" && item.outcome === "refused"));
+});
+
+await test("the chat is told what a run is doing at once, then no sooner than the least time between two tellings, and nothing once the run has ended", { timeout: 30_000 }, async (t) => {
+  const { alice, ask, answer } = await bobsDesk(t, [], { progress: 2 });
+  const id = await ask("@bob/uploader read, edit and run", "full", true); // Each step a change of what it is doing, all within the two seconds.
+  assert.match(await answer(id, true), /read; edit allowed; run allowed$/);
+  await delay(2500); // Past when the chat would next have been told.
+  const told = (await alice.events({ chat: "#team" })).filter((each) => each.event.kind === "job.progress" && each.event.refs[0] === id);
+  assert.equal(told.length, 1);
+});
+
+await test("the session keeps the newest 500 items of a run, and the activity of the 20 runs that ended last", { timeout: 60_000 }, async (t) => {
+  const { session, ask, answer } = await bobsDesk(t);
+  const first = await ask("@bob/uploader many", "full", true);
+  assert.match(await answer(first, true), /read many$/);
+  const items = await until("the run's end in its feed", () => {
+    const kept = session.view().current?.activity ?? [];
+    return kept.at(-1)?.title === "Answered" && kept;
+  });
+  assert.equal(items.length, 500); // Of its 604: started, the prompt's read, 600 more, its message and its end.
+  assert.deepEqual(items[0]?.title, "Read README.md");
+  // Twenty-one more runs, each in the first one's thread, so that each goes on in its agent's session and takes no time to start.
+  const ids = [first];
+  for (let index = 0; index < 21; index += 1) {
+    await until("the run before is over", () => session.view().current?.running === false);
+    const id = await ask("@bob/uploader read", "full", true, first);
+    await answer(id, true);
+    ids.push(id);
+  }
+  await until("the last run is over", () => session.view().current?.running === false);
+  assert.deepEqual(
+    [...new Set(session.view().current?.activity.map((item) => item.run))],
+    ids.slice(1).map((id) => runOf(id, "uploader"))
+  ); // The first run's is gone: when the last started, the twenty-one before it had ended, one more than are kept.
+});
+
 await test(
   "an agent that fails the permission test is held to no mode from then on, in this session and the next: the view says why for every mode but full, and a run at any of them is refused",
   { timeout: 30_000 },
@@ -638,8 +726,9 @@ await test(
     assert.equal(await accepted("#readonly"), "read-only");
     await owner.handle({ do: "discardDraft", chat: "#readonly", id: readOnly, repo: "uploader" });
 
-    // Accepted supervised, the agent's edit waits for bob's answer, in his view and as an arrival for when he is not looking, and the file is written only once he allows it. Alice sees no ask.
-    const supervised = await asked("#supervised", "@bob/uploader edit the README", "supervised", true);
+    // Accepted supervised, the agent's edit waits for bob's answer, in his view and as an arrival for when he is not looking, and the file is written only once he allows it; then so does its command.
+    // Alice sees no ask.
+    const supervised = await asked("#supervised", "@bob/uploader edit the README, then run the tests", "supervised", true);
     const ask = await until("bob is asked", () => owner.view().current?.asks[0]);
     /** Bob's view of the supervised run's activity, each item as its kind, title, status and outcome. */
     const steps = (): string[][] =>
@@ -663,7 +752,13 @@ await test(
     assert.deepEqual([asker.view().current?.asks, asker.view().current?.activity], [[], []]);
     assert.ok(!JSON.stringify(asker.view()).includes("edited.txt"));
     await owner.handle({ do: "permit", ask: ask.id, answer: "allow-once" });
-    await until("the answer, posted", () => asker.view().current?.messages.some((message) => message.agent === "uploader" && message.body === "turn 1: read; edit allowed"));
+    const command = await until("bob is asked again", () => owner.view().current?.asks.find((each) => each.id !== ask.id));
+    assert.deepEqual(
+      { ...command, id: "" },
+      { id: "", run: runOf(supervised, "uploader"), action: "execute", title: "Run npm test", detail: JSON.stringify({ command: "npm test", cwd: checkout }, null, 1) }
+    );
+    await owner.handle({ do: "permit", ask: command.id, answer: "allow-once" });
+    await until("the answer, posted", () => asker.view().current?.messages.some((message) => message.agent === "uploader" && message.body === "turn 1: read; edit allowed; run allowed"));
     assert.equal(existsSync(edited), true);
     assert.deepEqual(owner.view().current?.asks, []);
     await until("bob's feed of the run to its end", () => steps().at(-1)?.[1] === "Answered");
@@ -672,9 +767,12 @@ await test(
       ["tool", "Read README.md", "done", "done"],
       ["tool", "Edit edited.txt", "done", "done"],
       ["permission", "Edit edited.txt", "done", "allowed"],
-      ["message", "turn 1: read; edit allowed", "done", ""],
+      ["tool", "Ran npm test", "done", "done"],
+      ["permission", "Run npm test", "done", "allowed"],
+      ["message", "turn 1: read; edit allowed; run allowed", "done", ""],
       ["state", "Answered", "done", ""]
     ]);
+    const fed = JSON.stringify(owner.view().current?.activity); // Everything the leak check below looks for, bob's own feed has.
     await assert.rejects(owner.handle({ do: "permit", ask: ask.id, answer: "allow-once" }), { message: "your agent is no longer waiting for that answer" });
     rmSync(edited);
 
@@ -713,6 +811,7 @@ await test(
       said.join(", ")
     ); // Only when it changed.
     for (const leak of ["README.md", "edited.txt", "npm test", "Started Fake", checkout]) {
+      assert.ok(fed.includes(leak), leak);
       assert.deepEqual(
         rows.filter((row) => JSON.stringify(row).includes(leak)),
         [],
