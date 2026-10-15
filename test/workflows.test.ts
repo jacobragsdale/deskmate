@@ -434,6 +434,25 @@ await test("an approval from anyone takes any member's 👍; past its time, a �
   assert.deepEqual(runs(hub), ["deploy 1 2 ended", "deploy 2 2 ended", "deploy 3 0 ended", "deploy 4 0 ended", "deploy 5 0 ended", "deploy 6 0 ended"]);
 });
 
+await test("a 👍 lets an approval go only in its own channel, and a reaction sets off a workflow only on a message in the workflow's channel", async (t) => {
+  const hub = await startHub(t);
+  const [alice, bob] = await team(hub, "alice", "bob");
+  assert.ok(alice !== undefined && bob !== undefined);
+  for (const each of [alice, bob]) {
+    await each.publish("#elsewhere", "channel.join", {});
+  }
+  await alice.publish("#ops", "workflow.define", { name: "deploy", yaml: ANYONE });
+  await alice.publish("#elsewhere", "workflow.define", { name: "launch", yaml: LAUNCH });
+  const { event: asked } = await bob.publish("#ops", "message", { text: "ship it", via: "cli" });
+
+  // Sent to #elsewhere, each naming a message of #ops: the hub stores both, as it stores any reaction from a member.
+  await bob.publish("#elsewhere", "reaction", { emoji: "👍", on: true }, [await newestFromHub(alice)]);
+  await bob.publish("#elsewhere", "reaction", { emoji: "🚀", on: true }, [asked.id]);
+
+  assert.deepEqual(runs(hub), ["deploy 1 0 waiting"]);
+  assert.deepEqual(await channel(alice, "#elsewhere"), ["alice: channel.join", "bob: channel.join", "alice: workflow.define", "bob: reaction", "bob: reaction"]);
+});
+
 await test("the allow list names hosts, each a name and every name under it at a dot, or one IP address; http goes only to a host it names exactly, and nothing at all when it names none", () => {
   const allow = allowList(" Example.COM, ci.corp.internal ,10.0.0.5,[0:0::1], bücher.example,");
   assert.deepEqual(allow, ["example.com", "ci.corp.internal", "10.0.0.5", "[::1]", "xn--bcher-kva.example"]);
@@ -806,29 +825,32 @@ await test(
   }
 );
 
-await test("a workflow starts at most 30 runs an hour; one past that is recorded as throttled and does nothing, and those after it, until a run starts again, leave no trace", async (t) => {
+await test("a workflow starts at most 30 runs an hour, not counting those throttled; one past that is recorded as throttled and does nothing, and those after it, until a run starts again, leave no trace", async (t) => {
   let clock = NOW;
   const hub = await startHub(t, () => clock);
   const [alice] = await team(hub, "alice");
   assert.ok(alice !== undefined);
   const { event: often } = await alice.publish("#ops", "workflow.define", { name: "often", yaml: hooked("often", 'post: "ran"') });
 
-  for (let n = 0; n < 33; n += 1) {
+  await setOff(hub, often.id);
+  clock += 1_800;
+  for (let n = 0; n < 32; n += 1) {
     await setOff(hub, often.id);
   }
-  clock += 3_600; // The first 30 started an hour ago, to the second.
+  clock += 1_800; // The first started an hour ago, to the second, and no longer counts; the 29 after it and the run throttled do, but the throttled one counts for nothing.
   await setOff(hub, often.id);
   await setOff(hub, often.id);
 
   const lines = (await channel(alice)).filter((line) => line.startsWith("hub: often"));
   assert.equal(lines.length, 33);
+  const throttled = "often has started 30 runs in the last hour, the most it may";
   assert.deepEqual(lines.slice(29), [
     "hub: often run 30 step 0 done",
-    "hub: often run 31 step 0 throttled: often has started 30 runs in the last hour, the most it may",
+    `hub: often run 31 step 0 throttled: ${throttled}`,
     "hub: often run 32 step 0 done",
-    "hub: often run 33 step 0 done"
+    `hub: often run 33 step 0 throttled: ${throttled}`
   ]);
-  assert.deepEqual(runs(hub).slice(29), ["often 30 1 ended", "often 31 0 throttled", "often 32 1 ended", "often 33 1 ended"]);
+  assert.deepEqual(runs(hub).slice(29), ["often 30 1 ended", "often 31 0 throttled", "often 32 1 ended", "often 33 0 throttled"]);
 });
 
 await test("a workflow has at most 50 runs waiting for a 👍; one past that is recorded as throttled and does nothing, until one of them moves on", async (t) => {
