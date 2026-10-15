@@ -1271,7 +1271,7 @@ export class Session {
 
   /** The grant of the user's that lets `asker`'s request of their agent in `repo` run at `now`; null when none does. */
   private grantFor(repo: string, asker: string, now: number): Standing | null {
-    return liveGrant([...this.grants.values()], [...this.revocations.values()], [...this.acceptances.values()], { agent: `${this.me}/${repo}`, asker, now, unlogged: this.unlogged() });
+    return liveGrant([...this.grants.values()], [...this.revocations.values()], [...this.acceptances.values()], { agent: `${this.me}/${repo}`, people: [asker], now, unlogged: this.unlogged() });
   }
 
   /** The grant of each run going under one that the log does not hold the acceptance of yet. */

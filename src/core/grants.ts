@@ -56,19 +56,31 @@ export function standing(grants: readonly Entry[], revocations: readonly Entry[]
   return grants.toSorted((a, b) => a.seq - b.seq).flatMap((grant) => stands(grant, revocations, accepted, now, unlogged) ?? []);
 }
 
-/** A request of an agent ("owner/repo"), by whom, and when, in Unix seconds; and, as `standing` takes them, the runs let go under a grant that the log does not hold yet. */
+/**
+ * A request of an agent ("owner/repo"), on whose say it runs, and when, in Unix seconds; and, as `standing` takes them, the runs let go under a grant that the log does not hold yet.
+ * `people` is the asker alone for a request in a message, and for an agent's request of another what src/core/delegation.ts's `peopleInvolved` gives: whoever asked first and the owner of each agent it came through.
+ */
 interface Asked {
   readonly agent: string;
-  readonly asker: string;
+  readonly people: readonly string[];
   readonly now: number;
   readonly unlogged?: readonly string[];
 }
 
 /**
- * The grant that lets `asker`'s request of `agent` run at `now`, or null when none does: one that stands, names the agent, names the asker or "*", and let go fewer than its `runsPerDay` jobs
- * in the 24 hours before `now`. When several apply, the one that allows least wins: the lowest mode, then review before posting directly, then the first in the log.
+ * Whether a grant covers everyone a request runs on the say of: each is among its askers, or is the grant's own author, the agent's owner, who agrees to their own part of a chain
+ * as they need no grant to ask their own agent. Nobody at all is covered by no grant.
  */
-export function liveGrant(grants: readonly Entry[], revocations: readonly Entry[], accepted: readonly Entry[], { agent, asker, now, unlogged = [] }: Asked): Standing | null {
-  const live = standing(grants, revocations, accepted, now, unlogged).filter((grant) => grant.agent === agent && covers(grant.askers, asker) && grant.runsToday < grant.runsPerDay);
+function coversAll(grant: Standing, author: string, people: readonly string[]): boolean {
+  return people.length > 0 && people.every((person) => person === author || covers(grant.askers, person));
+}
+
+/**
+ * The grant that lets a request of `agent` on the say of `people` run at `now`, or null when none does: one that stands, names the agent, covers every one of them, and let go fewer than
+ * its `runsPerDay` jobs in the 24 hours before `now`. When several apply, the one that allows least wins: the lowest mode, then review before posting directly, then the first in the log.
+ */
+export function liveGrant(grants: readonly Entry[], revocations: readonly Entry[], accepted: readonly Entry[], { agent, people, now, unlogged = [] }: Asked): Standing | null {
+  const owner = agent.slice(0, agent.indexOf("/")); // A grant that stands was made by the owner of the agent it names.
+  const live = standing(grants, revocations, accepted, now, unlogged).filter((grant) => grant.agent === agent && coversAll(grant, owner, people) && grant.runsToday < grant.runsPerDay);
   return live.toSorted((a, b) => reach(a) - reach(b))[0] ?? null;
 }

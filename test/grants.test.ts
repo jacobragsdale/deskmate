@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { Entry } from "../src/core/chat.ts";
+import { peopleInvolved } from "../src/core/delegation.ts";
 import { DAY, liveGrant } from "../src/core/grants.ts";
 import { MAX_GRANT, PUBLIC_KINDS, readContent } from "../src/core/kinds.ts";
 import { loadKey, signEvent } from "../src/core/sign.ts";
@@ -60,10 +61,10 @@ function run(grant: Entry | null, more: { readonly author?: string; readonly ts?
 await test("a grant lets a request run when its author owns the agent, it names the asker or everyone, it is not revoked or expired, and its runs in the last 24 hours are under its daily limit", () => {
   const grant = entry("jacob", "grant", { ...GRANT, runsPerDay: 2 });
   const live = (grants: readonly Entry[], revocations: readonly Entry[], accepted: readonly Entry[], asker = "bob", now = NOW, agent = "jacob/uploader"): string | null =>
-    liveGrant(grants, revocations, accepted, { agent, asker, now })?.id ?? null;
+    liveGrant(grants, revocations, accepted, { agent, people: [asker], now })?.id ?? null;
   const id = grant.event.id;
 
-  assert.deepEqual(liveGrant([grant], [], [], { agent: "jacob/uploader", asker: "bob", now: NOW }), { id, ...GRANT, runsPerDay: 2, runsToday: 0 });
+  assert.deepEqual(liveGrant([grant], [], [], { agent: "jacob/uploader", people: ["bob"], now: NOW }), { id, ...GRANT, runsPerDay: 2, runsToday: 0 });
   assert.equal(live([grant], [], [], "carol"), null); // Not named.
   const everyone = entry("jacob", "grant", { ...GRANT, askers: ["*"] });
   assert.equal(live([everyone], [], [], "carol"), everyone.event.id);
@@ -87,8 +88,36 @@ await test("a grant lets a request run when its author owns the agent, it names 
   assert.equal(live([grant], [], [run(grant), run(grant, { ts: NOW - DAY })]), id);
   assert.equal(live([grant], [], [run(grant), run(grant, { author: "bob" }), run(grant, { trusted: false }), run(null), run(entry("jacob", "grant", GRANT))]), id); // None of these is a run under it.
   // A run its owner's desk has let go and not yet told the log of counts as one.
-  assert.equal(liveGrant([grant], [], [run(grant)], { agent: "jacob/uploader", asker: "bob", now: NOW, unlogged: [id] }), null);
-  assert.equal(liveGrant([grant], [], [run(grant)], { agent: "jacob/uploader", asker: "bob", now: NOW, unlogged: [everyone.event.id] })?.id, id);
+  assert.equal(liveGrant([grant], [], [run(grant)], { agent: "jacob/uploader", people: ["bob"], now: NOW, unlogged: [id] }), null);
+  assert.equal(liveGrant([grant], [], [run(grant)], { agent: "jacob/uploader", people: ["bob"], now: NOW, unlogged: [everyone.event.id] })?.id, id);
+});
+
+await test("a grant covers an agent's request of another only when it names everyone the request runs on the say of, but its own author: whoever asked first and the owner of each agent it came through", () => {
+  const billing = { ...GRANT, agent: "jacob/billing" };
+  const root = entry("bob", "message", { text: "@jacob/uploader @carol/api does removing `retries` break anything?", via: "window" });
+  /** `asker`'s request of jacob's billing agent, having come through `chain`, under bob's message. */
+  const through = (asker: string, chain: readonly string[]): readonly string[] =>
+    peopleInvolved([root], entry(asker, "job.request", { target: "jacob/billing", text: "does it?", chain }, { refs: [root.event.id, root.event.id] })) ?? assert.fail();
+  const covering = (askers: readonly string[], people: readonly string[]): boolean =>
+    liveGrant([entry("jacob", "grant", { ...billing, askers })], [], [], { agent: "jacob/billing", people, now: NOW }) !== null;
+  const viaCarol = through("carol/api", ["carol/api"]);
+  const viaJacob = through("jacob/uploader", ["jacob/uploader"]);
+
+  assert.deepEqual(
+    [viaCarol, viaJacob],
+    [
+      ["bob", "carol"],
+      ["bob", "jacob"]
+    ]
+  );
+  assert.ok(!covering(["bob"], viaCarol)); // carol never said her agent's say was enough.
+  assert.ok(!covering(["carol"], viaCarol));
+  assert.ok(covering(["bob", "carol"], viaCarol));
+  assert.ok(covering(["*"], viaCarol));
+  assert.ok(covering(["bob"], viaJacob)); // jacob's own agent asking: he agrees to his own part of the chain.
+  assert.ok(!covering(["carol"], viaJacob));
+  assert.ok(!covering(["*"], [])); // Nobody at all is covered by no grant.
+  assert.ok(covering(["carol"], ["jacob"])); // A request on its author's say alone: the session never asks a grant for one (see P4-B4's note).
 });
 
 await test("when several grants apply, the one that allows least wins: the lowest mode, then review before posting, then the first in the log", () => {
@@ -98,7 +127,7 @@ await test("when several grants apply, the one that allows least wins: the lowes
   const second = entry("jacob", "grant", GRANT);
   const names = new Map([full, posts, first, second].map((grant, at) => [grant.event.id, ["full", "posts", "first", "second"][at]]));
   const winner = (grants: readonly Entry[], accepted: readonly Entry[] = []): string | undefined =>
-    names.get(liveGrant(grants, [], accepted, { agent: "jacob/uploader", asker: "bob", now: NOW })?.id ?? "");
+    names.get(liveGrant(grants, [], accepted, { agent: "jacob/uploader", people: ["bob"], now: NOW })?.id ?? "");
 
   assert.equal(winner([full]), "full");
   assert.equal(winner([full, posts]), "posts");
