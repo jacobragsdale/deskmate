@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import type { KeyObject } from "node:crypto";
@@ -599,10 +599,19 @@ async function pullRequests(page: Page, carol: Client, home: string, project: Pr
 /**
  * Workflows, in #ops, which bob starts and pins to billing, the repo alice has checked out. Bob publishes two: one a message sets off, and one a webhook with a secret sets off, which waits
  * for alice's 👍 between its two posts. Her panel lists both, in words, each template as written and the secret nowhere; copies the webhook's address; shows a run as the hub reports its
- * steps; and removes one.
+ * steps; and removes one. She publishes her own from billing's .player-two/workflows/ in its place.
  */
-async function workflows(page: Page, bob: Client, hub: string): Promise<void> {
+async function workflows(page: Page, bob: Client, hub: string, home: string): Promise<void> {
   const secret = "a-secret-the-panel-never-shows";
+  // What billing keeps: a workflow, one that does not read, a file that is no workflow, and a link to one outside the repo, which the desk never follows.
+  const folder = join(home, "dev", "billing", ".player-two", "workflows");
+  mkdirSync(folder, { recursive: true });
+  const hers = `name: ci-failure\non:\n  webhook: { secret: ${secret} }\nsteps:\n  - post: "The build failed on {{body.branch}}"\n  - approve: { from: alice, text: "Retry it?" }\n  - post: Retrying.\n`;
+  writeFileSync(join(folder, "ci.yml"), hers);
+  writeFileSync(join(folder, "broken.yaml"), 'name: broken\non:\n  webhook: {}\nsteps:\n  - tag: "@alice/billing"\n');
+  writeFileSync(join(folder, "README.md"), "Publish these from Player Two.\n");
+  writeFileSync(join(home, "elsewhere.yml"), 'name: elsewhere\non:\n  webhook: {}\nsteps:\n  - post: "read through a link"\n');
+  symlinkSync(join(home, "elsewhere.yml"), join(folder, "linked.yml"));
   await bob.publish("#ops", "channel.join", {});
   await bob.publish("#ops", "channel.pin", { repo: { name: "billing", key: "dev.azure.com/acme/platform/billing", url: "https://dev.azure.com/acme/Platform/_git/billing" }, branch: null });
   await bob.publish("#ops", "workflow.define", { name: "deploy", yaml: 'name: deploy\non:\n  message: { contains: "deploy" }\nsteps:\n  - post: "Deploying for {{trigger.author}}"\n' });
@@ -617,13 +626,13 @@ async function workflows(page: Page, bob: Client, hub: string): Promise<void> {
   await page.click("main header button", "Workflows");
   const panel = `document.querySelector('[role="dialog"]')`;
   const item = (name: string): string => `${panel}?.querySelector('li[data-workflow="${name}"]')`;
-  const steps = (name: string): string => `[...${item(name)}.querySelectorAll('ol[aria-label="Steps"] li')].map((each) => each.textContent)`;
-  const said = (name: string): string => `${item(name)}.querySelector("p span").textContent`;
+  const steps = (where: string): string => `[...${where}.querySelectorAll('ol[aria-label="Steps"] li')].map((each) => each.textContent)`;
+  const said = (name: string): string => `${item(name)}?.querySelector("p span").textContent`;
   await page.until("both workflows listed", `${item("deploy")} != null && ${item("ci-failure")} != null`);
   assert.match(String(await page.eval(said("deploy"))), /^on a message containing "deploy" · published by bob · .+$/);
-  assert.deepEqual(await page.eval(steps("deploy")), ["post: Deploying for {{trigger.author}}"]);
+  assert.deepEqual(await page.eval(steps(item("deploy"))), ["post: Deploying for {{trigger.author}}"]);
   assert.match(String(await page.eval(said("ci-failure"))), /^on a webhook · published by bob · /);
-  assert.deepEqual(await page.eval(steps("ci-failure")), ["post: The build failed on {{body.branch}}", "wait up to 4 hours for a 👍 from alice: Retry it?", "post: Retrying."]);
+  assert.deepEqual(await page.eval(steps(item("ci-failure"))), ["post: The build failed on {{body.branch}}", "wait up to 4 hours for a 👍 from alice: Retry it?", "post: Retrying."]);
   const address = `${hub}/hooks/${bobs.event.id.slice(0, 32)}`;
   assert.equal(await page.eval(`${item("ci-failure")}.querySelector("code").textContent`), `POST ${address}`);
   assert.match(String(await page.eval(`${item("ci-failure")}.innerText`)), /must carry the workflow’s secret in an X-Player-Two-Secret header/);
@@ -647,12 +656,35 @@ async function workflows(page: Page, bob: Client, hub: string): Promise<void> {
     [bobs.event.id]
   );
   await page.shot("workflows");
+
+  // She publishes from billing's .player-two/workflows/, which the desk reads for her: each file there named .yml or .yaml, and not the link, each as it reads. The broken one says which
+  // line is wrong and why, and offers nothing to publish; ci.yml, in words, says it replaces bob's ci-failure, and is published under its own name in its place.
+  await page.click('[role="dialog"] button', "Publish a workflow");
+  const files = `[...document.querySelectorAll('[role="dialog"] ul[aria-label="Files"] button')].map((each) => each.textContent)`;
+  await page.until("billing's workflow files", `${files}.length > 0`);
+  assert.deepEqual(await page.eval(files), ["✗ broken.yaml", "ci.yml"]);
+  assert.match(String(await page.eval(`${panel}.innerText`)), /From ~\/dev\/billing\/\.player-two\/workflows:/);
+  const chosen = `document.querySelector('[role="dialog"] section')`;
+  await page.click('[role="dialog"] ul[aria-label="Files"] button', "broken.yaml");
+  await page.until("the line that is wrong, and why", `${chosen}?.querySelector('[role="alert"]')?.textContent === "line 5: steps.0.text: required"`);
+  assert.equal(await page.eval(`${chosen}.querySelectorAll("button").length`), 0);
+  await page.click('[role="dialog"] ul[aria-label="Files"] button', "ci.yml");
+  await page.until("ci.yml in words", `${chosen}?.getAttribute("aria-label") === "ci.yml"`);
+  assert.deepEqual(await page.eval(steps(chosen)), ["post: The build failed on {{body.branch}}", "wait up to 1 day for a 👍 from alice: Retry it?", "post: Retrying."]);
+  assert.match(String(await page.eval(`${chosen}.innerText`)), /It replaces the ci-failure bob published: its runs waiting for a 👍 are cancelled, and its webhook gets a new address\./);
+  await page.shot("publish");
+  await page.click('[role="dialog"] section button', "Publish ci-failure to #ops");
+  await page.until("hers listed in place of bob's", `${said("ci-failure")}?.startsWith("on a webhook · published by you · ") === true`);
+  const [published] = await bob.workflows("#ops");
+  const content = published === undefined ? null : readContent(published.event);
+  assert.ok(published?.event.author === "alice" && content?.kind === "workflow.define" && content.content.yaml === hers);
+  assert.equal(await page.eval(`${item("ci-failure")}.querySelector("code").textContent`), `POST ${hub}/hooks/${published.event.id.slice(0, 32)}`);
   await page.press("Escape");
   await page.until("the panel closed", `${panel} === null`);
 }
 
 await test(
-  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, keeps a card in reach in a closed thread and brings one far above the end into view, refuses and allows for the run from a card, and offers only the modes the agent that answers can keep, full alone beside its reason when that is all, and a full chosen once not again in one click when less is there, and for a grant full alone while it is untested; and on My agents makes grants from its dialog, which warns of full access for anyone however its answers go and asks a second yes when they are posted directly, one grant for each double click, revokes one with a double click and not the next, counts the run a grant lets go, and holds a repo back with a double click, unshared and answering nobody under that grant, and lets it answer again; and says under whose grant a run went ahead, to its owner while it runs and in its answer, and to whoever asked, and that an answer its agent signed was not reviewed, where it is shown and where it is found; and while a grant is live stays open on close, saying why, where it cannot say it went to the tray, and once told hides on close, answering on, until started again; lists a grant apart once its repo is not checked out here, and revokes it there; lets the user's agent, asked by another, ask others from a switch beside what that means, says before its buttons how that request came, draws under the message that started it the tree of jobs under it, folded once all are done, and ends it all with that message's one Withdraw, after which what was asked under it is not offered again, saying why; draws a patch as a card beside the draft it goes with and in the chat, each file folded with what it adds and removes, and every word of a hostile one as text, and applies one, to her branch or a new one, only once a dialog of the system's own, naming the repo, the branch, the files and what to beware of, has had a yes, pushes the branch one was applied to and opens a pull request from it, the push said yes to first, and shows who approved one or asked for changes, saying what; suggests a room for a branch she and a teammate are on, not the default, and none she dismissed, which is remembered; starts one, pinned to the branch and saying who is on it and which members are elsewhere, and pins one to a branch from the dialog, where the tag list leads with the agents on that branch; draws each pull request a message refers to, by !123 in a room pinned to a repo on Azure DevOps or by its address, as a chip of what a fake Azure DevOps answered, and under a branch room's header its branch's pull request and latest build, and opens one from there, pushing its branch only once a dialog of the system's own has had a yes, and says when its build changes to failed; lists a channel's workflows, what sets each off and its steps in words and never a secret, copies a webhook's address, shows a run as the hub reported its steps, and removes one; and quits on close once none is",
+  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, keeps a card in reach in a closed thread and brings one far above the end into view, refuses and allows for the run from a card, and offers only the modes the agent that answers can keep, full alone beside its reason when that is all, and a full chosen once not again in one click when less is there, and for a grant full alone while it is untested; and on My agents makes grants from its dialog, which warns of full access for anyone however its answers go and asks a second yes when they are posted directly, one grant for each double click, revokes one with a double click and not the next, counts the run a grant lets go, and holds a repo back with a double click, unshared and answering nobody under that grant, and lets it answer again; and says under whose grant a run went ahead, to its owner while it runs and in its answer, and to whoever asked, and that an answer its agent signed was not reviewed, where it is shown and where it is found; and while a grant is live stays open on close, saying why, where it cannot say it went to the tray, and once told hides on close, answering on, until started again; lists a grant apart once its repo is not checked out here, and revokes it there; lets the user's agent, asked by another, ask others from a switch beside what that means, says before its buttons how that request came, draws under the message that started it the tree of jobs under it, folded once all are done, and ends it all with that message's one Withdraw, after which what was asked under it is not offered again, saying why; draws a patch as a card beside the draft it goes with and in the chat, each file folded with what it adds and removes, and every word of a hostile one as text, and applies one, to her branch or a new one, only once a dialog of the system's own, naming the repo, the branch, the files and what to beware of, has had a yes, pushes the branch one was applied to and opens a pull request from it, the push said yes to first, and shows who approved one or asked for changes, saying what; suggests a room for a branch she and a teammate are on, not the default, and none she dismissed, which is remembered; starts one, pinned to the branch and saying who is on it and which members are elsewhere, and pins one to a branch from the dialog, where the tag list leads with the agents on that branch; draws each pull request a message refers to, by !123 in a room pinned to a repo on Azure DevOps or by its address, as a chip of what a fake Azure DevOps answered, and under a branch room's header its branch's pull request and latest build, and opens one from there, pushing its branch only once a dialog of the system's own has had a yes, and says when its build changes to failed; lists a channel's workflows, what sets each off and its steps in words and never a secret, copies a webhook's address, shows a run as the hub reported its steps, removes one, and publishes one from the files in the pinned repo's .player-two/workflows/, saying which line of a file that does not read is wrong; and quits on close once none is",
   { skip: NO_DISPLAY ? "no display: run it under xvfb-run" : false, timeout: 120_000 },
   async (t) => {
     assert.ok(existsSync(join(ROOT, "dist", "main.js")), "dist/ is not built: run `npm run build` first");
@@ -1487,7 +1519,7 @@ await test(
     await pullRequests(page, carol, home, azure.project, () => {
       azure.project.result = "failed";
     });
-    await workflows(page, bob, hub.url);
+    await workflows(page, bob, hub.url, home);
 
     assert.deepEqual(page.problems, []);
 

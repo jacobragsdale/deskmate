@@ -106,8 +106,8 @@ class Desk {
   }
 
   /**
-   * Do what the window asked, and say that it was done. Only four answer with more: the setup check with its list, the permission test with its row, a search with what it found,
-   * and the form of a pull request.
+   * Do what the window asked, and say that it was done. Only five answer with more: the setup check with its list, the permission test with its row, a search with what it found, the form
+   * of a pull request, and a channel's workflow files with what each holds.
    */
   private async handle(command: Command): Promise<Extract<Outcome, { readonly ok: true }>> {
     if (command.do === "doctor") {
@@ -137,6 +137,9 @@ class Desk {
     }
     if (command.do === "testPermissions") {
       return { ok: true, data: [await this.session.testPermissions(command.agent)] };
+    }
+    if (command.do === "workflowFiles") {
+      return { ok: true, workflowFiles: this.session.workflowFiles(command.chat) };
     }
     await this.session.handle(command);
     return { ok: true };

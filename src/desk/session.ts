@@ -31,6 +31,7 @@ import type {
   ReplyView,
   RequestView,
   RowView,
+  WorkflowFile,
   WorkflowView
 } from "../shared/ipc.ts";
 import { agentPrompt, askerOf, ChatLog, chatOf, continues, mayCome, mentions, ONLINE, refOf, rings } from "../core/chat.ts";
@@ -187,17 +188,17 @@ interface AgentRun {
   tellAt: number; // When it is to be told, Unix milliseconds.
 }
 
-type ChatCommand = Exclude<Command, { do: "join" | "doctor" | "search" | "testPermissions" | "saveAzureToken" | "pullForm" }>;
+type ChatCommand = Exclude<Command, { do: "join" | "doctor" | "search" | "testPermissions" | "saveAzureToken" | "pullForm" | "workflowFiles" }>;
 type PullFrom = Extract<Command, { do: "pullForm" }>["from"];
 type MessageDo = "send" | "reply" | "react" | "edit" | "delete" | "applyPatch" | "review"; // What the user does to a message: a patch's among them.
-type WorkflowDo = "removeWorkflow";
+type WorkflowDo = "removeWorkflow" | "publishWorkflow";
 type JobDo = "sendDraft" | "discardDraft" | "run" | "stop" | "stopAll" | "permit" | "decline" | "withdraw" | "grant" | "revoke";
 
 const MESSAGE_DOS: ReadonlySet<string> = new Set<MessageDo>(["send", "reply", "react", "edit", "delete", "applyPatch", "review"]);
 const JOB_DOS: ReadonlySet<string> = new Set<JobDo>(["sendDraft", "discardDraft", "run", "stop", "stopAll", "permit", "decline", "withdraw", "grant", "revoke"]);
 type RoomDo = "pin" | "unpin" | "startRoom" | "dismissRoom" | "openPull";
 const ROOM_DOS: ReadonlySet<string> = new Set<RoomDo>(["pin", "unpin", "startRoom", "dismissRoom", "openPull"]);
-const WORKFLOW_DOS: ReadonlySet<string> = new Set<WorkflowDo>(["removeWorkflow"]);
+const WORKFLOW_DOS: ReadonlySet<string> = new Set<WorkflowDo>(["removeWorkflow", "publishWorkflow"]);
 
 function isAboutMessages(command: ChatCommand): command is Extract<ChatCommand, { readonly do: MessageDo }> {
   return MESSAGE_DOS.has(command.do);
@@ -282,6 +283,12 @@ function chainWords({ first, chain, target }: Delegation, me: string): string {
 /** A patch as the window draws it: the repo by name, and everything else as its author wrote it. */
 function patchView({ repo, base, branch, title, diff }: PatchContent, { applied, reviews }: Pick<PatchView, "applied" | "reviews"> = { applied: [], reviews: [] }, checkout = false): PatchView {
   return { repo: repo.name, base, branch, title, diff, applied, reviews, checkout };
+}
+
+/** A path as the user reads it, their home folder written ~. */
+function shortened(path: string): string {
+  const home = homedir();
+  return path.startsWith(home) ? `~${path.slice(home.length)}` : path;
 }
 
 /** The lesser of two modes. */
@@ -424,7 +431,7 @@ export class Session {
     } else if (isAboutRooms(command)) {
       await this.handleRoom(command);
     } else if (isAboutWorkflows(command)) {
-      await this.publish(command.chat, "workflow.remove", { name: command.name });
+      await (command.do === "removeWorkflow" ? this.publish(command.chat, "workflow.remove", { name: command.name }) : this.publishWorkflow(command.chat, command.file, command.yaml));
     } else {
       switch (command.do) {
         case "open":
@@ -590,7 +597,6 @@ export class Session {
       }
       return { chat: row.chat, unread: row.unread, mark, here: isChannel(row.chat) ? null : this.here(row.chat) };
     });
-    const home = homedir();
     const answering = defaultAgentOf(this.client.config);
     let link: ChatView["link"] = { state: "connecting" };
     if (this.connected) {
@@ -607,7 +613,7 @@ export class Session {
       presets: PRESETS,
       cannot: { "read-only": this.cannotRun("read-only"), supervised: this.cannotRun("supervised"), "auto-edits": this.cannotRun("auto-edits"), full: this.cannotRun("full") },
       untested: answering.protocol === "acp" && this.tested[commandLineOf(answering)] === undefined,
-      dev: this.dev.startsWith(home) ? `~${this.dev.slice(home.length)}` : this.dev,
+      dev: shortened(this.dev),
       link,
       loaded: this.loaded,
       rows: rowViews,
@@ -1728,6 +1734,56 @@ export class Session {
   private async refreshChannels(): Promise<void> {
     this.channels = await this.client.channels();
     this.hooks.changed();
+  }
+
+  // ── workflows ─────────────────────────────────────────────────────────────
+
+  /** The user's checkout of the repo a channel is about, which its workflows are published from; or why there is none. */
+  private pinnedCheckout(chat: string): Checkout {
+    const pinned = this.channels.find((channel) => channel.name === chat)?.repo ?? null;
+    if (pinned === null) {
+      throw new PlayerTwoError(`${chat} is about no repo: pin one, and workflows are published from its .player-two/workflows/ folder`);
+    }
+    const checkout = this.checkouts.get(pinned.name);
+    if (checkout?.remote.key !== pinned.key) {
+      throw new PlayerTwoError(`you have no checkout of ${pinned.name}, which ${chat} is about, under ${this.dev}`);
+    }
+    return checkout;
+  }
+
+  /**
+   * The workflow files the user's checkout of the repo a channel is about keeps in .player-two/workflows/, for the window to show before one is published: each with the workflow it holds in
+   * words, or the line that is wrong and why, and the folder they are in.
+   */
+  public workflowFiles(chat: string): { readonly folder: string; readonly files: readonly WorkflowFile[] } {
+    const { path } = this.pinnedCheckout(chat);
+    const files = repos.workflowFiles(path).map(({ name, text }): WorkflowFile => {
+      if (text === null) {
+        return { name, yaml: "", read: { ok: false, problem: `it is not a file of at most ${String(repos.MOST_WORKFLOW / 1000)} KB, which a workflow is` } };
+      }
+      try {
+        const workflow = parseWorkflow(text);
+        return { name, yaml: text, read: { ok: true, name: workflow.name, on: setOff(workflow.on), steps: workflow.steps.map(stepWords) } };
+      } catch (error) {
+        return { name, yaml: text, read: { ok: false, problem: problemOf(error) } };
+      }
+    });
+    return { folder: shortened(joinPath(path, ".player-two", "workflows")), files };
+  }
+
+  /** Publish a workflow file from the user's checkout of the repo a channel is about, under the name it gives, once it reads, and still says `seen`, what the user was shown of it. */
+  private async publishWorkflow(chat: string, file: string, seen: string): Promise<void> {
+    const yaml = repos.workflowFile(this.pinnedCheckout(chat).path, file);
+    if (yaml !== seen) {
+      throw new PlayerTwoError(`${file} has changed since you read it: look at it again before you publish it`);
+    }
+    let name: string;
+    try {
+      name = parseWorkflow(yaml).name;
+    } catch (error) {
+      throw new PlayerTwoError(`${file}: ${problemOf(error)}`, { cause: error });
+    }
+    await this.publish(chat, "workflow.define", { name, yaml });
   }
 
   /** Offer to clone a repo the user lacks into ~/dev, showing where it comes from before anything is fetched. */

@@ -1,7 +1,7 @@
 /** Local checkouts: which team repos sit under ~/dev, what branch each is on, and how to fetch one that is missing. */
 
 import { execFile } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 import { isUnder, parseRemote } from "../core/remotes.ts";
@@ -12,6 +12,9 @@ const CLONE_TIMEOUT = 600; // Seconds a clone may take.
 const STATUS_TIMEOUT = 20;
 const REMOTE_TIMEOUT = 60; // Seconds git may take to ask a remote which branches it has.
 const PUSH_TIMEOUT = 600; // Seconds a push may take.
+const WORKFLOWS = [".player-two", "workflows"]; // Where a repo keeps the workflows its channel's members publish from.
+export const MOST_WORKFLOW = 64_000; // Bytes of a workflow's file read: more than one event can carry.
+const MOST_WORKFLOWS = 100; // Workflow files listed from one folder.
 
 export interface Checkout {
   readonly remote: Remote;
@@ -87,6 +90,59 @@ function isDirectory(path: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** Whether `path` is a folder itself, and not a link to one. */
+function isOwnFolder(path: string): boolean {
+  try {
+    return lstatSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/** The folder a checkout keeps its workflows in, when it has one and neither it nor .player-two is a link, which would let a repo lead the desk to read files outside it; null otherwise. */
+export function workflowFolder(checkout: string): string | null {
+  const folder = join(checkout, ...WORKFLOWS);
+  return isOwnFolder(join(checkout, ".player-two")) && isOwnFolder(folder) ? folder : null;
+}
+
+/**
+ * The text of the file `name` in a checkout's workflow folder, when it is a file itself, not a link, of at most MOST_WORKFLOW bytes; null otherwise. The name comes from a repo, so one that
+ * is not a plain file name, as "../x" is not, reads nothing.
+ */
+export function workflowFile(checkout: string, name: string): string | null {
+  const folder = workflowFolder(checkout);
+  if (folder === null || name === "." || name === ".." || /[/\\\0]/.test(name)) {
+    return null;
+  }
+  let fd: number;
+  try {
+    fd = openSync(join(folder, name), constants.O_RDONLY | constants.O_NOFOLLOW); // A link, even one put there since the folder was listed, is not opened.
+  } catch {
+    return null;
+  }
+  try {
+    const stat = fstatSync(fd);
+    return stat.isFile() && stat.size <= MOST_WORKFLOW ? readFileSync(fd, "utf8") : null;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** The workflow files a checkout keeps: each file in its workflow folder named .yml or .yaml, by name, never a link, at most MOST_WORKFLOWS, with its text (see `workflowFile`). */
+export function workflowFiles(checkout: string): { readonly name: string; readonly text: string | null }[] {
+  const folder = workflowFolder(checkout);
+  let names: string[] = [];
+  try {
+    names = folder === null ? [] : readdirSync(folder, { withFileTypes: true }).flatMap((entry) => (entry.isFile() && /\.ya?ml$/i.test(entry.name) ? [entry.name] : []));
+  } catch {
+    // A folder that cannot be read lists nothing.
+  }
+  return names
+    .sort(byCodeUnit)
+    .slice(0, MOST_WORKFLOWS)
+    .map((name) => ({ name, text: workflowFile(checkout, name) }));
 }
 
 /** The team's repos checked out directly under `dev`, by name. With two clones of one repo, the folder named like the repo wins. */

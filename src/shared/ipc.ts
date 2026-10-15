@@ -332,6 +332,11 @@ export const viewSchema = z.discriminatedUnion("kind", [
 ]);
 
 const chat = z.string().min(1).max(40);
+const fileName = z
+  .string()
+  .min(1)
+  .max(255)
+  .refine((name) => name !== "." && name !== ".." && !/[/\\\0]/.test(name), "a file's name, in no folder"); // From a repo: one of the files in its workflow folder, and nothing else.
 const repo = z.string().min(1).max(64);
 const id = z.string().regex(/^[0-9a-f]{64}$/); // An event's id: for a job, its request's.
 // Where a pull request would come from: a branch room, by its chat, from the branch it is pinned to, which must be the one the user's checkout of its repo is on; or a patch, by its id,
@@ -388,6 +393,9 @@ export const commandSchema = z.discriminatedUnion("do", [
   // lacks commits of it; then say so, with its address, where it was asked from.
   z.strictObject({ do: z.literal("openPull"), from: pullFrom, title: z.string().min(1).max(400), description: z.string().max(4000), draft: z.boolean() }),
   z.strictObject({ do: z.literal("removeWorkflow"), chat, name: nameSchema }), // Take a channel's workflow of that name away, as any member may.
+  // The workflow files in .player-two/workflows/ of the user's checkout of the repo the channel is about, each as it reads. The reply's `workflowFiles` is the list.
+  z.strictObject({ do: z.literal("workflowFiles"), chat }),
+  z.strictObject({ do: z.literal("publishWorkflow"), chat, file: fileName, yaml: z.string().min(1) }), // Publish one of those files to the channel, once read again it still holds `yaml`, what the user was shown.
   z.strictObject({ do: z.literal("older") }), // Load the page before the oldest event shown in the open chat.
   z.strictObject({ do: z.literal("search"), q: z.string().min(1).max(500) }), // Search every chat the user can see. The reply's `found` is what the hub found.
   z.strictObject({ do: z.literal("openNote"), id }), // Open the chat a message or an answer is in, with it loaded, and set the view's `focus` on it.
@@ -414,10 +422,34 @@ export const checkSchema = z.strictObject({ id: z.string(), title: z.string(), s
 /** What a pull request would be: from which branch of which repo into which, with the title and description its commits suggest. */
 const formSchema = z.strictObject({ repo: z.string(), branch: z.string(), target: z.string(), title: z.string(), description: z.string() }).readonly();
 
+/**
+ * A file in a repo's workflow folder, as the desk read it: its name, its text ("" when it could not be read), and the workflow it holds in words, its templates as written, or the line that is
+ * wrong and why. All of it comes from the repo, and is drawn as text.
+ */
+const workflowFileSchema = z
+  .strictObject({
+    name: z.string(),
+    yaml: z.string(),
+    read: z.discriminatedUnion("ok", [
+      z.strictObject({ ok: z.literal(true), name: z.string(), on: z.string(), steps: z.array(z.string()).readonly() }).readonly(),
+      z.strictObject({ ok: z.literal(false), problem: z.string() }).readonly()
+    ])
+  })
+  .readonly();
+
 /** How a command ended. A problem is worded for the user. */
 export const outcomeSchema = z.discriminatedUnion("ok", [
-  // Data only for the setup check, its list; found only for a search; form only for pullForm.
-  z.strictObject({ ok: z.literal(true), data: z.array(checkSchema).readonly().optional(), found: z.array(hitSchema).readonly().optional(), form: formSchema.optional() }),
+  // Data only for the setup check, its list; found only for a search; form only for pullForm; workflowFiles only for that command: the folder it looked in, and what it found there.
+  z.strictObject({
+    ok: z.literal(true),
+    data: z.array(checkSchema).readonly().optional(),
+    found: z.array(hitSchema).readonly().optional(),
+    form: formSchema.optional(),
+    workflowFiles: z
+      .strictObject({ folder: z.string(), files: z.array(workflowFileSchema).readonly() })
+      .readonly()
+      .optional()
+  }),
   z.strictObject({ ok: z.literal(false), problem: z.string() })
 ]);
 
@@ -484,6 +516,7 @@ export type ChatView = Extract<View, { kind: "chat" }>;
 export type Check = z.infer<typeof checkSchema>;
 export type GrantView = z.infer<typeof grantSchema>;
 export type WorkflowView = z.infer<typeof workflowSchema>;
+export type WorkflowFile = z.infer<typeof workflowFileSchema>;
 export type ActivityItem = z.infer<typeof activityItemSchema>;
 export type AskView = z.infer<typeof askSchema>;
 export type Hit = z.infer<typeof hitSchema>;
