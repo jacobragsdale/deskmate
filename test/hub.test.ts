@@ -16,7 +16,7 @@ import { MAX_GRANT, readContent } from "../src/core/kinds.ts";
 import { noteLink, notesIn } from "../src/core/links.ts";
 import { authHeader, eventIsAuthentic, loadKey, publicHex, signEvent } from "../src/core/sign.ts";
 import type { Event, PermissionMode } from "../src/core/wire.ts";
-import { agentKey } from "../src/desk/agentKeys.ts";
+import { AGENT_KEY_VAR, agentKey } from "../src/desk/agentKeys.ts";
 import { CURSOR_ONESHOT, oneshotAgent } from "../src/desk/agents/presets.ts";
 import { runAgent } from "../src/desk/agents/oneshot.ts";
 import { AgentCancelledError, http, join as joinHub, loadClient, PlayerTwoError } from "../src/desk/client.ts";
@@ -430,7 +430,7 @@ await test("two people, their agents and a channel, through the real hub", { tim
 });
 
 await test(
-  "a session tells everyone the key of each checkout's agent when it first shares it, not again while its newest registration holds that key, and again once the key file is replaced",
+  "a session tells everyone the key of each checkout's agent when it first shares it, not again while its newest registration holds that key, and again once the key file is replaced, before the next run when that is sooner than the next beat",
   { timeout: 30_000 },
   async (t) => {
     const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
@@ -470,6 +470,27 @@ await test(
     await started();
     assert.deepEqual((await registered()).slice(2), [`bob/uploader ${rotated}`]);
     assert.deepEqual([await alice.registeredKey("bob/uploader"), await alice.registeredKey("bob/billing"), await alice.registeredKey("alice/uploader")], [rotated, keyOf("billing"), null]);
+
+    // Replaced while the desk runs, long before its next beat: the next run is given a key everyone has been told of, and its answer is signed with it.
+    const given: string[][] = []; // The key in the file each run is pointed at, and the key registered for it then.
+    const { session } = deskOf(t, owner, dev, {
+      presence: 600,
+      describe: () => Promise.resolve({ branch: "main", commit: COMMIT, dirty: false }),
+      runner: async (_argv, _cwd, _cancel, env = {}) => {
+        given.push([publicHex(loadKey(readFileSync(env[AGENT_KEY_VAR] ?? "", "utf8").trim())), (await alice.registeredKey("bob/uploader")) ?? ""]);
+        return "done";
+      }
+    });
+    await until(session, "both checkouts shared", (view) => view.myRepos.length === 2);
+    rmSync(join(hub.dir, "bob", "agents", "uploader.key"));
+    const replaced = keyOf("uploader");
+    const { id } = (await alice.publish("bob", "message", { text: "@bob/uploader where?", via: "cli" })).event;
+    await until(session, "alice's request", () => shownTo(session, id)?.requests[0]?.status.kind === "ready");
+    await run(session, id, true);
+    await until(session, "the answer posted", (view) => messages(view).some((message) => message.agent === "uploader"));
+    assert.deepEqual(given, [[replaced, replaced]]);
+    const [answer] = await alice.events({ chat: "bob", limit: 1 });
+    assert.deepEqual([answer?.event.author, answer !== undefined && eventIsAuthentic(answer.event, replaced)], ["bob/uploader", true]);
   }
 );
 

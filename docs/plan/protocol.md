@@ -232,7 +232,7 @@ Inside WSL (or the home folder on Linux and macOS):
 | `~/.config/player-two/known.json` | The key first seen for each teammate. An agent's key is not kept here: it is learned from its owner's registrations, which that pinned key vouches for, each time a client starts. |
 | `~/.config/player-two/app-state.json` | Read marks, last open chat, and the mode and delivery each asker's requests of each repo were last run at, with the agent that ran them (phase 3). Safe to delete. |
 | `~/.config/player-two/agent-permissions.json` | Phase 3. How each agent over ACP did in the permission test, by its command line, with its version. Deleting it makes every agent untested again. |
-| `~/.config/player-two/agents/<repo>.key` | Phase 4. One key per checkout's agent. Mode `0600`, in a folder of mode `0700`: a key whose file or folder other users can get at is refused, and not made private behind its owner's back. |
+| `~/.config/player-two/agents/<repo>.key` | Phase 4. One key per checkout's agent. Mode `0600`, in a folder of mode `0700`: a key whose file or folder other users can get at is refused, and not made private behind its owner's back. Replacing the file rotates the key: the desk registers the new one on its next beat, or before its next run if that is sooner. |
 | `~/.config/player-two/azure.json` | Phase 6. An Azure DevOps token, if one was saved. Mode `0600`. |
 | `~/.player-two/runtime/sha256-<digest>/` | The Linux runtime the window unpacked. `~/.player-two/current` links to the one in use, and `~/.player-two/previous` to the one before it; any other is removed. |
 | `~/.player-two/worktrees/` | Phase 6. Throwaway git worktrees for runs that change files. |

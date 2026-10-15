@@ -743,14 +743,15 @@ export class Session {
   }
 
   /**
-   * Tell everyone, once each run of the session, the key of the agent in each checkout, unless the newest registration of mine for its repo already holds that key.
-   * So the first time a repo is shared its agent is registered, and replacing its key file and starting again rotates its key.
+   * Tell everyone the key of the agent in each checkout whenever its file holds another than the one told this run of the session, unless the newest registration of mine for its repo already holds it.
+   * So the first time a repo is shared its agent is registered, and replacing its key file rotates its key, on the next beat or before the next run, whichever comes first, as a run is pointed at the file.
    */
   private async register(found: readonly Checkout[]): Promise<void> {
-    for (const { remote } of found.filter((checkout) => !this.agentKeys.has(checkout.remote.name))) {
+    for (const { remote } of found) {
       const key = agentKey(this.client.home, remote.name);
       const pubkey = publicHex(key);
-      if ((await this.client.registeredKey(`${this.me}/${remote.name}`)) !== pubkey) {
+      const told = this.agentKeys.get(remote.name);
+      if ((told === undefined || publicHex(told) !== pubkey) && (await this.client.registeredKey(`${this.me}/${remote.name}`)) !== pubkey) {
         await this.client.publish("*", "agent.register", { repo: remote.name, pubkey });
       }
       this.agentKeys.set(remote.name, key);
@@ -1485,6 +1486,7 @@ export class Session {
     let head: Head;
     try {
       head = await this.describe(checkout);
+      await this.register([checkout]); // The run is given the file its key is in, which may have been replaced since the last beat.
       if (stopped()) {
         throw new AgentCancelledError(`Stopped your ${repo} agent before it started.`); // While git was asked where the checkout stands: nothing ran, so the chat hears nothing.
       }
