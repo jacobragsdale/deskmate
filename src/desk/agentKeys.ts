@@ -1,7 +1,7 @@
 /** Each checkout's agent has a key of its own, kept beside its owner's, so what the agent says is signed by the agent and not by them. */
 
 import type { KeyObject } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { loadKey, newKey, privateHex } from "../core/sign.ts";
@@ -16,13 +16,37 @@ export function agentKeyFile(home: string, repo: string): string {
   return join(home, "agents", `${repoNameSchema.parse(repo)}.key`); // A repo's name is a file name here, so it must be one: never a path.
 }
 
-/** The key of the agent in my checkout of `repo`, made the first time it is asked for. Replacing the file gives the agent a new key. */
+/**
+ * Refuse a folder or key file other users of this machine can get at: one of them may have read the key, or put their own there, and nothing tells which.
+ * It is not made private here, which would hide that: `fix` is the chmod that does it once its owner has looked.
+ */
+function refuseOpen(path: string, what: string, fix: string): void {
+  const mode = statSync(path).mode & 0o777;
+  if ((mode & 0o077) !== 0) {
+    throw new Error(
+      `${path} is open to other users of this machine (mode ${mode.toString(8)}), so ${what} may already have been read or put there by one of them, and is not used. ` +
+        `Delete it to have a new key made and registered the next time one is needed; or, if nobody else could have got at it, run: ${fix} ${path}`
+    );
+  }
+}
+
+/**
+ * The key of the agent in my checkout of `repo`, made the first time it is asked for, in a folder only its owner can open, and readable by nobody else; one that is not is refused.
+ * Replacing the file gives the agent a new key.
+ */
 export function agentKey(home: string, repo: string): KeyObject {
   const file = agentKeyFile(home, repo);
-  mkdirSync(join(home, "agents"), { mode: 0o700, recursive: true });
-  if (!existsSync(file)) {
-    writeFileSync(file, privateHex(newKey()), { mode: 0o600 });
+  const folder = join(home, "agents");
+  mkdirSync(folder, { mode: 0o700, recursive: true });
+  refuseOpen(folder, "a key in it", "chmod 700");
+  try {
+    writeFileSync(file, privateHex(newKey()), { mode: 0o600, flag: "wx" }); // Only where there is none: one another desk made a moment ago is the key.
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) {
+      throw error;
+    }
   }
+  refuseOpen(file, "the agent's key", "chmod 600");
   return loadKey(readFileSync(file, "utf8").trim());
 }
 
