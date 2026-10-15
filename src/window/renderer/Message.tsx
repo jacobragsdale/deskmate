@@ -850,14 +850,14 @@ interface Own {
   readonly remove: () => void;
 }
 
-/** Put a message's link on the clipboard, for pasting into another message or an agent's prompt. */
-function copyLink(id: string): void {
-  navigator.clipboard.writeText(noteLink(id)).then(
+/** Put text on the clipboard, saying so as `what`: "Link" for a message's link, for pasting into another message or an agent's prompt. */
+export function copyText(text: string, what: string): void {
+  navigator.clipboard.writeText(text).then(
     () => {
-      toast("Link copied.");
+      toast(`${what} copied.`);
     },
     (error: unknown) => {
-      toast.error("could not copy the link", { description: error instanceof Error ? error.message : String(error) });
+      toast.error(`could not copy the ${what.toLowerCase()}`, { description: error instanceof Error ? error.message : String(error) });
     }
   );
 }
@@ -880,7 +880,7 @@ function MessageMenu({ id, own }: { readonly id: string; readonly own: Own | nul
       >
         <DropdownMenuItem
           onSelect={() => {
-            copyLink(id);
+            copyText(noteLink(id), "Link");
           }}
         >
           <LinkIcon /> Copy link

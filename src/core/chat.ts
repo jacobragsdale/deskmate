@@ -583,6 +583,11 @@ export class ChatLog {
     return this.chats.get(this.where.get(id) ?? "") ?? [];
   }
 
+  /** A chat's events, in the order the hub stored them: what the window's workflow panel reads each run from. */
+  public events(chat: string): readonly Entry[] {
+    return this.chats.get(chat) ?? [];
+  }
+
   /** The jobs under a root request, a person's message, as src/core/delegation.ts's `tree` reads them from the chat it is in: none when it is not loaded here. */
   public tree(root: string): Node[] {
     return tree(this.chats.get(this.where.get(root) ?? "") ?? [], root);

@@ -2,8 +2,8 @@
 
 import { z } from "zod";
 
-import { MAX_GRANT } from "../core/kinds.ts";
-import { agentSchema, askerSchema, branchNameSchema, permissionModeSchema, teamRepoSchema } from "../core/wire.ts";
+import { MAX_GRANT, RUN_STATUSES } from "../core/kinds.ts";
+import { agentSchema, askerSchema, branchNameSchema, nameSchema, permissionModeSchema, teamRepoSchema } from "../core/wire.ts";
 
 const deliverySchema = z.enum(["review", "post"]); // Whether an answer waits for its owner to review it, or is posted as soon as it is ready.
 const beforeSchema = z.enum(["", "declined", "failed", "stopped", "interrupted"]); // What happened to a request of the user's agent that it could be run again after.
@@ -166,6 +166,39 @@ const messageSchema = z
 /** Someone joined or left the channel, or pinned a repo to it (named) or unpinned it: a quiet line, drawn in its place among the messages by its seq. */
 const lineSchema = z.strictObject({ seq: z.int(), ts: z.int(), who: z.string(), did: z.enum(["joined", "left", "pinned", "unpinned"]), repo: z.string() }).readonly();
 
+/**
+ * A channel's live workflow, as its panel shows it: who published it and when; once its signature holds and its file reads, its name, what sets it off and each step in words, each template as
+ * written, a webhook's address and whether a call must carry its secret, which is never here, and its newest runs, newest first, each with how each of its steps came out, the first step being 0,
+ * as the hub reported it. One that cannot be shown says why, never what it says.
+ */
+const workflowSchema = z.discriminatedUnion("shown", [
+  z.strictObject({ shown: z.literal(false), id: z.string(), author: z.string(), ts: z.int(), why: z.string() }).readonly(),
+  z
+    .strictObject({
+      shown: z.literal(true),
+      id: z.string(), // Its workflow.define's.
+      author: z.string(),
+      ts: z.int(),
+      name: z.string(),
+      on: z.string(),
+      steps: z.array(z.string()).readonly(),
+      hook: z.string().nullable(), // The address a webhook workflow is set off at; null for any other.
+      secret: z.boolean(),
+      runs: z
+        .array(
+          z
+            .strictObject({
+              run: z.int(),
+              ts: z.int(), // When it started.
+              steps: z.array(z.strictObject({ step: z.int(), status: z.enum(RUN_STATUSES), detail: z.string() }).readonly()).readonly()
+            })
+            .readonly()
+        )
+        .readonly()
+    })
+    .readonly()
+]);
+
 const rowSchema = z
   .strictObject({
     chat: z.string(),
@@ -237,7 +270,8 @@ const currentSchema = z
     activity: z.array(activityItemSchema).readonly(), // What the user's agents did on requests here, run by run, oldest first: at most 500 items a run, of the runs this desk still holds.
     // The message or answer the user last opened a link to, for the window to scroll to and highlight; null once another chat is opened.
     // `nth` counts the links opened, so the same one opened again is scrolled to again.
-    focus: z.strictObject({ id: z.string(), nth: z.int() }).readonly().nullable()
+    focus: z.strictObject({ id: z.string(), nth: z.int() }).readonly().nullable(),
+    workflows: z.array(workflowSchema).readonly().nullable() // A channel's live workflows, oldest first; null for a direct chat, and while the desk asks the hub for them.
   })
   .readonly();
 
@@ -353,6 +387,7 @@ export const commandSchema = z.discriminatedUnion("do", [
   // Open a pull request from there into the repo's default branch, pushing the branch first, once the user has said yes in a dialog of the system's own, when origin lacks it or
   // lacks commits of it; then say so, with its address, where it was asked from.
   z.strictObject({ do: z.literal("openPull"), from: pullFrom, title: z.string().min(1).max(400), description: z.string().max(4000), draft: z.boolean() }),
+  z.strictObject({ do: z.literal("removeWorkflow"), chat, name: nameSchema }), // Take a channel's workflow of that name away, as any member may.
   z.strictObject({ do: z.literal("older") }), // Load the page before the oldest event shown in the open chat.
   z.strictObject({ do: z.literal("search"), q: z.string().min(1).max(500) }), // Search every chat the user can see. The reply's `found` is what the hub found.
   z.strictObject({ do: z.literal("openNote"), id }), // Open the chat a message or an answer is in, with it loaded, and set the view's `focus` on it.
@@ -448,6 +483,7 @@ export type View = z.infer<typeof viewSchema>;
 export type ChatView = Extract<View, { kind: "chat" }>;
 export type Check = z.infer<typeof checkSchema>;
 export type GrantView = z.infer<typeof grantSchema>;
+export type WorkflowView = z.infer<typeof workflowSchema>;
 export type ActivityItem = z.infer<typeof activityItemSchema>;
 export type AskView = z.infer<typeof askSchema>;
 export type Hit = z.infer<typeof hitSchema>;

@@ -12,7 +12,7 @@ import type { Entry, Message } from "../core/chat.ts";
 import { readContent } from "../core/kinds.ts";
 import { noteLink, noteOf } from "../core/links.ts";
 import { problemOf } from "../core/text.ts";
-import { parseWorkflow } from "../core/workflow.ts";
+import { hookAddress, parseWorkflow, setOff } from "../core/workflow.ts";
 import type { Trigger, Workflow } from "../core/workflow.ts";
 import { channelSchema, commandLineOf, defaultAgentOf, fitText, isAgent, isChannel, nameSchema, ownerOf } from "../core/wire.ts";
 import type { ChannelInfo, Delivered, Event } from "../core/wire.ts";
@@ -424,20 +424,6 @@ function readable(yaml: string): Workflow | null {
   }
 }
 
-/** What sets a workflow off, in words. */
-function setOff(on: Trigger): string {
-  switch (on.kind) {
-    case "webhook":
-      return "a webhook";
-    case "message":
-      return `a message containing ${JSON.stringify(on.message.contains)}`;
-    case "reaction":
-      return `a ${on.reaction.emoji} reaction`;
-    case "schedule":
-      return `${on.schedule.cron} in ${on.schedule.zone}`;
-  }
-}
-
 /**
  * A live workflow as --json prints it: its definition as --json prints any entry, and, when it is trusted, its name, what sets it off as its file has it, and for a webhook the address to POST to,
  * whose id is the first 32 hex of the definition's. Null for each when it is not trusted.
@@ -445,7 +431,7 @@ function setOff(on: Trigger): string {
 function definition(client: Client, entry: Entry): ReturnType<typeof vouched> & { readonly name: string | null; readonly on: Trigger | null; readonly hook: string | null } {
   const said = readContent(entry.event);
   const file = entry.trusted && said.kind === "workflow.define" ? readable(said.content.yaml) : null;
-  return { ...vouched(entry), name: file?.name ?? null, on: file?.on ?? null, hook: file?.on.kind === "webhook" ? `${client.config.hub}/hooks/${entry.event.id.slice(0, 32)}` : null };
+  return { ...vouched(entry), name: file?.name ?? null, on: file?.on ?? null, hook: file?.on.kind === "webhook" ? hookAddress(client.config.hub, entry.event.id) : null };
 }
 
 /** A live workflow in words: its name, what sets it off, who published it and when, and under it a webhook's address. One whose signature fails is never shown with what it says. */

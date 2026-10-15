@@ -163,6 +163,54 @@ export function parseWorkflow(source: string): Workflow {
   throw new Error(`line ${String(lineOf(doc, lines, at))}: ${issue.path.length === 0 ? "" : `${issue.path.join(".")}: `}${issue.message}`);
 }
 
+/** What sets a workflow off, in words. A webhook's secret is never among them. */
+export function setOff(on: Trigger): string {
+  switch (on.kind) {
+    case "webhook":
+      return "a webhook";
+    case "message":
+      return `a message containing ${JSON.stringify(on.message.contains)}`;
+    case "reaction":
+      return `a ${on.reaction.emoji} reaction`;
+    case "schedule":
+      return `${on.schedule.cron} in ${on.schedule.zone}`;
+  }
+}
+
+/** A number of seconds an approval waits, in words: "4 hours", "1 day". */
+function span(seconds: number): string {
+  const [size, unit] = seconds % DAY === 0 ? [seconds / DAY, "day"] : seconds % 3_600 === 0 ? [seconds / 3_600, "hour"] : [seconds / 60, "minute"];
+  return `${String(size)} ${unit}${size === 1 ? "" : "s"}`;
+}
+
+function does(step: Step): string {
+  switch (step.kind) {
+    case "post":
+      return `post: ${step.post}`;
+    case "tag":
+      return `tag ${step.tag}: ${step.text}`;
+    case "approve":
+      return `wait up to ${span(step.approve.within)} for a 👍 from ${step.approve.from === "anyone" ? "anyone in the channel" : step.approve.from}: ${step.approve.text}`;
+    case "webhook":
+      return `call ${step.webhook.url}${step.webhook.body === undefined ? "" : ` with ${step.webhook.body}`}`;
+  }
+}
+
+/** What a workflow's step does, in words, each template as written: what the window shows of a file before it is published, and of a live workflow. */
+export function stepWords(step: Step): string {
+  const condition = step.if;
+  if (condition === undefined) {
+    return does(step);
+  }
+  const [a, b] = condition.kind === "equals" ? condition.equals : condition.contains;
+  return `${does(step)} · only if ${JSON.stringify(a)} ${condition.kind} ${JSON.stringify(b)}`;
+}
+
+/** The address that sets a webhook workflow off: the hub's, and the first 32 hex of the workflow.define that made it live. */
+export function hookAddress(hub: string, definition: string): string {
+  return `${hub}/hooks/${definition.slice(0, 32)}`;
+}
+
 /**
  * A template with each `{{name}}` that names a string, number or true/false in `values` filled in, in one pass: what is filled in is not read again. An unknown name is left as written.
  * `escape` writes each value as where it goes needs, such as inside a JSON string.

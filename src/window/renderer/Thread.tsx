@@ -12,6 +12,7 @@ import type { Act } from "./App.tsx";
 import { Message } from "./Message.tsx";
 import type { Runs } from "./Message.tsx";
 import { RoomLine } from "./Pulls.tsx";
+import { OpenWorkflows } from "./Workflows.tsx";
 
 const NEAR_BOTTOM = 80; // Pixels from the end within which new messages keep the view pinned to the end.
 const NEAR_TOP = 40; // Pixels from the top within which scrolling loads the page before what is shown.
@@ -169,6 +170,7 @@ export function Thread({
         <span className="flex-1 truncate text-muted-foreground">{aboutLine(current)}</span>
         {current.joined && (
           <span className="flex flex-none gap-1.5">
+            <OpenWorkflows current={current} me={view.me} act={act} />
             {pinned === null ? (
               <Button size="xs" variant="outline" className="text-foreground" type="button" onClick={onPin}>
                 ◆ Pin a repo

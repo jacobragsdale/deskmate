@@ -30,7 +30,8 @@ import type {
   Question,
   ReplyView,
   RequestView,
-  RowView
+  RowView,
+  WorkflowView
 } from "../shared/ipc.ts";
 import { agentPrompt, askerOf, ChatLog, chatOf, continues, mayCome, mentions, ONLINE, refOf, rings } from "../core/chat.ts";
 import type { Accepted, Delegation, Entry, Message, PatchContent, Request } from "../core/chat.ts";
@@ -44,6 +45,8 @@ import { notesIn } from "../core/links.ts";
 import { buildWords, onAzure, pullsIn } from "../core/pulls.ts";
 import { isBranch, roomName, suggestions } from "../core/rooms.ts";
 import type { Room } from "../core/rooms.ts";
+import { hookAddress, parseWorkflow, setOff, stepWords } from "../core/workflow.ts";
+import type { Workflow } from "../core/workflow.ts";
 import type { Content, ContentOf, Summary } from "../core/kinds.ts";
 import { publicHex } from "../core/sign.ts";
 import { acpRunner, greet } from "./agents/acp.ts";
@@ -86,6 +89,7 @@ const PULL_KEPT = 60;
 const PULLS = 100;
 const PULLS_EACH = 5;
 const ROOM_EVERY = 60; // Seconds between looks at the open branch room's pull request and build on Azure DevOps, while the user looks at the window.
+const RUNS_SHOWN = 5; // Runs of each workflow its panel shows, the newest.
 
 /**
  * How the user last ran a request: at which mode, whether its answer was posted without a review, and the agent that answered, by its id and command line.
@@ -186,12 +190,14 @@ interface AgentRun {
 type ChatCommand = Exclude<Command, { do: "join" | "doctor" | "search" | "testPermissions" | "saveAzureToken" | "pullForm" }>;
 type PullFrom = Extract<Command, { do: "pullForm" }>["from"];
 type MessageDo = "send" | "reply" | "react" | "edit" | "delete" | "applyPatch" | "review"; // What the user does to a message: a patch's among them.
+type WorkflowDo = "removeWorkflow";
 type JobDo = "sendDraft" | "discardDraft" | "run" | "stop" | "stopAll" | "permit" | "decline" | "withdraw" | "grant" | "revoke";
 
 const MESSAGE_DOS: ReadonlySet<string> = new Set<MessageDo>(["send", "reply", "react", "edit", "delete", "applyPatch", "review"]);
 const JOB_DOS: ReadonlySet<string> = new Set<JobDo>(["sendDraft", "discardDraft", "run", "stop", "stopAll", "permit", "decline", "withdraw", "grant", "revoke"]);
 type RoomDo = "pin" | "unpin" | "startRoom" | "dismissRoom" | "openPull";
 const ROOM_DOS: ReadonlySet<string> = new Set<RoomDo>(["pin", "unpin", "startRoom", "dismissRoom", "openPull"]);
+const WORKFLOW_DOS: ReadonlySet<string> = new Set<WorkflowDo>(["removeWorkflow"]);
 
 function isAboutMessages(command: ChatCommand): command is Extract<ChatCommand, { readonly do: MessageDo }> {
   return MESSAGE_DOS.has(command.do);
@@ -203,6 +209,10 @@ function isAboutJobs(command: ChatCommand): command is Extract<ChatCommand, { re
 
 function isAboutRooms(command: ChatCommand): command is Extract<ChatCommand, { readonly do: RoomDo }> {
   return ROOM_DOS.has(command.do);
+}
+
+function isAboutWorkflows(command: ChatCommand): command is Extract<ChatCommand, { readonly do: WorkflowDo }> {
+  return WORKFLOW_DOS.has(command.do);
 }
 
 /** The hub speaks another protocol: asked again only after UPDATE_DELAY. */
@@ -279,6 +289,9 @@ function least(a: PermissionMode, b: PermissionMode): PermissionMode {
   return atMost(a, b) ? a : b;
 }
 
+/** What the hub reported of one step of a workflow's run, and when. */
+type Report = Extract<Content, { readonly kind: "workflow.run" }>["content"] & { readonly ts: number };
+
 /** What the log and the clock say of an agent's request of another: the most its run may be let do, when its root was let run, and everyone it runs on the say of; or why it may not go. */
 type Judged = { readonly ok: true; readonly mode: PermissionMode; readonly since: number; readonly people: readonly string[] } | { readonly ok: false; readonly reason: string };
 
@@ -312,6 +325,9 @@ export class Session {
   private readonly pulls = new Map<string, { readonly at: number; readonly found: PullRequest | null }>(); // Pull requests referred to, by repo key and id, as Azure DevOps answered when, Unix milliseconds.
   private watched: Watched | null = null; // The open branch room on Azure DevOps.
   private roomTimer: NodeJS.Timeout | undefined; // Until it is next looked at, while the user looks at the window.
+  // Each channel's live workflows, as the hub last listed them, `entries` null while it is being asked; asked again once one is published or removed there.
+  private readonly live = new Map<string, { readonly entries: readonly Entry[] | null }>();
+  private readonly files = new Map<string, Workflow | string>(); // Each workflow.define's file as it reads, or why it does not, by the event's id: an event never changes.
   private lastChat: string | null; // The chat that was open when the session last ran.
   private people: readonly Person[] = [];
   private channels: readonly ChannelInfo[] = [];
@@ -407,6 +423,8 @@ export class Session {
       await this.handleJob(command);
     } else if (isAboutRooms(command)) {
       await this.handleRoom(command);
+    } else if (isAboutWorkflows(command)) {
+      await this.publish(command.chat, "workflow.remove", { name: command.name });
     } else {
       switch (command.do) {
         case "open":
@@ -431,11 +449,7 @@ export class Session {
           await this.hold(command.repo, command.held);
           break;
         case "agents":
-          this.client.saveAgents(command.agents, command.defaultAgent);
-          if (this.agentRunner?.which !== JSON.stringify(defaultAgentOf(this.client.config))) {
-            await this.retire();
-          }
-          this.hooks.changed();
+          await this.saveAgents(command);
           break;
       }
     }
@@ -463,6 +477,15 @@ export class Session {
         await this.openPull(command.from, { title: command.title, description: command.description, draft: command.draft });
         break;
     }
+  }
+
+  /** Replace the user's agents and say which of them answers, ending the sessions kept for follow-ups when that is another agent now. */
+  private async saveAgents({ agents, defaultAgent }: Extract<ChatCommand, { readonly do: "agents" }>): Promise<void> {
+    this.client.saveAgents(agents, defaultAgent);
+    if (this.agentRunner?.which !== JSON.stringify(defaultAgentOf(this.client.config))) {
+      await this.retire();
+    }
+    this.hooks.changed();
   }
 
   private async handleMessage(command: Extract<ChatCommand, { readonly do: MessageDo }>): Promise<void> {
@@ -642,7 +665,8 @@ export class Session {
       asks: [...this.waiting].flatMap(([id, waiting]): AskView[] =>
         waiting.chat === chat ? [{ id, run: waiting.run, action: waiting.ask.action, title: oneLine(waiting.ask.title, 200), detail: waiting.ask.detail }] : []
       ),
-      focus: this.focus
+      focus: this.focus,
+      workflows: this.workflowsIn(chat)
     };
   }
 
@@ -898,6 +922,94 @@ export class Session {
     }
     this.hooks.changed();
     this.watchRoom();
+  }
+
+  /**
+   * A channel's live workflows as the hub last listed them; null while it is asked, which this starts, once, and for a direct chat. When the hub cannot be reached they are asked again the next
+   * time the chat is drawn. What a list asked before a workflow was published or removed there says is not kept.
+   */
+  private liveIn(chat: string): readonly Entry[] | null {
+    const known = this.live.get(chat);
+    if (known !== undefined || !isChannel(chat)) {
+      return known?.entries ?? null;
+    }
+    const asking = { entries: null };
+    this.live.set(chat, asking);
+    this.client
+      .workflows(chat)
+      .then((found) => this.trust(found))
+      .then(
+        (entries) => {
+          if (this.live.get(chat) === asking) {
+            this.live.set(chat, { entries });
+            this.hooks.changed();
+          }
+        },
+        () => {
+          if (this.live.get(chat) === asking) {
+            this.live.delete(chat);
+          }
+        }
+      );
+    return null;
+  }
+
+  /** A workflow.define's file as it reads, or why it does not. */
+  private fileOf(event: Event): Workflow | string {
+    let file = this.files.get(event.id);
+    if (file === undefined) {
+      const said = readContent(event);
+      try {
+        file = said.kind === "workflow.define" ? parseWorkflow(said.content.yaml) : "it is not a workflow's file";
+      } catch (error) {
+        file = problemOf(error);
+      }
+      this.files.set(event.id, file);
+    }
+    return file;
+  }
+
+  /** The runs of a channel's workflows that its loaded events tell of, by number, oldest first, each with the hub's reports on its steps in order: workflow.run events, which count only from the hub. */
+  private runsIn(chat: string): Map<number, Report[]> {
+    const runs = new Map<number, Report[]>();
+    for (const { trusted, event } of this.chats.events(chat)) {
+      const said = readContent(event);
+      if (trusted && said.kind === "workflow.run" && mayCome(event, said)) {
+        runs.set(said.content.run, [...(runs.get(said.content.run) ?? []), { ...said.content, ts: event.ts }]);
+      }
+    }
+    return runs;
+  }
+
+  /** A channel's live workflows as its panel shows them, each with its newest runs; null while they are asked, and for a direct chat. A webhook's secret is never among what is shown. */
+  private workflowsIn(chat: string): CurrentView["workflows"] {
+    const entries = this.liveIn(chat);
+    const runs = [...this.runsIn(chat)];
+    return (
+      entries?.map(({ trusted, event }): WorkflowView => {
+        const read = trusted ? this.fileOf(event) : "its signature does not match the key first seen for them";
+        if (typeof read === "string") {
+          return { shown: false, id: event.id, author: event.author, ts: event.ts, why: trusted ? `its file does not read here: ${read}` : read };
+        }
+        const { name, on, steps } = read;
+        return {
+          shown: true,
+          id: event.id,
+          author: event.author,
+          ts: event.ts,
+          name,
+          on: setOff(on),
+          steps: steps.map(stepWords),
+          hook: on.kind === "webhook" ? hookAddress(this.client.config.hub, event.id) : null,
+          secret: on.kind === "webhook" && on.webhook.secret !== undefined,
+          runs: runs
+            .filter(([, reports]) => reports[0]?.workflow === name)
+            .slice(-RUNS_SHOWN)
+            .toReversed()
+            .map(([run, reports]) => ({ run, ts: reports[0]?.ts ?? 0, steps: reports.map(({ step, status, detail }) => ({ step, status, detail })) }))
+        };
+      }) ?? null
+    );
   }
 
   /** Someone joined, left, pinned or unpinned in the open chat, in order. */
@@ -1256,6 +1368,11 @@ export class Session {
   private take(entries: readonly Entry[], announce: boolean): Entry[] {
     const fresh = this.chats.add(entries);
     this.keep(entries);
+    for (const { event } of fresh) {
+      if (event.kind === "workflow.define" || event.kind === "workflow.remove") {
+        this.live.delete(event.to); // Its channel's workflows are asked for again.
+      }
+    }
     for (const key of this.runs.keys()) {
       this.holdFor(key);
       this.stopUnwanted(key);
@@ -1554,6 +1671,7 @@ export class Session {
     await this.refreshChannels();
     this.chats.forget(chat);
     this.paged.delete(chat);
+    this.live.delete(chat);
     if (this.current === chat) {
       this.current = "";
       const first = this.rows()[0];
