@@ -22,6 +22,7 @@ import {
   HIT_OPEN,
   hubInfoSchema,
   isAgent,
+  MAX_SKEW,
   ownerOf,
   personSchema,
   receiptSchema,
@@ -236,12 +237,35 @@ export class Client {
   public async catchUp(after: number): Promise<Delivered[]> {
     const found: Delivered[] = [];
     for (;;) {
-      const page = eventListSchema.parse(parseJson(await this.call("GET", `/events?after=${String(found.at(-1)?.seq ?? after)}&limit=${String(CATCH_UP_PAGE)}`)));
+      const page = await this.page(found.at(-1)?.seq ?? after, CATCH_UP_PAGE);
       found.push(...page);
       if (page.length < CATCH_UP_PAGE) {
         return found;
       }
     }
+  }
+
+  /**
+   * Everything this user can see that was stored since `ts`, Unix seconds, oldest first, with some from before it. The hub pages by seq, not by time, so where to start is found by looking back
+   * from its newest seq, twice as far each time, until the first event there is older than `ts` by more than an event's time and the hub's may differ twice over, or there is nothing further back.
+   * The hub's clock only goes forward, so everything stored after that event was signed at `ts` or later.
+   */
+  public async since(ts: number): Promise<Delivered[]> {
+    const { seq } = await this.head();
+    let after = seq;
+    for (let back = CATCH_UP_PAGE; after > 0; back *= 2) {
+      after = Math.max(0, seq - back);
+      const [first] = await this.page(after, 1);
+      if (first !== undefined && first.event.ts < ts - 2 * MAX_SKEW) {
+        break;
+      }
+    }
+    return this.catchUp(after);
+  }
+
+  /** What this user can see after `after`, oldest first: at most `limit` events. */
+  private async page(after: number, limit: number): Promise<Delivered[]> {
+    return eventListSchema.parse(parseJson(await this.call("GET", `/events?after=${String(after)}&limit=${String(limit)}`)));
   }
 
   /**

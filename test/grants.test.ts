@@ -32,6 +32,15 @@ await test("a grant is read when it lasts at most 30 days from its own time and 
   assert.ok(!fits({ askers: ["Bob"] }));
   assert.ok(!fits({ delivery: "email" }));
   assert.deepEqual(PUBLIC_KINDS, new Set(["agent.register", "grant", "grant.revoke"])); // What may be sent to everyone.
+
+  // An acceptance says who let the run go: its owner, or a grant of theirs by its event's id.
+  const accepted = { repo: "uploader", branch: "main", commit: "a".repeat(40), dirty: false, delivery: "review", mode: "read-only" };
+  for (const by of ["owner", { grant: "b".repeat(64) }]) {
+    assert.notEqual(read("job.accepted", { ...accepted, by }), "unknown");
+  }
+  for (const by of ["grant", { grant: "not an id" }, {}]) {
+    assert.equal(read("job.accepted", { ...accepted, by }), "unknown");
+  }
 });
 
 let lastSeq = 0;
@@ -77,6 +86,9 @@ await test("a grant lets a request run when its author owns the agent, it names 
   assert.equal(live([grant], [], [run(grant), run(grant, { ts: NOW - DAY + 1 })]), null);
   assert.equal(live([grant], [], [run(grant), run(grant, { ts: NOW - DAY })]), id);
   assert.equal(live([grant], [], [run(grant), run(grant, { author: "bob" }), run(grant, { trusted: false }), run(null), run(entry("jacob", "grant", GRANT))]), id); // None of these is a run under it.
+  // A run its owner's desk has let go and not yet told the log of counts as one.
+  assert.equal(liveGrant([grant], [], [run(grant)], { agent: "jacob/uploader", asker: "bob", now: NOW, unlogged: [id] }), null);
+  assert.equal(liveGrant([grant], [], [run(grant)], { agent: "jacob/uploader", asker: "bob", now: NOW, unlogged: [everyone.event.id] })?.id, id);
 });
 
 await test("when several grants apply, the one that allows least wins: the lowest mode, then review before posting, then the first in the log", () => {

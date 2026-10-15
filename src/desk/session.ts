@@ -11,6 +11,8 @@ import { runOf } from "../shared/ipc.ts";
 import type { ActivityItem, Arrival, AskView, ChatView, Check, Command, CurrentView, Hit, LineView, MessageView, NoteView, Notice, ReplyView, RequestView, RowView } from "../shared/ipc.ts";
 import { agentPrompt, ChatLog, chatOf, continues, mentions, ONLINE, refOf, rings } from "../core/chat.ts";
 import type { Accepted, Entry, Message, Request } from "../core/chat.ts";
+import { DAY, liveGrant, revoked } from "../core/grants.ts";
+import type { Grant } from "../core/grants.ts";
 import { readContent } from "../core/kinds.ts";
 import { notesIn } from "../core/links.ts";
 import type { Content, ContentOf, Summary } from "../core/kinds.ts";
@@ -42,6 +44,7 @@ const PROGRESS = 10; // Least seconds between two job.progress events of one run
 const HEARTBEAT = 300; // Seconds after which the chat is told again what a run is doing, unchanged, so that teammates go on believing it works: well within STALE, which a run waiting on its owner may outlast.
 const ITEMS = 500; // Items of one run's activity kept, the newest.
 const FEEDS = 20; // Runs that have ended whose activity is kept, the newest.
+const EVERYONE = 200; // Events to everyone read at a time when the desk starts: the most the hub gives at once.
 
 /**
  * How the user last ran a request: at which mode, whether its answer was posted without a review, and the agent that answered, by its id and command line.
@@ -96,6 +99,8 @@ interface AgentRun {
   readonly post: boolean; // Post the answer as soon as it is ready, rather than drafting it for review.
   readonly mode: PermissionMode; // What the agent may do without asking, as job.accepted says.
   readonly agent: string; // The label of the agent that runs it.
+  readonly grant: string | null; // The id of the grant it runs under; null when its owner let it run themselves.
+  accepting: boolean; // Until the chat is told it runs, or it ends before: a run under a grant counts against its daily limit before the log holds its acceptance.
   readonly cancel: AbortController;
   readonly startedAt: number; // Unix milliseconds.
   done: Promise<void>; // Settles once the agent's process is gone and the chat has been told how it ended.
@@ -189,6 +194,9 @@ export class Session {
   private team: readonly TeamRepo[] = []; // Every repo anyone has checked out.
   private checkouts = new Map<string, Checkout>(); // The user's own, by repo name.
   private readonly agentKeys = new Map<string, KeyObject>(); // The key of the agent in each of them, by repo name, once everyone has been told it this run.
+  private readonly grants = new Map<string, Entry>(); // Every grant to everyone the log holds, by id: one of the user's may let a teammate's request of their agent run without them.
+  private readonly revocations = new Map<string, Entry>(); // Every revocation, by id.
+  private readonly acceptances = new Map<string, Entry>(); // The user's own job.accepted events of the last day, by id, wherever they were sent: what each grant let go, for its daily limit.
   private prefix = ""; // The key every repo this hub shares starts with; "" until the hub has said.
   private advertised: string | null = null; // What the hub was last told about the user's repos.
   private current = ""; // The open chat; "" until one exists.
@@ -660,6 +668,7 @@ export class Session {
         from ??= (await this.client.head()).seq;
         await this.pageNew();
         if (this.streaming === null) {
+          await this.loadGrants();
           this.loaded = true;
           this.openFirst();
           this.streaming = this.client.stream(from, (batch) => this.arrive(batch), this.stopping.signal);
@@ -774,7 +783,9 @@ export class Session {
 
   /** What the stream has just delivered. Should this fail, the stream delivers it again. Someone joining, leaving or pinning changes what the window says about the channel, so its members and pin are asked for again. */
   private async arrive(batch: readonly Delivered[]): Promise<void> {
-    this.take(await this.trust(batch), true);
+    const entries = await this.trust(batch);
+    this.take(entries, true);
+    this.underGrants(entries);
     if (batch.some((delivered) => delivered.event.kind.startsWith("channel."))) {
       await this.refreshChannels().catch(() => undefined); // Best effort: the next presence check asks again.
     }
@@ -790,6 +801,7 @@ export class Session {
 
   private take(entries: readonly Entry[], announce: boolean): void {
     const fresh = this.chats.add(entries);
+    this.keep(entries);
     this.openFirst();
     if (announce) {
       this.announce(fresh.filter((entry) => (entry.event.kind === "message" || entry.event.kind === "job.result") && ownerOf(entry.event.author) !== this.me));
@@ -874,7 +886,8 @@ export class Session {
   /**
    * Send what the user typed, as a message or with `refs` as a reply in a thread. They typed it here, so its tags of their own agents run at once without asking, at the mode they chose for their own requests:
    * its id is known as soon as it is signed, so it is folded in its place and run from there.
-   * Nothing that arrives from the hub ever starts an agent. A message from anyone else, from the command or anything else that is not this window, or from this window before the desk last started, waits for the owner's click.
+   * Nothing else the user sends starts an agent, and nothing that arrives from the hub does unless a grant of theirs lets a teammate's request go (see `underGrants`):
+   * a message from anyone else, from the command or anything else that is not this window, or from this window before the desk last started, waits for the owner's click.
    */
   private async send(chat: string, text: string, refs: readonly string[]): Promise<void> {
     const body = fitText(text.trim());
@@ -888,7 +901,7 @@ export class Session {
         const mode = this.ownMode();
         const why = this.cannotRun(mode);
         if (why === "") {
-          this.startRun(message, request.repo, true, mode);
+          this.startRun(message, request.repo, true, mode, null);
         } else {
           const config = joinPath(this.client.home, "config.json");
           const body = `${why}. To let your own requests run it, make an agent spoken to over ACP, such as Cursor or Copilot, the one that answers on the Setup page, or set "ownMode" to "full" in ${config}`;
@@ -1013,7 +1026,7 @@ export class Session {
       if (message.text !== seen) {
         throw new PlayerTwoError(`${message.entry.event.author} edited the request after you saw it: read it again before you run it`);
       }
-      this.startRun(message, repo, post, mode);
+      this.startRun(message, repo, post, mode, null);
       const agent = defaultAgentOf(this.client.config);
       this.choices[`${message.entry.event.author} ${repo}`] = { mode, post, agent: { id: agent.id, line: commandLineOf(agent) } };
       this.save();
@@ -1119,6 +1132,88 @@ export class Session {
     this.hooks.notice({ title: "", body: `Cloned ${repo} into ${destination}. Your ${repo} agent can be tagged now.`, severity: "info" });
   }
 
+  // ── standing grants ───────────────────────────────────────────────────────
+
+  /**
+   * Read what grants are decided by, before the stream is followed: every event to everyone, newest first back to the first, for the grants and their revocations;
+   * and the user's own acceptances of the last day, from wherever they were sent, so that what a grant let go before the desk started counts against its daily limit.
+   */
+  private async loadGrants(): Promise<void> {
+    for (let before: number | undefined; ;) {
+      const page = await this.client.events(before === undefined ? { chat: "*", limit: EVERYONE } : { chat: "*", before, limit: EVERYONE });
+      this.keep(await this.trust(page));
+      before = page.at(-1)?.seq;
+      if (page.length < EVERYONE) {
+        break;
+      }
+    }
+    const day = await this.client.since(this.client.now() - DAY);
+    this.keep(await this.trust(day.filter(({ event }) => event.kind === "job.accepted" && event.author === this.me)));
+  }
+
+  /**
+   * Keep, of what the hub delivered, what grants are decided by: every grant sent to everyone, every revocation, and the user's own acceptances of the last day.
+   * A run under a grant that has been revoked is stopped: the revocation takes back the say-so it ran on, and the user can still run the request themselves.
+   */
+  private keep(entries: readonly Entry[]): void {
+    const now = this.client.now();
+    for (const entry of entries) {
+      const { id, kind, author, to } = entry.event;
+      if (kind === "grant" && to === "*") {
+        this.grants.set(id, entry);
+      } else if (kind === "grant.revoke") {
+        this.revocations.set(id, entry);
+      } else if (kind === "job.accepted" && author === this.me) {
+        this.acceptances.set(id, entry);
+      }
+    }
+    for (const [id, { event }] of this.acceptances) {
+      if (now - event.ts >= DAY) {
+        this.acceptances.delete(id);
+      }
+    }
+    const revocations = [...this.revocations.values()];
+    for (const run of this.runs.values()) {
+      const grant = this.grants.get(run.grant ?? "");
+      if (grant !== undefined && revoked(grant, revocations)) {
+        run.cancel.abort();
+      }
+    }
+  }
+
+  /**
+   * Let each request of the user's agents that arrives from a teammate run when a grant of the user's lets it: at the grant's mode and with its delivery, never more, and job.accepted names the grant.
+   * One of the user's own never runs under a grant: from this window it runs at once, and from anywhere else it waits for their click, so an agent that sends one in their name cannot start itself.
+   * Only a request that arrives while the desk follows the hub is let go: one that waited while it was not running waits for a click.
+   * When the agent that answers cannot be held to the grant's mode, the request waits for a click as any other, and the user is told why.
+   */
+  private underGrants(arrived: readonly Entry[]): void {
+    const now = this.client.now();
+    for (const { trusted, event } of arrived) {
+      const message = trusted && event.kind === "message" && event.author !== this.me ? this.chats.message(event.id) : null;
+      if (message === null) {
+        continue;
+      }
+      for (const { owner, repo, state } of this.chats.requests(message, now)) {
+        const grant = owner === this.me && state === "waiting" && this.checkouts.has(repo) ? this.grantFor(repo, event.author, now) : null;
+        if (grant === null) {
+          continue;
+        }
+        try {
+          this.startRun(message, repo, grant.delivery === "post", grant.mode, grant.id);
+        } catch (error) {
+          this.hooks.notice({ title: `your ${repo} agent did not run ${event.author}'s request under your grant`, body: problemOf(error), severity: "error" });
+        }
+      }
+    }
+  }
+
+  /** The grant of the user's that lets `asker`'s request of their agent in `repo` run at `now`, counting each run started under one that the log does not hold yet; null when none does. */
+  private grantFor(repo: string, asker: string, now: number): Grant | null {
+    const unlogged = [...this.runs.values()].flatMap((run) => (run.accepting && run.grant !== null ? [run.grant] : []));
+    return liveGrant([...this.grants.values()], [...this.revocations.values()], [...this.acceptances.values()], { agent: `${this.me}/${repo}`, asker, now, unlogged });
+  }
+
   // ── running an agent ──────────────────────────────────────────────────────
 
   /**
@@ -1159,8 +1254,11 @@ export class Session {
     return MODES.toReversed().find((mode) => atMost(mode, ownMode) && this.cannotRun(mode) === "") ?? ownMode;
   }
 
-  /** Start a run at `mode`, unless the agent that answers cannot be held to it: then refuse it, before anything is told to the chat, saying which setting would let it run. */
-  private startRun(message: Message, repo: string, post: boolean, mode: PermissionMode): void {
+  /**
+   * Start a run at `mode`, by the user's own say or under the grant `grant` names, unless the agent that answers cannot be held to it: then refuse it, before anything is told to the chat,
+   * saying which setting would let it run.
+   */
+  private startRun(message: Message, repo: string, post: boolean, mode: PermissionMode, grant: string | null): void {
     const checkout = this.checkouts.get(repo);
     const key = runOf(message.entry.event.id, repo);
     if (this.runs.has(key)) {
@@ -1184,6 +1282,8 @@ export class Session {
       post,
       mode,
       agent: agent.label,
+      grant,
+      accepting: true,
       cancel: new AbortController(),
       startedAt: Date.now(),
       done: Promise.resolve(),
@@ -1331,7 +1431,7 @@ export class Session {
       if (stopped()) {
         throw new AgentCancelledError(`Stopped your ${repo} agent before it started.`); // While git was asked where the checkout stands: nothing ran, so the chat hears nothing.
       }
-      await this.client.publish(chat, "job.accepted", { repo, ...head, delivery: run.post ? "post" : "review", mode: run.mode, by: "owner" }, request);
+      await this.accept(key, run, chat, head);
       this.noted(key, startedItem(run.agent, run.mode));
     } catch (error) {
       this.hooks.notice(
@@ -1381,6 +1481,17 @@ export class Session {
     }
     this.runs.delete(key);
     this.hooks.changed();
+  }
+
+  /** Tell the chat a run goes ahead: on which branch and commit, at which mode and delivery, and who let it, its owner or a grant of theirs, which then counts it from the log. */
+  private async accept(key: string, run: AgentRun, chat: string, head: Head): Promise<void> {
+    const by = run.grant === null ? "owner" : { grant: run.grant };
+    const accepted = await this.client.publish(chat, "job.accepted", { repo: run.repo, ...head, delivery: run.post ? "post" : "review", mode: run.mode, by }, [run.entry.event.id]);
+    this.keep([{ ...accepted, trusted: true }]);
+    const going = this.runs.get(key); // The same run: counted from the log from now on, and no longer as one the log does not hold.
+    if (going !== undefined) {
+      going.accepting = false;
+    }
   }
 
   /** The client that signs as my agent in `repo`, with the key everyone was told of: a run's own reports, and an answer nobody reviewed, are the agent's to sign. */

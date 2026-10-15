@@ -1190,3 +1190,81 @@ await test(
     assert.equal(opened?.messages.find((message) => message.id === earlier.event.id)?.body, "the uploader died with ECONNRESET when the proxy closed the connection");
   }
 );
+
+await test(
+  "a grant of its owner's lets a teammate's request run with nobody at the desk, at the grant's mode and delivery, which job.accepted records with the grant; not when the agent cannot keep the mode, which leaves the request waiting and says why; a run under a grant stops once it is revoked; and the daily limit counts a run the log does not hold yet, and holds across a restart",
+  { timeout: 60_000 },
+  async (t) => {
+    const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+    const alice = await hub.join("alice");
+    const owner = await hub.join("bob"); // His agent is a one-shot command of his own, which runs only at full.
+    const dev = join(hub.dir, "dev-bob");
+    checkout(dev, "uploader");
+    let held: Promise<unknown> = Promise.resolve(); // What git is waited for before it says where the checkout stands.
+    const options = { describe: () => held.then(() => ({ branch: "main", commit: COMMIT, dirty: false })), runner: patient };
+    const bob = deskOf(t, owner, dev, options);
+    await until(bob.session, "the checkout shared", (view) => view.loaded && view.myRepos.includes("uploader"));
+    const expires = Math.floor(Date.now() / 1000) + 3600;
+    const grant = async (mode: PermissionMode, delivery: "review" | "post"): Promise<string> =>
+      (await owner.publish("*", "grant", { agent: "bob/uploader", askers: ["alice"], mode, delivery, expires, runsPerDay: 1 })).event.id;
+    const ask = async (text: string): Promise<string> => (await alice.publish("bob", "message", { text: `@bob/uploader ${text}`, via: "window" })).event.id;
+    const status = (id: string, session = bob.session): string | undefined => {
+      session.handle({ do: "open", chat: "alice" }).catch(() => undefined);
+      return shownTo(session, id)?.requests[0]?.status.kind;
+    };
+    /** The job's events in the hub's log, oldest first, an acceptance with what it let go at and who let it. */
+    const jobs = async (id: string): Promise<string[]> =>
+      (await alice.events({ chat: "bob", limit: 200 }))
+        .filter(({ event }) => event.refs[0] === id)
+        .map(({ event }) => {
+          const said = readContent(event);
+          return said.kind === "job.accepted" ? `${event.kind} ${said.content.mode} ${said.content.delivery} ${JSON.stringify(said.content.by)}` : event.kind;
+        })
+        .reverse();
+
+    // Read-only, which his one-shot command cannot keep: the request waits for his click, and he is told why.
+    const readOnly = await grant("read-only", "review");
+    const first = await ask("have a look");
+    await until(bob.session, "told why it did not run", () => status(first) === "ready" && bob.notices.length > 0);
+    const why = "fake-agent runs as a single command and cannot be limited: it runs only with full access";
+    const told = `${why}. To run it read-only, make an agent spoken to over ACP, such as Cursor or Copilot, the one that answers on the Setup page, or run it with full access`;
+    assert.deepEqual(bob.notices, [{ title: "your uploader agent did not run alice's request under your grant", body: told, severity: "error" }]);
+    assert.deepEqual([bob.ran, await jobs(first)], [[], []]);
+
+    // At full, for review, once a day. While git is asked where the checkout stands, the first run counts against the day before the log holds it, so the request right behind it waits.
+    await owner.publish("*", "grant.revoke", {}, [readOnly]); // The least allowing grant wins: while the read-only one stood, it decided.
+    const full = await grant("full", "review");
+    const git = Promise.withResolvers();
+    held = git.promise;
+    const slow = await ask("take your time");
+    const second = await ask("and this");
+    await until(bob.session, "the first running and the second waiting", () => status(slow) === "running" && status(second) === "ready");
+    git.resolve(undefined);
+    await until(bob.session, "the first told to the chat", () => shownTo(bob.session, slow)?.requests[0]?.accepted !== null);
+    assert.deepEqual(await jobs(slow), [`job.accepted full review {"grant":"${full}"}`]);
+    assert.deepEqual([bob.ran.length, await jobs(second)], [1, []]);
+
+    // Revoked, the grant takes back what the run goes on: it is stopped, and the request is his to run again.
+    await owner.publish("*", "grant.revoke", {}, [full]);
+    await until(bob.session, "the run stopped", () => status(slow) === "ready");
+    assert.deepEqual(await jobs(slow), [`job.accepted full review {"grant":"${full}"}`, "job.cancelled"]);
+
+    // Posted directly, once a day: its one run is counted from the log, so after a restart, with the chat grown past the page a desk loads, the next request waits.
+    const posted = await grant("full", "post");
+    const third = await ask("one more");
+    for (let tries = 0; tries < 100 && !(await jobs(third)).includes("job.result"); tries += 1) {
+      await pause(50);
+    }
+    assert.deepEqual(await jobs(third), [`job.accepted full post {"grant":"${posted}"}`, "job.result"]);
+    for (let n = 0; n < 60; n += 1) {
+      await alice.publish("bob", "message", { text: `later ${String(n)}`, via: "cli" });
+    }
+    await bob.session.stop();
+    const again = deskOf(t, owner, dev, options);
+    await until(again.session, "his desk started again", (view) => view.loaded && view.myRepos.includes("uploader"));
+    const fourth = await ask("and another");
+    await until(again.session, "the request after the restart", () => status(fourth, again.session) === "ready");
+    await pause(300);
+    assert.deepEqual([again.ran, await jobs(fourth)], [[], []]);
+  }
+);

@@ -390,7 +390,7 @@ export class ChatLog {
     const fresh = entries.filter((entry) => !this.where.has(entry.event.id)).sort((a, b) => a.seq - b.seq);
     for (const entry of fresh) {
       if (entry.event.to === "*") {
-        continue; // Nothing may be sent to everyone until phase 4 names the kinds that can.
+        continue; // Agents' keys and grants, sent to everyone, are in no chat: the client and the session keep what they need of them.
       }
       const chat = chatOf(entry.event, this.me);
       const events = this.chats.get(chat) ?? [];

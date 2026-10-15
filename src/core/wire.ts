@@ -40,7 +40,7 @@ const repoUrlSchema = sized(0, 400).regex(/^https:\/\/[^\x00-\x20]+$/);
 export const branchSchema = sized(1, 200).regex(/^[^\x00-\x1f]+$/);
 export const pubKeySchema = z.string().regex(/^[0-9a-f]{64}$/);
 const signatureSchema = z.string().regex(/^[0-9a-f]{128}$/);
-const hashSchema = z.string().regex(/^[0-9a-f]{64}$/); // An event's id, or a link in the hub's chain: a sha256 in hex.
+export const hashSchema = z.string().regex(/^[0-9a-f]{64}$/); // An event's id, or a link in the hub's chain: a sha256 in hex.
 
 export const userSchema = z.strictObject({ name: nameSchema, pubkey: pubKeySchema }).readonly();
 
