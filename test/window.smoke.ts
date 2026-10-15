@@ -234,7 +234,7 @@ async function addAgent(page: Page, program: string, args: readonly string[]): P
 }
 
 await test(
-  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, keeps a card in reach in a closed thread and brings one far above the end into view, refuses and allows for the run from a card, and offers only the modes the agent that answers can keep, full alone beside its reason when that is all, and a full chosen once not again in one click when less is there, and for a grant full alone while it is untested; and on My agents makes grants from its dialog, which warns of full access for anyone however its answers go and asks a second yes when they are posted directly, one grant for each double click, revokes one with a double click and not the next, counts the run a grant lets go, and holds a repo back with a double click, unshared and answering nobody under that grant, and lets it answer again; and says under whose grant a run went ahead, to its owner and to whoever asked, and that an answer its agent signed was not reviewed; and while a grant is live hides on close, answering on, until started again; lists a grant apart once its repo is not checked out here, and revokes it there; and quits on close once none is",
+  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, keeps a card in reach in a closed thread and brings one far above the end into view, refuses and allows for the run from a card, and offers only the modes the agent that answers can keep, full alone beside its reason when that is all, and a full chosen once not again in one click when less is there, and for a grant full alone while it is untested; and on My agents makes grants from its dialog, which warns of full access for anyone however its answers go and asks a second yes when they are posted directly, one grant for each double click, revokes one with a double click and not the next, counts the run a grant lets go, and holds a repo back with a double click, unshared and answering nobody under that grant, and lets it answer again; and says under whose grant a run went ahead, to its owner and to whoever asked, and that an answer its agent signed was not reviewed; and while a grant is live stays open on close, saying why, where it cannot say it went to the tray, and once told hides on close, answering on, until started again; lists a grant apart once its repo is not checked out here, and revokes it there; and quits on close once none is",
   { skip: NO_DISPLAY ? "no display: run it under xvfb-run" : false, timeout: 120_000 },
   async (t) => {
     assert.ok(existsSync(join(ROOT, "dist", "main.js")), "dist/ is not built: run `npm run build` first");
@@ -249,6 +249,7 @@ await test(
     const env: Record<string, string | undefined> = { ...process.env, HOME: home, XDG_CONFIG_HOME: join(home, ".config") };
     delete env["PLAYER_TWO_HOME"];
     delete env["PLAYER_TWO_DEV"];
+    delete env["DBUS_SESSION_BUS_ADDRESS"]; // With no session bus no notification can be shown, wherever this runs: see where the window is closed with a grant live.
     // On a virtual display with no window manager, as in CI, Chromium may take the window for hidden and stop drawing frames, which freezes every
     // transition at its start: a toast that never slides in is "out of place". These are the switches Playwright starts Chromium with for the same reason.
     const unthrottled = ["--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding", "--disable-background-timer-throttling"];
@@ -901,17 +902,27 @@ await test(
     await page.until("billing answering again", `${billing}.innerText.includes(${JSON.stringify(`on main · ${process.execPath} answers`)})`);
     await shared(true);
 
-    // With her grant live, closing the window hides it, and her desk goes on answering: carol's next request runs under the grant. Starting the app again brings the same window back.
+    // With her grant live, closing the window would hide it to the tray, the first time with a notification saying so. None can be shown here, so it stays open and says why in
+    // the window, and the window's own settings do not count her as told. Starting at login is left alone: Electron cannot here.
     await page.click("button", "Back");
+    const windowSettings = join(home, ".config", "Player Two", "settings.json");
+    const told = (): unknown => (existsSync(windowSettings) ? z.object({ toldHidden: z.boolean().optional() }).parse(JSON.parse(readFileSync(windowSettings, "utf8"))).toldHidden : undefined);
     // Ctrl+W is Electron's own Window → Close, as the window's close button is: a close the app may turn down, which a page's window.close() is not.
+    await page.press("w", CTRL, "rawKeyDown");
+    await page.until(
+      "the window saying why it stays",
+      `[...document.querySelectorAll("[data-sonner-toast]")].some((each) => each.textContent.includes("Player Two stays open while a grant of yours is live"))`
+    );
+    assert.deepEqual([await page.eval("document.visibilityState"), app.exitCode, told()], ["visible", null, undefined]);
+
+    // Told on an earlier run, where a notification could be shown, closing hides the window, and her desk goes on answering: carol's next request runs under the grant.
+    // Starting the app again brings the same window back.
+    writeFileSync(windowSettings, JSON.stringify({ distro: null, toldHidden: true }));
     await page.press("w", CTRL, "rawKeyDown");
     await page.until("the window hidden", `document.visibilityState === "hidden"`);
     await carol.publish("alice", "message", { text: "@alice/billing read it while hidden", via: "cli" });
     await page.until("carol's request answered while hidden", `[...document.querySelectorAll("main article")].some((each) => each.innerText.includes("carol: @alice/billing read it while hidden"))`);
     assert.equal(app.exitCode, null);
-    // The window's own settings say she has been told, once, that it went to the tray. Starting at login is left alone: Electron cannot here.
-    const windowSettings: unknown = JSON.parse(readFileSync(join(home, ".config", "Player Two", "settings.json"), "utf8"));
-    assert.deepEqual(windowSettings, { distro: null, toldHidden: true });
     await startAgain([]);
     await page.until("the window shown again", `document.visibilityState === "visible"`);
     await page.click("footer button", "My agents");

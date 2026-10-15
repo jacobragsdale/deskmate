@@ -1,6 +1,7 @@
 /**
  * The desktop app's main process: one window, the desk it starts and speaks to, and the operating system's notifications, badge, dialogs and tray icon. The session is not here: it is in the desk,
- * a process of its own. While a grant of the user's is live, closing the window hides it to the tray, so the desk goes on answering under it; Quit in the tray's menu quits.
+ * a process of its own. While a grant of the user's is live, closing the window hides it to the tray, so the desk goes on answering under it, or keeps it open where the user could not be told
+ * it went there; Quit in the tray's menu quits.
  */
 
 import { join as joinPath } from "node:path";
@@ -29,6 +30,7 @@ let current: View | null = null; // What the desk last said to draw; null until 
 let stopped = false;
 let quitting = false; // Once the user, the tray's Quit or the system has asked the app to quit: the window then closes for real.
 let tray: Tray | null = null;
+let untold = false; // Once the system has failed to show the notice that the window went to the tray: it then stays in sight for the rest of this run.
 let linked: string | null = noteIn(process.argv); // A note a link asked for that the desk has not been asked to open yet: one the app was started with waits until the chats are loaded.
 
 function report(error: unknown): void {
@@ -269,18 +271,42 @@ function makeTray(): void {
   trayMenu();
 }
 
-/** Tell the user, the first time ever, that closing the window hid it rather than quitting, and how to quit. */
-function toldHidden(): void {
+/** Whether closing the window may hide it to the tray: there is a tray to bring it back from, and the user has been told once that closing hides it, or can be told now. */
+function mayHide(): boolean {
+  return tray !== null && (settings().toldHidden === true || (Notification.isSupported() && !untold));
+}
+
+/**
+ * Tell the user, the first time, that closing the window hid it rather than quitting, and how to quit. They count as told once the system has shown it; when it could not, the window comes back
+ * and says why it stays, as it does where nothing can be shown, so the user is never left with an app running out of sight that nothing told them of.
+ */
+function tellHidden(): void {
   if (settings().toldHidden === true) {
     return;
   }
-  saveSettings(app.getPath("userData"), { toldHidden: true });
-  if (Notification.isSupported()) {
-    new Notification({
-      title: "Player Two is still running",
-      body: "A grant of yours is live, so Player Two stays in the tray to let your agent answer under it. Quit from the tray icon's menu to stop it."
-    }).show();
-  }
+  const notification = new Notification({
+    title: "Player Two is still running",
+    body: "A grant of yours is live, so Player Two stays in the tray to let your agent answer under it. Quit from the tray icon's menu to stop it."
+  });
+  notification.on("show", () => {
+    saveSettings(app.getPath("userData"), { toldHidden: true });
+  });
+  notification.on("failed", () => {
+    untold = true;
+    bringUp();
+    stayOpen();
+  });
+  notification.show();
+}
+
+/** Say in the window why closing it left it open: a grant is live, and the app cannot hide to the tray and say so. */
+function stayOpen(): void {
+  const notice: Notice = {
+    title: "Player Two stays open while a grant of yours is live",
+    body: "Your agent may have to answer under it with nobody looking, and this system cannot show that Player Two went to the tray, so the window stays. Quit from its menu to stop it.",
+    severity: "info"
+  };
+  window?.webContents.send("notice", notice);
 }
 
 function openOutside(url: string): void {
@@ -325,9 +351,13 @@ function createWindow(hidden: boolean): void {
   });
   created.on("close", (event) => {
     if (!quitting && granting()) {
-      event.preventDefault(); // Hidden, not closed: the desk goes on answering under the user's grants.
-      created.hide();
-      toldHidden();
+      event.preventDefault(); // Not closed: the desk goes on answering under the user's grants.
+      if (mayHide()) {
+        created.hide();
+        tellHidden();
+      } else {
+        stayOpen(); // With no tray to come back from, or no way to say it went there, it stays in sight.
+      }
       return;
     }
     const { working, unsent } = current?.kind === "chat" ? current.busy : { working: 0, unsent: 0 };
