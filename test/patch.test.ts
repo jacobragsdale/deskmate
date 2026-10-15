@@ -379,6 +379,11 @@ await test(
     ]);
     assert.equal(snapshot(theirs), withMine);
     assert.deepEqual(asker.view().current?.messages.find((message) => message.id === good)?.patch?.applied, []);
+    // A symbolic link, which points wherever its author chose, is warned of too.
+    const link = await sends("diff --git a/key b/key\nnew file mode 120000\n--- /dev/null\n+++ b/key\n@@ -0,0 +1 @@\n+/home/bob/.ssh/id_ed25519\n\\ No newline at end of file\n");
+    await asker.handle({ do: "applyPatch", id: link });
+    assert.match(questions.at(-1)?.detail ?? "", /\n⚠ It makes symbolic links, which point wherever their author chose: see where each points before anything reads through one\.$/);
+    assert.equal(snapshot(theirs), withMine);
 
     // Yes applies it, though the desk inherited variables that would send git to another repository, and the chat hears where.
     reply.yes = true;

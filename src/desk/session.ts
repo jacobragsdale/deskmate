@@ -1411,8 +1411,8 @@ export class Session {
 
   /**
    * Put a patch to the user before it is applied, in a dialog of the system's own: who it is from, what it goes `onto`, its title, the repo and `where` in it, its files with what each
-   * adds and removes, and `warnings`, with one of its own when it changes files their agents read as instructions. Everything from the diff is drawn plain. Resolves with whether they
-   * said yes, on the button that reads `confirm`.
+   * adds and removes, and `warnings`, with one of its own when it changes files their agents read as instructions, and one when it makes symbolic links. Everything from the diff is
+   * drawn plain. Resolves with whether they said yes, on the button that reads `confirm`.
    */
   private async mayApply(
     { message, patch, checkout }: ReturnType<Session["toApply"]>,
@@ -1424,7 +1424,11 @@ export class Session {
     const instructions = touchesInstructions(patch.diff);
     const warned = [
       ...warnings,
-      ...(instructions.length > 0 ? [`⚠ It changes files your agents read as instructions: ${instructions.map(plain).join(", ")}. Read them before an agent works here again.`] : [])
+      ...(instructions.length > 0 ? [`⚠ It changes files your agents read as instructions: ${instructions.map(plain).join(", ")}. Read them before an agent works here again.`] : []),
+      // A header line, as git writes one: no line of a hunk starts so.
+      ...(/^(?:new file mode|new mode) 120000$/m.test(patch.diff)
+        ? ["⚠ It makes symbolic links, which point wherever their author chose: see where each points before anything reads through one."]
+        : [])
     ];
     const lines = [plain(patch.title), "", `Repo: ${checkout.remote.name}, in ${checkout.path}`, where, "", "Files:", ...files.slice(0, 20)];
     const question = {
