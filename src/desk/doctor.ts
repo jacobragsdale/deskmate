@@ -8,8 +8,9 @@ import { z } from "zod";
 import { quote } from "../core/install.ts";
 import { problemOf } from "../core/text.ts";
 import { defaultAgentOf, MAX_SKEW, PROTOCOL } from "../core/wire.ts";
-import type { Config, HubInfo } from "../core/wire.ts";
+import type { Agent, Config, HubInfo } from "../core/wire.ts";
 import type { Check } from "../shared/ipc.ts";
+import { greet, SignInNeeded } from "./agents/acp.ts";
 import { http, loadClient, readConfig } from "./client.ts";
 import type { Client } from "./client.ts";
 import { git, origin, scan } from "./repos.ts";
@@ -19,6 +20,7 @@ const LIMIT = 20; // Seconds anything one check does may take. Each call has a s
 const HUB_TIMEOUT = 10;
 const GIT_TIMEOUT = 10;
 const GIT_AUTH_TIMEOUT = 15;
+const ACP_TIMEOUT = 10; // Seconds an agent over ACP has to start, agree a protocol and open a session.
 const CLOCK_WARN = 60; // Seconds apart at which the clocks are worth a warning. At MAX_SKEW the hub refuses signatures.
 const CERTIFICATE = /CERT|SELF_SIGNED|UNABLE_TO_VERIFY|UNABLE_TO_GET_ISSUER/; // Node's codes for a certificate it does not trust.
 const JOIN = "Join from the window, or run: player-two join HUB NAME TOKEN";
@@ -241,13 +243,24 @@ function agent(home: string, config: Config): Outcome {
     : ok(`${program} is ${where}`);
 }
 
+/** Whether an agent over ACP starts and speaks the protocol, and its version; or why not, with the command that signs in when that is why. */
+async function agentAcp(agent: Agent): Promise<Outcome> {
+  try {
+    const version = await greet(agent, ACP_TIMEOUT);
+    return ok(`${agent.label} answers over ACP${version === "" ? "" : `, version ${version}`}`);
+  } catch (error) {
+    const install = findProgram(agent.command, process.env["PATH"] ?? "") === null ? (INSTALL.get(agent.command) ?? "") : "";
+    return fail(problemOf(error), error instanceof SignInNeeded ? error.how.replaceAll("`", "") : install);
+  }
+}
+
 /** What a check found, or that it failed while looking. */
 function either(found: Found<Outcome>): Outcome {
   return found.ok ? found.value : fail(found.problem);
 }
 
 /**
- * Check what Player Two needs here, in order: Node, the identity in `home`, the hub and the way to it, the clocks, the repos under `dev`, git, and the agent.
+ * Check what Player Two needs here, in order: Node, the identity in `home`, the hub and the way to it, the clocks, the repos under `dev`, git, the agent, and each agent over ACP.
  * A check that needs what an earlier one could not find is skipped and says why. Nothing here throws, and nothing waits for long.
  */
 export async function runChecks(home: string, dev: string): Promise<Check[]> {
@@ -282,6 +295,9 @@ export async function runChecks(home: string, dev: string): Promise<Check[]> {
       title: "git reaches the team's repos without asking",
       ...(version.ok && found.checkout !== undefined ? await gitAuth(found.checkout) : skip(version.ok ? "no team repo is checked out to try" : "git does not run"))
     },
-    { id: "agent", title: "The agent's command is found", ...(config === null ? skip("not joined, so no agent is chosen yet") : either(await attempt(() => agent(home, config)))) }
+    { id: "agent", title: "The agent's command is found", ...(config === null ? skip("not joined, so no agent is chosen yet") : either(await attempt(() => agent(home, config)))) },
+    ...(await Promise.all(
+      (config?.agents ?? []).filter((each) => each.protocol === "acp").map(async (each) => ({ id: `agent-acp:${each.id}`, title: `${each.label} starts and speaks ACP`, ...(await agentAcp(each)) }))
+    ))
   ];
 }

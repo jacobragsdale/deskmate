@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { TestContext } from "node:test";
 
+import { http, loadClient } from "../src/desk/client.ts";
 import { runChecks } from "../src/desk/doctor.ts";
 import type { Check } from "../src/shared/ipc.ts";
 import { startHub, TEAM_REPOS } from "./startHub.ts";
@@ -98,4 +99,39 @@ await test("an unreachable hub fails the hub, and the checks that need its answe
   const checks = await runChecks(home, dev);
   assert.equal(checks.find((check) => check.id === "hub")?.detail, `cannot reach ${hub}: connect ECONNREFUSED 127.0.0.1:${String(address.port)}`);
   assert.deepEqual(statuses(checks), { ...Object.fromEntries(IDS.map((id) => [id, "ok"])), hub: "fail", protocol: "skip", clock: "skip", repos: "skip", "git-auth": "skip" });
+});
+
+await test("each agent over ACP is started and asked to open a session, and fails with its own words, or with how to sign in when that is what it needs", { timeout: 60_000 }, async (t) => {
+  const { home, dev } = await machine(t);
+  const client = loadClient(home, http, () => Date.now() / 1000);
+  assert.ok(client !== null);
+  const fake = { label: "Fake", protocol: "acp", command: process.execPath, args: [join(import.meta.dirname, "fixtures", "fake-acp-agent.ts")] } as const;
+  client.saveAgents(
+    [
+      ...client.config.agents,
+      { ...fake, id: "fake" },
+      { ...fake, id: "signed-out", label: "Signed out", args: [...fake.args, "--signed-out"] },
+      { ...fake, id: "broken", label: "Broken", args: ["--no-such-flag-for-node"] }
+    ],
+    client.config.defaultAgent
+  );
+  const checks = await runChecks(home, dev);
+  assert.deepEqual(
+    checks.filter((check) => check.id.startsWith("agent-acp:")),
+    [
+      { id: "agent-acp:fake", title: "Fake starts and speaks ACP", status: "ok", detail: "Fake answers over ACP, version 1.2.3", fix: "" },
+      {
+        id: "agent-acp:signed-out",
+        title: "Signed out starts and speaks ACP",
+        status: "fail",
+        detail: "Signed out is not signed in. Sign in once in a terminal where your repos are, inside WSL on Windows, with Signed out's own sign-in, then try again",
+        fix: "Signed out's own sign-in"
+      },
+      { id: "agent-acp:broken", title: "Broken starts and speaks ACP", status: "fail", detail: `Broken ended with status 9: ${process.execPath}: bad option: --no-such-flag-for-node`, fix: "" }
+    ]
+  );
+  assert.deepEqual(
+    checks.map((check) => check.id),
+    [...IDS, "agent-acp:fake", "agent-acp:signed-out", "agent-acp:broken"]
+  );
 });

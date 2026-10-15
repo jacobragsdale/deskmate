@@ -67,7 +67,7 @@ function input(): ReadableStream<Uint8Array> {
 
 acp
   .agent({ name: "fake-acp-agent" })
-  .onRequest("initialize", () => ({ protocolVersion: acp.PROTOCOL_VERSION, authMethods: [{ id: "browser", name: "Sign in with a browser" }] }))
+  .onRequest("initialize", () => ({ protocolVersion: acp.PROTOCOL_VERSION, agentInfo: { name: "fake-acp-agent", version: "1.2.3" }, authMethods: [{ id: "browser", name: "Sign in with a browser" }] }))
   .onRequest("authenticate", () => {
     throw new Error("there is no browser here");
   })

@@ -5,6 +5,9 @@
 
 import { spawn } from "node:child_process";
 import type { ChildProcessByStdio } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Writable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Readable } from "node:stream";
@@ -36,11 +39,25 @@ const CANCELLED: acp.RequestPermissionResponse = { outcome: { outcome: "cancelle
 const MCP_SERVER: acp.McpServerStdio = { name: "player-two", command: "player-two", args: ["mcp"], env: [] };
 
 // What the agent answers is parsed for the parts used here; anything more it says is passed over.
-const initializedSchema = z.object({ protocolVersion: z.number(), authMethods: z.array(z.object({ id: z.string(), type: z.string().optional(), args: z.array(z.string()).optional() })).default([]) });
+const initializedSchema = z.object({
+  protocolVersion: z.number(),
+  agentInfo: z.object({ version: z.string() }).nullish(),
+  authMethods: z.array(z.object({ id: z.string(), type: z.string().optional(), args: z.array(z.string()).optional() })).default([])
+});
 const sessionSchema = z.object({ sessionId: z.string() });
 const promptedSchema = z.object({ stopReason: z.string() });
 
 type Initialized = z.infer<typeof initializedSchema>;
+
+/** The agent needs signing in, and Player Two could not do it: `how` is what the user does instead, in words for them, commands between backticks. */
+export class SignInNeeded extends PlayerTwoError {
+  public readonly how: string;
+
+  constructor(agent: Agent, how: string, options?: ErrorOptions) {
+    super(`${agent.label} is not signed in. Sign in once in a terminal where your repos are, inside WSL on Windows, with ${how}, then try again`, options);
+    this.how = how;
+  }
+}
 
 /** What one prompt turn is doing: the mode and handlers it runs with, what the agent has said so far, and its feed. */
 interface Turn {
@@ -153,6 +170,7 @@ class Conversation {
   public turn: Turn | null = null;
   public readonly gone: Promise<void>; // Settles once the process has exited, or never started.
   public exited = false;
+  public version = ""; // The agent's own version, as it says when the protocol is agreed; "" when it does not.
   private readonly agent: Agent;
   private readonly child: ChildProcessByStdio<Writable, Readable, Readable>;
   private readonly connection: acp.ClientConnection;
@@ -196,8 +214,11 @@ class Conversation {
       .connect(acp.ndJsonStream(Writable.toWeb(this.child.stdin), readable(this.child.stdout)));
   }
 
-  /** Agree a protocol, sign in if the agent says it must, and open a session in `cwd` with Player Two's MCP server attached. */
-  public async open(cwd: string): Promise<void> {
+  /**
+   * Agree a protocol, sign in if the agent says it must, and open a session in `cwd` with Player Two's MCP server attached.
+   * For the setup check, `looking` opens one with no MCP server and leaves signing in to the user, saying how.
+   */
+  public async open(cwd: string, looking = false): Promise<void> {
     const initialized = initializedSchema.parse(
       await this.ask(
         this.connection.agent.request("initialize", { protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {}, clientInfo: { name: "player-two", title: "Player Two", version: VERSION } })
@@ -206,13 +227,17 @@ class Conversation {
     if (initialized.protocolVersion !== acp.PROTOCOL_VERSION) {
       throw new PlayerTwoError(`${this.agent.label} speaks version ${String(initialized.protocolVersion)} of ACP, and Player Two version ${String(acp.PROTOCOL_VERSION)}`);
     }
-    const session = { cwd, mcpServers: [MCP_SERVER] };
+    this.version = initialized.agentInfo?.version ?? "";
+    const session = { cwd, mcpServers: looking ? [] : [MCP_SERVER] };
     let opened: unknown;
     try {
       opened = await this.ask(this.connection.agent.request("session/new", session));
     } catch (error) {
       if (!(error instanceof acp.RequestError && error.code === AUTH_REQUIRED)) {
         throw error;
+      }
+      if (looking) {
+        throw new SignInNeeded(this.agent, this.howToSignIn(initialized));
       }
       opened = await this.signIn(initialized, () => this.ask(this.connection.agent.request("session/new", session)));
     }
@@ -275,8 +300,6 @@ class Conversation {
    * or a sign-in that fails, ends with the command that signs in: the one the agent names for a terminal, or the one its maker documents.
    */
   private async signIn<T>(initialized: Initialized, again: () => Promise<T>): Promise<T> {
-    const byTerminal = initialized.authMethods.find((method) => method.type === "terminal");
-    const how = byTerminal === undefined ? signInFor(this.agent) : `\`${commandLineOf({ command: this.agent.command, args: byTerminal.args ?? [] })}\``;
     const method = initialized.authMethods.find((each) => each.type === undefined || each.type === "agent");
     try {
       if (method === undefined) {
@@ -285,8 +308,14 @@ class Conversation {
       await this.ask(this.connection.agent.request("authenticate", { methodId: method.id }));
       return await again();
     } catch (error) {
-      throw new PlayerTwoError(`${this.agent.label} is not signed in. Sign in once in a terminal where your repos are, inside WSL on Windows, with ${how}, then try again`, { cause: error });
+      throw new SignInNeeded(this.agent, this.howToSignIn(initialized), { cause: error });
     }
+  }
+
+  /** How the user signs in to the agent: the command it names for a terminal, or the one its maker documents. */
+  private howToSignIn(initialized: Initialized): string {
+    const byTerminal = initialized.authMethods.find((method) => method.type === "terminal");
+    return byTerminal === undefined ? signInFor(this.agent) : `\`${commandLineOf({ command: this.agent.command, args: byTerminal.args ?? [] })}\``;
   }
 
   /**
@@ -342,6 +371,29 @@ interface Kept {
   readonly conversation: Conversation;
   readonly cwd: string;
   readonly timer: NodeJS.Timeout;
+}
+
+/**
+ * For the setup check: start an agent over ACP, agree a protocol, and open a session with no MCP server in an empty folder of its own, all within `seconds`, then end it.
+ * Resolves with the agent's version, "" when it does not say; rejects with why not, in the agent's own words where it gave them, and with SignInNeeded when it needs signing in.
+ */
+export async function greet(agent: Agent, seconds: number): Promise<string> {
+  const dir = mkdtempSync(join(tmpdir(), "player-two-check-"));
+  const conversation = new Conversation(agent, dir);
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(new PlayerTwoError(`${agent.label} did not answer within ${String(seconds)} seconds`));
+    }, seconds * 1000);
+  });
+  try {
+    await Promise.race([conversation.open(dir, true), late]);
+    return conversation.version;
+  } finally {
+    clearTimeout(timer);
+    await conversation.end();
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 /**

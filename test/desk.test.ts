@@ -126,7 +126,7 @@ await test("the desk by lines: the join form, joining, the chats, a message sent
   }
   say({ t: "command", id: 6, command: { do: "open", chat: "bob" } });
   assert.deepEqual(await reply(6), { ok: true });
-  assert.deepEqual(await checked(11), ["node", "identity", "hub", "proxy", "protocol", "clock", "dev", "repos", "git", "git-auth", "agent"]);
+  assert.deepEqual(await checked(11), ["node", "identity", "hub", "proxy", "protocol", "clock", "dev", "repos", "git", "git-auth", "agent", "agent-acp:custom"]); // With alice's own agent over ACP.
 
   // The end of its input is the end of the desk.
   input.end();
