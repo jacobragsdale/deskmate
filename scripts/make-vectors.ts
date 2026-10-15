@@ -99,6 +99,16 @@ function shown(seq: number, author: string, to: string, text: string, agent: str
   };
 }
 
+/** An agent's request of carol's billing agent under bob's message, as the fold would leave it, having come through `chain`. */
+function asked(chain: readonly string[]): Message {
+  const asker = chain.at(-1) ?? "";
+  return {
+    ...shown(3, asker, "#backend", "Does removing `retries` from UploadOptions break your caller?", asker.slice(asker.indexOf("/") + 1)),
+    answers: null,
+    delegation: { root: REF, parent: REF, chain, first: "bob", target: "carol/billing" }
+  };
+}
+
 const earlier = [shown(1, "bob", "#backend", "it was the connection pool"), shown(2, "carol", "#backend", "Retries live in queue.py", "uploader")];
 const ask = "@jacob/uploader where do we retry?";
 
@@ -117,7 +127,9 @@ const vectors = {
     { review: false, prompt: agentPrompt(shown(3, "bob", "jacob", ask), "jacob", "uploader", [], false) },
     { review: false, prompt: agentPrompt(shown(3, "jacob", "bob", ask), "jacob", "uploader", [], false) },
     { review: true, mcp: true, prompt: agentPrompt(shown(3, "bob", "#backend", ask), "jacob", "uploader", earlier, true, "mcp") },
-    { review: false, grant: true, prompt: agentPrompt(shown(3, "bob", "#backend", ask), "jacob", "uploader", earlier, false, "none") }
+    { review: false, grant: true, prompt: agentPrompt(shown(3, "bob", "#backend", ask), "jacob", "uploader", earlier, false, "none") },
+    { review: true, mcp: true, delegated: true, prompt: agentPrompt(asked(["jacob/uploader"]), "carol", "billing", earlier, true, "mcp") },
+    { review: false, grant: true, delegated: true, prompt: agentPrompt(asked(["jacob/uploader", "dave/client"]), "carol", "billing", earlier, false, "none") }
   ]
 };
 
