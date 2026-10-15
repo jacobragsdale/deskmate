@@ -212,7 +212,7 @@ async function addAgent(page: Page, program: string, args: readonly string[]): P
 }
 
 await test(
-  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, keeps a card in reach in a closed thread and brings one far above the end into view, refuses and allows for the run from a card, and offers only the modes the agent that answers can keep, full alone beside its reason when that is all, and a full chosen once not again in one click when less is there; and on My agents makes a grant from its dialog, which asks a second yes for full access posted directly for anyone, counts the run it lets go and revokes it, and holds a repo back, unshared and answering nobody under that grant, and lets it answer again",
+  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, keeps a card in reach in a closed thread and brings one far above the end into view, refuses and allows for the run from a card, and offers only the modes the agent that answers can keep, full alone beside its reason when that is all, and a full chosen once not again in one click when less is there; and on My agents makes a grant from its dialog, which asks a second yes for full access posted directly for anyone, counts the run it lets go and revokes it, and holds a repo back, unshared and answering nobody under that grant, and lets it answer again; and says under whose grant a run went ahead, to its owner and to whoever asked",
   { skip: NO_DISPLAY ? "no display: run it under xvfb-run" : false, timeout: 120_000 },
   async (t) => {
     assert.ok(existsSync(join(ROOT, "dist", "main.js")), "dist/ is not built: run `npm run build` first");
@@ -792,7 +792,9 @@ await test(
     await page.shot("my-agents");
     await page.click("button", "Back");
     await carol.publish("alice", "message", { text: "@alice/billing read it under the grant", via: "cli" });
-    await page.until("carol's request answered", `[...document.querySelectorAll("main article")].some((each) => each.innerText.includes("carol: @alice/billing read it under the grant"))`);
+    const answered = `[...document.querySelectorAll("main article")].find((each) => each.innerText.includes("carol: @alice/billing read it under the grant"))`;
+    await page.until("carol's request answered", `${answered} !== undefined`);
+    assert.match(String(await page.eval(`${answered}.querySelector("header").innerText`)), /\/billing agent on main ± at [0-9a-f]{7} · ran under your grant, read-only, until /);
     assert.equal(await acceptedAt(carol, "alice"), "read-only");
     await page.click("footer button", "My agents");
     await page.until("the run counted", `${granted}?.innerText.includes(" · 1 of 2 runs today") === true`);
@@ -823,6 +825,33 @@ await test(
     await page.eval(`[...${granted}.querySelectorAll("button")].find((each) => each.textContent === "Revoke").click()`);
     await page.until("the grant gone", `${granted} === null && ${billing}.innerText.includes("No grants")`);
     await page.click("button", "Back");
+
+    // Alice asks bob's agent, and a grant of bob's lets it run: the line under her request says whose grant it runs under, at which mode and until when, and so does the answer.
+    const bobsGrant = await bob.publish("*", "grant", {
+      agent: "bob/uploader",
+      askers: ["alice"],
+      mode: "read-only",
+      delivery: "post",
+      expires: Math.floor(Date.now() / 1000) + 86_400,
+      runsPerDay: 5
+    });
+    await page.click("nav button", "bob");
+    await page.until("the chat with bob, to ask under his grant", `document.querySelector("main h1")?.textContent === "bob"`);
+    await page.type('textarea[aria-label="Message bob"]', "@bob/uploader what changed under the grant?");
+    await page.press("Enter");
+    await page.until("her request waiting", `${newest}.innerText.includes("what changed under the grant?") && ${newest}.innerText.includes("◌ waiting for bob to approve")`);
+    const underGrant = (await bob.events({ chat: "alice" })).find((each) => each.event.content.includes("what changed under the grant?"));
+    assert.ok(underGrant !== undefined);
+    await bob.publish("alice", "job.accepted", { repo: "uploader", branch: "main", commit, dirty: false, delivery: "post", mode: "read-only", by: { grant: bobsGrant.event.id } }, [
+      underGrant.event.id
+    ]);
+    await page.until("whose grant it runs under", `${newest}.innerText.includes("bob's uploader agent is working on main at c0ffee0 · under bob's grant, read-only, until ")`);
+    await bob.publish("alice", "job.result", { repo: "uploader", branch: "main", text: "nothing yet", reviewed: false }, [underGrant.event.id]);
+    await page.until(
+      "the answer, with whose grant it ran under",
+      `${newest}.querySelector("header")?.innerText.includes("/uploader agent on main at c0ffee0 · ran under bob's grant, read-only, until ") === true`
+    );
+    await page.shot("under-grant");
 
     assert.deepEqual(page.problems, []);
   }

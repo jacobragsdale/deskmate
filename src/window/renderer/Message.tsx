@@ -276,16 +276,31 @@ function Commit({ commit }: { readonly commit: string }): JSX.Element {
   return <code title={commit}>{commit.slice(0, 7)}</code>;
 }
 
+/** That a run went ahead under its owner's grant, `whose` ("your" or "bob's"), at a mode, and until when, when this desk holds the grant to say. */
+function Granted({ whose, mode, expires }: { readonly whose: string; readonly mode: PermissionMode; readonly expires: number | null }): JSX.Element {
+  return (
+    <>
+      under {whose} grant, {mode}
+      {expires !== null && (
+        <>
+          , until <Until expires={expires} />
+        </>
+      )}
+    </>
+  );
+}
+
 /**
  * Where and how its owner let a run go ahead: " on" the branch, ± when the checkout had changes nobody had committed, " at" the commit, and the permission mode it may act at,
- * which everyone in the chat sees. Nothing when they never did.
+ * or, when a grant of theirs let it go, that grant with the mode, which everyone in the chat sees. Nothing when it never went ahead.
  */
-function Ran({ accepted }: { readonly accepted: RequestView["accepted"] }): JSX.Element | null {
+function Ran({ accepted, whose }: { readonly accepted: RequestView["accepted"]; readonly whose: string }): JSX.Element | null {
   return accepted === null ? null : (
     <>
       {` on ${accepted.branch}${accepted.dirty ? " ±" : ""} at `}
       <Commit commit={accepted.commit} />
-      {` · ${accepted.mode}`}
+      {" · "}
+      {accepted.grant === null ? accepted.mode : <Granted whose={whose} mode={accepted.mode} expires={accepted.grant.expires} />}
     </>
   );
 }
@@ -334,7 +349,8 @@ function wordsOnly(status: RequestView["status"]): status is Extract<RequestView
 /** Where one agent a message tags stands, and what the reader can do about it. `text` is the message as shown; `asker` is whether the reader wrote it. */
 function RequestLine({ request, text, asker, runs, act }: { readonly request: RequestView; readonly text: string; readonly asker: boolean; readonly runs: Runs; readonly act: Act }): JSX.Element {
   const { id, owner, repo, status } = request;
-  const who = request.mine ? `your ${repo} agent` : `${owner}'s ${repo} agent`;
+  const whose = request.mine ? "your" : `${owner}'s`;
+  const who = `${whose} ${repo} agent`;
   if (wordsOnly(status)) {
     return <p className={LINE}>{WORDS[status.kind](request)}</p>;
   }
@@ -351,7 +367,7 @@ function RequestLine({ request, text, asker, runs, act }: { readonly request: Re
         <>
           <p className={LINE}>
             <Spinner /> {who} is working
-            <Ran accepted={request.accepted} /> · <Elapsed since={status.startedAt} /> · <ShowActivity request={request} who={who} text={text} runs={runs} />{" "}
+            <Ran accepted={request.accepted} whose={whose} /> · <Elapsed since={status.startedAt} /> · <ShowActivity request={request} who={who} text={text} runs={runs} />{" "}
             <Button
               size="xs"
               variant="outline"
@@ -402,7 +418,7 @@ function RequestLine({ request, text, asker, runs, act }: { readonly request: Re
       return (
         <p className={LINE}>
           <Spinner /> {who} is {status.summary === "" ? "working" : status.summary}
-          <Ran accepted={request.accepted} />
+          <Ran accepted={request.accepted} whose={whose} />
         </p>
       );
     case "waiting":
@@ -411,14 +427,14 @@ function RequestLine({ request, text, asker, runs, act }: { readonly request: Re
       return (
         <p className={LINE}>
           ✗ {who} failed
-          <Ran accepted={request.accepted} />
+          <Ran accepted={request.accepted} whose={whose} />
         </p>
       );
     case "stopped":
       return (
         <p className={LINE}>
           ■ {who} was stopped
-          <Ran accepted={request.accepted} />
+          <Ran accepted={request.accepted} whose={whose} />
         </p>
       );
   }
@@ -738,7 +754,7 @@ function Reactions({ message, me, react }: { readonly message: ReplyView; readon
   );
 }
 
-/** Who wrote a message, and when; for an agent's answer, which agent, and the branch and commit its owner let it run on. */
+/** Who wrote a message, and when; for an agent's answer, which agent, the branch and commit its owner let it run on, and the grant of theirs it ran under, if one let it. */
 function Header({ message, me }: { readonly message: ReplyView; readonly me: string }): JSX.Element {
   const when = new Date(message.ts * 1000);
   return (
@@ -751,6 +767,12 @@ function Header({ message, me }: { readonly message: ReplyView; readonly me: str
             <>
               {" at "}
               <Commit commit={message.commit} />
+            </>
+          )}
+          {message.grant !== null && (
+            <>
+              {" · ran "}
+              <Granted whose={message.sender === me ? "your" : `${message.sender}'s`} mode={message.grant.mode} expires={message.grant.expires} />
             </>
           )}
         </span>

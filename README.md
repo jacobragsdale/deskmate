@@ -161,6 +161,7 @@ Under each message that tags an agent, everyone in the chat sees one line per ta
 |---|---|
 | `◌ waiting for bob to approve` | Bob has not acted. `· they are away` is added when his window is not open, and whoever asked has `↩ Withdraw`. |
 | `bob's uploader agent is working on main ± at 1a2b3c4 · read-only` | Bob approved it. The branch and commit are those his checkout was at when the run started, and `read-only` the permission mode he let it act at. `working` becomes what the agent is doing, such as `editing files`, once his desk has said. |
+| `bob's uploader agent is working on main at 1a2b3c4 · under bob's grant, read-only, until Friday` | A standing grant of Bob's let it run with nobody at his desk, at the mode the grant names, and the grant lasts until then. The answer says `ran under bob's grant, read-only, until Friday` beside the branch and commit. Without the grant in hand, which Bob's desk sent to everyone, a window leaves out when it ends. |
 | `× bob declined` | Bob declined, or discarded the draft. |
 | `■ bob's uploader agent was stopped on main at 1a2b3c4 · read-only` | Bob stopped the run, or quit while it was working. |
 | `✗ bob's uploader agent failed on main at 1a2b3c4 · read-only` | The agent exited with an error, printed nothing, or ran past its time limit. Only Bob sees why. |
