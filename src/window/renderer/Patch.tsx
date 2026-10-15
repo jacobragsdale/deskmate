@@ -3,9 +3,12 @@
 import { Fragment, useMemo, useState } from "react";
 import type { JSX, ReactNode } from "react";
 
+import { Button } from "@/components/ui/button";
+
 import { parseDiff } from "../../core/diff.ts";
 import type { DiffFile } from "../../core/diff.ts";
 import type { PatchView } from "../../shared/ipc.ts";
+import type { Act } from "./App.tsx";
 
 const MARKS: Readonly<Record<string, string>> = { "+": "text-green-700 dark:text-green-400", "-": "text-destructive", "\\": "text-muted-foreground" }; // A changed line, by its first character.
 
@@ -63,5 +66,43 @@ export function PatchCard({ patch, children }: { readonly patch: PatchView; read
       </ul>
       {children}
     </section>
+  );
+}
+
+/**
+ * What has been done with a patch in the chat, and what the reader can do: who applied it to which branch, and Apply, for a reader with a checkout of its repo. The desk checks its paths
+ * and whether git takes it, then asks in a dialog of the system's own; the button waits until it has its answer.
+ */
+export function PatchActions({ id, patch, me, act }: { readonly id: string; readonly patch: PatchView; readonly me: string; readonly act: Act }): JSX.Element {
+  const [busy, setBusy] = useState(false);
+  return (
+    <>
+      {/* What was said of a patch never reorders, so its position is a stable key. */}
+      {patch.applied.map((each, at) => (
+        <p key={at} className="text-xs text-muted-foreground">
+          ✓ {each.who === me ? "you" : each.who} applied it to {each.branch}
+        </p>
+      ))}
+      {patch.checkout && (
+        <p className="mt-1.5 flex flex-wrap gap-1.5">
+          <Button
+            size="xs"
+            variant="outline"
+            className="text-foreground"
+            type="button"
+            disabled={busy}
+            title="Apply it to your checkout, on the branch it is on, once you have said yes to what it changes"
+            onClick={() => {
+              setBusy(true);
+              act({ do: "applyPatch", id }, () => {
+                setBusy(false);
+              });
+            }}
+          >
+            Apply
+          </Button>
+        </p>
+      )}
+    </>
   );
 }

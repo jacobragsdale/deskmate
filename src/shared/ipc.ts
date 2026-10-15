@@ -64,8 +64,21 @@ const noteSchema = z.discriminatedUnion("state", [
   z.strictObject({ state: z.literal("hidden"), id: z.string() }).readonly() // Not one the reader can see, or one whose signature failed.
 ]);
 
-/** A patch, as its author signed it: the repo by name, the commit and branch it was made on, its title and its diff. Every word of it is someone else's, and is drawn as text. */
-const patchSchema = z.strictObject({ repo: z.string(), base: z.string(), branch: z.string(), title: z.string(), diff: z.string() }).readonly();
+/**
+ * A patch, as its author signed it: the repo by name, the commit and branch it was made on, its title and its diff. Every word of it is someone else's, and is drawn as text.
+ * `applied` is who said they applied it, and to which branch, in order; `checkout` whether the user has a checkout of its repo to apply it to. Neither means anything beside a draft.
+ */
+const patchSchema = z
+  .strictObject({
+    repo: z.string(),
+    base: z.string(),
+    branch: z.string(),
+    title: z.string(),
+    diff: z.string(),
+    applied: z.array(z.strictObject({ who: z.string(), branch: z.string() }).readonly()).readonly(),
+    checkout: z.boolean()
+  })
+  .readonly();
 
 /** What a message and a reply both show. */
 const said = {
@@ -284,6 +297,8 @@ export const commandSchema = z.discriminatedUnion("do", [
   z.strictObject({ do: z.literal("pin"), chat, repo }),
   z.strictObject({ do: z.literal("unpin"), chat }),
   z.strictObject({ do: z.literal("clone"), repo }),
+  // Apply the patch with this id to the user's checkout of its repo, once its paths are checked, git says it applies, and the user has said yes to a dialog of the system's own.
+  z.strictObject({ do: z.literal("applyPatch"), id }),
   z.strictObject({ do: z.literal("older") }), // Load the page before the oldest event shown in the open chat.
   z.strictObject({ do: z.literal("search"), q: z.string().min(1).max(500) }), // Search every chat the user can see. The reply's `found` is what the hub found.
   z.strictObject({ do: z.literal("openNote"), id }), // Open the chat a message or an answer is in, with it loaded, and set the view's `focus` on it.

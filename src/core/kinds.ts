@@ -73,7 +73,8 @@ export const contentSchema = z
     z.object({ kind: z.literal("grant.revoke"), content: nothing }), // refs[0] is the grant. Counts only from the grant's author.
     // From phase 6, what a run on a clean copy changed, as a diff from `base` that git apply takes, made on `branch` of `repo`: refs[0] is the request, and it is signed as its answer is,
     // by the agent when nobody reviewed it and by its owner when they did. Every word of it is someone else's, to be drawn as text and applied only once its paths have been checked.
-    z.object({ kind: z.literal("patch"), content: z.object({ repo: repoRefSchema, base: commit, branch: branchSchema, title: z.string().min(1).max(200), diff: text }).readonly() })
+    z.object({ kind: z.literal("patch"), content: z.object({ repo: repoRefSchema, base: commit, branch: branchSchema, title: z.string().min(1).max(200), diff: text }).readonly() }),
+    z.object({ kind: z.literal("patch.applied"), content: z.object({ branch: branchSchema }).readonly() }) // refs[0] is the patch, which its author applied to their checkout on `branch`.
   ])
   .readonly();
 

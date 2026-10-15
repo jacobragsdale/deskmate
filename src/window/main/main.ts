@@ -4,6 +4,7 @@
  * it went there; Quit in the tray's menu quits.
  */
 
+import { appendFileSync, existsSync } from "node:fs";
 import { join as joinPath } from "node:path";
 
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, shell, Tray } from "electron";
@@ -32,6 +33,9 @@ let quitting = false; // Once the user, the tray's Quit or the system has asked 
 let tray: Tray | null = null;
 let untold = false; // Once the system has failed to show the notice that the window went to the tray: it then stays in sight for the rest of this run.
 let linked: string | null = noteIn(process.argv); // A note a link asked for that the desk has not been asked to open yet: one the app was started with waits until the chats are loaded.
+// For the smoke test alone, which nothing can click a native dialog for: with this naming a file, no dialog is shown. Each question is added to the file as a line of JSON, and answered
+// yes while a file of that name with ".yes" after it exists, no otherwise. Nothing else reads it, and the window's page can neither set it nor answer a dialog.
+const TEST_ASKS = process.env["PLAYER_TWO_TEST_ASKS"] ?? "";
 
 function report(error: unknown): void {
   console.error(error);
@@ -127,6 +131,11 @@ function arrived(arrival: Arrival): void {
 
 /** Put the desk's question to the user in a dialog of the system's own, and give the desk their answer. A dialog that could not be shown is a no. */
 function ask(id: number, question: Question): void {
+  if (TEST_ASKS !== "") {
+    appendFileSync(TEST_ASKS, `${JSON.stringify(question)}\n`);
+    desk.answer(id, existsSync(`${TEST_ASKS}.yes`));
+    return;
+  }
   const options = { type: "question" as const, message: question.message, detail: question.detail, buttons: [question.confirm, "Cancel"], defaultId: 0, cancelId: 1 };
   (window === null ? dialog.showMessageBox(options) : dialog.showMessageBox(window, options)).then(
     ({ response }) => {

@@ -318,8 +318,12 @@ async function askingAgents(page: Page, bob: Client, carol: Client, bobsAgent: K
   assert.equal(await page.eval(offers), false);
 }
 
-/** Patches, from erin in her own chat with alice: one whose title, file names and lines are HTML is drawn as text, each file folded until it is opened, with what it adds and removes. */
-async function patches(page: Page, erin: Client): Promise<void> {
+/**
+ * Patches, from erin in her own chat with alice: one whose title, file names and lines are HTML is drawn as text, each file folded until it is opened, with what it adds and removes,
+ * and Apply says it does not apply to alice's checkout; one that does is put to her in a dialog of the system's own, answered here through PLAYER_TWO_TEST_ASKS (see main.ts),
+ * which names her repo, its branch and the files and warns of her uncommitted work and of an instructions file; no leaves her checkout alone, yes applies it.
+ */
+async function patches(page: Page, erin: Client, home: string): Promise<void> {
   const billing = { name: "billing", key: "dev.azure.com/acme/platform/billing", url: "https://dev.azure.com/acme/Platform/_git/billing" };
   const hostile = [
     "diff --git a/page.html b/page.html",
@@ -356,10 +360,64 @@ async function patches(page: Page, erin: Client): Promise<void> {
   assert.equal(await page.eval(`document.querySelectorAll("main script, main img, main b").length`), 0);
   assert.equal(await page.eval("window.pwned"), undefined);
   await page.shot("patch");
+
+  // It is for her repo, so Apply is offered; git says it does not apply, which a toast says, and nothing is asked.
+  const asks = join(home, "asks.jsonl");
+  writeFileSync(asks, "");
+  await page.eval(`[...${card}.querySelectorAll("button")].find((each) => each.textContent === "Apply").click()`);
+  await page.until("why it does not apply", `[...document.querySelectorAll("[data-sonner-toast]")].some((each) => each.textContent.includes("does not apply"))`);
+  assert.equal(readFileSync(asks, "utf8"), "");
+
+  // One that applies, to the commit her checkout is on, beside a file of hers not added yet.
+  const checkout = join(home, "dev", "billing");
+  const base = execFileSync("git", ["-C", checkout, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  writeFileSync(join(checkout, "scratch.txt"), "hers\n");
+  const diff =
+    "diff --git a/notes.txt b/notes.txt\nnew file mode 100644\n--- /dev/null\n+++ b/notes.txt\n@@ -0,0 +1 @@\n+a note\ndiff --git a/AGENTS.md b/AGENTS.md\nnew file mode 100644\n--- /dev/null\n+++ b/AGENTS.md\n@@ -0,0 +1 @@\n+Be brief.\n";
+  await erin.publish("alice", "patch", { repo: billing, base, branch: "main", title: "Add a note", diff });
+  const good = `[...document.querySelectorAll('main section[aria-label="Patch"]')].find((each) => each.querySelector("p").textContent === "Add a note")`;
+  await page.until("the second patch", `${good} !== undefined`);
+  const question = {
+    message: "Apply this patch from erin to your billing checkout?",
+    detail: [
+      "Add a note",
+      "",
+      `Repo: billing, in ${checkout}`,
+      "Branch: main",
+      "",
+      "Files:",
+      "  notes.txt  +1 −0",
+      "  AGENTS.md  +1 −0",
+      "",
+      "⚠ Your checkout has changes you have not committed. The patch goes in beside them, and is added to the index.",
+      "⚠ It changes files your agents read as instructions: AGENTS.md. Read them before an agent works here again."
+    ].join("\n"),
+    confirm: "Apply"
+  };
+  const apply = `[...${good}.querySelectorAll("button")].find((each) => each.textContent === "Apply")`;
+  await page.eval(`${apply}.click()`);
+  for (let tries = 0; tries < 200 && readFileSync(asks, "utf8") === ""; tries += 1) {
+    await pause(100);
+  }
+  assert.deepEqual(
+    readFileSync(asks, "utf8")
+      .trim()
+      .split("\n")
+      .map((line): unknown => JSON.parse(line)),
+    [question]
+  );
+  await page.until("the answer, no, taken", `${apply}.disabled === false`);
+  assert.equal(existsSync(join(checkout, "notes.txt")), false);
+  writeFileSync(`${asks}.yes`, "");
+  await page.eval(`${apply}.click()`);
+  await page.until("it applied, and the card says so", `${good}.innerText.includes("✓ you applied it to main")`);
+  assert.equal(readFileSync(join(checkout, "notes.txt"), "utf8"), "a note\n");
+  rmSync(`${asks}.yes`);
+  await page.shot("applied");
 }
 
 await test(
-  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, keeps a card in reach in a closed thread and brings one far above the end into view, refuses and allows for the run from a card, and offers only the modes the agent that answers can keep, full alone beside its reason when that is all, and a full chosen once not again in one click when less is there, and for a grant full alone while it is untested; and on My agents makes grants from its dialog, which warns of full access for anyone however its answers go and asks a second yes when they are posted directly, one grant for each double click, revokes one with a double click and not the next, counts the run a grant lets go, and holds a repo back with a double click, unshared and answering nobody under that grant, and lets it answer again; and says under whose grant a run went ahead, to its owner while it runs and in its answer, and to whoever asked, and that an answer its agent signed was not reviewed, where it is shown and where it is found; and while a grant is live stays open on close, saying why, where it cannot say it went to the tray, and once told hides on close, answering on, until started again; lists a grant apart once its repo is not checked out here, and revokes it there; lets the user's agent, asked by another, ask others from a switch beside what that means, says before its buttons how that request came, draws under the message that started it the tree of jobs under it, folded once all are done, and ends it all with that message's one Withdraw, after which what was asked under it is not offered again, saying why; draws a patch as a card beside the draft it goes with and in the chat, each file folded with what it adds and removes, and every word of a hostile one as text; and quits on close once none is",
+  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, keeps a card in reach in a closed thread and brings one far above the end into view, refuses and allows for the run from a card, and offers only the modes the agent that answers can keep, full alone beside its reason when that is all, and a full chosen once not again in one click when less is there, and for a grant full alone while it is untested; and on My agents makes grants from its dialog, which warns of full access for anyone however its answers go and asks a second yes when they are posted directly, one grant for each double click, revokes one with a double click and not the next, counts the run a grant lets go, and holds a repo back with a double click, unshared and answering nobody under that grant, and lets it answer again; and says under whose grant a run went ahead, to its owner while it runs and in its answer, and to whoever asked, and that an answer its agent signed was not reviewed, where it is shown and where it is found; and while a grant is live stays open on close, saying why, where it cannot say it went to the tray, and once told hides on close, answering on, until started again; lists a grant apart once its repo is not checked out here, and revokes it there; lets the user's agent, asked by another, ask others from a switch beside what that means, says before its buttons how that request came, draws under the message that started it the tree of jobs under it, folded once all are done, and ends it all with that message's one Withdraw, after which what was asked under it is not offered again, saying why; draws a patch as a card beside the draft it goes with and in the chat, each file folded with what it adds and removes, and every word of a hostile one as text, and applies one only once a dialog of the system's own, naming the repo, the branch, the files and what to beware of, has had a yes; and quits on close once none is",
   { skip: NO_DISPLAY ? "no display: run it under xvfb-run" : false, timeout: 120_000 },
   async (t) => {
     assert.ok(existsSync(join(ROOT, "dist", "main.js")), "dist/ is not built: run `npm run build` first");
@@ -382,6 +440,7 @@ await test(
     delete env["AZURE_DEVOPS_EXT_PAT"];
     delete env["GIT_CONFIG_GLOBAL"];
     env["GIT_CONFIG_NOSYSTEM"] = "1";
+    env["PLAYER_TWO_TEST_ASKS"] = join(home, "asks.jsonl"); // The native dialog Apply asks in is answered by the main process from there: see main.ts.
     // On a virtual display with no window manager, as in CI, Chromium may take the window for hidden and stop drawing frames, which freezes every
     // transition at its start: a toast that never slides in is "out of place". These are the switches Playwright starts Chromium with for the same reason.
     const unthrottled = ["--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding", "--disable-background-timer-throttling"];
@@ -1164,7 +1223,7 @@ await test(
     await page.until("the search closed", `document.querySelector('[role="dialog"]') === null`);
 
     await askingAgents(page, bob, carol, bobsAgent, commit);
-    await patches(page, await hub.join("erin"));
+    await patches(page, await hub.join("erin"), home);
 
     assert.deepEqual(page.problems, []);
 

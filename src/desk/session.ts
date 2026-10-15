@@ -25,12 +25,14 @@ import type {
   Notice,
   PatchView,
   ReplyView,
+  Question,
   RequestView,
   RowView
 } from "../shared/ipc.ts";
 import { agentPrompt, ChatLog, chatOf, continues, mayCome, mentions, ONLINE, refOf, rings } from "../core/chat.ts";
 import type { Accepted, Delegation, Entry, Message, PatchContent, Request } from "../core/chat.ts";
 import { checkRequest, jobIn, peopleInvolved, ROOT_TIME } from "../core/delegation.ts";
+import { parseDiff, touchesInstructions, unsafePaths } from "../core/diff.ts";
 import type { Node } from "../core/delegation.ts";
 import { DAY, liveGrant, revoked, standing } from "../core/grants.ts";
 import type { Standing } from "../core/grants.ts";
@@ -51,6 +53,8 @@ import type { Tested } from "./doctor.ts";
 import { atMost } from "./permissions.ts";
 import * as repos from "./repos.ts";
 import type { Checkout, Head } from "./repos.ts";
+import * as patches from "./patches.ts";
+import { plain } from "./patches.ts";
 import * as worktree from "./worktree.ts";
 import type { Worktree } from "./worktree.ts";
 import { cloneFolder } from "../core/remotes.ts";
@@ -87,6 +91,7 @@ export interface Hooks {
   readonly notice: (notice: Notice) => void;
   readonly arrived: (arrival: Arrival) => void;
   readonly confirmClone: (url: string, destination: string) => Promise<boolean>; // Show where a clone comes from and goes to, before anything is fetched.
+  readonly confirm?: (question: Question) => Promise<boolean>; // Put a yes or no to the user in a dialog of the system's own, as before a patch is applied. Without it, as for a desk no window asks for, the answer is no.
 }
 
 export interface Options {
@@ -142,10 +147,10 @@ interface AgentRun {
 }
 
 type ChatCommand = Exclude<Command, { do: "join" | "doctor" | "search" | "testPermissions" | "saveAzureToken" }>;
-type MessageDo = "send" | "reply" | "react" | "edit" | "delete";
+type MessageDo = "send" | "reply" | "react" | "edit" | "delete" | "applyPatch"; // What the user does to a message: a patch's among them.
 type JobDo = "sendDraft" | "discardDraft" | "run" | "stop" | "stopAll" | "permit" | "decline" | "withdraw" | "grant" | "revoke";
 
-const MESSAGE_DOS: ReadonlySet<string> = new Set<MessageDo>(["send", "reply", "react", "edit", "delete"]);
+const MESSAGE_DOS: ReadonlySet<string> = new Set<MessageDo>(["send", "reply", "react", "edit", "delete", "applyPatch"]);
 const JOB_DOS: ReadonlySet<string> = new Set<JobDo>(["sendDraft", "discardDraft", "run", "stop", "stopAll", "permit", "decline", "withdraw", "grant", "revoke"]);
 
 function isAboutMessages(command: ChatCommand): command is Extract<ChatCommand, { readonly do: MessageDo }> {
@@ -221,8 +226,8 @@ function chainWords({ first, chain, target }: Delegation, me: string): string {
 }
 
 /** A patch as the window draws it: the repo by name, and everything else as its author wrote it. */
-function patchView({ repo, base, branch, title, diff }: PatchContent): PatchView {
-  return { repo: repo.name, base, branch, title, diff };
+function patchView({ repo, base, branch, title, diff }: PatchContent, applied: PatchView["applied"] = [], checkout = false): PatchView {
+  return { repo: repo.name, base, branch, title, diff, applied, checkout };
 }
 
 /** The lesser of two modes. */
@@ -412,6 +417,9 @@ export class Session {
       case "delete":
         await this.publish(chatOf(this.mine(command.id).entry.event, this.me), "message.delete", {}, [command.id]);
         break;
+      case "applyPatch":
+        await this.applyPatch(command.id);
+        break;
     }
   }
 
@@ -600,7 +608,7 @@ export class Session {
       delegation:
         message.delegation === null ? null : { first: message.delegation.first, chain: message.delegation.chain, target: message.delegation.target, words: chainWords(message.delegation, this.me) },
       tree: this.treeView(message, now),
-      patch: message.patch === null ? null : patchView(message.patch.content)
+      patch: message.patch === null ? null : patchView(message.patch.content, message.patch.applied, this.checkoutOf(message.patch.content.repo) !== undefined)
     };
   }
 
@@ -1365,6 +1373,67 @@ export class Session {
     await this.cloner(ref.url, destination);
     await this.share();
     this.hooks.notice({ title: "", body: `Cloned ${repo} into ${destination}. Your ${repo} agent can be tagged now.`, severity: "info" });
+  }
+
+  /** The user's checkout of a repo, found by its key, which says which repo it is wherever it was cloned from; undefined when they have none. */
+  private checkoutOf(repo: RepoRef): Checkout | undefined {
+    return [...this.checkouts.values()].find((checkout) => checkout.remote.key === repo.key);
+  }
+
+  /**
+   * Apply a patch in the chat to the user's checkout of its repo, as its card's Apply asks: refused before git sees it when it names a path outside the repo or inside .git, then refused
+   * with git's words when it does not apply; then put to the user in a dialog of the system's own that names the repo, the branch the checkout is on and the files, and warns of work not
+   * committed and of files their agents read as instructions. Only on yes is it applied, and the chat told on which branch.
+   */
+  private async applyPatch(id: string): Promise<void> {
+    const message = this.found(id);
+    const patch = message.patch?.content;
+    if (patch === undefined) {
+      throw new PlayerTwoError("that is not a patch");
+    }
+    const checkout = this.checkoutOf(patch.repo);
+    if (checkout === undefined) {
+      throw new PlayerTwoError(`you have no checkout of ${patch.repo.name} under ${this.dev} to apply it to`);
+    }
+    const unsafe = unsafePaths(patch.diff);
+    if (unsafe.length > 0) {
+      throw new PlayerTwoError(`not applied: it names ${unsafe.map(plain).join(", ")}, which is outside the repo or inside .git, where a patch must never write`);
+    }
+    const { conflicts } = await patches.check(checkout.path, patch.diff);
+    const head = await this.describe(checkout);
+    const { author } = message.entry.event;
+    const from = isAgent(author) ? `${agentWords(author, this.me)}, which nobody reviewed` : author === this.me ? "you" : author;
+    const files = parseDiff(patch.diff).map((file) => `  ${plain(file.from === null ? file.path : `${file.from} → ${file.path}`)}  +${String(file.added)} −${String(file.removed)}`);
+    const instructions = touchesInstructions(patch.diff);
+    const warnings = [
+      ...(head.dirty ? ["⚠ Your checkout has changes you have not committed. The patch goes in beside them, and is added to the index."] : []),
+      ...(conflicts ? ["⚠ It does not apply cleanly: git will leave conflict markers in what it cannot merge, for you to resolve."] : []),
+      ...(instructions.length > 0 ? [`⚠ It changes files your agents read as instructions: ${instructions.map(plain).join(", ")}. Read them before an agent works here again.`] : [])
+    ];
+    const question = {
+      message: `Apply this patch from ${from} to your ${checkout.remote.name} checkout?`,
+      detail: [
+        plain(patch.title),
+        "",
+        `Repo: ${checkout.remote.name}, in ${checkout.path}`,
+        `Branch: ${head.branch}`,
+        "",
+        "Files:",
+        ...files.slice(0, 20),
+        ...(files.length > 20 ? [`  and ${String(files.length - 20)} more`] : [])
+      ]
+        .concat(warnings.length > 0 ? ["", ...warnings] : [])
+        .join("\n"),
+      confirm: "Apply"
+    };
+    if ((await this.hooks.confirm?.(question)) !== true) {
+      return;
+    }
+    const applied = await patches.apply(checkout.path, patch.diff);
+    if (applied.conflicts) {
+      this.hooks.notice({ title: `the patch was applied to ${checkout.remote.name} with conflicts`, body: `Resolve them in ${checkout.path}.`, severity: "error" });
+    }
+    await this.publish(chatOf(message.entry.event, this.me), "patch.applied", { branch: head.branch }, [id]);
   }
 
   // ── standing grants ───────────────────────────────────────────────────────

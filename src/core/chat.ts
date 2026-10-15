@@ -50,9 +50,16 @@ export interface Delegation {
 /** What a patch holds, as its author signed it. */
 export type PatchContent = Extract<Content, { readonly kind: "patch" }>["content"];
 
-/** A patch as the chat shows it. */
+/** Someone applying a patch to their checkout, on a branch. */
+export interface Applied {
+  readonly who: string;
+  readonly branch: string;
+}
+
+/** A patch as the chat shows it: what it holds, and who said they applied it where, in order. */
 export interface Patch {
   readonly content: PatchContent;
+  readonly applied: readonly Applied[];
 }
 
 /** A message someone typed, an agent's answer, an agent's request of another, or a patch, as it stands after everything said about it since. */
@@ -203,6 +210,7 @@ export function refOf(repo: RepoRef): RepoRef {
 // ── the fold ─────────────────────────────────────────────────────────────────
 
 type MessageKind = "message" | "message.edit" | "message.delete" | "reaction";
+type PatchKind = "patch" | "patch.applied";
 type JobKind = "job.accepted" | "job.declined" | "job.result" | "job.error" | "job.cancelled" | "job.withdrawn";
 
 /** A message while its chat is being folded: what later events change is open to change. */
@@ -212,7 +220,7 @@ interface Folding {
   readonly answers: string | null;
   readonly branch: string;
   readonly delegation: Delegation | null;
-  readonly patch: Patch | null;
+  readonly patch: { readonly content: PatchContent; readonly applied: Applied[] } | null;
   readonly root: string | null;
   text: string;
   edited: boolean;
@@ -350,12 +358,19 @@ function applyRequest(folded: Folded, entry: Entry, said: Extract<Content, { rea
   folded.jobs.set(jobKey(event.id, said.content.target), job);
 }
 
-/** A patch, shown where an answer is: in its request's thread, or at the top of the chat when the request is not a reply, or is not loaded, or there is none. Its title is its text. */
-function applyPatch(folded: Folded, entry: Entry, said: Extract<Content, { readonly kind: "patch" }>): void {
-  const request = entry.event.refs[0];
-  const asked = request === undefined ? undefined : folded.messages.get(request);
-  const about = { ...TYPED, agent: said.content.repo.name, answers: request ?? null, branch: said.content.branch, patch: { content: said.content } };
-  place(folded, newMessage(entry, said.content.title, asked?.root === null ? undefined : asked, about));
+/**
+ * A patch, shown where an answer is: in its request's thread, or at the top of the chat when the request is not a reply, or is not loaded, or there is none. Its title is its text.
+ * Or what someone said of one: that they applied it.
+ */
+function applyPatch(folded: Folded, entry: Entry, said: Extract<Content, { readonly kind: PatchKind }>): void {
+  const [ref] = entry.event.refs;
+  const target = ref === undefined ? undefined : folded.messages.get(ref);
+  if (said.kind === "patch") {
+    const about = { ...TYPED, agent: said.content.repo.name, answers: ref ?? null, branch: said.content.branch, patch: { content: said.content, applied: [] } };
+    place(folded, newMessage(entry, said.content.title, target?.root === null ? undefined : target, about));
+  } else {
+    target?.patch?.applied.push({ who: entry.event.author, branch: said.content.branch }); // Its refs[0] is the patch. Only a person sends it: see mayCome.
+  }
 }
 
 function aboutMessage(said: ReturnType<typeof readContent>): said is Extract<Content, { readonly kind: MessageKind }> {
@@ -409,7 +424,7 @@ function apply(folded: Folded, entry: Entry): void {
     applyToJob(folded, entry, said);
   } else if (said.kind === "job.progress") {
     applyProgress(folded, entry, said);
-  } else if (said.kind === "patch") {
+  } else if (said.kind === "patch" || said.kind === "patch.applied") {
     applyPatch(folded, entry, said);
   } else if (said.kind === "channel.join" || said.kind === "channel.leave") {
     folded.items.push({ kind: "line", entry, did: said.kind === "channel.join" ? "joined" : "left", repo: "" });

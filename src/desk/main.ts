@@ -45,7 +45,8 @@ class Desk {
           message: "Clone this repository?",
           detail: `From ${url}\nInto ${destination}\n\nIt is cloned with your own git credentials. An agent started in a repo reads that repo's instruction files.`,
           confirm: "Clone"
-        })
+        }),
+      confirm: (question) => this.ask(question)
     };
   }
 
