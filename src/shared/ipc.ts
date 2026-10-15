@@ -89,7 +89,8 @@ export const activityItemSchema = z
     title: z.string(), // Verb and object: "Edited src/queue.py", "Ran npm test".
     outcome: z.string(), // "+12 −3", "exit 0", "refused"; "" while running.
     status: z.enum(["running", "done", "failed"]),
-    quiet: z.boolean(), // Reads, searches and thoughts.
+    quiet: z.boolean(), // Reads, searches and thoughts: the window dims it.
+    loud: z.boolean(), // A tool call that changes a file or runs a command: the window makes it stand out.
     detail: z.string() // Raw input and output, at most 8 KB; "" when there is none.
   })
   .readonly();

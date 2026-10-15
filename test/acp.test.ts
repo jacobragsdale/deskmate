@@ -73,18 +73,18 @@ await test("the feed names each step as a person would: one item for a message a
   for (const update of updates) {
     feed.update(update);
   }
-  const newest = new Map(reported.map(([item, doing]) => [item.id, [item.title, item.outcome, item.status, item.quiet, doing]])); // Each item in the place it first took.
+  const newest = new Map(reported.map(([item, doing]) => [item.id, [item.title, item.outcome, item.status, item.quiet, item.loud, doing]])); // Each item in the place it first took.
   assert.deepEqual(
     [...newest],
     [
-      ["thought 1", ["Let me look at the queue.", "", "done", true, "thinking"]],
-      ["t1", ["Read src/queue.py", "done", "done", true, "reading"]],
-      ["t2", ["Edited src/queue.py", "+2 −1", "done", false, "editing files"]],
-      ["t3", ["Ran npm test", "exit 1", "done", false, "running a command"]],
-      ["t4", ["Edit /etc/hosts", "failed", "failed", false, "editing files"]], // No path given: the agent's own title, not a guess.
-      ["t5", ["Something new", "done", "done", false, "thinking"]],
-      ["plan", ["Planned 2 steps", "1 of 2 done", "running", false, "thinking"]],
-      ["message 2", ["Done: it retries.", "", "done", false, "thinking"]]
+      ["thought 1", ["Let me look at the queue.", "", "done", true, false, "thinking"]],
+      ["t1", ["Read src/queue.py", "done", "done", true, false, "reading"]],
+      ["t2", ["Edited src/queue.py", "+2 −1", "done", false, true, "editing files"]],
+      ["t3", ["Ran npm test", "exit 1", "done", false, true, "running a command"]],
+      ["t4", ["Edit /etc/hosts", "failed", "failed", false, true, "editing files"]], // No path given: the agent's own title, not a guess.
+      ["t5", ["Something new", "done", "done", false, false, "thinking"]],
+      ["plan", ["Planned 2 steps", "1 of 2 done", "running", false, false, "thinking"]],
+      ["message 2", ["Done: it retries.", "", "done", false, false, "thinking"]]
     ]
   );
   const detail = (id: string): string => reported.findLast(([item]) => item.id === id)?.[0].detail ?? "";

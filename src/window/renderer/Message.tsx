@@ -1,9 +1,9 @@
 /** One message in the open chat and what hangs off it: its author's edit and delete, its reactions, where each agent it tags stands, and its thread, with a box to reply in. Everything in it that someone else wrote is drawn as text. */
 
 import { cn } from "cn";
-import { EllipsisIcon, LinkIcon, Loader2Icon, PencilIcon, ReplyIcon, SmilePlusIcon, Trash2Icon } from "lucide-react";
+import { ActivityIcon, EllipsisIcon, LinkIcon, PencilIcon, ReplyIcon, SmilePlusIcon, Trash2Icon } from "lucide-react";
 import { Fragment, useEffect, useState } from "react";
-import type { JSX, SyntheticEvent } from "react";
+import type { JSX, ReactNode, SyntheticEvent } from "react";
 import Markdown, { defaultUrlTransform } from "react-markdown";
 import { toast } from "sonner";
 
@@ -17,7 +17,9 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { spans } from "../../core/chat.ts";
 import { noteLink, noteOf, notesIn } from "../../core/links.ts";
 import { oneLine } from "../../core/text.ts";
+import { runOf } from "../../shared/ipc.ts";
 import type { CurrentView, MessageView, ReplyView, RequestView } from "../../shared/ipc.ts";
+import { Spinner } from "./Activity.tsx";
 import type { Act } from "./App.tsx";
 
 const LINE = "my-1 text-muted-foreground"; // Where a tagged agent stands, under the message.
@@ -25,9 +27,10 @@ const MINE = "my-1 text-warn"; // The same, when it waits on the user.
 const COMMON = ["👍", "❤️", "😂", "🎉", "👀"] as const; // The emoji offered in one click; any other is typed.
 const BEFORE = { "": "", declined: "you declined · ", failed: "it failed · ", stopped: "stopped · ", interrupted: "interrupted · " } as const; // What happened to a request the user can run again.
 
-/** An agent at work. */
-function Spinner(): JSX.Element {
-  return <Loader2Icon aria-hidden className="inline size-3.5 align-[-2px] motion-safe:animate-spin" />;
+/** What a request line needs of the user's own runs beyond the request itself. */
+export interface Runs {
+  readonly kept: ReadonlySet<string>; // The runs, as `runOf` names them, whose activity the open chat holds.
+  readonly show: (run: string, heading: string) => void; // Open the activity panel on a run, headed with whose agent on what.
 }
 
 /** Seconds since an agent started, counted here so the main process need not say so every second. */
@@ -54,7 +57,8 @@ function ReadyLine({
   who,
   before,
   canDecline,
-  act
+  act,
+  children
 }: {
   readonly request: RequestView;
   readonly text: string;
@@ -62,6 +66,7 @@ function ReadyLine({
   readonly before: keyof typeof BEFORE;
   readonly canDecline: boolean;
   readonly act: Act;
+  readonly children: ReactNode; // What else the line offers: the activity of the run before, when there is one.
 }): JSX.Element {
   const { id, repo } = request;
   return (
@@ -106,8 +111,36 @@ function ReadyLine({
           </Button>
         </>
       )}
+      {children}
     </p>
   );
+}
+
+/** Opens the side panel on what the user's agent did, or is doing, on a request. */
+function ShowActivity({ request, who, text, runs }: { readonly request: RequestView; readonly who: string; readonly text: string; readonly runs: Runs }): JSX.Element {
+  return (
+    <Button
+      size="xs"
+      variant="outline"
+      className="text-foreground"
+      type="button"
+      onClick={() => {
+        runs.show(runOf(request.id, request.repo), `${who} · ${oneLine(text, 80)}`);
+      }}
+    >
+      <ActivityIcon /> Show activity
+    </Button>
+  );
+}
+
+/** Once a run of the user's has ended, what it did can still be looked at while the desk keeps it. */
+function Kept({ request, who, text, runs }: { readonly request: RequestView; readonly who: string; readonly text: string; readonly runs: Runs }): JSX.Element | null {
+  return request.mine && runs.kept.has(runOf(request.id, request.repo)) ? (
+    <>
+      {" "}
+      · <ShowActivity request={request} who={who} text={text} runs={runs} />
+    </>
+  ) : null;
 }
 
 /** The short form of a commit, with the whole of it on hover. */
@@ -153,17 +186,22 @@ function WaitingLine({ request, away, asker, act }: { readonly request: RequestV
 }
 
 /** Where one agent a message tags stands, and what the reader can do about it. `text` is the message as shown; `asker` is whether the reader wrote it. */
-function RequestLine({ request, text, asker, act }: { readonly request: RequestView; readonly text: string; readonly asker: boolean; readonly act: Act }): JSX.Element {
+function RequestLine({ request, text, asker, runs, act }: { readonly request: RequestView; readonly text: string; readonly asker: boolean; readonly runs: Runs; readonly act: Act }): JSX.Element {
   const { id, owner, repo, status } = request;
   const who = request.mine ? `your ${repo} agent` : `${owner}'s ${repo} agent`;
+  const activity = <Kept request={request} who={who} text={text} runs={runs} />;
   switch (status.kind) {
     case "drafted":
-      return <p className={MINE}>✎ {who} has drafted an answer · it is below for you to review</p>;
+      return (
+        <p className={MINE}>
+          ✎ {who} has drafted an answer · it is below for you to review{activity}
+        </p>
+      );
     case "running":
       return (
         <p className={LINE}>
           <Spinner /> {who} is working
-          <Ran accepted={request.accepted} /> · <Elapsed since={status.startedAt} /> ·{" "}
+          <Ran accepted={request.accepted} /> · <Elapsed since={status.startedAt} /> · <ShowActivity request={request} who={who} text={text} runs={runs} />{" "}
           <Button
             size="xs"
             variant="outline"
@@ -195,7 +233,11 @@ function RequestLine({ request, text, asker, act }: { readonly request: RequestV
         </p>
       );
     case "ready":
-      return <ReadyLine request={request} text={text} who={who} before={status.before} canDecline={status.canDecline} act={act} />;
+      return (
+        <ReadyLine request={request} text={text} who={who} before={status.before} canDecline={status.canDecline} act={act}>
+          {activity}
+        </ReadyLine>
+      );
     case "working":
       return (
         <p className={LINE}>
@@ -581,12 +623,14 @@ function Header({ message, me }: { readonly message: ReplyView; readonly me: str
 function Said({
   message,
   me,
+  runs,
   act,
   onReply,
   focused
 }: {
   readonly message: ReplyView;
   readonly me: string;
+  readonly runs: Runs;
   readonly act: Act;
   readonly onReply: (() => void) | null;
   readonly focused: boolean;
@@ -632,7 +676,7 @@ function Said({
       )}
       <Reactions message={message} me={me} react={react} />
       {message.requests.map((request) => (
-        <RequestLine key={`${request.owner}/${request.repo}`} request={request} text={message.body} asker={message.sender === me} act={act} />
+        <RequestLine key={`${request.owner}/${request.repo}`} request={request} text={message.body} asker={message.sender === me} runs={runs} act={act} />
       ))}
       {!message.deleted && !editing && <Actions id={message.id} react={react} onReply={onReply} own={own} />}
     </article>
@@ -684,7 +728,19 @@ function ReplyBox({ root, act, onClose }: { readonly root: string; readonly act:
  * A message at the top of the chat, and under it its thread: how many replies and the last one while it is closed, and every reply with a box to add one while it is open.
  * `focus` is the message the user opened a link to, which is highlighted; when it is a reply here, the thread opens.
  */
-export function Message({ message, me, act, focus }: { readonly message: MessageView; readonly me: string; readonly act: Act; readonly focus: CurrentView["focus"] }): JSX.Element {
+export function Message({
+  message,
+  me,
+  runs,
+  act,
+  focus
+}: {
+  readonly message: MessageView;
+  readonly me: string;
+  readonly runs: Runs;
+  readonly act: Act;
+  readonly focus: CurrentView["focus"];
+}): JSX.Element {
   const [open, setOpen] = useState(false);
   const [opened, setOpened] = useState(0); // The `nth` of the last link to a reply here, which opened the thread.
   // In this render, so that the reply is there for the chat to scroll to when it looks for it.
@@ -701,6 +757,7 @@ export function Message({ message, me, act, focus }: { readonly message: Message
       <Said
         message={message}
         me={me}
+        runs={runs}
         act={act}
         focused={focus?.id === message.id}
         onReply={
@@ -733,7 +790,7 @@ export function Message({ message, me, act, focus }: { readonly message: Message
       {open && (
         <section className="my-1 ml-3 border-l-2 pl-3" aria-label="Thread">
           {message.replies.map((reply) => (
-            <Said key={reply.id} message={reply} me={me} act={act} onReply={null} focused={focus?.id === reply.id} />
+            <Said key={reply.id} message={reply} me={me} runs={runs} act={act} onReply={null} focused={focus?.id === reply.id} />
           ))}
           <ReplyBox root={message.id} act={act} onClose={close} />
           <Button variant="link" size="xs" className="h-auto p-0 text-muted-foreground" type="button" onClick={close}>

@@ -331,7 +331,7 @@ class Conversation {
     const action = actionOf(call.kind) ?? turn.feed.actionOf(call.toolCallId) ?? "other";
     const ask = { action, title: call.title ?? turn.feed.titleOf(call.toolCallId) ?? action, detail: turn.feed.detailOf(call) };
     const item = (outcome: string, status: ActivityItem["status"], doing: Summary): void => {
-      turn.handlers.activity({ id: `permission ${call.toolCallId}`, run: "", kind: "permission", title: ask.title, outcome, status, quiet: false, detail: ask.detail }, doing);
+      turn.handlers.activity({ id: `permission ${call.toolCallId}`, run: "", kind: "permission", title: ask.title, outcome, status, quiet: false, loud: false, detail: ask.detail }, doing);
     };
     let decision = turn.allowed.has(action) ? "allow" : decide(turn.mode, action);
     if (decision === "ask") {

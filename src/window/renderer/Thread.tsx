@@ -10,6 +10,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import type { ChatView, CurrentView, LineView, MessageView } from "../../shared/ipc.ts";
 import type { Act } from "./App.tsx";
 import { Message } from "./Message.tsx";
+import type { Runs } from "./Message.tsx";
 
 const NEAR_BOTTOM = 80; // Pixels from the end within which new messages keep the view pinned to the end.
 const NEAR_TOP = 40; // Pixels from the top within which scrolling loads the page before what is shown.
@@ -35,7 +36,19 @@ function Line({ line, me }: { readonly line: LineView; readonly me: string }): J
   );
 }
 
-export function Thread({ view, current, act, onPin }: { readonly view: ChatView; readonly current: CurrentView; readonly act: Act; readonly onPin: () => void }): JSX.Element {
+export function Thread({
+  view,
+  current,
+  act,
+  onPin,
+  onActivity
+}: {
+  readonly view: ChatView;
+  readonly current: CurrentView;
+  readonly act: Act;
+  readonly onPin: () => void;
+  readonly onActivity: Runs["show"];
+}): JSX.Element {
   const scroller = useRef<HTMLDivElement>(null);
   const atEnd = useRef(true);
   const shown = useRef("");
@@ -101,6 +114,7 @@ export function Thread({ view, current, act, onPin }: { readonly view: ChatView;
   }, [current]);
 
   const { pinned, members } = current;
+  const runs: Runs = { kept: new Set(current.activity.map((item) => item.run)), show: onActivity };
   const firstNew = current.newAfter === null ? undefined : current.messages.find((message) => message.seq > (current.newAfter ?? 0) && message.sender !== view.me);
   return (
     <>
@@ -186,7 +200,7 @@ export function Thread({ view, current, act, onPin }: { readonly view: ChatView;
               <Fragment key={"did" in item ? `line ${String(item.seq)}` : item.id}>
                 {newDay && <p className={RULE}>{dayLabel(item.ts)}</p>}
                 {item === firstNew && <p className={cn(RULE, "text-destructive before:border-destructive after:border-destructive")}>new</p>}
-                <div data-seq={item.seq}>{"did" in item ? <Line line={item} me={view.me} /> : <Message message={item} me={view.me} act={act} focus={current.focus} />}</div>
+                <div data-seq={item.seq}>{"did" in item ? <Line line={item} me={view.me} /> : <Message message={item} me={view.me} runs={runs} act={act} focus={current.focus} />}</div>
               </Fragment>
             );
           })}

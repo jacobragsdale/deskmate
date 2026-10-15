@@ -16,6 +16,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import type { Agent } from "../../core/wire.ts";
 import { noticeSchema, outcomeSchema, viewSchema } from "../../shared/ipc.ts";
 import type { ChatView, Check, Command, Notice, View } from "../../shared/ipc.ts";
+import { ActivityPanel, panelOf } from "./Activity.tsx";
+import type { Shown } from "./Activity.tsx";
 import { AgentPicker, AgentsPart, FIELD, ownAgent } from "./Agents.tsx";
 import { Composer } from "./Composer.tsx";
 import { JoinChannel, PickRepo, Search } from "./dialogs.tsx";
@@ -102,13 +104,27 @@ function Setup({ presets, tell }: { readonly presets: readonly Agent[]; readonly
   );
 }
 
+/** How the desk's link to the hub stands, for the status line. */
+function linkLine(link: ChatView["link"]): string {
+  switch (link.state) {
+    case "connecting":
+      return "◌ connecting";
+    case "connected":
+      return "● connected";
+    case "down":
+      return `◌ ${link.problem} · retrying`;
+  }
+}
+
 function Chat({ view, act, tell, onSetup }: { readonly view: ChatView; readonly act: Act; readonly tell: (notice: Notice) => void; readonly onSetup: () => void }): JSX.Element {
   const [dialog, setDialog] = useState<"" | "join" | "pin" | "search">("");
   const [sidebar, setSidebar] = useState(true);
+  const [shown, setShown] = useState<Shown | null>(null); // The run the activity panel was opened on; its panel shows while its chat is open and holds something of it.
   const current = view.current;
   const chats = view.rows.map((row) => row.chat);
-  // The chat list's width as the user last dragged it, kept in localStorage; one layout with the list shown and one without.
-  const layout = useDefaultLayout({ id: "player-two", panelIds: sidebar ? ["chats", "chat"] : ["chat"], onlySaveAfterUserInteractions: true });
+  const panel = panelOf(current, shown);
+  // The widths of the chat list and the activity panel as the user last dragged them, kept in localStorage; one layout for each set of panels shown.
+  const layout = useDefaultLayout({ id: "player-two", panelIds: [...(sidebar ? ["chats"] : []), "chat", ...(panel === null ? [] : ["activity"])], onlySaveAfterUserInteractions: true });
 
   /** Open the chat `by` rows down the list from the open one, or up when it is negative, going round at either end. */
   const step = (by: number): void => {
@@ -145,12 +161,6 @@ function Chat({ view, act, tell, onSetup }: { readonly view: ChatView; readonly 
     };
   });
 
-  let link = "◌ connecting";
-  if (view.link.state === "connected") {
-    link = "● connected";
-  } else if (view.link.state === "down") {
-    link = `◌ ${view.link.problem} · retrying`;
-  }
   return (
     <ResizablePanelGroup orientation="horizontal" defaultLayout={layout.defaultLayout} onLayoutChanged={layout.onLayoutChanged}>
       {sidebar && (
@@ -182,6 +192,9 @@ function Chat({ view, act, tell, onSetup }: { readonly view: ChatView; readonly 
                 onPin={() => {
                   setDialog("pin");
                 }}
+                onActivity={(id, heading) => {
+                  setShown({ chat: current.chat, run: id, heading });
+                }}
               />
               <Composer view={view} current={current} act={act} submit={submit} tell={tell} />
             </>
@@ -191,7 +204,7 @@ function Chat({ view, act, tell, onSetup }: { readonly view: ChatView; readonly 
               {view.me} on {view.hub} · {view.agents.find((agent) => agent.id === view.defaultAgent)?.label} · {view.myRepos.length} {view.myRepos.length === 1 ? "repo" : "repos"} in {view.dev}
             </span>
             <span className={cn("max-w-1/2 flex-none truncate", view.link.state === "down" && "text-destructive")}>
-              {link} ·{" "}
+              {linkLine(view.link)} ·{" "}
               <Button type="button" variant="link" size="xs" className="h-auto p-0" onClick={onSetup}>
                 Setup
               </Button>
@@ -199,6 +212,22 @@ function Chat({ view, act, tell, onSetup }: { readonly view: ChatView; readonly 
           </footer>
         </main>
       </ResizablePanel>
+      {panel !== null && (
+        <>
+          <ResizableHandle />
+          <ResizablePanel id="activity" defaultSize={360} minSize={240} maxSize="60" groupResizeBehavior="preserve-pixel-size">
+            <ActivityPanel
+              heading={panel.heading}
+              run={panel.run}
+              items={panel.items}
+              running={panel.running}
+              onClose={() => {
+                setShown(null);
+              }}
+            />
+          </ResizablePanel>
+        </>
+      )}
       {dialog === "join" && (
         <JoinChannel
           others={view.otherChannels}

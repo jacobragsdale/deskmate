@@ -178,7 +178,7 @@ export class Feed {
     }
     this.said.text += text;
     const { id, text: said } = this.said;
-    this.report({ id, run: "", kind, title: oneLine(said, TITLE), outcome: "", status: "done", quiet: kind === "thought", detail: head(said, DETAIL) }, "thinking");
+    this.report({ id, run: "", kind, title: oneLine(said, TITLE), outcome: "", status: "done", quiet: kind === "thought", loud: false, detail: head(said, DETAIL) }, "thinking");
   }
 
   private call(update: acp.ToolCallUpdate): void {
@@ -198,6 +198,7 @@ export class Feed {
         outcome: this.outcomeOf(status, diffs, call.rawOutput),
         status,
         quiet: action === "read" || action === "search" || action === "think",
+        loud: action === "edit" || action === "delete" || action === "move" || action === "execute",
         detail: this.detail(call, diffs)
       },
       summaryOf(action)
@@ -216,6 +217,7 @@ export class Feed {
         outcome: `${String(done)} of ${String(entries.length)} done`,
         status: done === entries.length ? "done" : "running",
         quiet: false,
+        loud: false,
         detail: head(entries.map((entry) => `${marks[entry.status]} ${entry.content}`).join("\n"), DETAIL)
       },
       "thinking"
@@ -286,12 +288,22 @@ export class Feed {
 
 /** The first item of every run: the agent and the mode it was let go at. */
 export function startedItem(agent: string, mode: PermissionMode): ActivityItem {
-  return { id: "started", run: "", kind: "state", title: `Started ${agent}, ${mode}`, outcome: "", status: "done", quiet: false, detail: "" };
+  return { id: "started", run: "", kind: "state", title: `Started ${agent}, ${mode}`, outcome: "", status: "done", quiet: false, loud: false, detail: "" };
 }
 
 /** The last item of every run: how it ended, and why when it failed. */
 export function endedItem(how: "answered" | "stopped" | "timed out" | "failed", why = ""): ActivityItem {
   const title = { answered: "Answered", stopped: "Stopped", "timed out": "Timed out", failed: "Failed" }[how];
   const failed = how === "timed out" || how === "failed";
-  return { id: "ended", run: "", kind: failed ? "error" : "state", title, outcome: how === "answered" ? "" : how, status: failed ? "failed" : "done", quiet: false, detail: head(why, DETAIL) };
+  return {
+    id: "ended",
+    run: "",
+    kind: failed ? "error" : "state",
+    title,
+    outcome: how === "answered" ? "" : how,
+    status: failed ? "failed" : "done",
+    quiet: false,
+    loud: false,
+    detail: head(why, DETAIL)
+  };
 }

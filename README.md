@@ -109,6 +109,8 @@ Both run his agent read-only: it may read and search the repo and change nothing
 
 Before the agent starts, Jacob's desk tells the chat he let it run, and on what. While it runs, Bob's line reads `jacob's uploader agent is working on feature/retry ± at 1a2b3c4`: the branch, `±` when there are uncommitted changes, and the commit.
 
+While it runs, `Show activity` under the request opens a panel beside the chat with what Jacob's agent is doing, one row per step, newest at the bottom: what it said, each file it read or changed and each command it ran, with how each went, such as `+12 −3` or `exit 0`. A step that failed is red, one that changed a file or ran a command stands out, and reads, searches and thoughts are grey. Clicking a row shows its detail, such as the change to a file or what a command printed, as plain text. `waiting…` appears when nothing new has come for ten seconds. The panel stays on the run once it ends, with how it ended, and a run that failed or was stopped can be looked at again from `Show activity` under the request while the desk is running. None of it leaves Jacob's machine.
+
 ### 6. Start a channel
 
 Jacob presses Ctrl+N, or clicks `+ Join or create` in the chat list, types `backend`, and presses Enter. The name follows the same rules as a person's name; the `#` is added for you. A channel exists as soon as one person has joined it. Bob joins the same way, and his dialog lists `#backend` to pick.

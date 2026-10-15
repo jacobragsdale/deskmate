@@ -1,8 +1,8 @@
 /** The window for real: Electron started on the built app with a home of its own, against a hub in this process, driven over the DevTools protocol the way a person would. It needs a display; CI gives it one with xvfb-run. */
 
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,6 +15,7 @@ import { noteLink } from "../src/core/links.ts";
 import { startHub, TOKEN } from "./startHub.ts";
 
 const ROOT = join(import.meta.dirname, "..");
+const FAKE = join(import.meta.dirname, "fixtures", "fake-acp-agent.ts"); // The scripted ACP agent, which acts on words in its prompt.
 const NO_DISPLAY = process.platform === "linux" && (process.env["DISPLAY"] ?? "") === "" && (process.env["WAYLAND_DISPLAY"] ?? "") === "";
 const KEYS = {
   Enter: { code: "Enter", keyCode: 13 },
@@ -150,13 +151,53 @@ class Page {
     }
   }
 
+  /** With PLAYER_TWO_SHOTS naming a folder, save what the window shows there as `name`.png, for a person to look at. */
+  public async shot(name: string): Promise<void> {
+    const folder = process.env["PLAYER_TWO_SHOTS"] ?? "";
+    if (folder !== "") {
+      const { data } = z.object({ data: z.string() }).parse(await this.send("Page.captureScreenshot"));
+      writeFileSync(join(folder, `${name}.png`), Buffer.from(data, "base64"));
+    }
+  }
+
   public close(): void {
     this.socket.close();
   }
 }
 
+/** A real git repository at `dir`, with one commit and an origin, as a checkout of a team repo is: the desk asks git where it stands before each run. */
+function repository(dir: string, origin: string): void {
+  mkdirSync(dir);
+  for (const args of [
+    ["init", "-q", "-b", "main"],
+    ["-c", "user.name=alice", "-c", "user.email=alice@example.com", "commit", "-q", "--allow-empty", "-m", "first"],
+    ["remote", "add", "origin", origin]
+  ]) {
+    execFileSync("git", ["-C", dir, ...args], { stdio: "ignore" });
+  }
+}
+
+/** On the Setup page, add an agent of the user's own over ACP, a program and its arguments typed in one per row, and choose it to answer. */
+async function addAgent(page: Page, program: string, args: readonly string[]): Promise<void> {
+  const picker = `[...document.querySelectorAll("label")].find((each) => each.textContent.startsWith("Add an agent")).querySelector("select")`;
+  await page.eval(`(() => { const select = ${picker}; select.value = ""; select.dispatchEvent(new Event("change", { bubbles: true })); })()`);
+  await page.until("the program's field", `document.querySelector('input[aria-label="Program"]') !== null`);
+  await page.type('input[aria-label="Program"]', program);
+  for (const [index, arg] of args.entries()) {
+    const field = `input[aria-label="Argument ${String(index + 1)}"]`;
+    await page.click("button", "Add an argument");
+    await page.until("a row for an argument", `document.querySelector(${JSON.stringify(field)}) !== null`);
+    await page.type(field, arg);
+  }
+  await page.eval(`[...document.querySelectorAll("button")].find((each) => each.textContent === "Add").click()`);
+  const answers = `input[aria-label=${JSON.stringify(`${program} answers`)}]`;
+  await page.until("the agent added", `document.querySelector(${JSON.stringify(answers)}) !== null`);
+  await page.click(answers);
+  await page.until("the agent chosen", `document.querySelector(${JSON.stringify(answers)}).checked === true`);
+}
+
 await test(
-  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, and shows editor agents' snippets and the user's own agents on the Setup page",
+  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, and runs a teammate's request with the user's agent, step by step in the activity panel",
   { skip: NO_DISPLAY ? "no display: run it under xvfb-run" : false, timeout: 120_000 },
   async (t) => {
     assert.ok(existsSync(join(ROOT, "dist", "main.js")), "dist/ is not built: run `npm run build` first");
@@ -166,6 +207,8 @@ await test(
     // A home of its own: the identity, the repos folder and Electron's own settings all go there. Started before the hub, it is stopped before the hub is.
     const home = mkdtempSync(join(tmpdir(), "player-two-window-"));
     mkdirSync(join(home, "dev"));
+    // Alice's own checkout, of a repo nobody else has, for her agent to be asked about.
+    repository(join(home, "dev", "billing"), "https://dev.azure.com/acme/Platform/_git/billing");
     const env: Record<string, string | undefined> = { ...process.env, HOME: home, XDG_CONFIG_HOME: join(home, ".config") };
     delete env["PLAYER_TWO_HOME"];
     delete env["PLAYER_TWO_DEV"];
@@ -238,8 +281,8 @@ await test(
     await page.press("Enter");
     await page.until("the message in the chat", `document.querySelector("main").innerText.includes("hello from the window")`);
 
-    // "@" opens the list of agents just above the message box.
-    await page.type('textarea[aria-label="Message bob"]', "@");
+    // "@" opens the list of agents just above the message box, narrowed to bob's as his name is typed.
+    await page.type('textarea[aria-label="Message bob"]', "@bob");
     await page.until("the list of agents", `document.querySelector('[role="listbox"]')?.textContent.includes("@bob/uploader") === true`);
     const list = await page.rect('[role="listbox"]');
     const box = await page.rect('textarea[aria-label="Message bob"]');
@@ -454,6 +497,49 @@ await test(
     await page.until("Cursor chosen", `document.querySelector('input[aria-label="Cursor answers"]').checked === true`);
     const config = z.object({ defaultAgent: z.string(), agents: z.array(z.object({ id: z.string() })) }).parse(JSON.parse(readFileSync(join(home, ".config", "player-two", "config.json"), "utf8")));
     assert.deepEqual([config.defaultAgent, config.agents.map((agent) => agent.id)], ["cursor", ["cursor-oneshot", "cursor"]]);
+
+    // An agent of her own over ACP, the scripted one, typed in as a program and its arguments, is added and chosen to answer.
+    await addAgent(page, process.execPath, [FAKE, "--no-pids"]);
+    await page.click("button", "Back");
+
+    // Carol asks alice's agent. Run read-only, as a teammate's request is offered first, it reads, is refused the edit the prompt's "may edit" sets it asking for, and drafts an answer;
+    // alice watches it in the activity panel, where the read is dim and the refusal stands out, and a row opens to show what the agent passed its tool.
+    const panel = `document.querySelector('aside[aria-label="Activity"]')`;
+    const rows = `[...${panel}?.querySelectorAll("li") ?? []].map((each) => each.dataset.tone + " " + each.querySelector("span[title]").textContent)`;
+    const button = (text: string): string => `[...document.querySelectorAll("main button")].some((each) => each.textContent.includes(${JSON.stringify(text)}))`;
+    await carol.publish("alice", "message", { text: "@alice/billing read the README for me", via: "cli" });
+    await page.until("carol in the chat list", `[...document.querySelectorAll("nav button")].some((each) => each.textContent.includes("carol"))`);
+    await page.click("nav button", "carol");
+    await page.until("carol's request, ready to run", `document.querySelector("main h1")?.textContent === "carol" && ${button("Run and review")}`);
+    await page.click("main button", "Run and review");
+    await page.until("Show activity", button("Show activity"));
+    await page.click("main button", "Show activity");
+    await page.until("the run to its end in the panel", `${rows}.at(-1) === "plain Answered"`);
+    assert.deepEqual(await page.eval(rows), [
+      `plain Started ${process.execPath}, read-only`,
+      "quiet Read README.md",
+      "failed Edit edited.txt",
+      "plain Edit edited.txt",
+      "plain turn 1: read; edit refused",
+      "plain Answered"
+    ]);
+    await page.eval(`${panel}.querySelector('li[data-tone="failed"] summary').click()`);
+    await page.until("the edit's detail", `${panel}.querySelector("details[open] pre")?.textContent === ${JSON.stringify(JSON.stringify({ title: "Edit edited.txt" }, null, 1))}`);
+    await page.shot("activity");
+    await page.click("main button", "Discard");
+    await page.until("the draft gone", `document.querySelector('textarea[aria-label="Draft answer"]') === null`);
+
+    // A run with nothing new for ten seconds says "waiting…", and Stop ends it: in a channel of its own, so that its "slow" reaches no later prompt.
+    await carol.publish("#history", "message", { text: "@alice/billing slow", via: "cli" });
+    await page.click("nav button", "#history");
+    await page.until("the slow request, ready to run", `document.querySelector("main h1")?.textContent === "#history" && ${button("Run and review")}`);
+    await page.click("main button", "Run and review");
+    await page.until("Show activity on the run", button("Show activity"));
+    await page.click("main button", "Show activity");
+    await page.until("waiting…", `${panel}?.innerText.includes("waiting…") === true`);
+    await page.shot("waiting");
+    await page.click("main button", "Stop");
+    await page.until("the run stopped", `${rows}.at(-1) === "plain Stopped"`);
 
     assert.deepEqual(page.problems, []);
   }
