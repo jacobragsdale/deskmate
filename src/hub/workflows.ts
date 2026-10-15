@@ -61,7 +61,8 @@ const HOURLY = 30; // Most runs one workflow may start in an hour.
 const WAITING = 50; // Most runs of one workflow that may wait for a 👍 at once.
 const MAX_DETAIL = 500; // Most characters of a step's detail, which can name a host filled in from a hook's body: far below what an event holds.
 
-// Where the hub's own machine, and a cloud's metadata service, answer: loopback, link-local and "this network". A name may lead there only when the allow list names the address itself.
+// Where the hub's own machine, and a cloud's services for the machine it runs on, answer: loopback, link-local, where AWS, Azure, Google Cloud and Oracle give a machine its metadata
+// at 169.254.169.254, and "this network"; and the addresses some clouds use besides. A name may lead to one only when the allow list names the address itself, IPv4-mapped included.
 const NEARBY = new BlockList();
 NEARBY.addSubnet("0.0.0.0", 8, "ipv4");
 NEARBY.addSubnet("127.0.0.0", 8, "ipv4");
@@ -69,6 +70,9 @@ NEARBY.addSubnet("169.254.0.0", 16, "ipv4");
 NEARBY.addAddress("::", "ipv6");
 NEARBY.addAddress("::1", "ipv6");
 NEARBY.addSubnet("fe80::", 10, "ipv6");
+NEARBY.addAddress("fd00:ec2::254", "ipv6"); // AWS's metadata over IPv6.
+NEARBY.addAddress("168.63.129.16", "ipv4"); // Azure's WireServer, which hands a machine its configuration and answers its health checks.
+NEARBY.addAddress("100.100.100.200", "ipv4"); // Alibaba Cloud's metadata.
 
 type Outcome = readonly [RunStatus, string];
 type Webhook = Extract<Step, { readonly kind: "webhook" }>["webhook"];
@@ -140,7 +144,7 @@ export function refusal(address: string, allow: readonly string[]): string {
  * differently the next time it is asked cannot lead the call elsewhere after it was let through. A lookup that fails, or throws, is the call's error: this runs outside any request or
  * promise, where a throw would end the hub.
  */
-function lookupWithin(allow: readonly string[]): LookupFunction {
+export function lookupWithin(allow: readonly string[]): LookupFunction {
   return (hostname, options, callback) => {
     try {
       lookup(hostname, { ...options, all: true }, (error, addresses) => {

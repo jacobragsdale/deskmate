@@ -24,7 +24,7 @@ import { fitText } from "../src/core/wire.ts";
 import type { Client } from "../src/desk/client.ts";
 import { Session } from "../src/desk/session.ts";
 import { Database } from "../src/hub/db.ts";
-import { allowList, refusal, runWorkflows } from "../src/hub/workflows.ts";
+import { allowList, lookupWithin, refusal, runWorkflows } from "../src/hub/workflows.ts";
 import { checkout, NOW, startHub, TEAM_REPOS } from "./startHub.ts";
 import type { Hub } from "./startHub.ts";
 
@@ -651,6 +651,44 @@ function resolver(t: TestContext, answer: (hostname: string) => Error | readonly
     syncBuiltinESMExports();
   });
 }
+
+await test("a name that leads to the hub's own machine, a link-local address, \"this network\" or a cloud's service for the machine is refused, unless that address is listed itself", async (t) => {
+  resolver(t, (hostname) => {
+    const address = hostname.slice(0, hostname.indexOf(".example.test")).replaceAll("_", ":"); // The address a test name leads to is in it: 10.0.0.5.example.test.
+    return isIP(address) === 0 ? new Error(`${hostname} is no test name`) : [{ address, family: isIP(address) }];
+  });
+  /** Where the hub may call a name, looked up under `allow`: its address, or why not. */
+  const look = (address: string, allow: readonly string[] = ["example.test"]): Promise<string> =>
+    new Promise((resolve) => {
+      lookupWithin(allow)(`${address.replaceAll(":", "_")}.example.test`, { all: true }, (error, addresses) => {
+        resolve(error !== null ? error.message.replace(/^\S+ is at (\S+), which the hub calls only when PLAYER_TWO_WEBHOOK_ALLOW names that address$/, "refused $1") : JSON.stringify(addresses));
+      });
+    });
+  const refused = [
+    "127.0.0.1",
+    "127.255.0.9",
+    "::1",
+    "0.0.0.0",
+    "0.1.2.3",
+    "::",
+    "169.254.169.254", // AWS, Azure, Google Cloud's metadata.google.internal, Oracle.
+    "169.254.0.1",
+    "::ffff:169.254.169.254",
+    "fe80::1",
+    "fd00:ec2::254",
+    "168.63.129.16",
+    "::ffff:168.63.129.16",
+    "100.100.100.200"
+  ];
+  for (const address of refused) {
+    assert.equal(await look(address), `refused ${address}`, address);
+  }
+  for (const address of ["10.0.0.5", "168.63.129.17", "100.100.100.201", "fd00:ec2::253", "169.255.0.1"]) {
+    assert.equal(await look(address), JSON.stringify([{ address, family: isIP(address) }]), address);
+  }
+  assert.equal(await look("168.63.129.16", ["example.test", "168.63.129.16"]), JSON.stringify([{ address: "168.63.129.16", family: 4 }]));
+  assert.equal(await look("fd00:ec2::254", ["example.test", "[fd00:ec2::254]"]), JSON.stringify([{ address: "fd00:ec2::254", family: 6 }]));
+});
 
 await test("a webhook step to a name that cannot be looked up fails, saying the system's code alone, and the hub goes on", async (t) => {
   const looked: string[] = [];
