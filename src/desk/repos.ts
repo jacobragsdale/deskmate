@@ -92,11 +92,14 @@ const NOT_PASSED = new Set([
   ...["GIT_INDEX_FILE", "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE", "GIT_PREFIX", "GIT_SHALLOW_FILE", "GIT_COMMON_DIR", "GIT_DIFF_OPTS"]
 ]);
 
-/** Run git with no terminal to prompt on, within a time limit, with `input` on its standard input. Resolves however it ends. */
-export function git(args: readonly string[], timeoutSeconds: number, input = ""): Promise<GitResult> {
+/**
+ * Run git with no terminal to prompt on, within a time limit, with `input` on its standard input. Resolves however it ends. `own` is set over what is passed on, for a call that names
+ * a variable of git's itself, as one that gives git an index of its own does.
+ */
+export function git(args: readonly string[], timeoutSeconds: number, input = "", own: Readonly<Record<string, string>> = {}): Promise<GitResult> {
   return new Promise((resolve) => {
     // No terminal prompt: there is no terminal to ask on, so git must fail rather than wait for a password.
-    const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !NOT_PASSED.has(name))), GIT_TERMINAL_PROMPT: "0" };
+    const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !NOT_PASSED.has(name))), GIT_TERMINAL_PROMPT: "0", ...own };
     const child = execFile("git", args, { timeout: timeoutSeconds * 1000, env, maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
       resolve({ ok: error === null, timedOut: error?.killed === true, stdout, stderr });
     });

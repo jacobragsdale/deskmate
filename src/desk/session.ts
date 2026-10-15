@@ -418,7 +418,7 @@ export class Session {
         await this.publish(chatOf(this.mine(command.id).entry.event, this.me), "message.delete", {}, [command.id]);
         break;
       case "applyPatch":
-        await this.applyPatch(command.id);
+        await (command.newBranch === true ? this.applyToBranch(command.id) : this.applyPatch(command.id));
         break;
     }
   }
@@ -1381,11 +1381,10 @@ export class Session {
   }
 
   /**
-   * Apply a patch in the chat to the user's checkout of its repo, as its card's Apply asks: refused before git sees it when it names a path outside the repo or inside .git, then refused
-   * with git's words when it does not apply; then put to the user in a dialog of the system's own that names the repo, the branch the checkout is on and the files, and warns of work not
-   * committed and of files their agents read as instructions. Only on yes is it applied, and the chat told on which branch.
+   * A patch in the chat, by its id, and the user's checkout of its repo to apply it to, once its paths have been read: refused, before git sees it, when one is outside the repo or
+   * inside .git.
    */
-  private async applyPatch(id: string): Promise<void> {
+  private toApply(id: string): { readonly message: Message; readonly patch: PatchContent; readonly checkout: Checkout } {
     const message = this.found(id);
     const patch = message.patch?.content;
     if (patch === undefined) {
@@ -1399,34 +1398,50 @@ export class Session {
     if (unsafe.length > 0) {
       throw new PlayerTwoError(`not applied: it names ${unsafe.map(plain).join(", ")}, which is outside the repo or inside .git, where a patch must never write`);
     }
-    const { conflicts } = await patches.check(checkout.path, patch.diff);
-    const head = await this.describe(checkout);
+    return { message, patch, checkout };
+  }
+
+  /**
+   * Put a patch to the user before it is applied, in a dialog of the system's own: who it is from, what it goes `onto`, its title, the repo and `where` in it, its files with what each
+   * adds and removes, and `warnings`, with one of its own when it changes files their agents read as instructions. Everything from the diff is drawn plain. Resolves with whether they
+   * said yes, on the button that reads `confirm`.
+   */
+  private async mayApply(
+    { message, patch, checkout }: ReturnType<Session["toApply"]>,
+    { onto, where, warnings, confirm }: { readonly onto: string; readonly where: string; readonly warnings: readonly string[]; readonly confirm: string }
+  ): Promise<boolean> {
     const { author } = message.entry.event;
     const from = isAgent(author) ? `${agentWords(author, this.me)}, which nobody reviewed` : author === this.me ? "you" : author;
     const files = parseDiff(patch.diff).map((file) => `  ${plain(file.from === null ? file.path : `${file.from} → ${file.path}`)}  +${String(file.added)} −${String(file.removed)}`);
     const instructions = touchesInstructions(patch.diff);
-    const warnings = [
-      ...(head.dirty ? ["⚠ Your checkout has changes you have not committed. The patch goes in beside them, and is added to the index."] : []),
-      ...(conflicts ? ["⚠ It does not apply cleanly: git will leave conflict markers in what it cannot merge, for you to resolve."] : []),
+    const warned = [
+      ...warnings,
       ...(instructions.length > 0 ? [`⚠ It changes files your agents read as instructions: ${instructions.map(plain).join(", ")}. Read them before an agent works here again.`] : [])
     ];
+    const lines = [plain(patch.title), "", `Repo: ${checkout.remote.name}, in ${checkout.path}`, where, "", "Files:", ...files.slice(0, 20)];
     const question = {
-      message: `Apply this patch from ${from} to your ${checkout.remote.name} checkout?`,
-      detail: [
-        plain(patch.title),
-        "",
-        `Repo: ${checkout.remote.name}, in ${checkout.path}`,
-        `Branch: ${head.branch}`,
-        "",
-        "Files:",
-        ...files.slice(0, 20),
-        ...(files.length > 20 ? [`  and ${String(files.length - 20)} more`] : [])
-      ]
-        .concat(warnings.length > 0 ? ["", ...warnings] : [])
-        .join("\n"),
-      confirm: "Apply"
+      message: `Apply this patch from ${from} to ${onto}?`,
+      detail: [...lines, ...(files.length > 20 ? [`  and ${String(files.length - 20)} more`] : []), ...(warned.length > 0 ? ["", ...warned] : [])].join("\n"),
+      confirm
     };
-    if ((await this.hooks.confirm?.(question)) !== true) {
+    return (await this.hooks.confirm?.(question)) === true;
+  }
+
+  /**
+   * Apply a patch in the chat to the user's checkout of its repo, on the branch it is on, as its card's Apply asks: refused before git sees it when it names a path outside the repo or
+   * inside .git (see `toApply`), then refused with git's words when it does not apply; then put to the user in a dialog of the system's own that names the repo, the branch the checkout
+   * is on and the files, and warns of work not committed and of files their agents read as instructions. Only on yes is it applied, and the chat told on which branch.
+   */
+  private async applyPatch(id: string): Promise<void> {
+    const target = this.toApply(id);
+    const { message, patch, checkout } = target;
+    const { conflicts } = await patches.check(checkout.path, patch.diff);
+    const head = await this.describe(checkout);
+    const warnings = [
+      ...(head.dirty ? ["⚠ Your checkout has changes you have not committed. The patch goes in beside them, and is added to the index."] : []),
+      ...(conflicts ? ["⚠ It does not apply cleanly: git will leave conflict markers in what it cannot merge, for you to resolve."] : [])
+    ];
+    if (!(await this.mayApply(target, { onto: `your ${checkout.remote.name} checkout`, where: `Branch: ${head.branch}`, warnings, confirm: "Apply" }))) {
       return;
     }
     const applied = await patches.apply(checkout.path, patch.diff);
@@ -1434,6 +1449,25 @@ export class Session {
       this.hooks.notice({ title: `the patch was applied to ${checkout.remote.name} with conflicts`, body: `Resolve them in ${checkout.path}.`, severity: "error" });
     }
     await this.publish(chatOf(message.entry.event, this.me), "patch.applied", { branch: head.branch }, [id]);
+  }
+
+  /**
+   * Apply a patch to a new branch of the user's checkout, `player-two/` and the first 8 of its id, made from the commit the patch was made on, as one commit: refused as Apply refuses
+   * one, and when the checkout's repository lacks that commit or has the branch already; then asked, and only on yes made. The branch the checkout is on, its working tree and its index
+   * are left as they are.
+   */
+  private async applyToBranch(id: string): Promise<void> {
+    const target = this.toApply(id);
+    const { message, patch, checkout } = target;
+    const branch = `player-two/${id.slice(0, 8)}`;
+    await patches.checkBranch(checkout.path, patch.base, branch, patch.diff);
+    const head = await this.describe(checkout);
+    const where = `New branch: ${branch}, from ${patch.base.slice(0, 7)}, the commit it was made on. ${head.branch}, which your checkout is on, and your working tree are left as they are.`;
+    if (!(await this.mayApply(target, { onto: `a new branch of your ${checkout.remote.name} checkout`, where, warnings: [], confirm: "Create the branch" }))) {
+      return;
+    }
+    await patches.commitBranch(checkout.path, patch.base, branch, patch.diff, patch.title);
+    await this.publish(chatOf(message.entry.event, this.me), "patch.applied", { branch }, [id]);
   }
 
   // ── standing grants ───────────────────────────────────────────────────────

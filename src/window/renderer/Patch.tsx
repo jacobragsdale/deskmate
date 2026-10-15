@@ -70,11 +70,18 @@ export function PatchCard({ patch, children }: { readonly patch: PatchView; read
 }
 
 /**
- * What has been done with a patch in the chat, and what the reader can do: who applied it to which branch, and Apply, for a reader with a checkout of its repo. The desk checks its paths
- * and whether git takes it, then asks in a dialog of the system's own; the button waits until it has its answer.
+ * What has been done with a patch in the chat, and what the reader can do: who applied it to which branch, and for a reader with a checkout of its repo, Apply, to the branch it is on,
+ * and Apply to a new branch, made from the commit the patch was made on. The desk checks its paths and whether git takes it, then asks in a dialog of the system's own; the buttons wait
+ * until it has its answer.
  */
 export function PatchActions({ id, patch, me, act }: { readonly id: string; readonly patch: PatchView; readonly me: string; readonly act: Act }): JSX.Element {
   const [busy, setBusy] = useState(false);
+  const apply = (newBranch: boolean): void => {
+    setBusy(true);
+    act({ do: "applyPatch", id, newBranch }, () => {
+      setBusy(false);
+    });
+  };
   return (
     <>
       {/* What was said of a patch never reorders, so its position is a stable key. */}
@@ -93,13 +100,23 @@ export function PatchActions({ id, patch, me, act }: { readonly id: string; read
             disabled={busy}
             title="Apply it to your checkout, on the branch it is on, once you have said yes to what it changes"
             onClick={() => {
-              setBusy(true);
-              act({ do: "applyPatch", id }, () => {
-                setBusy(false);
-              });
+              apply(false);
             }}
           >
             Apply
+          </Button>
+          <Button
+            size="xs"
+            variant="outline"
+            className="text-foreground"
+            type="button"
+            disabled={busy}
+            title={`Make player-two/${id.slice(0, 8)} from the commit it was made on, with it applied, and leave your branch and working tree as they are`}
+            onClick={() => {
+              apply(true);
+            }}
+          >
+            Apply to a new branch
           </Button>
         </p>
       )}

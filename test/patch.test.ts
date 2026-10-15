@@ -401,3 +401,61 @@ await test(
     assert.notEqual(snapshot(theirs), before);
   }
 );
+
+await test(
+  "Apply to a new branch makes player-two/ and the first 8 of the patch's id from the commit it was made on, with the patch as one commit, after a dialog, leaving the branch the checkout is on, its working tree and its index as they were; refused before asking when that commit is not there, the branch is, or the patch does not apply to it",
+  { timeout: 60_000 },
+  async (t) => {
+    const { jacob, asker, mine, theirs, questions, reply } = await two(t);
+    const base = git(mine, "rev-parse", "HEAD").trim();
+    const sends = async (diff: string, at = base): Promise<string> => {
+      const { id } = (await jacob.publish("#team", "patch", { repo: UPLOADER, base: at, branch: "main", title: "Shout the second note", diff })).event;
+      await until("bob sees the patch", () => asker.view().current?.messages.find((message) => message.id === id)?.patch?.checkout === true);
+      return id;
+    };
+    const diff = "diff --git a/notes.txt b/notes.txt\n--- a/notes.txt\n+++ b/notes.txt\n@@ -1,3 +1,3 @@\n one\n-two\n+TWO\n three\n";
+    // Bob has moved on: a commit of his own on main, and work of his not committed, in the very file the patch changes.
+    writeFileSync(join(theirs, "notes.txt"), "one\ntwo\nthree\nfour\n");
+    git(theirs, "commit", "-qam", "a fourth note");
+    writeFileSync(join(theirs, "notes.txt"), "one\ntwo\nthree\nfour\nfive, not committed\n");
+    writeFileSync(join(theirs, "mine.txt"), "bob's own, not added\n");
+    const before = snapshot(theirs);
+
+    const id = await sends(diff);
+    const branch = `player-two/${id.slice(0, 8)}`;
+    reply.yes = true;
+    await asker.handle({ do: "applyPatch", id, newBranch: true });
+    assert.deepEqual(questions, [
+      {
+        message: "Apply this patch from jacob to a new branch of your uploader checkout?",
+        detail: [
+          "Shout the second note",
+          "",
+          `Repo: uploader, in ${theirs}`,
+          `New branch: ${branch}, from ${base.slice(0, 7)}, the commit it was made on. main, which your checkout is on, and your working tree are left as they are.`,
+          "",
+          "Files:",
+          "  notes.txt  +1 −1"
+        ].join("\n"),
+        confirm: "Create the branch"
+      }
+    ]);
+    assert.equal(snapshot(theirs), before);
+    assert.equal(git(theirs, "rev-parse", `${branch}^`).trim(), base);
+    assert.equal(git(theirs, "show", `${branch}:notes.txt`), "one\nTWO\nthree\n");
+    assert.equal(git(theirs, "log", "-1", "--format=%s%n%an", branch), "Shout the second note\nTest\n");
+    await until("bob sees it applied", () => asker.view().current?.messages.find((message) => message.id === id)?.patch?.applied.length === 1);
+    assert.deepEqual(asker.view().current?.messages.find((message) => message.id === id)?.patch?.applied, [{ who: "bob", branch }]);
+
+    // Not again, onto the branch it made; nor from a commit bob does not have; nor when it does not apply to the commit it says.
+    await assert.rejects(asker.handle({ do: "applyPatch", id, newBranch: true }), { message: `${theirs} has a branch ${branch} already` });
+    const elsewhere = await sends(diff, "f".repeat(40));
+    await assert.rejects(asker.handle({ do: "applyPatch", id: elsewhere, newBranch: true }), {
+      message: `the commit it was made on, fffffff, is not in ${theirs}: fetch it, or apply the patch to your branch`
+    });
+    const stale = await sends(diff.replace("-two", "-zwei"));
+    await assert.rejects(asker.handle({ do: "applyPatch", id: stale, newBranch: true }), /^Error: it does not apply to [0-9a-f]{7}: error: .*notes\.txt/);
+    assert.equal(questions.length, 1);
+    assert.equal(snapshot(theirs), before);
+  }
+);

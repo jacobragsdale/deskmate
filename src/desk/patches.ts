@@ -3,6 +3,10 @@
  * command line, and git is never given --unsafe-paths. Which paths it names is checked before any of this (`unsafePaths` in src/core/diff.ts).
  */
 
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { git } from "./repos.ts";
 
 const LIMIT = 120; // Seconds one git call may take.
@@ -36,6 +40,54 @@ export async function apply(path: string, diff: string): Promise<{ readonly conf
     throw new Error(`git apply failed in ${path}: ${done.timedOut ? `no answer within ${String(LIMIT)} seconds` : lastWords(done.stderr)}`);
   }
   return { conflicts: !done.ok };
+}
+
+/** What git printed, or a rejection that says `what` failed, with git's words. */
+async function run(args: readonly string[], what: string, input = "", own: Readonly<Record<string, string>> = {}): Promise<string> {
+  const done = await git(args, LIMIT, input, own);
+  if (!done.ok) {
+    throw new Error(`${what}: ${done.timedOut ? `git gave no answer within ${String(LIMIT)} seconds` : lastWords(done.stderr)}`);
+  }
+  return done.stdout;
+}
+
+/** Hand `use` an index of its own, holding the tree of `base` in the checkout's repository, in a folder of its own that is removed afterwards. */
+async function onIndex<T>(path: string, base: string, use: (own: Readonly<Record<string, string>>) => Promise<T>): Promise<T> {
+  const folder = mkdtempSync(join(tmpdir(), "player-two-index-"));
+  const own = { GIT_INDEX_FILE: join(folder, "index") };
+  try {
+    await run(["-C", path, "read-tree", base], `git read-tree in ${path}`, "", own);
+    return await use(own);
+  } finally {
+    rmSync(folder, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Whether the patch applies to `base`, as a new branch `branch` would hold it: rejects when the checkout's repository lacks that commit, as when it has not been fetched, when it has a
+ * branch of that name already, or when the patch does not apply to it as it is. Nothing is written but a scratch index.
+ */
+export async function checkBranch(path: string, base: string, branch: string, diff: string): Promise<void> {
+  if (!(await git(["-C", path, "cat-file", "-e", `${base}^{commit}`], LIMIT)).ok) {
+    throw new Error(`the commit it was made on, ${base.slice(0, 7)}, is not in ${path}: fetch it, or apply the patch to your branch`);
+  }
+  if ((await git(["-C", path, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`], LIMIT)).ok) {
+    throw new Error(`${path} has a branch ${branch} already`);
+  }
+  await onIndex(path, base, (own) => run(["-C", path, "apply", "--cached", "--check"], `it does not apply to ${base.slice(0, 7)}`, diff, own));
+}
+
+/**
+ * Make the branch `branch` at one commit on `base` that holds the patch, with `title` as its message, by the user as git knows them: in an index of its own, so that neither the branch
+ * the checkout is on, nor its working tree, nor its index is touched, and nothing the patch wrote is ever checked out. The title, someone else's, goes to git on standard input too.
+ */
+export async function commitBranch(path: string, base: string, branch: string, diff: string, title: string): Promise<void> {
+  const tree = await onIndex(path, base, async (own) => {
+    await run(["-C", path, "apply", "--cached"], `git apply failed in ${path}`, diff, own);
+    return (await run(["-C", path, "write-tree"], `git write-tree in ${path}`, "", own)).trim();
+  });
+  const commit = (await run(["-C", path, "commit-tree", tree, "-p", base], `git commit-tree in ${path}`, `${title}\n`)).trim();
+  await run(["-C", path, "update-ref", `refs/heads/${branch}`, commit, ""], `git update-ref in ${path}`); // "" as the old value: only while there is no such branch.
 }
 
 /** Text from someone else's diff as a dialog may show it: each control or formatting character written as its code, so that a name can neither add a line to the dialog nor turn its text around. */

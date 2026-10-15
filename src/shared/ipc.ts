@@ -297,8 +297,9 @@ export const commandSchema = z.discriminatedUnion("do", [
   z.strictObject({ do: z.literal("pin"), chat, repo }),
   z.strictObject({ do: z.literal("unpin"), chat }),
   z.strictObject({ do: z.literal("clone"), repo }),
-  // Apply the patch with this id to the user's checkout of its repo, once its paths are checked, git says it applies, and the user has said yes to a dialog of the system's own.
-  z.strictObject({ do: z.literal("applyPatch"), id }),
+  // Apply the patch with this id to the user's checkout of its repo, once its paths are checked, git says it applies, and the user has said yes to a dialog of the system's own:
+  // on the branch the checkout is on, or with `newBranch` on a branch of its own, made from the commit the patch was made on, leaving the checkout as it is.
+  z.strictObject({ do: z.literal("applyPatch"), id, newBranch: z.boolean().optional() }),
   z.strictObject({ do: z.literal("older") }), // Load the page before the oldest event shown in the open chat.
   z.strictObject({ do: z.literal("search"), q: z.string().min(1).max(500) }), // Search every chat the user can see. The reply's `found` is what the hub found.
   z.strictObject({ do: z.literal("openNote"), id }), // Open the chat a message or an answer is in, with it loaded, and set the view's `focus` on it.
