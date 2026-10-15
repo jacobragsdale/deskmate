@@ -1,9 +1,12 @@
-/** The desktop app's main process: one window, the desk it starts and speaks to, and the operating system's notifications, badge and dialogs. The session is not here: it is in the desk, a process of its own. */
+/**
+ * The desktop app's main process: one window, the desk it starts and speaks to, and the operating system's notifications, badge, dialogs and tray icon. The session is not here: it is in the desk,
+ * a process of its own. While a grant of the user's is live, closing the window hides it to the tray, so the desk goes on answering under it; Quit in the tray's menu quits.
+ */
 
 import { join as joinPath } from "node:path";
 
-import { app, BrowserWindow, dialog, ipcMain, Notification, shell } from "electron";
-import type { IpcMainInvokeEvent } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, shell, Tray } from "electron";
+import type { IpcMainInvokeEvent, NativeImage } from "electron";
 
 import { noteIn, noteOf } from "../../core/links.ts";
 import { problemOf } from "../../core/text.ts";
@@ -11,23 +14,51 @@ import { commandSchema } from "../../shared/ipc.ts";
 import type { Arrival, Check, DistroChoice, Notice, Outcome, Question, View } from "../../shared/ipc.ts";
 import { DeskProcess, localLaunch, windowChecks, wslLaunch } from "./deskProcess.ts";
 import { distroSchema, loadSettings, saveSettings } from "./settings.ts";
+import type { Settings } from "./settings.ts";
 import { listDistros } from "./wsl.ts";
 
 const START_WAIT = 120_000; // Milliseconds the setup page waits for a desk it started afresh: WSL can take half a minute to start, and the runtime is unpacked first.
+const HIDDEN = "--hidden"; // How the app is started at login on Windows: with its window hidden, in the tray.
+// Whether the app can start itself at login: Electron can on Windows and macOS, and a copy run from its source, as in development, would register the bare Electron binary.
+const LOGIN = (process.platform === "win32" || process.platform === "darwin") && app.isPackaged;
+const ICON = 32; // Pixels across the tray's icon, drawn at twice the size it is shown, for screens that scale by two.
+const ICON_BGR = [0xc4, 0x3f, 0x7a] as const; // Its colour, an agent's answer's (#7a3fc4), in the order a bitmap holds it.
 
 let window: BrowserWindow | null = null;
 let current: View | null = null; // What the desk last said to draw; null until it has said anything.
 let stopped = false;
+let quitting = false; // Once the user, the tray's Quit or the system has asked the app to quit: the window then closes for real.
+let tray: Tray | null = null;
 let linked: string | null = noteIn(process.argv); // A note a link asked for that the desk has not been asked to open yet: one the app was started with waits until the chats are loaded.
 
 function report(error: unknown): void {
   console.error(error);
 }
 
-/** Send the window what to draw, and put what needs the user where they see it without the window: the title and the dock badge. */
+/** The window's own settings, as saved. */
+function settings(): Settings {
+  return loadSettings(app.getPath("userData"));
+}
+
+/** Whether a grant of the user's is live: a teammate's request may then need their agent while nobody looks at the window. */
+function granting(): boolean {
+  return current?.kind === "chat" && current.grants.length > 0;
+}
+
+/** Start at login, hidden, or stop doing so, where the app can, and say so in the tray's menu. */
+function startAtLogin(on: boolean): void {
+  app.setLoginItemSettings({ openAtLogin: on, args: [HIDDEN] });
+  saveSettings(app.getPath("userData"), { atLogin: on });
+  trayMenu();
+}
+
+/** Send the window what to draw, and put what needs the user where they see it without the window: the title and the dock badge. The first grant turns starting at login on, until the user turns it off. */
 function show(view: View): void {
   current = view;
   openLinked();
+  if (LOGIN && granting() && settings().atLogin === undefined) {
+    startAtLogin(true);
+  }
   if (window === null || window.isDestroyed()) {
     return;
   }
@@ -185,14 +216,83 @@ ipcMain.handle("distros", async (event): Promise<DistroChoice | null> => {
   return { chosen: loadSettings(app.getPath("userData")).distro, names: listed.ok ? listed.value.map((each) => each.name) : [] };
 });
 
+/** The tray's icon: a filled circle, drawn here, as the app ships no image of its own. Its edge is smoothed, and its colour premultiplied by its opacity, as a bitmap's is. */
+function trayIcon(): NativeImage {
+  const pixels = Buffer.alloc(ICON * ICON * 4);
+  for (let y = 0; y < ICON; y += 1) {
+    for (let x = 0; x < ICON; x += 1) {
+      const cover = Math.min(1, Math.max(0, ICON / 2 - Math.hypot(x + 0.5 - ICON / 2, y + 0.5 - ICON / 2)));
+      pixels.set([...ICON_BGR.map((each) => Math.round(each * cover)), Math.round(cover * 255)], (y * ICON + x) * 4);
+    }
+  }
+  return nativeImage.createFromBitmap(pixels, { width: ICON, height: ICON, scaleFactor: 2 });
+}
+
+/** The tray's menu: open the window, start at login where the app can, and quit for real. */
+function trayMenu(): void {
+  tray?.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: "Open Player Two", click: bringUp },
+      ...(LOGIN
+        ? [
+            {
+              label: "Start at login, hidden",
+              type: "checkbox" as const,
+              checked: settings().atLogin === true,
+              click: (item: { readonly checked: boolean }): void => {
+                startAtLogin(item.checked);
+              }
+            }
+          ]
+        : []),
+      { type: "separator" },
+      {
+        label: "Quit",
+        click: (): void => {
+          app.quit();
+        }
+      }
+    ])
+  );
+}
+
+/** Put the app in the tray. Where the system has no tray to show it in, it is still there to take, and starting the app again brings the window back. */
+function makeTray(): void {
+  try {
+    tray = new Tray(trayIcon());
+  } catch (error) {
+    report(error);
+    return;
+  }
+  tray.setToolTip("Player Two");
+  tray.on("click", bringUp);
+  trayMenu();
+}
+
+/** Tell the user, the first time ever, that closing the window hid it rather than quitting, and how to quit. */
+function toldHidden(): void {
+  if (settings().toldHidden === true) {
+    return;
+  }
+  saveSettings(app.getPath("userData"), { toldHidden: true });
+  if (Notification.isSupported()) {
+    new Notification({
+      title: "Player Two is still running",
+      body: "A grant of yours is live, so Player Two stays in the tray to let your agent answer under it. Quit from the tray icon's menu to stop it."
+    }).show();
+  }
+}
+
 function openOutside(url: string): void {
   if (/^https?:\/\//i.test(url)) {
     shell.openExternal(url).catch(report);
   }
 }
 
-function createWindow(): void {
+/** The window, shown at once unless the app was started at login, when it waits in the tray. */
+function createWindow(hidden: boolean): void {
   const created = new BrowserWindow({
+    show: !hidden,
     width: 1100,
     height: 760,
     minWidth: 560,
@@ -220,9 +320,21 @@ function createWindow(): void {
   created.on("blur", () => {
     desk.attend(false);
   });
+  created.on("session-end", () => {
+    quitting = true; // Windows is shutting down or signing the user out, which does not say before-quit: the window closes for real.
+  });
   created.on("close", (event) => {
+    if (!quitting && granting()) {
+      event.preventDefault(); // Hidden, not closed: the desk goes on answering under the user's grants.
+      created.hide();
+      toldHidden();
+      return;
+    }
     const { working, unsent } = current?.kind === "chat" ? current.busy : { working: 0, unsent: 0 };
     const losing = [...(working > 0 ? [`${String(working)} agent${working > 1 ? "s" : ""} still working`] : []), ...(unsent > 0 ? [`${String(unsent)} draft${unsent > 1 ? "s" : ""} not sent`] : [])];
+    if (losing.length > 0) {
+      bringUp(); // Quitting from the tray: the warning is about this window's agents and drafts.
+    }
     const stay =
       losing.length > 0 &&
       dialog.showMessageBoxSync(created, {
@@ -235,6 +347,7 @@ function createWindow(): void {
       }) === 1;
     if (stay) {
       event.preventDefault();
+      quitting = false; // The user stayed: closing the window later hides it again while a grant is live.
     }
   });
   created.on("closed", () => {
@@ -261,6 +374,10 @@ app.on("window-all-closed", () => {
   app.quit(); // With no window there is nobody to approve a run, so the desk and its agents go too.
 });
 
+app.on("before-quit", () => {
+  quitting = true;
+});
+
 app.on("will-quit", (event) => {
   if (!stopped) {
     stopped = true;
@@ -284,7 +401,9 @@ app
     if (app.isPackaged) {
       app.setAsDefaultProtocolClient("player-two");
     }
-    createWindow();
+    // Started at login it waits in the tray: on Windows it is given HIDDEN, and macOS says whether it opened it at login.
+    createWindow(process.argv.includes(HIDDEN) || (process.platform === "darwin" && app.getLoginItemSettings().wasOpenedAtLogin));
+    makeTray();
     desk.start();
     desk.attend(window?.isFocused() ?? true);
   })

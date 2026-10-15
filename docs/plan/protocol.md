@@ -237,7 +237,7 @@ Inside WSL (or the home folder on Linux and macOS):
 | `~/.player-two/runtime/sha256-<digest>/` | The Linux runtime the window unpacked. `~/.player-two/current` links to the one in use, and `~/.player-two/previous` to the one before it; any other is removed. |
 | `~/.player-two/worktrees/` | Phase 6. Throwaway git worktrees for runs that change files. |
 
-`PLAYER_TWO_HOME` moves `~/.config/player-two`; `PLAYER_TWO_DEV` moves `~/dev`. From phase 4, during a run the agent's process, and the MCP server it is given over ACP, also get `PLAYER_TWO_AGENT`, its name as `owner/repo`, and `PLAYER_TWO_AGENT_KEY_FILE`, the path of its key: with both set, the `player-two` command and `player-two mcp` sign as that agent, and read as its owner. On Windows the window keeps one file of its own, `settings.json` in Electron's user-data folder, with the name of the WSL distribution.
+`PLAYER_TWO_HOME` moves `~/.config/player-two`; `PLAYER_TWO_DEV` moves `~/dev`. From phase 4, during a run the agent's process, and the MCP server it is given over ACP, also get `PLAYER_TWO_AGENT`, its name as `owner/repo`, and `PLAYER_TWO_AGENT_KEY_FILE`, the path of its key: with both set, the `player-two` command and `player-two mcp` sign as that agent, and read as its owner. The window keeps one file of its own, `settings.json` in Electron's user-data folder, with the name of the WSL distribution on Windows, and from phase 4 whether it starts at login and whether it has said, once, that closing it hid it to the tray.
 
 ## Versions
 

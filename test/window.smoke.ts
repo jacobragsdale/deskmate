@@ -27,7 +27,8 @@ const KEYS = {
   ArrowUp: { code: "ArrowUp", keyCode: 38 },
   ArrowDown: { code: "ArrowDown", keyCode: 40 },
   k: { code: "KeyK", keyCode: 75 },
-  n: { code: "KeyN", keyCode: 78 }
+  n: { code: "KeyN", keyCode: 78 },
+  w: { code: "KeyW", keyCode: 87 }
 } as const;
 const ALT = 1; // The DevTools protocol's bits for the Alt and Ctrl keys.
 const CTRL = 2;
@@ -93,10 +94,14 @@ class Page {
   public async send(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
     this.next += 1;
     const id = this.next;
-    const reply = await new Promise<z.infer<typeof replySchema>>((resolve) => {
+    // Bounded, so a page that has gone, or stopped answering, fails the step that asked rather than the whole test's time.
+    let timer: NodeJS.Timeout | undefined;
+    const reply = await new Promise<z.infer<typeof replySchema>>((resolve, reject) => {
       this.waiting.set(id, resolve);
+      timer = setTimeout(reject, 20_000, new Error(`${method} had no answer in 20 seconds: ${JSON.stringify(params).slice(0, 200)}`)).unref();
       this.socket.send(JSON.stringify({ id, method, params }));
     });
+    clearTimeout(timer);
     this.waiting.delete(id);
     if (reply.error !== undefined) {
       throw new Error(`${method}: ${reply.error.message}`);
@@ -149,9 +154,11 @@ class Page {
     await this.send("Input.insertText", { text });
   }
 
-  public async press(key: keyof typeof KEYS, modifiers = 0): Promise<void> {
-    for (const type of ["keyDown", "keyUp"]) {
-      await this.send("Input.dispatchKeyEvent", { type, key, code: KEYS[key].code, windowsVirtualKeyCode: KEYS[key].keyCode, modifiers });
+  /** Press a key. One the window's menu takes, as Ctrl+W, goes down raw, as the system sends it, with its native code, which the menu matches, and no character the page could take first. */
+  public async press(key: keyof typeof KEYS, modifiers = 0, down: "keyDown" | "rawKeyDown" = "keyDown"): Promise<void> {
+    for (const type of [down, "keyUp"]) {
+      const native = down === "rawKeyDown" ? { nativeVirtualKeyCode: KEYS[key].keyCode } : {};
+      await this.send("Input.dispatchKeyEvent", { type, key, code: KEYS[key].code, windowsVirtualKeyCode: KEYS[key].keyCode, ...native, modifiers });
     }
   }
 
@@ -213,7 +220,7 @@ async function addAgent(page: Page, program: string, args: readonly string[]): P
 }
 
 await test(
-  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, keeps a card in reach in a closed thread and brings one far above the end into view, refuses and allows for the run from a card, and offers only the modes the agent that answers can keep, full alone beside its reason when that is all, and a full chosen once not again in one click when less is there; and on My agents makes a grant from its dialog, which asks a second yes for full access posted directly for anyone, counts the run it lets go and revokes it, and holds a repo back, unshared and answering nobody under that grant, and lets it answer again; and says under whose grant a run went ahead, to its owner and to whoever asked, and that an answer its agent signed was not reviewed",
+  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, keeps a card in reach in a closed thread and brings one far above the end into view, refuses and allows for the run from a card, and offers only the modes the agent that answers can keep, full alone beside its reason when that is all, and a full chosen once not again in one click when less is there; and on My agents makes a grant from its dialog, which asks a second yes for full access posted directly for anyone, counts the run it lets go and revokes it, and holds a repo back, unshared and answering nobody under that grant, and lets it answer again; and says under whose grant a run went ahead, to its owner and to whoever asked, and that an answer its agent signed was not reviewed; and while a grant is live hides on close, answering on, until started again, and quits on close once none is",
   { skip: NO_DISPLAY ? "no display: run it under xvfb-run" : false, timeout: 120_000 },
   async (t) => {
     assert.ok(existsSync(join(ROOT, "dist", "main.js")), "dist/ is not built: run `npm run build` first");
@@ -473,23 +480,26 @@ await test(
 
     // A link the app is started with while it runs goes to the window already open, which opens the note: the second copy hands it over and quits.
     // Bounded, and killed at the end whatever happens: a copy that kept running would keep this test from ever ending.
-    const second = spawn(electron, [ROOT, noteLink(theFirst.event.id)], { env, stdio: ["ignore", "ignore", "pipe"] });
-    t.after(() => {
-      second.kill("SIGKILL");
-    });
-    const secondSaid: string[] = [];
-    createInterface({ input: second.stderr }).on("line", (line) => {
-      secondSaid.push(line);
-    });
-    const ended = await Promise.race([
-      new Promise((resolve) => {
-        second.once("exit", resolve);
-      }),
-      new Promise((resolve) => {
-        setTimeout(resolve, 30_000, "still running after 30 seconds").unref(); // Unref'd, so it does not hold the test open once the copy has gone.
-      })
-    ]);
-    assert.equal(ended, 0, `the second copy did not hand its link over and quit. The last it said:\n${secondSaid.slice(-10).join("\n")}`);
+    const startAgain = async (args: readonly string[]): Promise<void> => {
+      const copy = spawn(electron, [ROOT, ...args], { env, stdio: ["ignore", "ignore", "pipe"] });
+      t.after(() => {
+        copy.kill("SIGKILL");
+      });
+      const copySaid: string[] = [];
+      createInterface({ input: copy.stderr }).on("line", (line) => {
+        copySaid.push(line);
+      });
+      const ended = await Promise.race([
+        new Promise((resolve) => {
+          copy.once("exit", resolve);
+        }),
+        new Promise((resolve) => {
+          setTimeout(resolve, 30_000, "still running after 30 seconds").unref(); // Unref'd, so it does not hold the test open once the copy has gone.
+        })
+      ]);
+      assert.equal(ended, 0, `the copy started again did not hand over and quit. The last it said:\n${copySaid.slice(-10).join("\n")}`);
+    };
+    await startAgain([noteLink(theFirst.event.id)]);
     await page.until(
       "the note the link names, open and highlighted",
       `document.querySelector("main h1")?.textContent === "#history" && document.querySelector('${focused}')?.innerText.includes("the first") === true`
@@ -825,6 +835,22 @@ await test(
     await page.until("billing answering again", `${billing}.innerText.includes(${JSON.stringify(`on main · ${process.execPath} answers`)})`);
     await shared(true);
 
+    // With her grant live, closing the window hides it, and her desk goes on answering: carol's next request runs under the grant. Starting the app again brings the same window back.
+    await page.click("button", "Back");
+    // Ctrl+W is Electron's own Window → Close, as the window's close button is: a close the app may turn down, which a page's window.close() is not.
+    await page.press("w", CTRL, "rawKeyDown");
+    await page.until("the window hidden", `document.visibilityState === "hidden"`);
+    await carol.publish("alice", "message", { text: "@alice/billing read it while hidden", via: "cli" });
+    await page.until("carol's request answered while hidden", `[...document.querySelectorAll("main article")].some((each) => each.innerText.includes("carol: @alice/billing read it while hidden"))`);
+    assert.equal(app.exitCode, null);
+    // The window's own settings say she has been told, once, that it went to the tray. Starting at login is left alone: Electron cannot here.
+    const windowSettings: unknown = JSON.parse(readFileSync(join(home, ".config", "Player Two", "settings.json"), "utf8"));
+    assert.deepEqual(windowSettings, { distro: null, toldHidden: true });
+    await startAgain([]);
+    await page.until("the window shown again", `document.visibilityState === "visible"`);
+    await page.click("footer button", "My agents");
+    await page.until("both runs counted", `${granted}?.innerText.includes(" · 2 of 2 runs today") === true`);
+
     // Revoked, it is gone.
     await page.eval(`[...${granted}.querySelectorAll("button")].find((each) => each.textContent === "Revoke").click()`);
     await page.until("the grant gone", `${granted} === null && ${billing}.innerText.includes("No grants")`);
@@ -861,5 +887,13 @@ await test(
     await page.shot("under-grant");
 
     assert.deepEqual(page.problems, []);
+
+    // With no grant of hers live, closing the window quits the app, as it always did.
+    // Not waited for: an app that has quit never answers the key's release.
+    page.press("w", CTRL, "rawKeyDown").catch(() => undefined);
+    const gave = new Promise((resolve) => {
+      setTimeout(resolve, 30_000, "still running after 30 seconds").unref(); // Unref'd, so it does not hold the test open once the app has gone.
+    });
+    assert.equal(await Promise.race([exited, gave]), 0, "closing the window with no grant live did not quit the app");
   }
 );
