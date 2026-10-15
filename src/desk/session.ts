@@ -32,7 +32,7 @@ import * as repos from "./repos.ts";
 import type { Checkout, Head } from "./repos.ts";
 import { cloneFolder } from "../core/remotes.ts";
 import { oneLine, problemOf } from "../core/text.ts";
-import { commandLineOf, defaultAgentOf, fitText, isChannel, MODES, nameSchema, ownerOf, permissionModeSchema, PROTOCOL } from "../core/wire.ts";
+import { commandLineOf, defaultAgentOf, fitText, isChannel, MAX_SKEW, MODES, nameSchema, ownerOf, permissionModeSchema, PROTOCOL } from "../core/wire.ts";
 import type { Agent, ChannelInfo, Delivered, PermissionMode, Person, RepoRef, TeamRepo } from "../core/wire.ts";
 
 const PRESENCE = 25; // Seconds between asking the hub who is here, which channels there are and who has which repo. Each is a signed request, which is what says the user is here; the repo scan runs on the same beat.
@@ -1238,13 +1238,15 @@ export class Session {
   /**
    * Let each request of the user's agents that arrives from a teammate run when a grant of the user's lets it: at the grant's mode and with its delivery, never more, and job.accepted names the grant.
    * One of the user's own never runs under a grant: from this window it runs at once, and from anywhere else it waits for their click, so an agent that sends one in their name cannot start itself.
-   * Only a request that arrives while the desk follows the hub is let go: one that waited while it was not running waits for a click.
+   * Only a request that arrives while the desk follows the hub is let go: one that waited while it was not running waits for a click, and so does one signed longer ago than the hub
+   * and this clock can differ twice over, as the stream hands over what was stored while it was down.
    * When the agent that answers cannot be held to the grant's mode, the request waits for a click as any other, and the user is told why.
    */
   private underGrants(arrived: readonly Entry[]): void {
     const now = this.client.now();
     for (const { trusted, event } of arrived) {
-      const message = trusted && event.kind === "message" && event.author !== this.me ? this.chats.message(event.id) : null;
+      const fresh = now - event.ts <= 2 * MAX_SKEW;
+      const message = trusted && fresh && event.kind === "message" && event.author !== this.me ? this.chats.message(event.id) : null;
       if (message === null) {
         continue;
       }

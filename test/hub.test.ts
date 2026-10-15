@@ -15,7 +15,7 @@ import { main } from "../src/cli/main.ts";
 import { MAX_GRANT, readContent } from "../src/core/kinds.ts";
 import { noteLink, notesIn } from "../src/core/links.ts";
 import { authHeader, eventIsAuthentic, loadKey, newKey, publicHex, signEvent } from "../src/core/sign.ts";
-import { deliveredSchema, personSchema } from "../src/core/wire.ts";
+import { deliveredSchema, MAX_SKEW, personSchema } from "../src/core/wire.ts";
 import type { Event, PermissionMode } from "../src/core/wire.ts";
 import { AGENT_KEY_VAR, agentKey } from "../src/desk/agentKeys.ts";
 import { CURSOR_ONESHOT, oneshotAgent } from "../src/desk/agents/presets.ts";
@@ -1594,5 +1594,37 @@ await test(
     assert.deepEqual([bob.session.view().busy.unsent, await results()], [leaks.length, 0]);
     await answer(`Its public half is ${owner.ownKey}, which anyone may see.`);
     assert.deepEqual([bob.session.view().busy.unsent, await results(), bob.notices.length], [leaks.length, 1, leaks.length]);
+  }
+);
+
+await test(
+  "a request the stream hands over late, signed longer ago than two clock skews, as one stored while the stream was down, waits for a click though a grant covers it; one signed lately runs",
+  { timeout: 30_000 },
+  async (t) => {
+    let clock = Math.floor(Date.now() / 1000); // Everyone's, and the hub's.
+    const hub = await hubOfItsOwn(t, () => clock);
+    const alice = await hub.join("alice");
+    const owner = await hub.join("bob");
+    const dev = join(hub.dir, "dev-bob");
+    checkout(dev, "uploader");
+    const bob = deskOf(t, owner, dev, { describe: () => Promise.resolve({ branch: "main", commit: COMMIT, dirty: false }) });
+    await until(bob.session, "the checkout shared", (view) => view.loaded && view.myRepos.includes("uploader"));
+    await owner.publish("*", "grant", { agent: "bob/uploader", askers: ["alice"], mode: "full", delivery: "post", expires: clock + 3600, runsPerDay: 20 });
+
+    // Stored as the stream passes it by, and handed over with the next event, 601 seconds on.
+    const key = loadKey(readFileSync(join(hub.dir, "alice", "key"), "utf8").trim());
+    const late = storedUnchecked(hub, key, { author: "alice", to: "bob", kind: "message", content: { text: "@bob/uploader from long ago", via: "window" }, ts: clock, refs: [] }).event.id;
+    clock += 2 * MAX_SKEW + 1;
+    const lately = (await alice.publish("bob", "message", { text: "@bob/uploader just now", via: "window" })).event.id;
+    const jobs = async (id: string): Promise<string[]> => (await alice.events({ chat: "bob" })).flatMap(({ event }) => (event.refs[0] === id ? [event.kind] : [])).reverse();
+    for (let tries = 0; tries < 100 && !(await jobs(lately)).includes("job.result"); tries += 1) {
+      await pause(50);
+    }
+    assert.deepEqual(await jobs(lately), ["job.accepted", "job.result"]);
+    await until(bob.session, "the late request waiting", () => {
+      bob.session.handle({ do: "open", chat: "alice" }).catch(() => undefined);
+      return shownTo(bob.session, late)?.requests[0]?.status.kind === "ready";
+    });
+    assert.deepEqual([bob.ran.length, await jobs(late)], [1, []]);
   }
 );
