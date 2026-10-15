@@ -217,6 +217,42 @@ async function aKindNeitherKnows(jacob: Person, bob: Person, hub: string, about:
   assert.deepEqual(messages(jacob.session.view()).slice(0, -1), shown);
 }
 
+/**
+ * Branch rooms. Both move to feature/retry and are suggested a room for it; the one jacob dismisses stays dismissed once his desk starts again. Bob starts it, and jacob's Start,
+ * from a suggestion his window still showed, joins it rather than making a second. It says who is on its branch, and who is elsewhere once bob is back on main.
+ */
+async function branchRooms(jacob: Person, bob: Person, hub: string, people: Person[]): Promise<void> {
+  // Both move to feature/retry, so each is suggested a room for it. Jacob dismisses his, which his desk, started again, still keeps from suggesting.
+  const uploaderOf = (who: string): string => join(root, `dev-${who}`, "uploader");
+  for (const who of ["jacob", "bob"]) {
+    execFileSync("git", ["-C", uploaderOf(who), "checkout", "-q", "-b", "feature/retry"]);
+  }
+  assert.deepEqual(await until(jacob.session, "a room suggested to jacob", (view) => view.rooms.length > 0 && view.rooms), [{ repo: "uploader", branch: "feature/retry", others: ["bob"] }]);
+  await jacob.session.handle({ do: "dismissRoom", repo: "uploader", branch: "feature/retry" });
+  assert.deepEqual(jacob.session.view().rooms, []);
+  const again = await person(hub, "jacob");
+  people.push(again);
+  await until(again.session, "his desk again, seeing both on the branch", (view) => view.loaded && view.team.filter((repo) => repo.branch === "feature/retry").length === 2);
+  assert.deepEqual(again.session.view().rooms, []);
+  await again.session.stop();
+
+  // Bob starts a room for a branch; jacob's Start, from a suggestion his window still showed, joins and opens it rather than making a second.
+  await bob.session.handle({ do: "startRoom", repo: "uploader", branch: "feature/retry" });
+  await jacob.session.handle({ do: "startRoom", repo: "uploader", branch: "feature/retry" });
+  assert.equal(jacob.session.view().current?.chat, "#uploader-feature-retry");
+  assert.deepEqual(
+    (await jacob.client.channels()).filter((each) => each.branch === "feature/retry").map((each) => [each.name, each.members]),
+    [["#uploader-feature-retry", ["bob", "jacob"]]]
+  );
+  assert.deepEqual(jacob.notices.at(-1), { title: "", body: "#uploader-feature-retry was started for uploader on feature/retry already: it is open, and you are in it.", severity: "info" });
+  // The room says who is on its branch: both, and once bob is back on main, jacob, with bob elsewhere.
+  const pinned = { name: "uploader", have: 2, mine: true, branch: "feature/retry" };
+  assert.deepEqual(jacob.session.view().current?.pinned, { ...pinned, on: ["bob", "jacob"], elsewhere: [] });
+  execFileSync("git", ["-C", uploaderOf("bob"), "checkout", "-q", "main"]);
+  const moved = await until(jacob.session, "bob elsewhere", (view) => view.current?.pinned?.elsewhere.length === 1 && view.current.pinned);
+  assert.deepEqual(moved, { ...pinned, on: ["jacob"], elsewhere: [{ who: "bob", branch: "main" }] });
+}
+
 /** The hub in this process, or the one PLAYER_TWO_TEST_HUB names: a container from the image, say, started with TOKEN as its join token and PLAYER_TWO_REPOS=https://dev.azure.com/acme/. */
 async function startHub(): Promise<{ readonly url: string; readonly close: () => Promise<unknown> }> {
   const given = process.env["PLAYER_TWO_TEST_HUB"] ?? "";
@@ -433,15 +469,7 @@ await test("two people, their agents and a channel, through the real hub", { tim
   await bob.session.handle({ do: "leaveChannel", chat: "#backend" });
   assert.ok(!bob.session.view().rows.some((row) => row.chat === "#backend"));
 
-  // Bob starts a room for a branch; jacob's Start, from a suggestion his window still showed, joins and opens it rather than making a second.
-  await bob.session.handle({ do: "startRoom", repo: "uploader", branch: "feature/retry" });
-  await jacob.session.handle({ do: "startRoom", repo: "uploader", branch: "feature/retry" });
-  assert.equal(jacob.session.view().current?.chat, "#uploader-feature-retry");
-  assert.deepEqual(
-    (await jacob.client.channels()).filter((each) => each.branch === "feature/retry").map((each) => [each.name, each.members]),
-    [["#uploader-feature-retry", ["bob", "jacob"]]]
-  );
-  assert.deepEqual(jacob.notices.at(-1), { title: "", body: "#uploader-feature-retry was started for uploader on feature/retry already: it is open, and you are in it.", severity: "info" });
+  await branchRooms(jacob, bob, hub, people);
 
   assert.deepEqual(
     [...jacob.notices, ...bob.notices].filter((notice) => notice.severity === "error"),
