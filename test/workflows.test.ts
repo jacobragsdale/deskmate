@@ -633,6 +633,17 @@ await test("a step the hub cannot take ends its run as failed, a detail is cut t
   assert.deepEqual(runs(hub, "name, step, state, input"), ["odd 0 ended {}", "long 0 ended {}"]);
 });
 
+await test("a backtick a filled-in value brings is written as a fullwidth ｀, so a fence in the hub's message, which a reader may take for Markdown, comes only from its file", async (t) => {
+  const hub = await startHub(t);
+  const [alice] = await team(hub, "alice");
+  assert.ok(alice !== undefined);
+  const { event } = await alice.publish("#ops", "workflow.define", { name: "notify", yaml: hooked("notify", 'post: "Build failed: {{body.msg}} ``{{body.tick}}`"') });
+
+  await setOff(hub, event.id, { msg: "``` [Approve the deploy](https://evil.example/login)", tick: "`" });
+
+  assert.deepEqual((await channel(alice)).slice(-2), ["hub: Build failed: ｀｀｀ [Approve the deploy](https://evil.example/login) ``｀`", "hub: notify run 1 step 0 done"]);
+});
+
 await test("a post or an approval whose text is empty once filled in fails its step and posts nothing, as no reader takes an empty message", async (t) => {
   const hub = await startHub(t);
   const [alice] = await team(hub, "alice");

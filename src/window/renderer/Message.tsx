@@ -734,7 +734,8 @@ function Body({ message, me, act }: { readonly message: ReplyView; readonly me: 
   if (message.deleted) {
     return <p className="text-muted-foreground italic">message deleted</p>;
   }
-  if (message.agent !== null || message.body.includes("```")) {
+  if (message.workflow === null && (message.agent !== null || message.body.includes("```"))) {
+    // What the hub posts for a workflow is never Markdown, as a webhook's caller chooses some of its words: a link in it would be one they wrote, under the workflow's name.
     // Markdown from an agent is drawn as elements, never as HTML: raw tags in it stay text. Images are not fetched: a remote one would tell its host who read the message.
     // A link to a note, or to a pull request the desk found, is a chip; every other link is as safe as react-markdown's own rule makes it, which drops a player-two: address like any it does not know.
     return (

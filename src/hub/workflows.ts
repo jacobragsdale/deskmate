@@ -274,9 +274,12 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, al
     return { step: at + 1, state: at + 1 < going.file.steps.length ? "running" : "ended" };
   }
 
-  /** What a message the hub posts for a run says: its template filled in, cut to fit an event, tagging only the agents its template names; cut first, as cutting can leave part of a tag at the end. */
+  /**
+   * What a message the hub posts for a run says: its template filled in, cut to fit an event, tagging only the agents its template names; cut first, as cutting can leave part of a tag at the
+   * end. Every "`" a value brings is written as a fullwidth "｀", which looks like what was sent, so that a fence, which a reader may take a message for Markdown by, comes only from the file.
+   */
   function told(template: string, values: Values): string {
-    return untagged(template, fitText(fill(template, values)));
+    return untagged(template, fitText(fill(template, values, (value) => value.replaceAll("`", "｀"))));
   }
 
   /**

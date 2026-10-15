@@ -614,7 +614,8 @@ async function workflows(page: Page, bob: Client, hub: string, home: string): Pr
   symlinkSync(join(home, "elsewhere.yml"), join(folder, "linked.yml"));
   await bob.publish("#ops", "channel.join", {});
   await bob.publish("#ops", "channel.pin", { repo: { name: "billing", key: "dev.azure.com/acme/platform/billing", url: "https://dev.azure.com/acme/Platform/_git/billing" }, branch: null });
-  await bob.publish("#ops", "workflow.define", { name: "deploy", yaml: 'name: deploy\non:\n  message: { contains: "deploy" }\nsteps:\n  - post: "Deploying for {{trigger.author}}"\n' });
+  const deploy = "Deploying for {{trigger.author}} ``` [the log](https://ci.example/log)"; // A fence, and a link, which a message from a person would be drawn as Markdown for.
+  await bob.publish("#ops", "workflow.define", { name: "deploy", yaml: `name: deploy\non:\n  message: { contains: "deploy" }\nsteps:\n  - post: "${deploy}"\n` });
   const ci = `name: ci-failure\non:\n  webhook: { secret: ${secret} }\nsteps:\n  - post: "The build failed on {{body.branch}}"\n  - approve: { from: alice, text: "Retry it?", within: 4h }\n  - post: Retrying.\n`;
   const bobs = await bob.publish("#ops", "workflow.define", { name: "ci-failure", yaml: ci });
   await page.press("n", CTRL);
@@ -630,7 +631,7 @@ async function workflows(page: Page, bob: Client, hub: string, home: string): Pr
   const said = (name: string): string => `${item(name)}?.querySelector("p span").textContent`;
   await page.until("both workflows listed", `${item("deploy")} != null && ${item("ci-failure")} != null`);
   assert.match(String(await page.eval(said("deploy"))), /^on a message containing "deploy" · published by bob · .+$/);
-  assert.deepEqual(await page.eval(steps(item("deploy"))), ["post: Deploying for {{trigger.author}}"]);
+  assert.deepEqual(await page.eval(steps(item("deploy"))), [`post: ${deploy}`]);
   assert.match(String(await page.eval(said("ci-failure"))), /^on a webhook · published by bob · /);
   assert.deepEqual(await page.eval(steps(item("ci-failure"))), ["post: The build failed on {{body.branch}}", "wait up to 4 hours for a 👍 from alice: Retry it?", "post: Retrying."]);
   const address = `${hub}/hooks/${bobs.event.id.slice(0, 32)}`;
@@ -704,6 +705,9 @@ async function workflows(page: Page, bob: Client, hub: string, home: string): Pr
   assert.deepEqual(await page.eval(writers), ["workflow: deploy", "workflow: ci-failure"]);
   const failed = `[...document.querySelectorAll("main article")].find((each) => each.innerText.includes("The build failed on main ＠bob/uploader"))`;
   assert.equal(await page.eval(`${failed}.querySelectorAll(".text-tag").length`), 0);
+  // And it is never drawn as Markdown, fence or not: the link in deploy's message is its text.
+  const deploying = `[...document.querySelectorAll("main article")].find((each) => each.innerText.includes("Deploying for bob"))`;
+  assert.deepEqual(await page.eval(`[${deploying}.querySelectorAll("a").length, ${deploying}.innerText.includes("Deploying for bob \`\`\` [the log](https://ci.example/log)")]`), [0, true]);
   await page.shot("workflow-messages");
 
   await page.click("main header button", "Workflows");
