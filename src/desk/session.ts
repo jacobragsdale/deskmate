@@ -18,7 +18,7 @@ import { notesIn } from "../core/links.ts";
 import type { Content, ContentOf, Summary } from "../core/kinds.ts";
 import { publicHex } from "../core/sign.ts";
 import { acpRunner, greet } from "./agents/acp.ts";
-import { agentEnv, agentKey } from "./agentKeys.ts";
+import { agentEnv, agentKey, keyIn } from "./agentKeys.ts";
 import { endedItem, startedItem } from "./agents/activity.ts";
 import { oneshotRunner, runAgent } from "./agents/oneshot.ts";
 import { PRESETS } from "./agents/presets.ts";
@@ -1628,8 +1628,18 @@ export class Session {
     return this.client.as(`${this.me}/${repo}`, this.agentKeys.get(repo) ?? agentKey(this.client.home, repo));
   }
 
-  /** Post an answer nobody reviewed, signed by the agent that wrote it; or when it cannot be, keep it as a draft for its owner to review and send under their own name. */
+  /**
+   * Post an answer nobody reviewed, signed by the agent that wrote it; or when it cannot be, or it holds one of the user's private keys, keep it as a draft for its owner to review and send under
+   * their own name. A key in an answer would let whoever reads it sign as them or their agent, a grant in their name among what it could sign.
+   */
   private async postAnswer(chat: string, draft: Draft): Promise<void> {
+    const leaked = keyIn(this.client.home, draft.text);
+    if (leaked !== null) {
+      const body = `It holds the private key in ${leaked}, which would let whoever reads it sign as its owner. Read it before you send it: the agent read that file, and may have put the key elsewhere too.`;
+      this.hooks.notice({ title: `your ${draft.repo} agent's answer was not posted; it is kept as a draft`, body, severity: "error" });
+      await this.keepDraft(chat, draft);
+      return;
+    }
     try {
       await this.agentOf(draft.repo).publish(chat, "job.result", { repo: draft.repo, branch: draft.branch, text: draft.text, reviewed: false }, [draft.entry.event.id]);
     } catch (error) {

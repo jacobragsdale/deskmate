@@ -1,7 +1,7 @@
 /** Each checkout's agent has a key of its own, kept beside its owner's, so what the agent says is signed by the agent and not by them. */
 
 import type { KeyObject } from "node:crypto";
-import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { loadKey, newKey, privateHex } from "../core/sign.ts";
@@ -48,6 +48,37 @@ export function agentKey(home: string, repo: string): KeyObject {
   }
   refuseOpen(file, "the agent's key", "chmod 600");
   return loadKey(readFileSync(file, "utf8").trim());
+}
+
+/**
+ * The file in `home` whose private key `text` holds, the user's own or one of their agents', null when it holds none: as the file has it, hex in either case, or the raw key in base64 or base64url,
+ * whitespace inside it aside. For an answer posted with nobody reviewing it. It is a last net and no wall: an agent that read a key could send it in pieces or in another form.
+ */
+export function keyIn(home: string, text: string): string | null {
+  const squeezed = text.replace(/\s+/g, "");
+  const folder = join(home, "agents");
+  let agents: string[] = [];
+  try {
+    agents = readdirSync(folder).flatMap((name) => (name.endsWith(".key") ? [join(folder, name)] : []));
+  } catch {
+    // No agent has a key yet.
+  }
+  return (
+    [join(home, "key"), ...agents].find((file) => {
+      let held: string;
+      try {
+        held = readFileSync(file, "utf8").trim();
+      } catch {
+        return false;
+      }
+      const raw = Buffer.from(held, "hex");
+      // Only a key a desk could load: anything else is no key, and an empty file would be found in every text.
+      return (
+        /^[0-9a-fA-F]{64}$/.test(held) &&
+        (squeezed.toLowerCase().includes(held.toLowerCase()) || [raw.toString("base64").replace(/=+$/, ""), raw.toString("base64url")].some((form) => squeezed.includes(form)))
+      );
+    }) ?? null
+  );
 }
 
 /**

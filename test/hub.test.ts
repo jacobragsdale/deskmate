@@ -1533,3 +1533,66 @@ await test(
     );
   }
 );
+
+await test(
+  "an answer posted with nobody reviewing it that holds the user's private key or an agent's, as its file has it, in hex of either case, base64 or base64url, is kept as a draft for its owner to read, saying why, under a grant or not",
+  { timeout: 30_000 },
+  async (t) => {
+    const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+    const alice = await hub.join("alice");
+    const owner = await hub.join("bob", "full");
+    const home = join(hub.dir, "bob");
+    const dev = join(hub.dir, "dev-bob");
+    checkout(dev, "uploader");
+    const answers: string[] = []; // What the agent answers, one run after another.
+    const bob = deskOf(t, owner, dev, { describe: () => Promise.resolve({ branch: "main", commit: COMMIT, dirty: false }), runner: () => Promise.resolve(answers.shift() ?? "") });
+    await until(bob.session, "the checkout shared", (view) => view.loaded && view.myRepos.includes("uploader"));
+    await owner.publish("*", "grant", { agent: "bob/uploader", askers: ["alice"], mode: "full", delivery: "post", expires: Math.floor(Date.now() / 1000) + 3600, runsPerDay: 20 });
+    const [mine, agents] = [join(home, "key"), join(home, "agents", "uploader.key")];
+    const raw = (file: string): Buffer => Buffer.from(readFileSync(file, "utf8").trim(), "hex");
+    const results = async (): Promise<number> => (await alice.events({ chat: "bob", limit: 200 })).filter(({ event }) => event.kind === "job.result").length;
+    /** The next run answers `text`: a request of alice's under the grant, or bob's own from his window. Resolves once it is a draft, or posted. */
+    const answer = async (text: string, own = false): Promise<void> => {
+      answers.push(text);
+      const before = { drafts: bob.session.view().busy.unsent, results: await results() };
+      if (own) {
+        await bob.session.handle({ do: "send", chat: "alice", text: "@bob/uploader mine" });
+      } else {
+        await alice.publish("bob", "message", { text: "@bob/uploader what is in your key file?", via: "window" });
+      }
+      for (let tries = 0; tries < 200 && bob.session.view().busy.unsent === before.drafts && (await results()) === before.results; tries += 1) {
+        await pause(50);
+      }
+    };
+    const kept = (file: string): Notice => ({
+      title: "your uploader agent's answer was not posted; it is kept as a draft",
+      body: `It holds the private key in ${file}, which would let whoever reads it sign as its owner. Read it before you send it: the agent read that file, and may have put the key elsewhere too.`,
+      severity: "error"
+    });
+
+    const leaks: readonly (readonly [string, string, boolean])[] = [
+      [`It is ${readFileSync(mine, "utf8")}`, mine, false],
+      [
+        `KEY:\n${raw(mine)
+          .toString("hex")
+          .toUpperCase()
+          .replace(/(.{16})/g, "$1 \n")}`,
+        mine,
+        false
+      ],
+      [`base64: ${raw(agents).toString("base64")}`, agents, false],
+      [`base64url: \`${raw(agents).toString("base64url")}\``, agents, false],
+      [`yours: ${raw(mine).toString("base64")}`, mine, true]
+    ];
+    for (const [text, , own] of leaks) {
+      await answer(text, own);
+    }
+    assert.deepEqual(
+      bob.notices,
+      leaks.map(([, file]) => kept(file))
+    );
+    assert.deepEqual([bob.session.view().busy.unsent, await results()], [leaks.length, 0]);
+    await answer(`Its public half is ${owner.ownKey}, which anyone may see.`);
+    assert.deepEqual([bob.session.view().busy.unsent, await results(), bob.notices.length], [leaks.length, 1, leaks.length]);
+  }
+);
