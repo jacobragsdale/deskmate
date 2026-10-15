@@ -105,6 +105,9 @@ async function person(hub: string, name: string): Promise<Person> {
             });
           });
         }
+        if (argv.at(-1)?.endsWith("say nothing") === true) {
+          return Promise.resolve(""); // A run that fails: the agent returned nothing.
+        }
         return Promise.resolve(`Retries live in ${cwd.slice(root.length)}/queue.py`);
       }
     }
@@ -353,6 +356,27 @@ await test("two people, their agents and a channel, through the real hub", { tim
 
   const later = await takingBack(jacob, bob);
 
+  // A run that fails, and one over ACP that says what it is doing until jacob stops it.
+  const asking = async (text: string): Promise<string> => {
+    await bob.session.handle({ do: "send", chat: "jacob", text: `@jacob/uploader ${text}` });
+    const { id } = await until(jacob.session, text, (view) => messages(view).find((message) => message.body.endsWith(text) && message.requests[0]?.status.kind === "ready"));
+    await run(jacob.session, id, true);
+    return id;
+  };
+  const statusOf = (id: string): string => shownTo(bob.session, id)?.requests[0]?.status.kind ?? "";
+  const failing = await asking("say nothing");
+  await until(bob.session, "bob sees it failed", () => statusOf(failing) === "failed");
+  const { agents, defaultAgent } = jacob.client.config;
+  jacob.client.saveAgents([{ id: "fake", label: "Fake", protocol: "acp", command: process.execPath, args: [join(import.meta.dirname, "fixtures", "fake-acp-agent.ts")] }], "fake");
+  const reading = await asking("read, then slow");
+  await until(bob.session, "bob sees what jacob's agent is doing", () => {
+    const status = shownTo(bob.session, reading)?.requests[0]?.status;
+    return status?.kind === "working" && status.summary !== "";
+  });
+  await jacob.session.handle({ do: "stop", id: reading, repo: "uploader" });
+  await until(bob.session, "bob sees it stopped", () => statusOf(reading) === "stopped");
+  jacob.client.saveAgents(agents, defaultAgent);
+
   // Who signed what: jacob what he decided and the answer he reviewed and sent; his agent its run's own reports and the answer posted with nobody reviewing it.
   assert.deepEqual(
     (await bob.client.events({ chat: "jacob", limit: 100 }))
@@ -369,7 +393,12 @@ await test("two people, their agents and a channel, through the real hub", { tim
       "job.declined by jacob",
       "job.accepted by jacob",
       "job.cancelled by jacob/uploader",
-      "job.withdrawn by bob"
+      "job.withdrawn by bob",
+      "job.accepted by jacob",
+      "job.error by jacob/uploader",
+      "job.accepted by jacob",
+      "job.progress by jacob/uploader",
+      "job.cancelled by jacob/uploader"
     ]
   );
   await reactingEditingAndReplying(jacob, bob, later);
@@ -396,7 +425,7 @@ await test("two people, their agents and a channel, through the real hub", { tim
 
   assert.deepEqual(
     [...jacob.notices, ...bob.notices].filter((notice) => notice.severity === "error"),
-    []
+    [{ title: "your uploader agent", body: "the agent returned nothing", severity: "error" }] // The run that failed, and nothing else.
   );
 });
 
