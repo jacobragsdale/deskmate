@@ -368,3 +368,40 @@ await test("a patch applied to a new branch opens its pull request from that bra
   const said = (await jacob.events({ chat: "#team" })).find(({ event }) => event.kind === "message" && event.author === "jacob");
   assert.deepEqual(JSON.parse(said?.event.content ?? "{}"), { text: "Opened pull request 101: https://dev.azure.com/acme/Platform/_git/uploader/pullrequest/101", via: "window" });
 });
+
+await test("the user is told, on their desk alone, once each time the latest build of the branch room they look at changes to failed, and not of one failed when first seen", async (t) => {
+  const { project } = await azure(t);
+  const hub = await startHub(t, () => Date.now() / 1000);
+  const [bob, jacob] = [await hub.join("bob"), await hub.join("jacob")];
+  for (const person of [bob, jacob]) {
+    await person.publish("#room", "channel.join", {});
+  }
+  await bob.publish("#room", "channel.pin", { repo: UPLOADER, branch: "npaulk/my_work" });
+  const { session, notices } = await deskOf(t, jacob, join(hub.dir, "dev-jacob"), "#room", { rooms: 0.1 });
+  const result = (): string | null | undefined => {
+    const azure = session.view().current?.pinned?.azure;
+    return azure?.ok === true ? azure.build?.result : undefined;
+  };
+  await until("the build, failed when first seen", () => result() === "failed");
+  await delay(300);
+  assert.deepEqual(notices, []);
+
+  // Each state, and how many times the user has been told by then: a build that failed after it succeeded, and one that failed after it ran.
+  for (const [now, told] of [
+    ["succeeded", 0],
+    ["failed", 1],
+    [null, 1],
+    ["failed", 2]
+  ] as const) {
+    project.result = now;
+    await until(`the build ${String(now)}`, () => result() === now);
+    await delay(300); // Looked at again, and again, with nothing new.
+    assert.equal(notices.length, told);
+  }
+  assert.deepEqual(notices[0], {
+    title: "the build of uploader on npaulk/my_work failed",
+    body: "AnotherRepository-CI: failed, https://dev.azure.com/acme/platform/_build/results?buildId=391",
+    severity: "error"
+  });
+  assert.equal((await bob.events({ chat: "#room" })).filter(({ event }) => event.author === "jacob" && event.kind !== "channel.join").length, 0);
+});

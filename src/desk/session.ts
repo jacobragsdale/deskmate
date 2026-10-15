@@ -41,7 +41,7 @@ import { DAY, liveGrant, revoked, standing } from "../core/grants.ts";
 import type { Standing } from "../core/grants.ts";
 import { readContent } from "../core/kinds.ts";
 import { notesIn } from "../core/links.ts";
-import { onAzure, pullsIn } from "../core/pulls.ts";
+import { buildWords, onAzure, pullsIn } from "../core/pulls.ts";
 import { isBranch, roomName, suggestions } from "../core/rooms.ts";
 import type { Room } from "../core/rooms.ts";
 import type { Content, ContentOf, Summary } from "../core/kinds.ts";
@@ -884,11 +884,17 @@ export class Session {
     this.lookedAt(id, found, build.ok ? build.data : undefined);
   }
 
-  /** Keep what was found of the room `id`, and its latest build when that was found, while it is the one open; and look at it again in time. */
+  /**
+   * Keep what was found of the room `id`, and its latest build when that was found, while it is the one open, and look at it again in time. When that build has failed and was not
+   * seen failed before, though the room had been looked at, tell the user, here alone: a notice, once for each change to failed, and nothing in the chat.
+   */
   private lookedAt(id: string, found: NonNullable<Watched["found"]>, build: Build | null | undefined): void {
     const room = this.watched;
     if (room?.id === id) {
       this.watched = { ...room, looking: false, found, build: build === undefined ? room.build : build };
+      if (build?.result === "failed" && room.build !== undefined && !(room.build?.id === build.id && room.build.result === "failed")) {
+        this.hooks.notice({ title: `the build of ${room.repo.name} on ${plain(room.branch)} failed`, body: `${buildWords(build)}, ${build.web}`, severity: "error" });
+      }
     }
     this.hooks.changed();
     this.watchRoom();
