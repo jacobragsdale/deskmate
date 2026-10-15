@@ -2,9 +2,11 @@
 
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import dns from "node:dns";
 import { createServer } from "node:http";
 import type { ServerResponse } from "node:http";
 import { syncBuiltinESMExports } from "node:module";
+import { isIP } from "node:net";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
@@ -550,6 +552,51 @@ await test("a webhook step is refused with the allow list unset, to a host not o
   assert.equal(await outcome("listed", `${called.url}/1mb`), "done and went on");
   assert.equal(await outcome("listed", "http://127.0.0.1:1/"), "failed: could not call 127.0.0.1:1: ECONNREFUSED"); // Nothing listens there.
   assert.deepEqual(redirected.calls, []);
+});
+
+/**
+ * Have every name looked up in this process, until the test ends, answered by `answer` with its addresses or the error the system would give, and no resolver asked: an IP address,
+ * which a server listening is looked up by, is itself. The answer comes back as the system's does, with no addresses beside an error.
+ */
+function resolver(t: TestContext, answer: (hostname: string) => Error | readonly dns.LookupAddress[]): void {
+  type Answer = (error: Error | null, address?: string | readonly dns.LookupAddress[], family?: number) => void;
+  const mocked = t.mock.method(dns, "lookup", (hostname: string, options: unknown, callback: Answer) => {
+    const family = isIP(hostname);
+    const answered = family === 0 ? answer(hostname) : [{ address: hostname, family }];
+    const all = typeof options === "object" && options !== null && "all" in options && options.all === true;
+    process.nextTick(() => {
+      if (answered instanceof Error) {
+        callback(answered);
+      } else if (all) {
+        callback(null, answered);
+      } else {
+        callback(null, answered[0]?.address ?? "", answered[0]?.family ?? 4);
+      }
+    });
+  });
+  syncBuiltinESMExports(); // So the hub's own import of it is this one.
+  t.after(() => {
+    mocked.mock.restore();
+    syncBuiltinESMExports();
+  });
+}
+
+await test("a webhook step to a name that cannot be looked up fails, saying the system's code alone, and the hub goes on", async (t) => {
+  const looked: string[] = [];
+  resolver(t, (hostname) => {
+    looked.push(hostname);
+    return Object.assign(new Error(`getaddrinfo EAI_AGAIN ${hostname}`), { code: "EAI_AGAIN" });
+  });
+  const hub = await startHub(t, () => NOW, "", TEAM_REPOS, ["example.test"]);
+  const [alice] = await team(hub, "alice");
+  assert.ok(alice !== undefined);
+  const { event } = await alice.publish("#ops", "workflow.define", { name: "retry", yaml: hooked("retry", 'webhook: { url: "https://{{body.host}}.example.test/retry" }') });
+
+  await setOff(hub, event.id, { host: "typo" });
+
+  assert.equal((await until(alice, /retry run 1 step 0/)).at(-1), "hub: retry run 1 step 0 failed: could not call typo.example.test: EAI_AGAIN");
+  assert.deepEqual(looked, ["typo.example.test"]);
+  assert.equal((await fetch(`${hub.url}/healthz`)).status, 200);
 });
 
 await test(

@@ -134,22 +134,29 @@ export function refusal(address: string, allow: readonly string[]): string {
 
 /**
  * Look a name up as the system does, and refuse it when an address it has is NEARBY and not on the list. The connection is made to an address looked at here, so a name that answers
- * differently the next time it is asked cannot lead the call elsewhere after it was let through.
+ * differently the next time it is asked cannot lead the call elsewhere after it was let through. A lookup that fails, or throws, is the call's error: this runs outside any request or
+ * promise, where a throw would end the hub.
  */
 function lookupWithin(allow: readonly string[]): LookupFunction {
   return (hostname, options, callback) => {
-    lookup(hostname, { ...options, all: true }, (error, addresses) => {
-      const near = addresses.find(({ address, family }) => NEARBY.check(address, family === 6 ? "ipv6" : "ipv4") && !allow.includes(family === 6 ? `[${address}]` : address));
-      if (error !== null) {
-        callback(error, []);
-      } else if (near !== undefined) {
-        callback(new Refused(`${hostname} is at ${near.address}, which the hub calls only when ${ALLOW} names that address`), []);
-      } else if (options.all === true) {
-        callback(null, addresses);
-      } else {
-        callback(null, addresses[0]?.address ?? "", addresses[0]?.family ?? 4);
-      }
-    });
+    try {
+      lookup(hostname, { ...options, all: true }, (error, addresses) => {
+        if (error !== null) {
+          callback(error, []); // A failed lookup has no addresses to look at.
+          return;
+        }
+        const near = addresses.find(({ address, family }) => NEARBY.check(address, family === 6 ? "ipv6" : "ipv4") && !allow.includes(family === 6 ? `[${address}]` : address));
+        if (near !== undefined) {
+          callback(new Refused(`${hostname} is at ${near.address}, which the hub calls only when ${ALLOW} names that address`), []);
+        } else if (options.all === true) {
+          callback(null, addresses);
+        } else {
+          callback(null, addresses[0]?.address ?? "", addresses[0]?.family ?? 4);
+        }
+      });
+    } catch (error) {
+      callback(error instanceof Error ? error : new Error("the lookup failed"), []); // Arguments it would not take; it called nothing back.
+    }
   };
 }
 
