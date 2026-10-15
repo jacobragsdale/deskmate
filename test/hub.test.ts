@@ -307,6 +307,7 @@ await test("two people, their agents and a channel, through the real hub", { tim
       header: true,
       requests: [],
       delegation: null,
+      tree: [],
       replyCount: 0,
       replies: []
     }
@@ -356,7 +357,7 @@ await test("two people, their agents and a channel, through the real hub", { tim
   const working = await until(bob.session, "bob sees it working, on the branch it reported", (view) =>
     messages(view).find((message) => message.requests[0]?.status.kind === "working" && message.requests[0].status.branch === "main ±")
   );
-  assert.deepEqual(working.requests[0]?.accepted, { branch: "main", commit: COMMIT, dirty: true, mode: "full", grant: null }); // Where its owner let it run, what it may do, and that he let it himself.
+  assert.deepEqual(working.requests[0]?.accepted, { branch: "main", commit: COMMIT, dirty: true, mode: "full", delegate: false, grant: null }); // Where its owner let it run, what it may do, and that he let it himself.
   assert.equal(jacob.session.view().busy.working, 1);
   await jacob.session.handle({ do: "stop", id: slow.id, repo: "uploader" });
   await until(bob.session, "bob sees it stopped", (view) => messages(view).some((message) => message.requests[0]?.status.kind === "stopped"));

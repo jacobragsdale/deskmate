@@ -12,6 +12,7 @@ import type { ActivityItem, Arrival, AskView, ChatView, Check, Command, CurrentV
 import { agentPrompt, ChatLog, chatOf, continues, mayCome, mentions, ONLINE, refOf, rings } from "../core/chat.ts";
 import type { Accepted, Delegation, Entry, Message, Request } from "../core/chat.ts";
 import { checkRequest, jobIn, peopleInvolved, ROOT_TIME } from "../core/delegation.ts";
+import type { Node } from "../core/delegation.ts";
 import { DAY, liveGrant, revoked, standing } from "../core/grants.ts";
 import type { Standing } from "../core/grants.ts";
 import { readContent } from "../core/kinds.ts";
@@ -562,7 +563,8 @@ export class Session {
       header: !continues(previous, message),
       requests: (message.deleted ? this.stillMine(message, now) : this.chats.requests(message, now)).flatMap((request) => this.requestView(request)),
       delegation:
-        message.delegation === null ? null : { first: message.delegation.first, chain: message.delegation.chain, target: message.delegation.target, words: chainWords(message.delegation, this.me) }
+        message.delegation === null ? null : { first: message.delegation.first, chain: message.delegation.chain, target: message.delegation.target, words: chainWords(message.delegation, this.me) },
+      tree: this.treeView(message, now)
     };
   }
 
@@ -592,6 +594,7 @@ export class Session {
       quote: "",
       requests: [],
       delegation: null,
+      tree: [],
       replyCount: 0,
       replies: []
     };
@@ -652,7 +655,14 @@ export class Session {
     const accepted =
       request.accepted === null
         ? null
-        : { branch: request.accepted.branch, commit: request.accepted.commit, dirty: request.accepted.dirty, mode: request.accepted.mode, grant: this.ranUnder(owner, request.accepted) };
+        : {
+            branch: request.accepted.branch,
+            commit: request.accepted.commit,
+            dirty: request.accepted.dirty,
+            mode: request.accepted.mode,
+            delegate: request.accepted.delegate,
+            grant: this.ranUnder(owner, request.accepted)
+          };
     return request.state === "answered" ? [] : [{ id: request.message.entry.event.id, owner, repo, mine, accepted, status: mine ? this.myStatus(request) : this.theirStatus(request) }];
   }
 
@@ -673,6 +683,22 @@ export class Session {
   private answeredUnder(owner: string, accepted: Accepted | null): MessageView["grant"] {
     const grant = accepted === null ? null : this.ranUnder(owner, accepted);
     return accepted === null || grant === null ? null : { ...grant, mode: accepted.mode };
+  }
+
+  /** Every job under a message a person wrote, one line each, deepest last under its parent, when an agent it tags asked another; none otherwise. */
+  private treeView(message: Message, now: number): ReplyView["tree"] {
+    const lines: ReplyView["tree"][number][] = [];
+    const walk = (nodes: readonly Node[], depth: number): void => {
+      for (const { request, agent, children } of nodes) {
+        const asked = this.chats.message(request.event.id);
+        const job = asked === null ? undefined : this.chats.requests(asked, now, true).find((each) => `${each.owner}/${each.repo}` === agent);
+        lines.push({ id: request.event.id, agent, depth, state: job?.state ?? "waiting", mode: job?.accepted?.mode ?? null });
+        walk(children, depth + 1);
+      }
+    };
+    const roots = message.delegation === null && message.agent === null ? this.chats.tree(message.entry.event.id) : [];
+    walk(roots.some((node) => node.children.length > 0) ? roots : [], 0);
+    return lines;
   }
 
   /** The user's grants that stand, first made first, each with the runs it let go in the last 24 hours. */
@@ -936,6 +962,7 @@ export class Session {
     this.keep(entries);
     for (const key of this.runs.keys()) {
       this.holdFor(key);
+      this.stopUnwanted(key);
     }
     this.openFirst();
     if (announce) {
@@ -1116,11 +1143,15 @@ export class Session {
     return hits;
   }
 
-  /** Take back a request the user made of someone's agent, while it is still waiting. */
+  /**
+   * Take back a request the user made of someone's agent, while it is still waiting; or while it works on it let ask other agents, which ends everything under it:
+   * its owner's desk stops it, and each desk under it stops what it was asked.
+   */
   private async withdraw(request: string, owner: string, repo: string): Promise<void> {
     const message = this.found(request);
-    if (message.entry.event.author !== this.me || !this.chats.requests(message, this.client.now()).some((each) => each.owner === owner && each.repo === repo && each.state === "waiting")) {
-      throw new PlayerTwoError("only a request of yours that is still waiting can be taken back");
+    const job = this.chats.requests(message, this.client.now()).find((each) => each.owner === owner && each.repo === repo);
+    if (message.entry.event.author !== this.me || !(job?.state === "waiting" || (job?.state === "working" && job.accepted?.delegate === true))) {
+      throw new PlayerTwoError("only a request of yours that is still waiting, or that an agent let ask others is working on, can be taken back");
     }
     await this.publish(chatOf(message.entry.event, this.me), "job.withdrawn", { agent: `${owner}/${repo}` }, [request]);
   }
@@ -1791,6 +1822,38 @@ export class Session {
       const state = asked === null ? undefined : this.chats.requests(asked, this.client.now()).find((each) => `${each.owner}/${each.repo}` === agent)?.state;
       return state === "waiting" || state === "working" ? [{ id: request.event.id, agent }] : [];
     });
+  }
+
+  /**
+   * Why a run in a tree is no longer wanted: its asker took its request back, as a person may one whose agent is let ask others and an agent does what it asked once its own run ends;
+   * or, for an agent's request, the log no longer lets it go, as when the job that asked it has ended or been taken back. Null while it is wanted, and for any other run.
+   */
+  private unwanted(run: AgentRun): string | null {
+    const { event } = run.entry;
+    const agent = `${this.me}/${run.repo}`;
+    if (!run.delegate && event.kind !== "job.request") {
+      return null;
+    }
+    const takenBack = this.chats.log(event.id).some(({ trusted, event: other }) => {
+      const said = readContent(other);
+      return trusted && said.kind === "job.withdrawn" && said.content.agent === agent && other.refs[0] === event.id && other.author === event.author;
+    });
+    if (takenBack) {
+      return `${event.kind === "job.request" ? agentWords(event.author, this.me) : event.author} took the request back`;
+    }
+    const message = event.kind === "job.request" ? this.chats.message(event.id) : null;
+    const judged = message === null ? null : this.judge(message);
+    return judged?.ok === false ? `the request may no longer go: ${judged.reason}` : null;
+  }
+
+  /** Stop a run in a tree that is no longer wanted (see `unwanted`), saying why; its end then takes back what it asked in turn. */
+  private stopUnwanted(key: string): void {
+    const run = this.runs.get(key);
+    const why = run === undefined || run.cancel.signal.aborted ? null : this.unwanted(run);
+    if (run !== undefined && why !== null) {
+      this.hooks.notice({ title: `your ${run.repo} agent was stopped`, body: `${why}.`, severity: "info" });
+      run.cancel.abort();
+    }
   }
 
   /** Stop a run's time limit while an agent it asked has not ended, and start it again once none is open: time spent waiting on them is not the agent's own. */

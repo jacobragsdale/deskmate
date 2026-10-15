@@ -430,3 +430,83 @@ await test(
     assert.deepEqual([asked.state, asked.answer?.text, asked.answer?.entry.event.author], ["answered", "No: nothing passes it.", "carol"]); // As carol sent it, under her name.
   }
 );
+
+await test(
+  "withdrawing and stopping travel down the tree: a run let ask others that ends takes back what it asked, its asker may take back the root while it works, and a desk stops what it was asked once that is taken back or what asked it has ended",
+  { timeout: 120_000 },
+  async (t) => {
+    const hub = await startHub(t, () => Date.now() / 1000);
+    const bob = await deskOf(t, hub, "bob", ["client"]);
+    const jacob = await deskOf(t, hub, "jacob", ["uploader"]);
+    const carol = await deskOf(t, hub, "carol", ["billing"]);
+    const uploader = jacob.client.as("jacob/uploader", agentKey(join(hub.dir, "jacob"), "uploader"));
+    const run = async (desk: Desk, id: string, repo: string, delegate = true): Promise<void> => {
+      await eventually("it can be run", () => desk.shown(id)?.requests[0]?.status.kind === "ready");
+      await desk.session.handle({ do: "run", id, repo, post: true, mode: "full", text: desk.shown(id)?.body ?? "", delegate });
+      await sent(bob.client, id, desk.client.config.name, "job.accepted");
+    };
+    /** Bob asks jacob's agent to take its time, and jacob lets it, asking others; it asks carol's to take its time too, and carol lets it. Resolves with both requests' ids. */
+    const tree = async (): Promise<{ readonly root: string; readonly child: string }> => {
+      const { id: root } = (await bob.client.publish("#team", "message", { text: "@jacob/uploader slow", via: "cli" })).event;
+      await run(jacob, root, "uploader");
+      const { id: child } = (await uploader.publish("#team", "job.request", { target: "carol/billing", text: "slow", chain: ["jacob/uploader"] }, [root, root])).event;
+      await run(carol, child, "billing", false);
+      return { root, child };
+    };
+    const stopped = (id: string, agent: string): Promise<Delivered> => sent(bob.client, id, agent, "job.cancelled");
+
+    // Jacob stops his run: his desk takes back what his agent asked, at work or still waiting, and carol's desk stops hers.
+    const first = await tree();
+    const { id: waiting } = (await uploader.publish("#team", "job.request", { target: "bob/client", text: "read", chain: ["jacob/uploader"] }, [first.root, first.root])).event;
+    await eventually("bob is offered it", () => bob.shown(waiting)?.requests[0]?.status.kind === "ready");
+    await jacob.session.handle({ do: "stop", id: first.root, repo: "uploader" });
+    await stopped(first.root, "jacob/uploader");
+    for (const [id, agent] of [
+      [first.child, "carol/billing"],
+      [waiting, "bob/client"]
+    ] satisfies [string, string][]) {
+      assert.deepEqual(readContent((await sent(bob.client, id, "jacob/uploader", "job.withdrawn")).event), { kind: "job.withdrawn", content: { agent } });
+    }
+    await stopped(first.child, "carol/billing");
+    const lines = await eventually("the tree settled", () => {
+      const shown = bob.shown(first.root)?.tree ?? [];
+      return shown.every((line) => line.state !== "working" && line.state !== "waiting") && shown;
+    });
+    assert.deepEqual(
+      lines.map(({ agent, depth, state, mode }) => [agent, depth, state, mode]),
+      [
+        ["jacob/uploader", 0, "stopped", "full"],
+        ["carol/billing", 1, "stopped", "full"],
+        ["bob/client", 1, "withdrawn", null]
+      ]
+    );
+
+    // Bob takes back the root while jacob's agent works on it, let ask others: that ends all of it. One not let ask others he cannot take back once it runs.
+    const second = await tree();
+    await bob.session.handle({ do: "withdraw", id: second.root, owner: "jacob", repo: "uploader" });
+    await stopped(second.root, "jacob/uploader");
+    await stopped(second.child, "carol/billing");
+    const { id: plain } = (await bob.client.publish("#team", "message", { text: "@jacob/uploader slow, alone", via: "cli" })).event;
+    await run(jacob, plain, "uploader", false);
+    await eventually("bob sees it working", () => bob.shown(plain)?.requests[0]?.status.kind === "working");
+    await assert.rejects(
+      bob.session.handle({ do: "withdraw", id: plain, owner: "jacob", repo: "uploader" }),
+      /only a request of yours that is still waiting, or that an agent let ask others is working on/
+    );
+    await jacob.session.handle({ do: "stop", id: plain, repo: "uploader" });
+
+    // Carol's desk stops what it was asked once the log says what asked it has ended, though nobody took hers back: as if jacob's desk had gone.
+    const third = await tree();
+    await jacob.client.publish("#team", "job.cancelled", { repo: "uploader" }, [third.root]);
+    await stopped(third.child, "carol/billing");
+    assert.ok(!(await bob.client.events({ chat: "#team" })).some(({ event }) => event.refs[0] === third.child && event.kind === "job.withdrawn"));
+    await jacob.session.handle({ do: "stop", id: third.root, repo: "uploader" });
+
+    // And once the agent that asked takes it back, though what asked it goes on.
+    const fourth = await tree();
+    await uploader.publish("#team", "job.withdrawn", { agent: "carol/billing" }, [fourth.child]);
+    await stopped(fourth.child, "carol/billing");
+    assert.equal(jacob.session.view().busy.working, 1);
+    await jacob.session.handle({ do: "stop", id: fourth.root, repo: "uploader" });
+  }
+);

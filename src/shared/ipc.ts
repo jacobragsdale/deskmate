@@ -15,13 +15,15 @@ const requestSchema = z
     repo: z.string(),
     mine: z.boolean(),
     // What its owner last let it run on, and at which permission mode; null when they never have. `grant` is the grant of the owner's it ran under, by its id, and when that grant ends,
-    // `expires` null when this desk holds no such grant of theirs, or it has been revoked; null when the owner let it run themselves.
+    // `expires` null when this desk holds no such grant of theirs, or it has been revoked; null when the owner let it run themselves. `delegate`: whether its agent may ask other agents
+    // in the run, which makes a request of the user's still working one they can take back, ending everything under it.
     accepted: z
       .strictObject({
         branch: z.string(),
         commit: z.string(),
         dirty: z.boolean(),
         mode: permissionModeSchema,
+        delegate: z.boolean(),
         grant: z.strictObject({ id: z.string(), expires: z.int().nullable() }).readonly().nullable()
       })
       .readonly()
@@ -87,7 +89,22 @@ const said = {
   delegation: z
     .strictObject({ first: z.string(), chain: z.array(z.string()).readonly(), target: z.string(), words: z.string() })
     .readonly()
-    .nullable()
+    .nullable(),
+  // For a message a person wrote whose tagged agents asked others: every job under it, one per line in the order to draw them, each its request's id, its agent as owner/repo, how deep it is
+  // (0 for an agent the message tags), where it stands, and the mode its owner last let it run at, null before they have. Empty when no agent it tags asked another.
+  tree: z
+    .array(
+      z
+        .strictObject({
+          id: z.string(),
+          agent: z.string(),
+          depth: z.int(),
+          state: z.enum(["waiting", "working", "answered", "declined", "failed", "stopped", "withdrawn"]),
+          mode: permissionModeSchema.nullable()
+        })
+        .readonly()
+    )
+    .readonly()
 };
 
 /** A message in a thread, under its root. */
@@ -225,7 +242,8 @@ export const commandSchema = z.discriminatedUnion("do", [
   z.strictObject({ do: z.literal("react"), id, emoji: z.string().min(1).max(32), on: z.boolean() }), // `on: false` takes the user's reaction back.
   z.strictObject({ do: z.literal("edit"), id, text: z.string().min(1) }), // One of the user's own messages. Its tags stay as they were sent.
   z.strictObject({ do: z.literal("delete"), id }), // One of the user's own messages.
-  z.strictObject({ do: z.literal("withdraw"), id, owner: z.string(), repo }), // Take back a request of the user's that `owner`'s agent has not started on.
+  // Take back a request of the user's that `owner`'s agent has not started on; or one it works on let ask other agents, which stops it and everything it asked.
+  z.strictObject({ do: z.literal("withdraw"), id, owner: z.string(), repo }),
   z.strictObject({ do: z.literal("sendDraft"), chat, id, repo, text: z.string().min(1) }),
   z.strictObject({ do: z.literal("discardDraft"), chat, id, repo }),
   // `mode` is what the agent may do without asking, and the run never goes beyond it. `text` is the request as the user was shown it: an edit since then refuses the run.
