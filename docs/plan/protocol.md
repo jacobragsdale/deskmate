@@ -105,10 +105,10 @@ The hub gives each stored event a sequence number, `seq`, and a chain value: `ch
 | `channel.pin` | 1 | | `{ repo, branch }` | Structural. `repo: null` unpins. `branch` from phase 6, `null` before. |
 | `job.accepted` | 1 | the request | `{ repo, branch, commit, dirty, delivery, mode, by, delegate }` | The owner let it run. `delivery`: `review` or `post`. `mode`: a permission mode. `by`: `"owner"` or `{ grant: id }`. `delegate`, from phase 5: whether the agent may ask others. |
 | `job.declined` | 1 | the request | `{ repo, reason }` | `reason` may be `""`. |
-| `job.progress` | 3 | the request | `{ repo, summary }` | Coarse: no paths, no output. From the owner while the job is working, it is also word that the run goes on (see Jobs). The owner's desk sends it when the summary changes, at most every ten seconds, and again unchanged every five minutes while the run goes on. |
-| `job.result` | 1 | the request | `{ repo, branch, text, reviewed }` | The answer. |
-| `job.error` | 1 | the request | `{ repo }` | Only the fact. Why stays with the owner. |
-| `job.cancelled` | 1 | the request | `{ repo }` | The owner stopped it. |
+| `job.progress` | 3 | the request | `{ repo, summary }` | Coarse: no paths, no output. From the owner, or from phase 4 the agent, while the job is working, it is also word that the run goes on (see Jobs). The owner's desk sends it, signed by the agent from phase 4, when the summary changes, at most every ten seconds, and again unchanged every five minutes while the run goes on. |
+| `job.result` | 1 | the request | `{ repo, branch, text, reviewed }` | The answer. From phase 4, signed by the agent when it is posted with nobody reviewing it (`reviewed: false`), and by its owner when they reviewed and sent it. |
+| `job.error` | 1 | the request | `{ repo }` | Only the fact. Why stays with the owner. Signed by the agent from phase 4. |
+| `job.cancelled` | 1 | the request | `{ repo }` | The owner stopped it. Signed by the agent from phase 4, as the run's own report. |
 | `job.withdrawn` | 1 | the request | `{ agent }` | Counts only from the asker. |
 | `agent.register` | 4 | | `{ repo, pubkey }` | Public, and sent to `*` only. Structural: the hub learns the key for `author/repo`, the newest registration winning. |
 | `grant` | 4 | | `{ agent, askers, mode, delivery, expires, runsPerDay }` | Public. `agent` is one of the author's. `askers`: names, or `"*"` for anyone on the hub. `mode`: a permission mode. `delivery`: `review` or `post`. `expires`: Unix seconds, at most 30 days after the event's own `ts`, or the event is not read as a grant. `runsPerDay`: 1 to 1000. |
@@ -237,7 +237,7 @@ Inside WSL (or the home folder on Linux and macOS):
 | `~/.player-two/runtime/sha256-<digest>/` | The Linux runtime the window unpacked. `~/.player-two/current` links to the one in use, and `~/.player-two/previous` to the one before it; any other is removed. |
 | `~/.player-two/worktrees/` | Phase 6. Throwaway git worktrees for runs that change files. |
 
-`PLAYER_TWO_HOME` moves `~/.config/player-two`; `PLAYER_TWO_DEV` moves `~/dev`. On Windows the window keeps one file of its own, `settings.json` in Electron's user-data folder, with the name of the WSL distribution.
+`PLAYER_TWO_HOME` moves `~/.config/player-two`; `PLAYER_TWO_DEV` moves `~/dev`. From phase 4, during a run the agent's process, and the MCP server it is given over ACP, also get `PLAYER_TWO_AGENT`, its name as `owner/repo`, and `PLAYER_TWO_AGENT_KEY_FILE`, the path of its key: with both set, the `player-two` command and `player-two mcp` sign as that agent, and read as its owner. On Windows the window keeps one file of its own, `settings.json` in Electron's user-data folder, with the name of the WSL distribution.
 
 ## Versions
 

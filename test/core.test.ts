@@ -755,9 +755,22 @@ await test("a checkout's head is its branch, the commit it is at and whether any
   await assert.rejects(repos.describe(checkout), /git cannot say whether .* has uncommitted changes: fatal: .*index/);
 });
 
-await test("running an agent returns what it printed, reports a failure, and stops when cancelled", async () => {
+await test("running an agent returns what it printed, in the environment it is given beside the desk's own, reports a failure, and stops when cancelled", async () => {
   const never = new AbortController().signal;
   assert.equal(await runAgent(["sh", "-c", "printf ' hello\n'"], process.cwd(), never), "hello");
+  assert.equal(await runAgent(["sh", "-c", 'printf "%s %s" "$PLAYER_TWO_AGENT" "$PATH"'], process.cwd(), never, { PLAYER_TWO_AGENT: "jacob/uploader" }), `jacob/uploader ${process.env["PATH"] ?? ""}`);
+  assert.equal(
+    await oneshotRunner(oneshotAgent("sh -c"), runAgent).run(
+      'printf %s "$PLAYER_TWO_AGENT"',
+      process.cwd(),
+      "full",
+      { activity: () => undefined, permission: () => Promise.resolve("refuse") },
+      never,
+      undefined,
+      { PLAYER_TWO_AGENT: "jacob/uploader" }
+    ),
+    "jacob/uploader"
+  );
   await assert.rejects(runAgent(["sh", "-c", "echo oops >&2; exit 3"], process.cwd(), never), /status 3: oops/);
   await assert.rejects(runAgent(["no-such-agent-command"], process.cwd(), never), /could not start the agent command/);
   const cancel = new AbortController();

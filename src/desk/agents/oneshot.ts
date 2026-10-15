@@ -32,8 +32,8 @@ export function splitCommand(command: string): string[] {
   return word === null ? words : [...words, word];
 }
 
-/** Run the agent command and resolve with what it printed. Aborting `cancel` stops it and everything it started. */
-export const runAgent: Runner = (argv, cwd, cancel) =>
+/** Run the agent command, with `env` added to this process's environment, and resolve with what it printed. Aborting `cancel` stops it and everything it started. */
+export const runAgent: Runner = (argv, cwd, cancel, env = {}) =>
   new Promise((resolve, reject) => {
     const [command, ...args] = argv;
     if (command === undefined) {
@@ -42,7 +42,7 @@ export const runAgent: Runner = (argv, cwd, cancel) =>
     }
     // Its own process group, so stopping it takes the agent's child processes with it.
     // ponytail: process groups are POSIX; on Windows this stops only the agent itself. Use `taskkill /T` there if it matters.
-    const child = spawn(command, args, { cwd, stdio: ["ignore", "pipe", "pipe"], detached: true });
+    const child = spawn(command, args, { cwd, env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"], detached: true });
     let out = "";
     let err = "";
     let ended: "finished" | "cancelled" | "timed out" = "finished";
@@ -114,12 +114,12 @@ export function oneshotRunner(agent: Agent, exec: Runner = runAgent): AgentRunne
   };
   return {
     cannotHonour,
-    run: (prompt, cwd, mode, _handlers, cancel) => {
+    run: (prompt, cwd, mode, _handlers, cancel, _followUp, env = {}) => {
       const why = cannotHonour(mode);
       if (why !== "") {
         return Promise.reject(new PlayerTwoError(why));
       }
-      return exec([agent.command, ...agent.args, ...(cursor && mode === "full" ? ["--force"] : []), prompt], cwd, cancel);
+      return exec([agent.command, ...agent.args, ...(cursor && mode === "full" ? ["--force"] : []), prompt], cwd, cancel, env);
     },
     close: () => Promise.resolve() // A one-shot command keeps nothing open.
   };

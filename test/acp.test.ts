@@ -20,6 +20,7 @@ import { readContent, SUMMARIES } from "../src/core/kinds.ts";
 import type { Summary } from "../src/core/kinds.ts";
 import type { Agent, PermissionMode } from "../src/core/wire.ts";
 import { acpRunner } from "../src/desk/agents/acp.ts";
+import { agentEnv } from "../src/desk/agentKeys.ts";
 import { permissionTests } from "../src/desk/doctor.ts";
 import { Feed } from "../src/desk/agents/activity.ts";
 import type { FollowUp, PermissionAsk, RunHandlers } from "../src/desk/agents/runner.ts";
@@ -156,6 +157,14 @@ await test(
     const { handlers, items } = recorder();
     const answer = await acpRunner(fake()).run("mcp, and read", dir, "full", handlers, never);
     assert.equal(answer, `turn 1: read; servers ${JSON.stringify([{ name: "player-two", command: "player-two", args: ["mcp"], env: [] }])}`);
+    // In a run for an agent, the agent and its MCP server are both told which agent it is, so both sign as the agent.
+    const env = agentEnv(dir, "alice", "uploader");
+    const server = { name: "player-two", command: "player-two", args: ["mcp"], env: Object.entries(env).map(([name, value]) => ({ name, value })) };
+    assert.equal(await acpRunner(fake()).run("mcp, and whoami", dir, "full", handlers, never, undefined, env), `turn 1: servers ${JSON.stringify([server])}; as alice/uploader`);
+    assert.deepEqual(server.env, [
+      { name: "PLAYER_TWO_AGENT", value: "alice/uploader" },
+      { name: "PLAYER_TWO_AGENT_KEY_FILE", value: join(dir, "agents", "uploader.key") }
+    ]);
     assert.deepEqual(
       items.filter((item) => item.kind === "tool").map((item) => [item.id, item.kind, item.title, item.status, item.quiet]),
       [

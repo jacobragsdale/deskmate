@@ -16,7 +16,7 @@ import { notesIn } from "../core/links.ts";
 import type { Content, ContentOf, Summary } from "../core/kinds.ts";
 import { publicHex } from "../core/sign.ts";
 import { acpRunner } from "./agents/acp.ts";
-import { agentKey } from "./agentKeys.ts";
+import { agentEnv, agentKey } from "./agentKeys.ts";
 import { endedItem, startedItem } from "./agents/activity.ts";
 import { oneshotRunner, runAgent } from "./agents/oneshot.ts";
 import { PRESETS } from "./agents/presets.ts";
@@ -1243,7 +1243,9 @@ export class Session {
         if (run.doing !== "" && (run.doing !== run.told || Date.now() - run.toldAt >= this.heartbeat * 1000)) {
           run.told = run.doing;
           run.toldAt = Date.now();
-          this.client.publish(chatOf(run.entry.event, this.me), "job.progress", { repo: run.repo, summary: run.doing }, [run.entry.event.id]).catch(() => undefined);
+          this.agentOf(run.repo)
+            .publish(chatOf(run.entry.event, this.me), "job.progress", { repo: run.repo, summary: run.doing }, [run.entry.event.id])
+            .catch(() => undefined);
         }
         this.tellAt(key, run.toldAt + this.heartbeat * 1000);
       },
@@ -1345,7 +1347,7 @@ export class Session {
       if (stopped()) {
         throw new AgentCancelledError("stopped"); // While the chat was being told: it ends as stopped, without the agent being started only to be killed.
       }
-      const text = fitText(await runner.run(prompt, checkout.path, run.mode, handlers, run.cancel.signal, followUp));
+      const text = fitText(await runner.run(prompt, checkout.path, run.mode, handlers, run.cancel.signal, followUp, agentEnv(this.client.home, this.me, repo)));
       if (text === "") {
         ending = "the agent returned nothing";
         ended = endedItem("failed", ending);
@@ -1360,10 +1362,14 @@ export class Session {
     }
     this.noted(key, ended);
     if (ending === "stopped") {
-      await this.client.publish(chat, "job.cancelled", { repo }, request).catch(() => undefined);
+      await this.agentOf(repo)
+        .publish(chat, "job.cancelled", { repo }, request)
+        .catch(() => undefined);
       this.hooks.notice({ title: "", body: `Stopped your ${repo} agent.`, severity: "info" });
     } else if (ending !== "") {
-      await this.client.publish(chat, "job.error", { repo }, request).catch(() => undefined); // Only the fact: what the agent printed on the way down may not be fit to share.
+      await this.agentOf(repo)
+        .publish(chat, "job.error", { repo }, request)
+        .catch(() => undefined); // Only the fact: what the agent printed on the way down may not be fit to share.
       this.hooks.notice({ title: `your ${repo} agent`, body: ending, severity: "error" });
     }
     clearTimeout(run.telling);
@@ -1377,9 +1383,15 @@ export class Session {
     this.hooks.changed();
   }
 
+  /** The client that signs as my agent in `repo`, with the key everyone was told of: a run's own reports, and an answer nobody reviewed, are the agent's to sign. */
+  private agentOf(repo: string): Client {
+    return this.client.as(`${this.me}/${repo}`, this.agentKeys.get(repo) ?? agentKey(this.client.home, repo));
+  }
+
+  /** Post an answer nobody reviewed, signed by the agent that wrote it; or when it cannot be, keep it as a draft for its owner to review and send under their own name. */
   private async postAnswer(chat: string, draft: Draft): Promise<void> {
     try {
-      await this.client.publish(chat, "job.result", { repo: draft.repo, branch: draft.branch, text: draft.text, reviewed: false }, [draft.entry.event.id]);
+      await this.agentOf(draft.repo).publish(chat, "job.result", { repo: draft.repo, branch: draft.branch, text: draft.text, reviewed: false }, [draft.entry.event.id]);
     } catch (error) {
       // An answer that could not be posted is kept as a draft, so the agent's work is not lost.
       this.hooks.notice({ title: `your ${draft.repo} agent's answer was not posted; it is kept as a draft`, body: problemOf(error), severity: "error" });

@@ -35,9 +35,13 @@ const GOING = 1; // Seconds to wait, once the connection has closed, for the age
 const STOP_GRACE = 2; // Seconds a stopped agent has to end its turn before it is killed.
 const IDLE = 30 * 60; // Seconds a finished session is kept for a follow-up.
 const CANCELLED: acp.RequestPermissionResponse = { outcome: { outcome: "cancelled" } };
-// Player Two's own MCP server, attached to every session: found on the PATH by name, as the `player-two` an agent is told about in its prompt is,
-// and without --allow-send, so the agent can read and search the chat as the user and send nothing.
-const MCP_SERVER: acp.McpServerStdio = { name: "player-two", command: "player-two", args: ["mcp"], env: [] };
+/**
+ * Player Two's own MCP server, attached to every session: found on the PATH by name, as the `player-two` an agent is told about in its prompt is,
+ * and without --allow-send, so the agent can read and search the chat as the user and send nothing. It is given the run's `env` as the agent is, so it signs as the agent too.
+ */
+function mcpServer(env: Readonly<Record<string, string>>): acp.McpServerStdio {
+  return { name: "player-two", command: "player-two", args: ["mcp"], env: Object.entries(env).map(([name, value]) => ({ name, value })) };
+}
 
 // What the agent answers is parsed for the parts used here; anything more it says is passed over.
 const initializedSchema = z.object({
@@ -183,15 +187,17 @@ class Conversation {
   public exited = false;
   public version = ""; // The agent's own version, as it says when the protocol is agreed; "" when it does not.
   private readonly agent: Agent;
+  private readonly env: Readonly<Record<string, string>>; // Added to the agent's environment, and the MCP server's.
   private readonly child: ChildProcessByStdio<Writable, Readable, Readable>;
   private readonly connection: acp.ClientConnection;
   private readonly failed: Promise<never>; // Rejects, with why, when the process goes or never starts.
   private said = ""; // The end of what the agent has written on standard error.
   private sessionId = "";
 
-  constructor(agent: Agent, cwd: string) {
+  constructor(agent: Agent, cwd: string, env: Readonly<Record<string, string>> = {}) {
     this.agent = agent;
-    this.child = spawn(agent.command, agent.args, { cwd, stdio: ["pipe", "pipe", "pipe"], detached: true });
+    this.env = env;
+    this.child = spawn(agent.command, agent.args, { cwd, env: { ...process.env, ...env }, stdio: ["pipe", "pipe", "pipe"], detached: true });
     this.child.stdin.on("error", () => undefined); // Writing to an agent that has gone: the process's own end says why.
     this.child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
       this.said = (this.said + chunk).slice(-SAID);
@@ -239,7 +245,7 @@ class Conversation {
       throw new PlayerTwoError(`${this.agent.label} speaks version ${String(initialized.protocolVersion)} of ACP, and Player Two version ${String(acp.PROTOCOL_VERSION)}`);
     }
     this.version = initialized.agentInfo?.version ?? "";
-    const session = { cwd, mcpServers: looking ? [] : [MCP_SERVER] };
+    const session = { cwd, mcpServers: looking ? [] : [mcpServer(this.env)] };
     let opened: unknown;
     try {
       opened = await this.ask(this.connection.agent.request("session/new", session));
@@ -454,9 +460,9 @@ export function acpRunner(agent: Agent, seconds: { readonly limit: number; reado
   };
   return {
     cannotHonour: () => "",
-    run: async (prompt, cwd, mode, handlers, cancel, followUp) => {
-      const reused = take(followUp, cwd);
-      const conversation = reused ?? new Conversation(agent, cwd);
+    run: async (prompt, cwd, mode, handlers, cancel, followUp, env = {}) => {
+      const reused = take(followUp, cwd); // Its key names the repo, which is what `env` says of the agent, so a session kept is one started with the same.
+      const conversation = reused ?? new Conversation(agent, cwd, env);
       const late = new AbortController();
       const clock = new Clock(seconds.limit, () => {
         late.abort();

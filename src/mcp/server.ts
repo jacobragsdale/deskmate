@@ -1,6 +1,7 @@
 /**
  * The MCP server, `player-two mcp`: the chat as tools for an agent in its owner's editor, which starts it and talks to it over standard input and output.
- * It runs as the person who joined from this machine, with their key, and talks to the hub as the command does. Reading only, unless started with --allow-send.
+ * It runs as the person who joined from this machine, with their key, and talks to the hub as the command does; in an agent's run, attached to it over ACP, it signs as that agent and reads as its owner.
+ * Reading only, unless started with --allow-send.
  */
 
 import { readFileSync } from "node:fs";

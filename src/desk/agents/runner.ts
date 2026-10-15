@@ -30,8 +30,9 @@ export interface AgentRunner {
   /**
    * Run the agent on `prompt` in `cwd` and resolve with its answer. Aborting `cancel` stops it and everything it started, and rejects with AgentCancelledError.
    * With `followUp`, an agent that can keep a session goes on in the one an earlier run with the same key left open, with only the follow-up's text, and keeps its own open for the next.
+   * `env` is added to the agent's environment, and to that of the MCP server it is given: who it is, from `agentEnv`.
    */
-  run(prompt: string, cwd: string, mode: PermissionMode, handlers: RunHandlers, cancel: AbortSignal, followUp?: FollowUp): Promise<string>;
+  run(prompt: string, cwd: string, mode: PermissionMode, handlers: RunHandlers, cancel: AbortSignal, followUp?: FollowUp, env?: Readonly<Record<string, string>>): Promise<string>;
   /** End every session kept open for a follow-up, and everything their agents started. */
   close(): Promise<void>;
 }

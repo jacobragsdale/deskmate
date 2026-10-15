@@ -74,6 +74,7 @@ export interface Options {
   readonly transport?: Transport;
   readonly now?: () => number; // Unix seconds.
   readonly stdin?: NodeJS.ReadableStream; // Where `send TO -` reads the message from.
+  readonly env?: Readonly<Record<string, string | undefined>>; // Where an agent's run says which agent it is (see agentEnv); this process's environment when not given.
   readonly out?: (line: string) => void;
   readonly err?: (line: string) => void;
 }
@@ -469,8 +470,9 @@ async function run(argv: readonly string[], options: Options, out: (line: string
   const [command = "", ...args] = argv;
   const home = options.home ?? defaultHome();
   const transport = options.transport ?? http;
+  // As the person who joined from here; or, in an agent's run, as that agent, so that what it does through the command or the MCP server is the agent's and not its owner's.
   const joined = (): Client => {
-    const client = loadClient(home, transport, options.now ?? (() => Date.now() / 1000));
+    const client = loadClient(home, transport, options.now ?? (() => Date.now() / 1000), options.env ?? process.env);
     if (client === null) {
       throw new PlayerTwoError("not joined yet: run `player-two join HUB NAME TOKEN`");
     }

@@ -141,9 +141,9 @@ function deskOf(t: TestContext, client: Client, dev: string, options: Options = 
   const session = new Session(client, dev, hooks, {
     presence: 1,
     ...options,
-    runner: (argv, cwd, cancel) => {
+    runner: (argv, cwd, cancel, env) => {
       ran.push([...argv]);
-      return runner(argv, cwd, cancel);
+      return runner(argv, cwd, cancel, env);
     }
   });
   session.start();
@@ -345,6 +345,26 @@ await test("two people, their agents and a channel, through the real hub", { tim
   assert.deepEqual(jacob.session.view().busy, { working: 0, unsent: 0 });
 
   const later = await takingBack(jacob, bob);
+
+  // Who signed what: jacob what he decided and the answer he reviewed and sent; his agent its run's own reports and the answer posted with nobody reviewing it.
+  assert.deepEqual(
+    (await bob.client.events({ chat: "jacob", limit: 100 }))
+      .flatMap(({ event }) => {
+        const said = readContent(event);
+        return event.kind.startsWith("job.") ? [`${event.kind}${said.kind === "job.result" ? ` reviewed ${String(said.content.reviewed)}` : ""} by ${event.author}`] : [];
+      })
+      .reverse(),
+    [
+      "job.accepted by jacob",
+      "job.result reviewed true by jacob",
+      "job.accepted by jacob",
+      "job.result reviewed false by jacob/uploader",
+      "job.declined by jacob",
+      "job.accepted by jacob",
+      "job.cancelled by jacob/uploader",
+      "job.withdrawn by bob"
+    ]
+  );
   await reactingEditingAndReplying(jacob, bob, later);
   await aKindNeitherKnows(jacob, bob, hub, later);
 
@@ -976,14 +996,17 @@ await test("your own tag, sent from your window on one machine, waits for your c
   assert.deepEqual([first.ran.length, second.ran.length], [1, 0]);
 });
 
-/** A one-shot agent that looks for the last word of its request with the built player-two command, `command`, as its prompt says it may, and answers with the link of the earliest trusted note it finds. */
+/**
+ * A one-shot agent that looks for the last word of its request with the built player-two command, `command`, as its prompt says it may, and answers with the link of the earliest trusted note it finds,
+ * and which agent its environment said it was, which the command signed as.
+ */
 function searchingAgent(command: string): string {
   return `
     import { execFileSync } from "node:child_process";
     const word = process.argv.at(-1).trim().split(/\\s+/).at(-1);
     const found = JSON.parse(execFileSync(process.execPath, [${JSON.stringify(command)}, "search", "--json", word], { encoding: "utf8" }));
     const [note] = found.filter((match) => match.trusted).sort((a, b) => a.seq - b.seq); // The request itself is found too: the earliest is the one seen before.
-    console.log(note === undefined ? "Not that I can find." : "Yes, first seen here: " + note.link);
+    console.log((note === undefined ? "Not that I can find." : "Yes, first seen here: " + note.link) + " (searched as " + process.env.PLAYER_TWO_AGENT + ")");
   `;
 }
 
@@ -1032,7 +1055,7 @@ await test(
     await run(owner.session, id, true);
     await asker.session.handle({ do: "open", chat: "#backend" });
     const answer = await until(asker.session, "the agent's answer", (view) => messages(view).find((message) => message.agent === "uploader"));
-    assert.equal(answer.body, `Yes, first seen here: ${noteLink(earlier.event.id)}`);
+    assert.equal(answer.body, `Yes, first seen here: ${noteLink(earlier.event.id)} (searched as bob/uploader)`); // Posted with nobody reviewing it, signed by the agent, and trusted by alice.
     assert.match(owner.ran[0]?.at(-1) ?? "", /you may run `player-two search --json WORDS`/); // What its prompt told it.
     assert.equal(
       messages(asker.session.view()).some((message) => message.id === earlier.event.id),

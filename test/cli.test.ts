@@ -11,9 +11,10 @@ import { z } from "zod";
 import { main, render } from "../src/cli/main.ts";
 import { readContent } from "../src/core/kinds.ts";
 import { noteLink } from "../src/core/links.ts";
-import { loadKey, signEvent } from "../src/core/sign.ts";
+import { loadKey, publicHex, signEvent } from "../src/core/sign.ts";
 import { eventSchema } from "../src/core/wire.ts";
 import type { Delivered } from "../src/core/wire.ts";
+import { agentEnv, agentKey } from "../src/desk/agentKeys.ts";
 import { http } from "../src/desk/client.ts";
 import type { Client } from "../src/desk/client.ts";
 import { checkSchema } from "../src/shared/ipc.ts";
@@ -30,8 +31,8 @@ interface Ran {
   readonly err: string;
 }
 
-/** Run the command as a named person, each with their own home folder, and return how it exited and what it printed. */
-async function playerTwo(hub: Hub, who: string, argv: readonly string[], stdin = ""): Promise<Ran> {
+/** Run the command as a named person, each with their own home folder, and return how it exited and what it printed. `env` is its environment, as in an agent's run; none when not given. */
+async function playerTwo(hub: Hub, who: string, argv: readonly string[], stdin = "", env: Readonly<Record<string, string>> = {}): Promise<Ran> {
   const out: string[] = [];
   const err: string[] = [];
   const status = await main(argv, {
@@ -39,6 +40,7 @@ async function playerTwo(hub: Hub, who: string, argv: readonly string[], stdin =
     transport: http,
     now: () => NOW,
     stdin: Readable.from([stdin]),
+    env,
     out: (line) => {
       out.push(line);
     },
@@ -507,4 +509,33 @@ await test("ask exits 0 answered, 3 declined, 4 failed, stopped or withdrawn, an
   }
   assert.match((await playerTwo(hub, "alice", tooLong[0] ?? [])).err, /^player-two: --wait takes at most 86400 seconds, a day, not 2147484\n/);
   assert.equal((await bob.events({ chat: "alice", limit: 1 }))[0]?.event.kind, "job.accepted"); // A command line that is wrong sends nothing.
+});
+
+await test("in an agent's run the command signs as the agent: it reads what its owner sees, and sends nothing only a person can", async (t) => {
+  const hub = await startHub(t);
+  const [alice, bob] = [await hub.join("alice"), await hub.join("bob")];
+  const home = join(hub.dir, "alice");
+  await alice.publish("*", "agent.register", { repo: "uploader", pubkey: publicHex(agentKey(home, "uploader")) });
+  const asked = await bob.publish("alice", "message", { text: "@alice/uploader where do we retry?", via: "cli" });
+  const run = agentEnv(home, "alice", "uploader");
+  const asAgent = (...argv: string[]): Promise<Ran> => playerTwo(hub, "alice", argv, "", run);
+
+  assert.deepEqual(z.object({ text: z.string(), trusted: z.boolean() }).parse(printed(await asAgent("read", "--json", noteLink(asked.event.id)))), {
+    text: "@alice/uploader where do we retry?",
+    trusted: true
+  });
+  assert.equal(z.array(z.unknown()).parse(printed(await asAgent("search", "--json", "retry"))).length, 1);
+  assert.deepEqual(await asAgent("send", "bob", "hello from the agent"), { status: 1, out: "", err: "player-two: agents cannot send message: only a person can" });
+  assert.deepEqual(await asAgent("ask", "@bob/billing", "and you?", "--wait", "1"), { status: 1, out: "", err: "player-two: agents cannot send message: only a person can" });
+  assert.deepEqual(await asAgent("channel", "join", "ops"), { status: 1, out: "", err: "player-two: agents cannot send channel.join: only a person can" });
+  assert.deepEqual(await playerTwo(hub, "alice", ["who"], "", { ...run, PLAYER_TWO_AGENT: "bob/uploader" }), {
+    status: 1,
+    out: "",
+    err: 'player-two: PLAYER_TWO_AGENT is "bob/uploader", which is not one of alice\'s agents, as owner/repo'
+  });
+  assert.equal((await playerTwo(hub, "alice", ["send", "bob", "from alice herself"], "", { PLAYER_TWO_AGENT: "alice/uploader" })).status, 0); // Both are needed; with one, it is alice.
+  assert.deepEqual(
+    (await bob.events({ chat: "alice" })).map(({ event }) => event.author),
+    ["alice", "bob"]
+  );
 });

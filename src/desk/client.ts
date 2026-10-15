@@ -13,6 +13,7 @@ import { contentSchema, readContent } from "../core/kinds.ts";
 import type { Content, ContentOf } from "../core/kinds.ts";
 import { authHeader, eventIsAuthentic, loadKey, newKey, privateHex, publicHex, signEvent } from "../core/sign.ts";
 import {
+  authorSchema,
   channelInfoSchema,
   configSchema,
   deliveredSchema,
@@ -21,6 +22,7 @@ import {
   HIT_OPEN,
   hubInfoSchema,
   isAgent,
+  ownerOf,
   personSchema,
   receiptSchema,
   repoSchema,
@@ -28,6 +30,7 @@ import {
   userSchema
 } from "../core/wire.ts";
 import type { Agent, ChannelInfo, Config, Delivered, Event, HubInfo, Person, Repo, TeamRepo } from "../core/wire.ts";
+import { AGENT_KEY_VAR, AGENT_VAR } from "./agentKeys.ts";
 import { oneshotAgent } from "./agents/presets.ts";
 
 const CALL_TIMEOUT = 10; // Seconds any one request but the stream may take.
@@ -37,8 +40,8 @@ const JSON_BODY = { "Content-Type": "application/json" };
 
 /** Makes one HTTP request and resolves with the response body. Rejects with a PlayerTwoError the user can act on. */
 export type Transport = (method: string, url: string, headers: Readonly<Record<string, string>>, body: string | null) => Promise<string>;
-/** Runs the agent command in a folder and resolves with what it printed. Aborting `cancel` stops it. */
-export type Runner = (argv: readonly string[], cwd: string, cancel: AbortSignal) => Promise<string>;
+/** Runs the agent command in a folder, with `env` added to the desk's environment, and resolves with what it printed. Aborting `cancel` stops it. */
+export type Runner = (argv: readonly string[], cwd: string, cancel: AbortSignal, env?: Readonly<Record<string, string>>) => Promise<string>;
 
 const peopleSchema = z.array(personSchema);
 const reposSchema = z.array(repoSchema);
@@ -115,6 +118,7 @@ export const http: Transport = async (method, url, headers, body) => {
 export class Client {
   public readonly home: string;
   public readonly now: () => number; // Unix seconds.
+  public readonly signer: string; // Who signs what this client sends and asks: the person who joined, or with `as`, one of their agents, "owner/repo". It reads as the person does.
   private readonly key: KeyObject;
   private readonly transport: Transport;
   private settings: Config;
@@ -122,12 +126,18 @@ export class Client {
   private registeredTo = 0; // The seq of the newest event to everyone read: every agent.register up to it is in `registrations`.
   private learning: Promise<void> | null = null; // Reading the registrations newer than that, while it goes on.
 
-  constructor(home: string, config: Config, key: KeyObject, transport: Transport, now: () => number) {
+  constructor(home: string, config: Config, key: KeyObject, transport: Transport, now: () => number, signer: string = config.name) {
     this.home = home;
     this.settings = config;
     this.key = key;
     this.transport = transport;
     this.now = now;
+    this.signer = signer;
+  }
+
+  /** The same person's client, signing as their agent `agent`, "owner/repo", with the agent's own key: what it publishes, and the requests it makes, are the agent's. */
+  public as(agent: string, key: KeyObject): Client {
+    return new Client(this.home, this.settings, key, this.transport, this.now, agent);
   }
 
   public get config(): Config {
@@ -167,7 +177,7 @@ export class Client {
   public async publish<K extends Content["kind"]>(to: string, kind: K, content: ContentOf<K>, refs: readonly string[] = []): Promise<Delivered> {
     const ts = Math.floor(this.now());
     const said = contentSchema.parse({ kind, content, ts }); // What is signed is what this version reads the kind as, at the time it is signed with, so every reader of the kind can read it.
-    const event = signEvent(this.key, { author: this.config.name, to, kind, content: JSON.stringify(said.content), ts, refs });
+    const event = signEvent(this.key, { author: this.signer, to, kind, content: JSON.stringify(said.content), ts, refs });
     const { seq } = receiptSchema.parse(parseJson(await this.call("POST", "/events", JSON.stringify(event))));
     return { seq, event };
   }
@@ -355,7 +365,7 @@ export class Client {
   }
 
   private headers(method: string, path: string, body: string | null): Readonly<Record<string, string>> {
-    return { Authorization: authHeader(this.key, this.config.name, Math.floor(this.now()), method, path), ...(body === null ? {} : JSON_BODY) };
+    return { Authorization: authHeader(this.key, this.signer, Math.floor(this.now()), method, path), ...(body === null ? {} : JSON_BODY) };
   }
 
   private call(method: string, path: string, body: string | null = null): Promise<string> {
@@ -389,14 +399,26 @@ export async function join(home: string, hub: string, name: string, token: strin
   return config;
 }
 
-/** The client for the identity in `home`, or null when nobody has joined from there yet. */
-export function loadClient(home: string, transport: Transport, now: () => number): Client | null {
+/**
+ * The client for the identity in `home`, or null when nobody has joined from there yet. When `env` names one of that identity's agents and the file its key is in,
+ * as an agent's environment does during a run (see `agentEnv`), it signs as that agent: the player-two command and its MCP server pass their own environment, and the desk none.
+ */
+export function loadClient(home: string, transport: Transport, now: () => number, env: Readonly<Record<string, string | undefined>> = {}): Client | null {
   const configFile = joinPath(home, "config.json");
   const keyFile = joinPath(home, "key");
   if (!existsSync(configFile) || !existsSync(keyFile)) {
     return null;
   }
-  return new Client(home, readConfig(home), loadKey(readFileSync(keyFile, "utf8").trim()), transport, now);
+  const client = new Client(home, readConfig(home), loadKey(readFileSync(keyFile, "utf8").trim()), transport, now);
+  const agent = env[AGENT_VAR] ?? "";
+  const agentKeyFile = env[AGENT_KEY_VAR] ?? "";
+  if (agent === "" || agentKeyFile === "") {
+    return client;
+  }
+  if (!isAgent(agent) || !authorSchema.safeParse(agent).success || ownerOf(agent) !== client.config.name) {
+    throw new PlayerTwoError(`${AGENT_VAR} is ${JSON.stringify(agent)}, which is not one of ${client.config.name}'s agents, as owner/repo`);
+  }
+  return client.as(agent, loadKey(readFileSync(agentKeyFile, "utf8").trim()));
 }
 
 /**

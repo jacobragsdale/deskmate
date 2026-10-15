@@ -15,6 +15,9 @@ import { NOT_INSTRUCTIONS } from "../src/core/chat.ts";
 import { readContent } from "../src/core/kinds.ts";
 import { noteLink } from "../src/core/links.ts";
 import type { Delivered } from "../src/core/wire.ts";
+import { publicHex } from "../src/core/sign.ts";
+import { agentEnv, agentKey } from "../src/desk/agentKeys.ts";
+import { http, loadClient } from "../src/desk/client.ts";
 import type { Client } from "../src/desk/client.ts";
 import { Session } from "../src/desk/session.ts";
 import { createServer } from "../src/mcp/server.ts";
@@ -222,7 +225,7 @@ await test("without --allow-send nothing can be sent, and ask_agent returns the 
   const asked = z
     .object({ outcome: z.literal("answered"), request: z.string(), answer: z.object({ author: z.string(), agent: z.string(), trusted: z.boolean(), text: z.string() }) })
     .parse(await asking);
-  assert.deepEqual([asked.request, asked.answer], [noteLink(request.id), { ...asked.answer, author: "bob", agent: "uploader", trusted: true, text: "Retries live in queue.py" }]);
+  assert.deepEqual([asked.request, asked.answer], [noteLink(request.id), { ...asked.answer, author: "bob/uploader", agent: "uploader", trusted: true, text: "Retries live in queue.py" }]); // Posted with nobody reviewing it: signed by the agent.
   assert.match(prompts[0] ?? "", /alice, a teammate, tagged you in a direct chat with alice/);
 
   // Bob's own agent, tagged from his editor, waits for his click like any tag that does not come from his window.
@@ -232,4 +235,26 @@ await test("without --allow-send nothing can be sent, and ask_agent returns the 
   );
   await delay(300);
   assert.deepEqual([own.requests[0]?.status, prompts.length], [{ kind: "ready", before: "", canDecline: false, offer: { mode: "read-only", post: false } }, 1]);
+});
+
+await test("started in an agent's run, as its MCP server is, it signs as the agent: it reads what its owner sees, and even with --allow-send sends nothing only a person can", async (t) => {
+  const hub = await startHub(t);
+  const [alice, bob] = [await hub.join("alice"), await hub.join("bob")];
+  const home = join(hub.dir, "alice");
+  await alice.publish("*", "agent.register", { repo: "uploader", pubkey: publicHex(agentKey(home, "uploader")) });
+  await bob.publish("alice", "message", { text: "where do we retry?", via: "cli" });
+  const agent = loadClient(home, http, () => NOW, agentEnv(home, "alice", "uploader"));
+  assert.ok(agent !== null);
+  const mcp = await connect(t, agent, true);
+
+  assert.deepEqual(
+    z
+      .object({ notes: z.array(z.object({ author: z.string(), text: z.string(), trusted: z.boolean() })) })
+      .parse(await call(mcp, "read_chat", { chat: "bob" }))
+      .notes.map(({ author, text, trusted }) => [author, text, trusted]),
+    [["bob", "where do we retry?", true]]
+  );
+  const refused = resultSchema.parse(await mcp.callTool({ name: "send_message", arguments: { to: "bob", text: "hello from the agent" } }));
+  assert.deepEqual([refused.isError, refused.content[0]?.text], [true, "agents cannot send message: only a person can"]);
+  assert.equal((await bob.events({ chat: "alice" })).length, 1);
 });

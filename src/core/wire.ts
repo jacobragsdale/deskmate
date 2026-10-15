@@ -28,6 +28,7 @@ function within(text: string, max: number): boolean {
 }
 
 export const nameSchema = z.string().regex(new RegExp(`^${NAME}$`));
+export const authorSchema = z.string().regex(new RegExp(`^${AUTHOR}$`)); // A person, or one of their agents.
 export const channelSchema = z.string().regex(new RegExp(`^#${NAME}$`));
 export const addressSchema = z.string().regex(new RegExp(`^#?${NAME}$`)); // A person, or a channel when it starts with "#".
 export const repoNameSchema = z.string().regex(new RegExp(`^${REPO_NAME}$`));
@@ -73,7 +74,7 @@ export const channelInfoSchema = z.object({ name: channelSchema, members: z.arra
 export const eventSchema = z
   .strictObject({
     id: hashSchema, // The sha256 of the signed bytes, so the author knows it before sending.
-    author: z.string().regex(new RegExp(`^${AUTHOR}$`)), // A person, or one of their agents, which signs with a key of its own.
+    author: authorSchema, // A person, or one of their agents, which signs with a key of its own.
     to: z.string().regex(new RegExp(`^(#?${NAME}|\\*)$`)), // A person, a channel, or "*" for everyone.
     kind: z
       .string()
