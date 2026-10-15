@@ -39,13 +39,18 @@ const PROGRESS = 10; // Least seconds between two job.progress events of one run
 const ITEMS = 500; // Items of one run's activity kept, the newest.
 const FEEDS = 20; // Runs that have ended whose activity is kept, the newest.
 
-/** How the user last ran a request: at which mode, and whether its answer was posted without a review. */
-const choiceSchema = z.strictObject({ mode: permissionModeSchema, post: z.boolean() });
+/**
+ * How the user last ran a request: at which mode, whether its answer was posted without a review, and the agent that answered, by its id and command line.
+ * A choice kept before the agent was has none, and so matches no agent.
+ */
+const choiceSchema = z.strictObject({ mode: permissionModeSchema, post: z.boolean(), agent: z.strictObject({ id: z.string(), line: z.string() }).optional() });
 
 /** What the session remembers between runs, in app-state.json: read marks, the chat open last, and how each asker's requests of each repo were last run, by the asker and the repo. */
 const savedSchema = z.strictObject({ read: z.record(z.string(), z.int()), chat: z.string().nullable(), choices: z.record(z.string(), choiceSchema).default({}) });
 
-const FIRST_CHOICE: z.infer<typeof choiceSchema> = { mode: "read-only", post: false }; // What a request is offered at until its asker's requests of that repo have been run: the least an agent may do, reviewed.
+type Offer = Extract<RequestView["status"], { kind: "ready" }>["offer"];
+
+const FIRST_CHOICE: Offer = { mode: "read-only", post: false }; // What a request is offered at until its asker's requests of that repo have been run: the least an agent may do, reviewed.
 
 export interface Hooks {
   readonly changed: () => void; // What `view()` returns is different now.
@@ -572,7 +577,22 @@ export class Session {
       return { kind: "noCheckout" };
     }
     const before = state === "working" ? "interrupted" : state === "waiting" || state === "answered" ? "" : state;
-    return { kind: "ready", before, canDecline: event.author !== this.me && state !== "declined", offer: this.choices[`${event.author} ${repo}`] ?? FIRST_CHOICE };
+    return { kind: "ready", before, canDecline: event.author !== this.me && state !== "declined", offer: this.offerFor(event.author, repo) };
+  }
+
+  /**
+   * How a request from `asker` of `repo` is offered first: as the user last ran that asker's requests of it, while the agent that ran it is the one that answers, unchanged.
+   * A `full` only while that agent can still be held to nothing less: a mode the user chose because nothing less was there is never one click once something less is.
+   * Otherwise read-only, reviewed.
+   */
+  private offerFor(asker: string, repo: string): Offer {
+    const choice = this.choices[`${asker} ${repo}`];
+    const agent = defaultAgentOf(this.client.config);
+    const same = choice?.agent?.id === agent.id && choice.agent.line === commandLineOf(agent);
+    if (!same || (choice.mode === "full" && MODES.some((mode) => mode !== "full" && this.cannotRun(mode) === ""))) {
+      return FIRST_CHOICE;
+    }
+    return { mode: choice.mode, post: choice.post };
   }
 
   private theirStatus(request: Request): RequestView["status"] {
@@ -957,7 +977,7 @@ export class Session {
 
   /**
    * Run the user's agent on a request at `mode`, with its text as it stands now; which must be what the user was shown, `seen`, when they said to run it, or the agent would be given something they never saw.
-   * The mode is the user's choice each time: a teammate's request is offered read-only first, and then as the user last ran that asker's requests of that repo.
+   * The mode is the user's choice each time: a teammate's request is offered read-only first, and then as the user last ran that asker's requests of that repo (see `offerFor`).
    */
   private runRequest(request: string, repo: string, post: boolean, mode: PermissionMode, seen: string): void {
     const message = this.chats.message(request);
@@ -966,7 +986,8 @@ export class Session {
         throw new PlayerTwoError(`${message.entry.event.author} edited the request after you saw it: read it again before you run it`);
       }
       this.startRun(message, repo, post, mode);
-      this.choices[`${message.entry.event.author} ${repo}`] = { mode, post };
+      const agent = defaultAgentOf(this.client.config);
+      this.choices[`${message.entry.event.author} ${repo}`] = { mode, post, agent: { id: agent.id, line: commandLineOf(agent) } };
       this.save();
     }
   }

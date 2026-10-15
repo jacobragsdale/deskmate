@@ -793,7 +793,8 @@ await test("a teammate's request runs at the mode its owner chose, which job.acc
     ]
   ); // A one-shot run says only that it started and how it ended.
 
-  // Her next request is offered as bob last ran hers in that repo, and still is once his desk has started again, from app-state.json; another asker's is offered read-only, reviewed.
+  // Her next request is offered as bob last ran hers in that repo while the agent that ran it answers, but a full only while that agent can be held to nothing less:
+  // Cursor's one-shot command keeps read-only, so it is offered read-only, reviewed, as another asker's is.
   const carol = await hub.join("carol");
   const again = await alice.publish("bob", "message", { text: "@bob/uploader once more", via: "cli" });
   const other = await carol.publish("bob", "message", { text: "@bob/uploader from carol", via: "cli" });
@@ -803,15 +804,19 @@ await test("a teammate's request runs at the mode its owner chose, which job.acc
       const status = shownTo(session, id)?.requests[0]?.status;
       return status?.kind === "ready" && status.offer;
     });
+  const reviewed = { mode: "read-only", post: false };
+  assert.deepEqual([await offered(bob.session, "alice", again.event.id), await offered(bob.session, "carol", other.event.id)], [reviewed, reviewed]);
+
+  // Another agent answers, a one-shot command of his own that keeps only full: what was chosen for Cursor's is not offered for it. Run at full from the menu, her next is offered at full,
+  // as nothing less is there, and still is once his desk has started again, from app-state.json.
+  owner.saveAgents([oneshotAgent("fake-agent")], "custom");
+  assert.deepEqual(await offered(bob.session, "alice", again.event.id), reviewed);
+  await run(bob.session, again.event.id, false, "full");
+  await until(bob.session, "its draft", (view) => view.current?.drafts.some((draft) => draft.id === again.event.id));
+  const last = await alice.publish("bob", "message", { text: "@bob/uploader the last one", via: "cli" });
   const restarted = deskOf(t, owner, dev);
   for (const session of [bob.session, restarted.session]) {
-    assert.deepEqual(
-      [await offered(session, "alice", again.event.id), await offered(session, "carol", other.event.id)],
-      [
-        { mode: "full", post: false },
-        { mode: "read-only", post: false }
-      ]
-    );
+    assert.deepEqual(await offered(session, "alice", last.event.id), { mode: "full", post: false });
   }
 });
 

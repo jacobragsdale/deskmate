@@ -105,7 +105,7 @@ Jacob's window notifies him, and his chat list marks the chat with `▶`. Under 
 - The menu beside it chooses how the answer is delivered, reviewed as a draft first or posted directly, and runs his agent at the permission mode he picks in it: `read-only`; `supervised`, which asks him before it changes a file or runs a command; `auto-edits`, which changes files and asks before it runs a command; or `full`, which does anything without asking.
 - `× Decline` tells Bob the answer is no.
 
-The next request from Bob of the same repo offers what Jacob chose last as its first button, such as `▶▶ Run supervised and post`. The menu offers only the modes the agent that answers can be held to, and says why not the others. Copilot's one-shot command runs as a single command and cannot be limited, so it is offered only at `full`; Cursor's one-shot command is offered `read-only`, when it only proposes changes, and `full`; an agent over ACP that failed the permission test on the Setup page is offered only `full` until it passes. When what Jacob chose last cannot be kept by the agent that answers now, there is no first button, only `▶ Run…` with the menu.
+The next request from Bob of the same repo offers what Jacob chose last as its first button, such as `▶▶ Run supervised and post`, while the same agent answers. `full` is offered that way only while that agent cannot be held to anything less; otherwise, and once another agent answers, the first button is `▶ Run read-only` again, and `full` is chosen in the menu. The menu offers only the modes the agent that answers can be held to, and says why not the others. Copilot's one-shot command runs as a single command and cannot be limited, so it is offered only at `full`; Cursor's one-shot command is offered `read-only`, when it only proposes changes, and `full`; an agent over ACP that failed the permission test on the Setup page is offered only `full` until it passes. When what is offered cannot be kept by the agent that answers, there is no first button, only `▶ Run…` with the menu.
 
 Before the agent starts, Jacob's desk tells the chat he let it run, on what and at which mode. While it runs, Bob's line reads `jacob's uploader agent is working on feature/retry ± at 1a2b3c4 · read-only`: the branch, `±` when there are uncommitted changes, the commit, and the mode Jacob let it act at. Once an agent spoken to over ACP is under way, `working` gives way to what it is doing, in a few words that Jacob's desk sends at most every ten seconds: `thinking`, `reading`, `editing files`, `running a command` or `waiting for approval`. Bob never sees a file, a command or anything the agent printed.
 
@@ -251,7 +251,7 @@ Your identity is in `~/.config/player-two`, inside WSL on Windows:
 | `config.json` | `hub` (the hub URL), `name`, `agents`, `defaultAgent` and `ownMode`. |
 | `key` | Your Ed25519 private key. Readable only by you. |
 | `known.json` | The public key first seen for each teammate. |
-| `app-state.json` | Read marks, the last open chat, and how you last ran each teammate's requests of each repo. Safe to delete. |
+| `app-state.json` | Read marks, the last open chat, and how you last ran each teammate's requests of each repo, and with which agent. Safe to delete. |
 
 Two environment variables move things, mainly to hold two identities on one machine:
 

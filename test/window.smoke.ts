@@ -13,6 +13,7 @@ import { z } from "zod";
 
 import { readContent } from "../src/core/kinds.ts";
 import { noteLink } from "../src/core/links.ts";
+import { commandLineOf } from "../src/core/wire.ts";
 import type { Client } from "../src/desk/client.ts";
 import { startHub, TOKEN } from "./startHub.ts";
 
@@ -607,31 +608,69 @@ await test(
     assert.ok(existsSync(join(home, "dev", "billing", "edited.txt")));
     assert.equal(await acceptedAt(carol, "alice"), "supervised");
     const saved = z.object({ choices: z.record(z.string(), z.unknown()) }).parse(JSON.parse(readFileSync(join(home, ".config", "player-two", "app-state.json"), "utf8")));
-    assert.deepEqual(saved.choices["carol billing"], { mode: "supervised", post: true });
+    assert.deepEqual(saved.choices["carol billing"], { mode: "supervised", post: true, agent: { id: "custom", line: commandLineOf({ command: process.execPath, args: [FAKE, "--no-pids"] }) } });
     await carol.publish("alice", "message", { text: "@alice/billing and once more", via: "cli" });
     await page.until(
       "carol's next request, offered as alice ran the last",
       `${newest}.innerText.includes("and once more") && [...${newest}.querySelectorAll("button")].some((each) => each.textContent === "▶▶ Run supervised and post")`
     );
 
-    // With Cursor's one-shot command answering, which keeps read-only and full and nothing between, that offer cannot be kept: there is no first button, and the menu offers the two modes it keeps and says why not the others.
-    await page.click("button", "Setup");
-    await page.until("her agents on the Setup page", `document.querySelector('input[aria-label="Cursor one-shot answers"]') !== null`);
-    await page.click('input[aria-label="Cursor one-shot answers"]');
-    await page.until("Cursor's one-shot command chosen", `document.querySelector('input[aria-label="Cursor one-shot answers"]').checked === true`);
-    await page.click("button", "Back");
-    await page.until("no first button", `document.querySelector("main h1")?.textContent === "carol" && ${another}?.textContent === "▶ Run…"`);
-    assert.ok(!String(await page.eval(`${newest}.innerText`)).includes("Run supervised"));
+    // She runs that one at full from the menu, where the agent asks nothing. The agent that answers can be held to less, so a full is not offered again in one click: carol's next request
+    // is offered read-only, reviewed.
     await page.eval(`${another}.focus()`);
     await page.press("Enter");
-    await page.until("the menu again", `document.querySelector('[role="menuitem"][data-mode]') !== null`);
-    assert.deepEqual(await page.eval(`[...document.querySelectorAll('[role="menuitem"][data-mode]')].map((each) => each.dataset.mode)`), ["read-only", "full"]);
+    await page.until("the menu, for full", `document.querySelector('[role="menuitem"][data-mode="full"]') !== null`);
+    await page.click('[role="menuitem"][data-mode="full"]');
+    await page.until("the answer at full", `[...document.querySelectorAll("main article")].some((each) => each.innerText.includes("carol: @alice/billing and once more"))`);
+    assert.equal(await acceptedAt(carol, "alice"), "full");
+    await carol.publish("alice", "message", { text: "@alice/billing and after that", via: "cli" });
+    await page.until(
+      "carol's next request, offered read-only",
+      `${newest}.innerText.includes("and after that") && [...${newest}.querySelectorAll("button")].some((each) => each.textContent === "▶ Run read-only")`
+    );
+    assert.ok(!String(await page.eval(`${newest}.innerText`)).includes("Run full"));
+
+    // With Copilot's one-shot command answering, which runs only at full, that offer cannot be kept: there is no first button, and the menu offers full alone, beside the reason.
+    const chooseAgent = async (label: string): Promise<void> => {
+      await page.click("button", "Setup");
+      await page.until("her agents on the Setup page", `document.querySelector('input[aria-label="Cursor one-shot answers"]') !== null`);
+      const answers = `input[aria-label=${JSON.stringify(`${label} answers`)}]`;
+      if ((await page.eval(`document.querySelector(${JSON.stringify(answers)}) === null`)) === true) {
+        await page.click("button", "Add"); // The next agent offered.
+        await page.until(`${label} added`, `document.querySelector(${JSON.stringify(answers)}) !== null`);
+      }
+      await page.click(answers);
+      await page.until(`${label} chosen`, `document.querySelector(${JSON.stringify(answers)}).checked === true`);
+      await page.click("button", "Back");
+    };
+    const menuModes = `[...document.querySelectorAll('[role="menuitem"][data-mode]')].map((each) => each.dataset.mode)`;
+    const openMenu = async (): Promise<void> => {
+      await page.eval(`${another}.focus()`);
+      await page.press("Enter");
+      await page.until("the menu", `document.querySelector('[role="menuitem"][data-mode]') !== null`);
+    };
+    await chooseAgent("Copilot one-shot");
+    await page.until("no first button", `document.querySelector("main h1")?.textContent === "carol" && ${another}?.textContent === "▶ Run…"`);
+    await openMenu();
+    assert.deepEqual(await page.eval(menuModes), ["full"]);
+    assert.ok(String(await page.eval(`document.querySelector('[role="menu"]').innerText`)).includes("Copilot one-shot runs as a single command and cannot be limited: it runs only with full access."));
+    await page.shot("cannot");
+    await page.press("Escape");
+    await page.until("the menu closed", `document.querySelector('[role="menu"]') === null`);
+
+    // With Cursor's one-shot command answering, which keeps read-only and full and nothing between, the offer is kept, and the menu offers the two modes and says why not the others.
+    await chooseAgent("Cursor one-shot");
+    await page.until(
+      "the first button again",
+      `document.querySelector("main h1")?.textContent === "carol" && [...${newest}.querySelectorAll("button")].some((each) => each.textContent === "▶ Run read-only")`
+    );
+    await openMenu();
+    assert.deepEqual(await page.eval(menuModes), ["read-only", "full"]);
     assert.ok(
       String(await page.eval(`document.querySelector('[role="menu"]').innerText`)).includes(
         "Cursor one-shot runs either read-only, when it only proposes changes, or with full access, and nothing between."
       )
     );
-    await page.shot("cannot");
     await page.press("Escape");
 
     assert.deepEqual(page.problems, []);
