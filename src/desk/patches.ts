@@ -3,10 +3,11 @@
  * command line, and git is never given --unsafe-paths. Which paths it names is checked before any of this (`unsafePaths` in src/core/diff.ts).
  */
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { lstatSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 
+import { parseDiff } from "../core/diff.ts";
 import { git } from "./repos.ts";
 
 const LIMIT = 120; // Seconds one git call may take.
@@ -88,6 +89,31 @@ export async function commitBranch(path: string, base: string, branch: string, d
   });
   const commit = (await run(["-C", path, "commit-tree", tree, "-p", base], `git commit-tree in ${path}`, `${title}\n`)).trim();
   await run(["-C", path, "update-ref", `refs/heads/${branch}`, commit, ""], `git update-ref in ${path}`); // "" as the old value: only while there is no such branch.
+}
+
+/**
+ * Refuse a patch, before git sees it, that would write through a symbolic link in the checkout: git apply looks for one only in its index, so a folder the user has as a link git does not
+ * track would take the patch's files wherever it points. Each folder leading to each path in the diff is looked at as it is, not followed: a link, or one that is somewhere other than
+ * inside the checkout, refuses it. One that is not there is made by git, inside the one before it. The paths have been read already (`unsafePaths`): none is absolute or has a "..".
+ */
+export function refuseLinks(path: string, diff: string): void {
+  const root = realpathSync(path);
+  for (const name of new Set(parseDiff(diff).flatMap((file) => file.paths))) {
+    const parts = name.split("/").slice(0, -1);
+    for (let at = 1; at <= parts.length; at += 1) {
+      const folder = join(path, ...parts.slice(0, at));
+      let link: boolean;
+      try {
+        link = lstatSync(folder).isSymbolicLink();
+      } catch {
+        break; // Not there.
+      }
+      const inside = relative(root, realpathSync(folder));
+      if (link || inside === ".." || inside.startsWith("../") || isAbsolute(inside)) {
+        throw new Error(`not applied: ${plain(name)} is in ${plain(parts.slice(0, at).join("/"))}, which in ${path} is a link to elsewhere, so git would write where it points`);
+      }
+    }
+  }
 }
 
 /** Text from someone else's diff as a dialog may show it: each control or formatting character written as its code, so that a name can neither add a line to the dialog nor turn its text around. */

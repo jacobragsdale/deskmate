@@ -1453,7 +1453,7 @@ export class Session {
 
   /**
    * A patch in the chat, by its id, and the user's checkout of its repo to apply it to, once its paths have been read: refused, before git sees it, when one is outside the repo or
-   * inside .git.
+   * inside .git, or goes through a symbolic link in the checkout.
    */
   private toApply(id: string): { readonly message: Message; readonly patch: PatchContent; readonly checkout: Checkout } {
     const message = this.found(id);
@@ -1469,6 +1469,7 @@ export class Session {
     if (unsafe.length > 0) {
       throw new PlayerTwoError(`not applied: it names ${unsafe.map(plain).join(", ")}, which is outside the repo or inside .git, where a patch must never write`);
     }
+    patches.refuseLinks(checkout.path, patch.diff);
     return { message, patch, checkout };
   }
 

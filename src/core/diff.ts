@@ -25,10 +25,12 @@ export interface DiffFile {
   readonly binary: boolean;
   readonly hunks: readonly Hunk[];
   readonly names: readonly string[]; // Every name its headers give, as written: what `git apply` would act on.
+  readonly paths: readonly string[]; // The same names as paths in the repo, as `git apply` takes them: without "a/" or "b/" where git takes it off.
 }
 
 interface Draft {
   names: string[];
+  paths: string[];
   before: string | null;
   after: string | null;
   from: string | null;
@@ -40,7 +42,7 @@ interface Draft {
 }
 
 /** What one header line says: the names it gives, and what they mean for the file. */
-type Header = Partial<Pick<Draft, "before" | "after" | "from" | "binary" | "minus">> & { readonly names: readonly string[] };
+type Header = Partial<Pick<Draft, "before" | "after" | "from" | "binary" | "minus">> & { readonly names: readonly string[]; readonly paths: readonly string[] };
 
 /** Undo git's quoting of a name: "\303\251" is the bytes of "é", "\t" a tab. Null when the quoting is not git's. */
 function unquote(text: string): { readonly name: string; readonly end: number } | null {
@@ -96,19 +98,19 @@ function gitNames(text: string): readonly [string, string] | null {
 function headerOf(line: string): Header | null {
   if (line.startsWith("diff --git ")) {
     const pair = gitNames(line.slice("diff --git ".length));
-    return pair === null ? { names: [] } : { names: pair, before: strip(pair[0]), after: strip(pair[1]) };
+    return pair === null ? { names: [], paths: [] } : { names: pair, paths: pair.map(strip), before: strip(pair[0]), after: strip(pair[1]) };
   }
   if (line.startsWith("--- ") || line.startsWith("+++ ")) {
     const name = nameIn(line.slice(4));
     const side = name === DEV_NULL ? null : strip(name);
-    return { names: name === DEV_NULL ? [] : [name], ...(line.startsWith("-") ? { before: side, minus: true } : { after: side }) };
+    return { names: side === null ? [] : [name], paths: side === null ? [] : [side], ...(line.startsWith("-") ? { before: side, minus: true } : { after: side }) };
   }
   const moved = /^(rename from|rename old|copy from|rename to|rename new|copy to) (.*)$/u.exec(line);
   if (moved?.[1] !== undefined && moved[2] !== undefined) {
     const name = nameIn(moved[2]);
-    return /from|old/u.test(moved[1]) ? { names: [name], before: name, from: name } : { names: [name], after: name };
+    return /from|old/u.test(moved[1]) ? { names: [name], paths: [name], before: name, from: name } : { names: [name], paths: [name], after: name };
   }
-  return line.startsWith("GIT binary patch") || line.startsWith("Binary files ") ? { names: [], binary: true } : null;
+  return line.startsWith("GIT binary patch") || line.startsWith("Binary files ") ? { names: [], paths: [], binary: true } : null;
 }
 
 /** The hunk whose "@@" line is at `at`, its lines counted as its header says, as git counts them. Null when the line is not a hunk's header. */
@@ -156,7 +158,7 @@ export function parseDiff(diff: string): DiffFile[] {
   let file: Draft | null = null;
   for (let at = 0; at < lines.length; at += 1) {
     if (startsFile(lines, at, file)) {
-      file = { names: [], before: null, after: null, from: null, binary: false, minus: false, hunks: [], added: 0, removed: 0 };
+      file = { names: [], paths: [], before: null, after: null, from: null, binary: false, minus: false, hunks: [], added: 0, removed: 0 };
       files.push(file);
     }
     if (file === null) {
@@ -172,12 +174,21 @@ export function parseDiff(diff: string): DiffFile[] {
     }
     const header = headerOf(lines[at] ?? "");
     if (header !== null) {
-      Object.assign(file, header, { names: [...file.names, ...header.names] });
+      Object.assign(file, header, { names: [...file.names, ...header.names], paths: [...file.paths, ...header.paths] });
     }
   }
   return files.map((draft) => {
     const path = draft.after ?? draft.before ?? "";
-    return { path, from: draft.from !== null && draft.from !== path ? draft.from : null, added: draft.added, removed: draft.removed, binary: draft.binary, hunks: draft.hunks, names: draft.names };
+    return {
+      path,
+      from: draft.from !== null && draft.from !== path ? draft.from : null,
+      added: draft.added,
+      removed: draft.removed,
+      binary: draft.binary,
+      hunks: draft.hunks,
+      names: draft.names,
+      paths: draft.paths
+    };
   });
 }
 

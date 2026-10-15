@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -435,6 +435,43 @@ await test(
     await until("bob sees it applied", () => asker.view().current?.messages.find((message) => message.id === good)?.patch?.applied.length === 1);
     assert.deepEqual(asker.view().current?.messages.find((message) => message.id === good)?.patch?.applied, [{ who: "bob", branch: "main" }]);
     assert.notEqual(snapshot(theirs), before);
+  }
+);
+
+await test(
+  "Apply, and Apply to a new branch, refuse before git is called a patch with a file in a folder the recipient has as a symbolic link git does not track, which git apply would write through",
+  { timeout: 60_000 },
+  async (t) => {
+    const { jacob, asker, mine, theirs, questions, reply } = await two(t);
+    const elsewhere = mkdtempSync(join(tmpdir(), "player-two-elsewhere-"));
+    t.after(() => {
+      rmSync(elsewhere, { recursive: true, force: true });
+    });
+    symlinkSync(elsewhere, join(theirs, "docs"));
+    mkdirSync(join(theirs, "src"));
+    symlinkSync(elsewhere, join(theirs, "src", "lib"));
+    const base = git(mine, "rev-parse", "HEAD").trim();
+    const sends = async (diff: string): Promise<string> => {
+      const { id } = (await jacob.publish("#team", "patch", { repo: UPLOADER, base, branch: "main", title: "Through a link", diff })).event;
+      await until("bob sees the patch", () => asker.view().current?.messages.find((message) => message.id === id)?.patch?.checkout === true);
+      return id;
+    };
+    reply.yes = true;
+    const calls = applies().length;
+    for (const [diff, name, folder] of [
+      ["diff --git a/docs/x.txt b/docs/x.txt\nnew file mode 100644\n--- /dev/null\n+++ b/docs/x.txt\n@@ -0,0 +1 @@\n+written\n", "docs/x.txt", "docs"],
+      ["diff --git a/src/lib/deep/y.txt b/src/lib/deep/y.txt\nnew file mode 100644\n--- /dev/null\n+++ b/src/lib/deep/y.txt\n@@ -0,0 +1 @@\n+written\n", "src/lib/deep/y.txt", "src/lib"],
+      // A rename, whose new name only its "rename to" line gives.
+      ["diff --git a/notes.txt b/docs/notes.txt\nsimilarity index 100%\nrename from notes.txt\nrename to docs/notes.txt\n", "docs/notes.txt", "docs"]
+    ] as const) {
+      const id = await sends(diff);
+      for (const newBranch of [false, true]) {
+        await assert.rejects(asker.handle({ do: "applyPatch", id, newBranch }), {
+          message: `not applied: ${name} is in ${folder}, which in ${theirs} is a link to elsewhere, so git would write where it points`
+        });
+      }
+    }
+    assert.deepEqual([applies().length, questions, readdirSync(elsewhere)], [calls, [], []]);
   }
 );
 
