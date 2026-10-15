@@ -13,6 +13,7 @@ import { checkRequest, MAX_CHILDREN, MAX_TREE, peopleInvolved, ROOT_TIME, tree }
 import type { Node } from "../src/core/delegation.ts";
 import { readContent } from "../src/core/kinds.ts";
 import { loadKey, publicHex, signEvent } from "../src/core/sign.ts";
+import { ownerOf } from "../src/core/wire.ts";
 import type { Delivered, PermissionMode } from "../src/core/wire.ts";
 import { agentKey } from "../src/desk/agentKeys.ts";
 import { askUnder } from "../src/desk/notes.ts";
@@ -551,5 +552,181 @@ await test(
     });
     assert.match(asked, /; asked bob\/client: in queue\.py$/);
     assert.match(await answer("@jacob/uploader ask:bob/client", false), /; could not ask bob\/client: no ask_agent$/);
+  }
+);
+
+await test(
+  "three people: bob asks jacob's agent, which asks bob's and carol's, each run let go by its owner, and its answer holds both; then each limit and refusal, end to end, and no agent ran without its owner's acceptance in the log",
+  { timeout: 240_000 },
+  async (t) => {
+    const hub = await startHub(t, () => Date.now() / 1000);
+    const bob = await deskOf(t, hub, "bob", ["client"]);
+    const jacob = await deskOf(t, hub, "jacob", ["uploader"]);
+    const carol = await deskOf(t, hub, "carol", ["billing"]);
+    const desks = new Map([
+      ["bob", bob],
+      ["jacob", jacob],
+      ["carol", carol]
+    ]);
+    const deskFor = (agent: string): Desk => desks.get(ownerOf(agent)) ?? assert.fail(`no desk for ${agent}`);
+    const chats: string[] = [];
+    let chat = "#team";
+    /** A channel of its own for each case, everyone in it and looking at it, so that no earlier request reaches an agent's prompt. */
+    const room = async (name: string): Promise<void> => {
+      const where = `#${name}`;
+      chat = where;
+      chats.push(where);
+      for (const desk of desks.values()) {
+        await desk.client.publish(where, "channel.join", {});
+      }
+      for (const desk of desks.values()) {
+        await eventually(`${where} listed`, () => desk.session.view().rows.some((row) => row.chat === where));
+        await desk.session.handle({ do: "open", chat: where });
+      }
+    };
+    const events = async (): Promise<Delivered[]> => (await bob.client.events({ chat, limit: 200 })).reverse();
+    /** Bob asks, in the case's channel. */
+    const ask = async (text: string): Promise<string> => (await bob.client.publish(chat, "message", { text, via: "cli" })).event.id;
+    /** The owner of the agent `id` asks lets it run, read-only and posted, asking others when `delegate`. */
+    const run = async (id: string, agent: string, delegate: boolean): Promise<void> => {
+      const desk = deskFor(agent);
+      const shown = await eventually(`${agent} can run it`, () => (desk.shown(id)?.requests[0]?.status.kind === "ready" ? desk.shown(id) : undefined));
+      await desk.session.handle({ do: "run", id, repo: agent.slice(agent.indexOf("/") + 1), post: true, mode: "read-only", text: shown.body, delegate });
+    };
+    /** The request of `target` an agent made under `parent`, once it is in the chat. */
+    const asked = (parent: string, target: string): Promise<string> =>
+      eventually(`the request of ${target}`, async () => {
+        const found = (await events()).find(({ event }) => {
+          const said = readContent(event);
+          return said.kind === "job.request" && said.content.target === target && event.refs[1] === parent;
+        });
+        return found?.event.id;
+      });
+    /** What `agent` answered the request `id`, once it is posted. */
+    const answer = (id: string, agent: string): Promise<string> =>
+      eventually(`${agent}'s answer`, async () => {
+        const found = (await events()).find(({ event }) => event.kind === "job.result" && event.author === agent && event.refs[0] === id);
+        const said = found === undefined ? null : readContent(found.event);
+        return said?.kind === "job.result" ? said.content.text : undefined;
+      });
+    const ended = (id: string, author: string, kind: string): Promise<boolean> =>
+      eventually(`${author}'s ${kind}`, async () => (await events()).some(({ event }) => event.refs[0] === id && event.author === author && event.kind === kind));
+
+    // Bob asks jacob's uploader agent, whose run jacob lets ask others; it asks bob's client agent and carol's billing agent, and each owner lets theirs run.
+    await room("first");
+    const root = await ask("@jacob/uploader ask:bob/client ask:carol/billing");
+    await run(root, "jacob/uploader", true);
+    const [toBob, toCarol] = [await asked(root, "bob/client"), await asked(root, "carol/billing")];
+    assert.equal(carol.shown(toCarol)?.delegation?.words, "bob asked jacob's uploader agent, which is asking your billing agent");
+    assert.equal(bob.shown(toBob)?.delegation?.words, "you asked jacob's uploader agent, which is asking your client agent"); // Asked first by bob, whose click it still needs.
+    await run(toBob, "bob/client", false);
+    await run(toCarol, "carol/billing", false);
+    assert.match(await answer(root, "jacob/uploader"), /; asked bob\/client: turn 1: read; asked carol\/billing: turn 1: read$/);
+    const tree = await eventually("the tree, answered", () => {
+      const lines = bob.shown(root)?.tree ?? [];
+      return lines.every((line) => line.state === "answered") && lines;
+    });
+    assert.deepEqual(
+      tree.map(({ agent, depth, state, mode }) => [agent, depth, state, mode]),
+      [
+        ["jacob/uploader", 0, "answered", "read-only"],
+        ["bob/client", 1, "answered", "read-only"],
+        ["carol/billing", 1, "answered", "read-only"]
+      ]
+    );
+
+    // A third level is refused for depth: jacob's agent asks carol's, which asks bob's, which may ask nobody further.
+    await room("depth");
+    const deep = await ask("@jacob/uploader ask:carol/billing:ask:bob/client:ask:jacob/api");
+    await run(deep, "jacob/uploader", true);
+    const second = await asked(deep, "carol/billing");
+    await run(second, "carol/billing", true);
+    const third = await asked(second, "bob/client");
+    await run(third, "bob/client", true);
+    assert.match(await answer(third, "bob/client"), /; asked jacob\/api: declined \(it has come through 3 agents, and may come through at most 2\)$/);
+    await answer(deep, "jacob/uploader");
+
+    // An agent asking itself, or the agent that asked it, is refused.
+    await room("loops");
+    const loop = await ask("@jacob/uploader ask:jacob/uploader ask:carol/billing:ask:jacob/uploader");
+    await run(loop, "jacob/uploader", true);
+    await run(await asked(loop, "carol/billing"), "carol/billing", true);
+    const looped = await answer(loop, "jacob/uploader");
+    assert.match(
+      looped,
+      /; asked jacob\/uploader: declined \(jacob\/uploader is already in its chain\); asked carol\/billing: turn 1: [^;]*; asked jacob\/uploader: declined \(jacob\/uploader is already in its chain\)$/
+    );
+
+    // A fifth child is refused: whichever of the five came last, by its target's desk or before it was sent. Their owners decline the rest, and jacob's agent still answers.
+    await room("fanout");
+    const wide = await ask("@jacob/uploader ask:bob/client ask:bob/api ask:carol/billing ask:carol/web ask:jacob/api");
+    await run(wide, "jacob/uploader", true);
+    await eventually("four asked", async () => (await events()).filter(({ event }) => event.kind === "job.request").length >= 4);
+    await delay(1_500);
+    for (const { event } of await events()) {
+      const said = readContent(event);
+      const declined = (await events()).some(({ event: other }) => other.kind === "job.declined" && other.refs[0] === event.id);
+      if (said.kind === "job.request" && !declined) {
+        await deskFor(said.content.target).session.handle({ do: "decline", id: event.id, repo: said.content.target.slice(said.content.target.indexOf("/") + 1) });
+      }
+    }
+    const fanned = await answer(wide, "jacob/uploader");
+    assert.equal([...fanned.matchAll(/: declined \(jacob\/uploader has already asked 4 agents\)/g)].length, 1);
+    assert.equal([...fanned.matchAll(/: declined(;|$)/g)].length, 4);
+
+    // Carol declining gives jacob's agent "declined", and it still answers.
+    await room("declines");
+    const declining = await ask("@jacob/uploader ask:carol/billing");
+    await run(declining, "jacob/uploader", true);
+    const toDecline = await asked(declining, "carol/billing");
+    await eventually("carol is offered it", () => carol.shown(toDecline)?.requests[0]?.status.kind === "ready");
+    await carol.session.handle({ do: "decline", id: toDecline, repo: "billing" });
+    assert.match(await answer(declining, "jacob/uploader"), /; asked carol\/billing: declined$/);
+
+    // Bob taking back the root stops carol's agent at work under it.
+    await room("withdraws");
+    const slow = await ask("@jacob/uploader ask:carol/billing:slow");
+    await run(slow, "jacob/uploader", true);
+    const working = await asked(slow, "carol/billing");
+    await run(working, "carol/billing", false);
+    await eventually("bob sees jacob's agent working", () => bob.shown(slow)?.requests[0]?.status.kind === "working");
+    await ended(working, "carol", "job.accepted");
+    await bob.session.handle({ do: "withdraw", id: slow, owner: "jacob", repo: "uploader" });
+    await ended(working, "carol/billing", "job.cancelled");
+    await ended(slow, "jacob/uploader", "job.cancelled");
+
+    // A request naming a parent accepted without letting it ask others is declined by its target's desk.
+    await room("unlet");
+    const unlet = await ask("@jacob/uploader slow");
+    await run(unlet, "jacob/uploader", false);
+    await ended(unlet, "jacob", "job.accepted");
+    const uploader = jacob.client.as("jacob/uploader", agentKey(join(hub.dir, "jacob"), "uploader"));
+    const forged = (await uploader.publish(chat, "job.request", { target: "carol/billing", text: "read", chain: ["jacob/uploader"] }, [unlet, unlet])).event.id;
+    const declined = await eventually("carol's desk declines it", async () => (await events()).find(({ event }) => event.kind === "job.declined" && event.refs[0] === forged));
+    assert.deepEqual([declined.event.author, readContent(declined.event)], ["carol", { kind: "job.declined", content: { repo: "billing", reason: "jacob/uploader was not let ask other agents" } }]);
+    await jacob.session.handle({ do: "stop", id: unlet, repo: "uploader" });
+    await ended(unlet, "jacob/uploader", "job.cancelled");
+
+    // No agent ran on any machine without a job.accepted from its own owner in the log: every event an agent signed about a request comes after its owner let it run on that request.
+    let checked = 0;
+    for (const where of chats) {
+      chat = where;
+      const log = await events();
+      for (const [at, { event }] of log.entries()) {
+        const said = readContent(event);
+        if (!event.author.includes("/") || said.kind === "unknown") {
+          continue;
+        }
+        // A request is made in the run on its parent; any other report is about the run on the request it names.
+        const [request, repo] = said.kind === "job.request" ? [event.refs[1], event.author.slice(event.author.indexOf("/") + 1)] : [event.refs[0], "repo" in said.content ? said.content.repo : ""];
+        const letGo = log.slice(0, at).some(({ event: before }) => {
+          const accepted = readContent(before);
+          return accepted.kind === "job.accepted" && before.author === ownerOf(event.author) && before.refs[0] === request && accepted.content.repo === repo;
+        });
+        assert.ok(letGo || said.kind === "job.withdrawn", `${event.author}'s ${event.kind} in ${where} with no acceptance from its owner before it`);
+        checked += 1;
+      }
+    }
+    assert.ok(checked > 30);
   }
 );
