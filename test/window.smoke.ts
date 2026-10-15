@@ -240,8 +240,9 @@ async function addAgent(page: Page, program: string, args: readonly string[]): P
  */
 async function askingAgents(page: Page, bob: Client, carol: Client, bobsAgent: KeyObject, commit: string): Promise<void> {
   // Agents asking agents, in a channel of its own with bob and carol, so that no earlier message reaches a prompt. Alice asks bob's agent there, and bob lets it run read-only and ask
-  // others, as his desk would; it asks hers, signed by it. That request, a reply in her request's thread, offers the switch that lets her agent ask others too, off as for anyone else's
-  // request, beside what that means: she turns it on and runs it, her acceptance says so, and her agent asks carol's through the MCP server it is given for that, in the same thread.
+  // others, as his desk would; it asks hers, signed by it. Under her request is the tree of the jobs under it, one line each, indented by depth. That request, a reply in her request's
+  // thread, reads as bob's agent asking hers, and offers the switch that lets her agent ask others too, off as for anyone else's request, beside what that means: she turns it on and runs
+  // it, her acceptance says so, and her agent asks carol's through the MCP server it is given for that, in the same thread, and in the tree.
   await bob.publish("#relay", "channel.join", {});
   await carol.publish("#relay", "channel.join", {});
   await page.press("n", CTRL);
@@ -257,10 +258,14 @@ async function askingAgents(page: Page, bob: Client, carol: Client, bobsAgent: K
   assert.ok(relayRoot !== undefined);
   await bob.publish("#relay", "job.accepted", { repo: "uploader", branch: "main", commit, dirty: false, delivery: "post", mode: "read-only", by: "owner", delegate: true }, [relayRoot]);
   await bob.as("bob/uploader", bobsAgent).publish("#relay", "job.request", { target: "alice/billing", text: "ask:carol/api", chain: ["bob/uploader"] }, [relayRoot, relayRoot]);
+  const tree = `[...(${relay}?.querySelector("article").querySelectorAll('ul[aria-label="Agents asked under it"] li') ?? [])].map((each) => each.dataset.depth + " " + each.textContent.trim())`;
+  await page.until("the tree under her request", `${tree}.length === 2`);
+  assert.deepEqual(await page.eval(tree), ["0 bob's uploader agent · working · read-only", "1 ◌ your billing agent · waiting for you"]);
+  assert.equal(await page.eval(`${relay}.querySelector('article [aria-live="polite"] ul') !== null`), true);
   await page.until("the thread's summary under her request", `[...${relay}.querySelectorAll("button")].some((each) => each.textContent === "1 reply")`);
   await page.eval(`[...${relay}.querySelectorAll("button")].find((each) => each.textContent === "1 reply").click()`);
   const replyOf = (words: string): string => `[...${relay}.querySelectorAll('section[aria-label="Thread"] article')].find((each) => each.innerText.includes(${JSON.stringify(words)}))`;
-  const ofMine = replyOf("ask:carol/api");
+  const ofMine = replyOf("bob's uploader agent asked @alice/billing: ask:carol/api");
   const toggle = `${ofMine}?.querySelector('button[role="switch"]')`;
   await page.until("the switch under bob's agent's request of hers", `${toggle}?.getAttribute("aria-checked") === "false"`);
   assert.equal(await page.eval(`${toggle}.labels[0].textContent`), "Let this agent ask other agents");
@@ -269,15 +274,24 @@ async function askingAgents(page: Page, bob: Client, carol: Client, bobsAgent: K
   await page.until("the switch on", `${toggle}?.getAttribute("aria-checked") === "true"`);
   await page.shot("ask-others");
   await page.eval(`[...${ofMine}.querySelectorAll("button")].find((each) => each.textContent === "▶ Run read-only").click()`);
-  await page.until("her agent asking carol's, in the thread", `${replyOf("waiting for carol to approve")} !== undefined`);
+  await page.until("her agent asking carol's, in the thread", `${replyOf("your billing agent asked @carol/api: read")}?.innerText.includes("◌ waiting for carol to approve") === true`);
+  await page.until("carol's agent in the tree", `${tree}.length === 3`);
+  assert.deepEqual(await page.eval(tree), ["0 bob's uploader agent · working · read-only", "1 your billing agent · working · read-only", "2 ◌ carol's api agent · waiting for carol"]);
+  await page.shot("tree");
   const accepted = (await carol.events({ chat: "#relay" }))
     .map(({ event }) => ({ author: event.author, said: readContent(event) }))
     .find((each) => each.author === "alice" && each.said.kind === "job.accepted");
   assert.ok(accepted?.said.kind === "job.accepted" && accepted.said.content.delegate && accepted.said.content.mode === "read-only", JSON.stringify(accepted));
 
-  // Bob's agent's run ends, as his desk would say: hers, asked under it, is stopped by her desk, and what it asked is taken back.
+  // Bob's agent's run ends, as his desk would say: hers, asked under it, is stopped by her desk, and what it asked is taken back. Every job done, the tree folds to how many agents were
+  // involved, and opens again.
   await bob.publish("#relay", "job.cancelled", { repo: "uploader" }, [relayRoot]);
   await page.until("what her agent asked taken back", `${replyOf("↩ the request was taken back")} !== undefined`);
+  const folded = `${relay}.querySelector("article details")`;
+  await page.until("the tree folded", `${folded}?.querySelector("summary").textContent === "3 agents involved" && !${folded}.open`);
+  await page.eval(`${folded}.querySelector("summary").click()`);
+  await page.until("the tree open again", `${folded}.open`);
+  assert.deepEqual(await page.eval(tree), ["0 ■ bob's uploader agent · stopped · read-only", "1 ■ your billing agent · stopped · read-only", "2 ↩ carol's api agent · taken back"]);
 }
 
 await test(

@@ -497,6 +497,53 @@ function RequestLine({
   }
 }
 
+/** How each job in a tree stands, before its agent: a spinner while it works. */
+const MARK = { waiting: "◌", answered: "✓", declined: "×", failed: "✗", stopped: "■", withdrawn: "↩" } as const;
+const INDENT = ["", "pl-4", "pl-8"] as const; // A job's line, by how deep it is under the message.
+
+/** Where one job in a tree stands, in words. */
+function standing({ agent, state }: ReplyView["tree"][number], me: string): string {
+  if (state === "waiting") {
+    return ownerOf(agent) === me ? "waiting for you" : `waiting for ${ownerOf(agent)}`;
+  }
+  return state === "withdrawn" ? "taken back" : state;
+}
+
+/**
+ * Under a message a person wrote, once an agent it tags has asked another, every job under it: one line each, indented by how deep it is, with its agent, where it stands and the mode its
+ * owner let it run at. Once every one is done it folds to how many agents were involved, which opens it again. In a region there before it, so that a screen reader says what changes.
+ */
+function Tree({ message, me }: { readonly message: ReplyView; readonly me: string }): JSX.Element | null {
+  if (message.agent !== null) {
+    return null;
+  }
+  const { tree } = message;
+  const lines = (
+    <ul className="my-1 text-xs text-muted-foreground" aria-label="Agents asked under it">
+      {tree.map((job) => (
+        <li key={`${job.id} ${job.agent}`} className={INDENT[Math.min(job.depth, INDENT.length - 1)]} data-depth={job.depth}>
+          {job.state === "working" ? <Spinner /> : MARK[job.state]} {agentWords(job.agent, me)} · {standing(job, me)}
+          {job.mode === null ? "" : ` · ${job.mode}`}
+        </li>
+      ))}
+    </ul>
+  );
+  const done = tree.every((job) => job.state !== "waiting" && job.state !== "working");
+  return (
+    <div aria-live="polite">
+      {tree.length > 0 &&
+        (done ? (
+          <details className="my-1 text-xs text-muted-foreground">
+            <summary className="cursor-pointer">{new Set(tree.map((job) => job.agent)).size} agents involved</summary>
+            {lines}
+          </details>
+        ) : (
+          lines
+        ))}
+    </div>
+  );
+}
+
 /** "(edited)", after the text of a message its author has changed. */
 function Edited({ message }: { readonly message: ReplyView }): JSX.Element | null {
   return message.edited ? <span className="text-xs text-muted-foreground"> (edited)</span> : null;
@@ -560,7 +607,25 @@ function linkNotes(): (tree: MarkdownNode) => void {
   return visit;
 }
 
-function Body({ message, act }: { readonly message: ReplyView; readonly act: Act }): JSX.Element {
+/** Whose agent that is, as the reader says it: "your uploader agent", or "jacob's uploader agent". */
+function agentWords(agent: string, me: string): string {
+  const owner = ownerOf(agent);
+  return `${owner === me ? "your" : `${owner}'s`} ${agent.slice(owner.length + 1)} agent`;
+}
+
+/** An agent's request of another, as it reads in the chat: "jacob's uploader agent asked @bob/billing: …", drawn as text. */
+function Asked({ message, delegation, me }: { readonly message: ReplyView; readonly delegation: NonNullable<ReplyView["delegation"]>; readonly me: string }): JSX.Element {
+  return (
+    <p className="wrap-anywhere whitespace-pre-wrap">
+      {agentWords(`${message.sender}/${message.agent ?? ""}`, me)} asked <span className="font-semibold text-tag">@{delegation.target}</span>: {message.body}
+    </p>
+  );
+}
+
+function Body({ message, me, act }: { readonly message: ReplyView; readonly me: string; readonly act: Act }): JSX.Element {
+  if (message.delegation !== null) {
+    return <Asked message={message} delegation={message.delegation} me={me} />;
+  }
   if (message.deleted) {
     return <p className="text-muted-foreground italic">message deleted</p>;
   }
@@ -912,12 +977,13 @@ function Said({
           }}
         />
       ) : (
-        <Body message={message} act={act} />
+        <Body message={message} me={me} act={act} />
       )}
       <Reactions message={message} me={me} react={react} />
       {message.requests.map((request) => (
         <RequestLine key={`${request.owner}/${request.repo}`} request={request} text={message.body} asker={message.sender === me} own={myOwn} delegation={message.delegation} runs={runs} act={act} />
       ))}
+      <Tree message={message} me={me} />
       {!message.deleted && !editing && <Actions id={message.id} react={react} onReply={onReply} own={own} />}
     </article>
   );

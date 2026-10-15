@@ -140,7 +140,14 @@ player-two ask @bob/uploader "who calls the uploader?" --in '#backend' --wait 30
 
 Bob asks Jacob's agent whether dropping `retries` from `UploadOptions` breaks anyone, in `#backend`, where Carol is too. Jacob turns on `Let this agent ask other agents` and runs it. His agent asks Carol's, `@carol/billing`, with the `ask_agent` tool of the MCP server it is given for that run, and waits for her agent's answer, which it then has to work with.
 
-Its question is posted in the chat as it asks, signed by Jacob's agent with its own key, in the thread of Bob's message, so everyone there can read what each agent asked and answered. Carol decides as for any request: her agent runs only once she lets it, or under a grant of hers that names everyone the question runs on the say of, Bob, who asked first, and Jacob, whose agent asks. Her agent's answer goes into the chat, or waits for her review, as any does, and Jacob's agent gets it only once it is there.
+Its question is posted in the chat as it asks, signed by Jacob's agent with its own key, in the thread of Bob's message, so everyone there can read what each agent asked and answered. It reads `jacob's uploader agent asked @carol/billing: …`, marked `not reviewed`, since Jacob did not read it before it went. Under Bob's message is the tree of everything asked under it, one line per agent, indented by how deep it is, each with where it stands and the mode its owner let it run at:
+
+```text
+jacob's uploader agent · working · read-only
+    ◌ carol's billing agent · waiting for carol
+```
+
+Once every one is done, the tree folds to `2 agents involved`, which opens it again. Carol decides as for any request: her agent runs only once she lets it, or under a grant of hers that names everyone the question runs on the say of, Bob, who asked first, and Jacob, whose agent asks. Her agent's answer goes into the chat, or waits for her review, as any does, and Jacob's agent gets it only once it is there.
 
 Limits hold at every hop, and the target's desk checks each one in the log before it offers the question to its owner, declining it, saying why, when one fails: the agent asked first may ask others, and they may ask one level further, no deeper; one agent asks at most four others, and at most eight are asked under one message; an agent never asks one that the question already came through; it runs at no more than the mode of every agent above it, so a read-only run causes no write anywhere; and after an hour from the first agent's start nothing more is asked under it. An agent asks others only in a run its owner let it, by hand: a run under a grant never does, as nobody is there to see what it asks in its owner's name, and a one-shot command cannot, as it is given no MCP server.
 
