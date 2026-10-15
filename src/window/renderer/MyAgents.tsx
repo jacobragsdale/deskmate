@@ -54,8 +54,14 @@ function NewGrant({ repo, people, cannot, act, onDone }: NewGrantProps): JSX.Ele
   const [lasts, setLasts] = useState<number>(LASTS[0].seconds);
   const [runs, setRuns] = useState(RUNS);
   const [confirming, setConfirming] = useState(false); // Asking the second yes, for full access posted directly for everyone.
+  const [sending, setSending] = useState(false); // While the desk makes the grant: Grant does nothing more, so a second click, or a double click, makes no second grant.
   const grant = (): void => {
+    if (sending) {
+      return;
+    }
+    setSending(true);
     act({ do: "grant", repo, askers: [asker], mode, delivery, lasts, runsPerDay: Number(runs) }, (ok) => {
+      setSending(false);
       if (ok) {
         onDone();
       }
@@ -77,7 +83,7 @@ function NewGrant({ repo, people, cannot, act, onDone }: NewGrantProps): JSX.Ele
           What it writes is posted to the chat before you have read it. Up to {runs} times a day, for {LASTS.find((each) => each.seconds === lasts)?.label.toLowerCase()}, with nobody at your desk.
         </p>
         <p className="flex gap-2">
-          <Button type="button" variant="destructive" onClick={grant}>
+          <Button type="button" variant="destructive" disabled={sending} onClick={grant}>
             Grant full access to anyone
           </Button>
           <Button
@@ -181,7 +187,7 @@ function NewGrant({ repo, people, cannot, act, onDone }: NewGrantProps): JSX.Ele
             }}
           />
         </Label>
-        <Button type="submit" className="self-start">
+        <Button type="submit" className="self-start" disabled={sending}>
           Grant
         </Button>
       </form>
@@ -191,6 +197,7 @@ function NewGrant({ repo, people, cannot, act, onDone }: NewGrantProps): JSX.Ele
 
 /** The grants that stand on one of the user's agents, each with what it allows, until when, its runs today, and Revoke. */
 function Grants({ grants, act }: { readonly grants: readonly GrantView[]; readonly act: Act }): JSX.Element {
+  const [revoking, setRevoking] = useState<readonly string[]>([]); // The grants being revoked: their Revoke does nothing more until the desk answers.
   if (grants.length === 0) {
     return <p className="pl-4 text-muted-foreground">No grants: a teammate&rsquo;s request of it waits for you.</p>;
   }
@@ -205,8 +212,16 @@ function Grants({ grants, act }: { readonly grants: readonly GrantView[]; readon
             type="button"
             size="xs"
             variant="outline"
-            onClick={() => {
-              act({ do: "revoke", id: grant.id });
+            disabled={revoking.includes(grant.id)}
+            onClick={(event) => {
+              // The second click of a double click lands on whatever the first put under the pointer: here the next grant's Revoke, once this one has gone.
+              if (event.detail > 1) {
+                return;
+              }
+              setRevoking((each) => [...each, grant.id]);
+              act({ do: "revoke", id: grant.id }, () => {
+                setRevoking((each) => each.filter((id) => id !== grant.id));
+              });
             }}
           >
             Revoke

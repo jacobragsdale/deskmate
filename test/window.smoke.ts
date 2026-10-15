@@ -162,6 +162,20 @@ class Page {
     }
   }
 
+  /** Double-click what `expression` finds, as the system does: two presses at its middle, the second with a click count of 2, once `between` has resolved after the first. */
+  public async doubleClick(expression: string, between: () => Promise<void> = () => Promise.resolve()): Promise<void> {
+    const at = z
+      .object({ x: z.number(), y: z.number() })
+      .parse(await this.eval(`(() => { const box = ${expression}.getBoundingClientRect(); return { x: box.left + box.width / 2, y: box.top + box.height / 2 }; })()`));
+    for (const clickCount of [1, 2]) {
+      await this.send("Input.dispatchMouseEvent", { type: "mousePressed", ...at, button: "left", clickCount });
+      await this.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...at, button: "left", clickCount });
+      if (clickCount === 1) {
+        await between();
+      }
+    }
+  }
+
   /** With PLAYER_TWO_SHOTS naming a folder, save what the window shows there as `name`.png, for a person to look at. */
   public async shot(name: string): Promise<void> {
     const folder = process.env["PLAYER_TWO_SHOTS"] ?? "";
@@ -220,7 +234,7 @@ async function addAgent(page: Page, program: string, args: readonly string[]): P
 }
 
 await test(
-  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, keeps a card in reach in a closed thread and brings one far above the end into view, refuses and allows for the run from a card, and offers only the modes the agent that answers can keep, full alone beside its reason when that is all, and a full chosen once not again in one click when less is there; and on My agents makes a grant from its dialog, which asks a second yes for full access posted directly for anyone, counts the run it lets go, and holds a repo back, unshared and answering nobody under that grant, and lets it answer again; and says under whose grant a run went ahead, to its owner and to whoever asked, and that an answer its agent signed was not reviewed; and while a grant is live hides on close, answering on, until started again; lists a grant apart once its repo is not checked out here, and revokes it there; and quits on close once none is",
+  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, keeps a card in reach in a closed thread and brings one far above the end into view, refuses and allows for the run from a card, and offers only the modes the agent that answers can keep, full alone beside its reason when that is all, and a full chosen once not again in one click when less is there; and on My agents makes grants from its dialog, which asks a second yes for full access posted directly for anyone, one grant for each double click, revokes one with a double click and not the next, counts the run a grant lets go, and holds a repo back, unshared and answering nobody under that grant, and lets it answer again; and says under whose grant a run went ahead, to its owner and to whoever asked, and that an answer its agent signed was not reviewed; and while a grant is live hides on close, answering on, until started again; lists a grant apart once its repo is not checked out here, and revokes it there; and quits on close once none is",
   { skip: NO_DISPLAY ? "no display: run it under xvfb-run" : false, timeout: 120_000 },
   async (t) => {
     assert.ok(existsSync(join(ROOT, "dist", "main.js")), "dist/ is not built: run `npm run build` first");
@@ -767,8 +781,8 @@ await test(
     await page.press("Escape");
 
     // My agents, with the scripted agent answering again: a row for her billing agent, on its branch, and who answers for it. From its dialog, which offers the modes that agent can keep, she
-    // grants carol read-only, posted directly, twice a day; full access posted directly for anyone would have asked a second yes first. Carol's next request runs with nobody touching
-    // the window, and the grant counts it.
+    // grants full access posted directly for anyone, which asks a second yes first, and carol read-only, posted directly, twice a day, double-clicking each time: each makes one grant.
+    // She revokes the first, double-clicking, and it alone goes. Carol's next request runs with nobody touching the window, and the grant counts it.
     await chooseAgent(process.execPath);
     await page.click("footer button", "My agents");
     const billing = `document.querySelector('li[data-repo="billing"]')`;
@@ -795,13 +809,37 @@ await test(
     await page.shot("grant-everyone");
     await page.click('[role="dialog"] button', "Back");
     await page.until("the grant's dialog again", `${form}?.querySelector('select[name="mode"]').value === "full"`);
+    await page.click('[role="dialog"] button[type="submit"]');
+    const yes = `[...document.querySelectorAll('[role="dialog"] button')].find((each) => each.textContent === "Grant full access to anyone")`;
+    await page.until("the second yes again", `${yes} !== undefined`);
+    await page.doubleClick(yes);
+    const granted = `document.querySelector('li[data-grant]')`;
+    await page.until(
+      "the grant for anyone listed",
+      `document.querySelector('[role="dialog"]') === null && ${granted}?.innerText.includes("anyone on the hub · full · posted directly · until ") === true`
+    );
+    await page.eval(`[...${billing}.querySelectorAll("button")].find((each) => each.textContent === "New grant").click()`);
+    await page.until("the grant's dialog once more", `${form} !== null`);
     await choose("asker", "carol");
     await choose("mode", "read-only");
+    await choose("delivery", "post");
     await page.type(`[role="dialog"] input[name="runs"]`, "2");
     await page.shot("grant");
-    await page.click('[role="dialog"] button[type="submit"]');
-    const granted = `document.querySelector('li[data-grant]')`;
-    await page.until("the grant listed", `document.querySelector('[role="dialog"]') === null && ${granted}?.innerText.includes("carol · read-only · posted directly · until ") === true`);
+    await page.doubleClick(`document.querySelector('[role="dialog"] button[type="submit"]')`);
+    const carols = `document.querySelectorAll('li[data-grant]')[1]`;
+    await page.until("carol's grant listed", `document.querySelector('[role="dialog"]') === null && ${carols}?.innerText.includes("carol · read-only · posted directly · until ") === true`);
+    // What alice sent to everyone, once anything a second click would have sent has had time to arrive.
+    const toEveryone = async (kind: string): Promise<number> => {
+      await pause(1000);
+      return (await carol.events({ chat: "*" })).filter(({ event }) => event.author === "alice" && event.kind === kind).length;
+    };
+    assert.equal(await toEveryone("grant"), 2);
+    // The second click comes once the first has revoked the grant for anyone, and lands on carol's Revoke, which has moved up under the pointer: it revokes nothing.
+    await page.doubleClick(`${granted}.querySelector("button")`, () =>
+      page.until("the grant for anyone gone", `document.querySelectorAll('li[data-grant]').length === 1 && ${granted}.innerText.includes("carol · read-only")`)
+    );
+    assert.equal(await toEveryone("grant.revoke"), 1);
+    assert.equal(await page.eval(`document.querySelectorAll('li[data-grant]').length`), 1);
     assert.match(String(await page.eval(`${granted}.innerText`)), / · 0 of 2 runs today/);
     await page.shot("my-agents");
     await page.click("button", "Back");
