@@ -9,8 +9,8 @@ import type { TestContext } from "node:test";
 
 import { readContent } from "../src/core/kinds.ts";
 import { noteLink, notesIn } from "../src/core/links.ts";
-import { authHeader, loadKey, publicHex, signEvent } from "../src/core/sign.ts";
-import type { PermissionMode } from "../src/core/wire.ts";
+import { authHeader, eventIsAuthentic, loadKey, publicHex, signEvent } from "../src/core/sign.ts";
+import type { Event, PermissionMode } from "../src/core/wire.ts";
 import { agentKey } from "../src/desk/agentKeys.ts";
 import { CURSOR_ONESHOT, oneshotAgent } from "../src/desk/agents/presets.ts";
 import { runAgent } from "../src/desk/agents/oneshot.ts";
@@ -434,6 +434,125 @@ await test(
     await started();
     assert.deepEqual((await registered()).slice(2), [`bob/uploader ${rotated}`]);
     assert.deepEqual([await alice.registeredKey("bob/uploader"), await alice.registeredKey("bob/billing"), await alice.registeredKey("alice/uploader")], [rotated, keyOf("billing"), null]);
+  }
+);
+
+/** The key someone joined with, read from their home folder as their client reads it. */
+function keyIn(home: string): ReturnType<typeof loadKey> {
+  return loadKey(readFileSync(join(home, "key"), "utf8").trim());
+}
+
+await test(
+  "agent keys hold end to end: each answer holds under the key of whoever sent it, a key that is wrong, registered by someone else or rotated out is refused and not trusted, and an agent writes only where its owner may",
+  { timeout: 60_000 },
+  async (t) => {
+    const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+    const [bob, owner] = [await hub.join("bob"), await hub.join("jacob")];
+    await hub.join("mallory");
+    const [home, dev] = [join(hub.dir, "jacob"), join(hub.dir, "dev-jacob")];
+    checkout(dev, "uploader");
+    for (const who of [owner, bob]) {
+      await who.publish("#team", "channel.join", {});
+    }
+    const started = async (): Promise<Desk> => {
+      const desk = deskOf(t, owner, dev, { describe: () => Promise.resolve({ branch: "main", commit: COMMIT, dirty: false }) });
+      await until(desk.session, "jacob's checkout shared and #team open", (view) => {
+        desk.session.handle({ do: "open", chat: "#team" }).catch(() => undefined);
+        return view.myRepos.includes("uploader") && view.current?.chat === "#team";
+      });
+      return desk;
+    };
+    const now = (): number => Math.floor(Date.now() / 1000);
+    const signed = (key: ReturnType<typeof loadKey>, author: string, kind: string, content: object, to = "#team"): Event =>
+      signEvent(key, { author, to, kind, content: JSON.stringify(content), ts: now(), refs: [] });
+    const post = async (event: Event): Promise<readonly [number, string]> => {
+      const response = await fetch(`${hub.url}/events`, {
+        method: "POST",
+        headers: { Authorization: authHeader(keyIn(join(hub.dir, "bob")), "bob", now(), "POST", "/events"), "Content-Type": "application/json" },
+        body: JSON.stringify(event)
+      });
+      const said: unknown = await response.json();
+      return [response.status, typeof said === "object" && said !== null && "detail" in said ? String(said.detail) : ""];
+    };
+    const reading = { repo: "uploader", summary: "reading" };
+
+    // Bob asks twice in #team: jacob lets one be posted with nobody reviewing it, and reviews and sends the other.
+    const jacob = await started();
+    const first = agentKey(home, "uploader");
+    for (const [text, post] of [
+      ["posted", true],
+      ["reviewed", false]
+    ] as const) {
+      const { id } = (await bob.publish("#team", "message", { text: `@jacob/uploader ${text}`, via: "cli" })).event;
+      await until(jacob.session, `the ${text} request`, () => shownTo(jacob.session, id)?.requests[0]?.status.kind === "ready");
+      await run(jacob.session, id, post);
+      if (!post) {
+        await until(jacob.session, "its draft", (view) => view.current?.drafts.some((draft) => draft.id === id));
+        await jacob.session.handle({ do: "sendDraft", chat: "#team", id, repo: "uploader", text: "read and sent" });
+      }
+    }
+    const results = async (): Promise<{ readonly seq: number; readonly event: Event; readonly reviewed: boolean }[]> =>
+      (await bob.events({ chat: "#team", limit: 100 })).flatMap(({ seq, event }) => {
+        const said = readContent(event);
+        return said.kind === "job.result" ? [{ seq, event, reviewed: said.content.reviewed }] : [];
+      });
+    for (let tries = 0; tries < 100 && (await results()).length < 2; tries += 1) {
+      await pause(50);
+    }
+    const answers = (await results()).toReversed();
+    const keys = { jacob: publicHex(keyIn(home)), agent: publicHex(first) };
+    assert.deepEqual(
+      answers.map(({ event, reviewed }) => [reviewed, event.author, eventIsAuthentic(event, keys.jacob), eventIsAuthentic(event, keys.agent)]),
+      [
+        [false, "jacob/uploader", false, true], // Nobody read it: the agent's.
+        [true, "jacob", true, false] // Jacob read it and pressed send: his.
+      ]
+    );
+
+    // A wrong key, the agent sending what only a person may, and a key someone else registered, under their own name or forged under jacob's, are all refused.
+    const mallory = keyIn(join(hub.dir, "mallory"));
+    const theirs = loadKey("55".repeat(32));
+    assert.deepEqual(await post(signed(mallory, "jacob/uploader", "job.progress", reading)), [401, "event is not signed by its author"]);
+    assert.deepEqual(await post(signed(first, "jacob/uploader", "message", { text: "@jacob/uploader again", via: "cli" })), [403, "agents cannot send message: only a person can"]);
+    assert.equal((await post(signed(mallory, "mallory", "agent.register", { repo: "uploader", pubkey: publicHex(theirs) }, "*")))[0], 201); // Mallory's own uploader.
+    assert.deepEqual(await post(signed(mallory, "jacob", "agent.register", { repo: "uploader", pubkey: publicHex(theirs) }, "*")), [401, "event is not signed by its author"]);
+    const misregistered = signed(theirs, "jacob/uploader", "job.progress", reading);
+    assert.deepEqual(await post(misregistered), [401, "event is not signed by its author"]);
+    assert.ok(!(await bob.isTrusted({ seq: Number.MAX_SAFE_INTEGER, event: misregistered })));
+
+    // Jacob replaces the key file and starts again: the new key is registered, the old one is refused, and what the old one signed before still holds.
+    await jacob.session.stop();
+    rmSync(join(home, "agents", "uploader.key"));
+    await started();
+    const second = agentKey(home, "uploader"); // As the desk started again made it.
+    assert.notEqual(publicHex(second), keys.agent);
+    assert.deepEqual(await post(signed(first, "jacob/uploader", "job.progress", reading)), [401, "event is not signed by its author"]);
+    assert.equal((await post(signed(second, "jacob/uploader", "job.progress", reading)))[0], 201);
+    const fresh = loadClient(join(hub.dir, "bob"), http, () => Date.now() / 1000); // One that has learned nothing yet.
+    assert.ok(fresh !== null);
+    assert.deepEqual(await Promise.all(answers.map((answer) => fresh.isTrusted(answer))), [true, true]);
+    const watching = deskOf(t, bob, join(hub.dir, "dev-bob"));
+    const shown = await until(watching.session, "bob's window with both answers", (view) => {
+      watching.session.handle({ do: "open", chat: "#team" }).catch(() => undefined);
+      const found = messages(view).filter((message) => message.agent === "uploader");
+      return found.length === 2 && found;
+    });
+    assert.deepEqual(
+      shown.map((answer) => [answer.sender, answer.trusted, answer.body]),
+      [
+        ["jacob", true, "done"], // Under its owner's name, as before agents signed: the window says it is the agent's by `agent`.
+        ["jacob", true, "read and sent"]
+      ]
+    );
+
+    // A client that pinned jacob under another key believes nothing his agent signs.
+    const carol = await hub.join("carol");
+    writeFileSync(join(hub.dir, "carol", "known.json"), JSON.stringify({ jacob: publicHex(mallory) }));
+    assert.deepEqual(await Promise.all(answers.map((answer) => carol.isTrusted(answer))), [false, false]);
+
+    // And once jacob has left #team, his agent cannot write there either.
+    await owner.publish("#team", "channel.leave", {});
+    assert.deepEqual(await post(signed(second, "jacob/uploader", "job.progress", reading)), [403, "join #team before posting to it"]);
   }
 );
 

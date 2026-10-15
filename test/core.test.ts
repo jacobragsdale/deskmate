@@ -432,6 +432,17 @@ function clientOf(answers: Readonly<Record<string, unknown>>, asked: string[] = 
   return new Client("/nowhere", { hub: "http://hub.test", name: "jacob", agents: [agent], defaultAgent: "custom", ownMode: "auto-edits" }, key, transport, () => NOW);
 }
 
+await test("a client that has never seen an agent's owner, or any registration of the agent, does not trust its events, and asks the hub only for registrations before it says so", async () => {
+  const asked: string[] = [];
+  const client = clientOf({ "GET /events": [], "GET /users": [] }, asked);
+  const content = JSON.stringify({ repo: "uploader", branch: "main", text: "trust me", reviewed: false });
+  const answer = { seq: 7, event: signEvent(key, { author: "zed/uploader", to: "jacob", kind: "job.result", content, ts: NOW, refs: [] }) };
+
+  assert.equal(await client.isTrusted(answer), false);
+  assert.deepEqual(asked, ["GET /events"]); // The events to everyone: an agent's key is never taken from the hub's word, nor pinned as a person's is.
+  assert.deepEqual(shown(logOf("jacob", [{ ...answer, trusted: false }]), "zed"), ["! zed/uploader"]); // Shown as a warning, without what it says.
+});
+
 await test("the client reads past a field a newer hub adds, but refuses one inside a signed event", async () => {
   const event = signEvent(key, { author: "bob", to: "jacob", kind: "message", content: JSON.stringify({ text: "hello", via: "cli" }), ts: NOW, refs: [] });
   const info = { version: "9.0.0", protocol: PROTOCOL, repos: "dev.azure.com/acme", now: NOW };
