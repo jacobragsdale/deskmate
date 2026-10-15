@@ -17,7 +17,7 @@ import type { Act } from "./App.tsx";
 
 const STALLED = 10_000; // Milliseconds with no new item before a run still going is shown as waiting.
 const NEAR_BOTTOM = 40; // Pixels from the end within which a new item keeps the list pinned to the end.
-const MARKS = { message: "›", thought: "›", tool: "✓", plan: "☰", permission: "✓", error: "✗", state: "•" } as const; // A step that is over, by its kind.
+const MARKS = { message: "›", thought: "›", tool: "✓", plan: "☰", permission: "?", error: "✗", state: "•" } as const; // A step that is over, by its kind.
 // Failures, and steps that changed a file or ran a command, stand out; reads, searches and thoughts are dim.
 const TONES = { failed: "border-destructive text-destructive", loud: "border-agent font-medium", quiet: "border-transparent text-muted-foreground", plain: "border-transparent" } as const;
 
@@ -103,7 +103,7 @@ function Row({ item }: { readonly item: ActivityItem }): JSX.Element {
         <details className="group">
           <summary className="flex cursor-pointer list-none items-baseline gap-1.5 rounded-sm py-0.5 pr-1 hover:bg-muted">
             {line}
-            <ChevronRightIcon aria-hidden className="size-3 flex-none self-center transition-transform group-open:rotate-90" />
+            <ChevronRightIcon aria-hidden className="size-3 flex-none self-center group-open:rotate-90 motion-safe:transition-transform" />
           </summary>
           <pre className="mt-0.5 mb-1.5 ml-5.5 max-h-80 overflow-auto rounded bg-muted px-2 py-1 text-xs font-normal wrap-anywhere whitespace-pre-wrap text-foreground">{item.detail}</pre>
         </details>
