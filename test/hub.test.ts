@@ -16,12 +16,12 @@ import { main } from "../src/cli/main.ts";
 import { MAX_GRANT, readContent } from "../src/core/kinds.ts";
 import { noteLink, notesIn } from "../src/core/links.ts";
 import { authHeader, eventIsAuthentic, loadKey, newKey, publicHex, signEvent } from "../src/core/sign.ts";
-import { deliveredSchema, MAX_SKEW, personSchema } from "../src/core/wire.ts";
+import { deliveredSchema, eventSchema, MAX_SKEW, personSchema } from "../src/core/wire.ts";
 import type { Event, PermissionMode } from "../src/core/wire.ts";
 import { AGENT_KEY_VAR, agentKey } from "../src/desk/agentKeys.ts";
 import { CURSOR_ONESHOT, oneshotAgent } from "../src/desk/agents/presets.ts";
 import { runAgent } from "../src/desk/agents/oneshot.ts";
-import { AgentCancelledError, http, join as joinHub, loadClient, PlayerTwoError } from "../src/desk/client.ts";
+import { AgentCancelledError, http, join as joinHub, loadClient, PlayerTwoError, Refused } from "../src/desk/client.ts";
 import type { Client, Runner, Transport } from "../src/desk/client.ts";
 import { Session } from "../src/desk/session.ts";
 import type { Options } from "../src/desk/session.ts";
@@ -716,6 +716,35 @@ await test("a repo list the hub gave before the desk told it of a change does no
   await until(session, "the first beat's list taken in", (view) => view.loaded);
   assert.deepEqual([session.view().team, await bob.repos()], [[], []]);
 });
+
+await test(
+  "against a hub that refuses a pin naming a branch, as one before phase 6 does, Start a room leaves the channel it made and says why, so another click leaves none behind either",
+  { timeout: 30_000 },
+  async (t) => {
+    const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+    await hub.join("bob");
+    const dev = join(hub.dir, "dev");
+    checkout(dev, "uploader");
+    const older: Transport = (method, url, headers, body) => {
+      const said = method === "POST" && body !== null ? readContent(eventSchema.parse(JSON.parse(body))) : null;
+      return said?.kind === "channel.pin" && said.content.branch !== null ? Promise.reject(new Refused(422, "invalid content: not what channel.pin holds")) : http(method, url, headers, body);
+    };
+    const bob = loadClient(join(hub.dir, "bob"), older, () => Date.now() / 1000);
+    assert.ok(bob !== null);
+    const { session, notices } = deskOf(t, bob, dev);
+    await until(session, "uploader shared", (view) => view.loaded && view.myRepos.includes("uploader"));
+
+    for (const click of [1, 2]) {
+      await assert.rejects(session.handle({ do: "startRoom", repo: "uploader", branch: "feature/retry" }), {
+        message: "the hub would not pin #uploader-feature-retry to uploader on feature/retry (invalid content: not what channel.pin holds), so you left it again: it may be older than this app"
+      });
+      assert.deepEqual(
+        [await bob.channels(), session.view().rows.filter((row) => row.chat.startsWith("#")), notices.map((notice) => notice.body)],
+        [[], [], Array.from({ length: click }, () => "You left #uploader-feature-retry.")]
+      );
+    }
+  }
+);
 
 await test(
   "a link to a note shows who wrote it and its first words when it is loaded, who wrote it and where when it is not, and that the reader cannot see it when the hub will not show it or its signature fails",

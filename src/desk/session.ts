@@ -1433,7 +1433,13 @@ export class Session {
     const taken = this.channels.map((channel) => channel.name);
     const name = roomName(repo, branch, taken);
     await this.joinChannel(name);
-    await this.pin(name, repo, branch);
+    try {
+      await this.pin(name, repo, branch);
+    } catch (error) {
+      // As a hub before phase 6 refuses a pin that names a branch: the channel made for it is left again, which ends it, so that each click does not leave one more behind.
+      await this.leaveChannel(name);
+      throw new PlayerTwoError(`the hub would not pin ${name} to ${repo} on ${branch} (${problemOf(error)}), so you left it again: it may be older than this app`, { cause: error });
+    }
   }
 
   /** Ask again who is in each channel and what it is pinned to, after the user or someone else changed either. */
