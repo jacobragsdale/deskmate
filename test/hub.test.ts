@@ -1354,6 +1354,9 @@ await test(
     await until(again.session, "the request after the restart", () => status(fourth, again.session) === "ready");
     await pause(300);
     assert.deepEqual([again.ran, await jobs(fourth)], [[], []]);
+    // It waits because the one grant that stands has had its run today, and for no other reason: the revoked read-only grant, had the restart forgotten its revocation, would have been the one
+    // tried, and its owner told why it did not run.
+    assert.deepEqual([again.session.view().grants.map((each) => [each.id, each.runsToday]), again.notices], [[[posted, 1]], []]);
   }
 );
 
@@ -1464,6 +1467,11 @@ await test(
 
     // Only his own grant is his to revoke; revoked, or ended, it leaves his list.
     const theirs = (await alice.publish("*", "grant", { agent: "alice/uploader", askers: ["bob"], mode: "read-only", delivery: "review", expires: clock + 60, runsPerDay: 1 })).event.id;
+    await alice.publish("bob", "message", { text: "granted you mine", via: "cli" });
+    await until(bob.session, "her grant on his desk, before her message after it", () => {
+      bob.session.handle({ do: "open", chat: "alice" }).catch(() => undefined);
+      return messages(bob.session.view()).some((message) => message.body === "granted you mine");
+    });
     for (const id of [theirs, "0".repeat(64)]) {
       await assert.rejects(bob.session.handle({ do: "revoke", id }), { message: "that is not a grant of yours" });
     }
@@ -1626,5 +1634,51 @@ await test(
       return shownTo(bob.session, late)?.requests[0]?.status.kind === "ready";
     });
     assert.deepEqual([bob.ran.length, await jobs(late)], [1, []]);
+  }
+);
+
+await test(
+  "a grant lets go only a request still waiting when its owner's desk first hears of it, not one their other desk has already let run; and a grant sent anywhere but to everyone lets nothing go",
+  { timeout: 30_000 },
+  async (t) => {
+    const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+    const alice = await hub.join("alice");
+    const elsewhere = await hub.join("bob"); // Bob on his other machine.
+    const dev = join(hub.dir, "dev-bob");
+    checkout(dev, "uploader");
+    const expires = Math.floor(Date.now() / 1000) + 3600;
+    const grant = { agent: "bob/uploader", askers: ["alice"], mode: "full", delivery: "post", expires, runsPerDay: 20 } as const;
+    const ask = async (text: string): Promise<string> => (await alice.publish("bob", "message", { text: `@bob/uploader ${text}`, via: "window" })).event.id;
+    const everyone = (await elsewhere.publish("*", "grant", grant)).event.id;
+
+    // As bob's desk here starts, after it has fixed where its stream begins and before it reads alice's chat, she asks and his other desk lets the request run: the page brings both,
+    // and then the stream brings the request again.
+    let going = "";
+    let first: (() => Promise<void>) | null = async () => {
+      going = await ask("already going elsewhere");
+      const accepted = { repo: "uploader", branch: "main", commit: COMMIT, dirty: false, delivery: "post", mode: "full", by: "owner" } as const;
+      await elsewhere.publish("alice", "job.accepted", accepted, [going]);
+    };
+    const transport: Transport = async (method, url, headers, body) => {
+      const before = url.includes("/events?chat=alice") ? first : null;
+      first = before === null ? first : null;
+      await before?.();
+      return http(method, url, headers, body);
+    };
+    const here = loadClient(join(hub.dir, "bob"), transport, () => Date.now() / 1000);
+    assert.ok(here !== null);
+    const bob = deskOf(t, here, dev, { describe: () => Promise.resolve({ branch: "main", commit: COMMIT, dirty: false }) });
+    await until(bob.session, "the checkout shared", (view) => view.loaded && view.myRepos.includes("uploader"));
+
+    // Then bob takes back the grant to everyone and makes one in the direct chat with alice, which is not a grant anyone else can see.
+    await elsewhere.publish("*", "grant.revoke", {}, [everyone]);
+    await elsewhere.publish("alice", "grant", grant);
+    const hidden = await ask("under a grant only she can see");
+    await until(bob.session, "both requests on his desk", () => {
+      bob.session.handle({ do: "open", chat: "alice" }).catch(() => undefined);
+      return [going, hidden].every((id) => shownTo(bob.session, id)?.requests[0]?.status.kind === "ready");
+    });
+    await pause(300);
+    assert.deepEqual([bob.ran, bob.session.view().grants], [[], []]);
   }
 );
