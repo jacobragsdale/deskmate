@@ -17,8 +17,8 @@ import type { Check, DistroChoice, Notice } from "../../shared/ipc.ts";
 
 const checksSchema = z.array(checkSchema).readonly();
 
-const MARKS = { ok: "✓", warn: "!", fail: "✗", skip: "–" } as const;
-const MARK_COLOURS = { ok: "text-tag", warn: "text-warn", fail: "text-destructive", skip: "" } as const;
+export const MARKS = { ok: "✓", warn: "!", fail: "✗", skip: "–" } as const;
+export const MARK_COLOURS = { ok: "text-tag", warn: "text-warn", fail: "text-destructive", skip: "" } as const;
 const DETAIL = "mt-0.5 wrap-anywhere whitespace-pre-wrap text-muted-foreground"; // What a check found, in the lines it came in.
 
 /** Where each editor's agent looks for MCP servers, and what to put there to start `player-two mcp`. */

@@ -205,7 +205,7 @@ async function addAgent(page: Page, program: string, args: readonly string[]): P
 }
 
 await test(
-  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, and offers only the modes the agent that answers can keep",
+  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, and offers only the modes the agent that answers can keep",
   { skip: NO_DISPLAY ? "no display: run it under xvfb-run" : false, timeout: 120_000 },
   async (t) => {
     assert.ok(existsSync(join(ROOT, "dist", "main.js")), "dist/ is not built: run `npm run build` first");
@@ -512,6 +512,11 @@ await test(
 
     // An agent of her own over ACP, the scripted one, typed in as a program and its arguments, is added and chosen to answer.
     await addAgent(page, process.execPath, [FAKE, "--no-pids"]);
+    // Testing whether it asks before it writes a file costs a model call, so it runs only from its button: the scripted agent asks, and is refused, and writes nothing.
+    const mine = `document.querySelector(${JSON.stringify(`input[aria-label=${JSON.stringify(`${process.execPath} answers`)}]`)}).closest("li")`;
+    await page.eval(`[...${mine}.querySelectorAll("button")].find((each) => each.textContent === "Test permissions").click()`);
+    await page.until("the test passed", `${mine}.querySelector('[data-tested="ok"]')?.innerText.includes("asked before it wrote a file, and wrote none when refused") === true`);
+    await page.shot("tested");
     await page.click("button", "Back");
 
     // Carol asks alice's agent. Run read-only, as a teammate's request is offered first, it reads, is refused the edit the prompt's "may edit" sets it asking for, and drafts an answer;

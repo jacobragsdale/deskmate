@@ -3,8 +3,10 @@
  * Nothing here starts an agent, and no shell ever reads what is typed: the desk starts the program with the arguments as they are.
  */
 
+import { cn } from "cn";
 import { useState } from "react";
 import type { JSX } from "react";
+import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,7 +14,9 @@ import { Label } from "@/components/ui/label";
 
 import { commandLineOf } from "../../core/wire.ts";
 import type { Agent } from "../../core/wire.ts";
-import type { ChatView, Command } from "../../shared/ipc.ts";
+import { outcomeSchema } from "../../shared/ipc.ts";
+import type { ChatView, Check, Command } from "../../shared/ipc.ts";
+import { MARK_COLOURS, MARKS } from "./SetupPage.tsx";
 
 export const FIELD = "flex-col items-stretch gap-1.5"; // A label above its field.
 const PROTOCOLS = { acp: "ACP: asks before it acts", oneshot: "One-shot: the prompt added as the last argument" } as const;
@@ -132,7 +136,47 @@ export function AgentPicker({ title, presets, taken, value, onChange }: PickerPr
   );
 }
 
-/** The setup page's part about the user's agents: which of them answers, removing one, and adding a preset or one of their own. Each change is saved at once. */
+/**
+ * Whether an agent over ACP asks before it writes a file, which it must to be held to a mode: tested only when the user presses the button, since the agent's answer costs a model call,
+ * and shown with what it found. The setup check above shows the result kept from the last test.
+ */
+function TestPermissions({ agent }: { readonly agent: Agent }): JSX.Element {
+  const [testing, setTesting] = useState(false);
+  const [found, setFound] = useState<Check | null>(null);
+  const test = (): void => {
+    setTesting(true);
+    window.playerTwo
+      .command({ do: "testPermissions", agent: agent.id })
+      .then((raw) => {
+        const outcome = outcomeSchema.parse(raw);
+        if (outcome.ok) {
+          setFound(outcome.data?.[0] ?? null);
+        } else {
+          toast.error(`could not test ${agent.label}`, { description: outcome.problem });
+        }
+      })
+      .catch((error: unknown) => {
+        toast.error(`could not test ${agent.label}`, { description: error instanceof Error ? error.message : String(error) });
+      })
+      .finally(() => {
+        setTesting(false);
+      });
+  };
+  return (
+    <>
+      <Button type="button" size="xs" variant="outline" disabled={testing} onClick={test}>
+        {testing ? "Testing…" : "Test permissions"}
+      </Button>
+      {found !== null && (
+        <p className="order-last basis-full pl-5 wrap-anywhere text-muted-foreground" data-tested={found.status}>
+          <span className={cn("font-bold", MARK_COLOURS[found.status])}>{MARKS[found.status]}</span> {found.detail}
+        </p>
+      )}
+    </>
+  );
+}
+
+/** The setup page's part about the user's agents: which of them answers, removing one, testing whether one over ACP can be held to a mode, and adding a preset or one of their own. Each change is saved at once. */
 export function AgentsPart({ view, act }: { readonly view: ChatView; readonly act: (command: Command) => void }): JSX.Element {
   const { agents, defaultAgent, presets } = view;
   const next = (taken: readonly Agent[]): Agent => presets.find((preset) => taken.every((agent) => agent.id !== preset.id)) ?? ownAgent(taken);
@@ -150,7 +194,7 @@ export function AgentsPart({ view, act }: { readonly view: ChatView; readonly ac
       </p>
       <ul className="flex flex-col gap-1.5">
         {agents.map((agent) => (
-          <li key={agent.id} className="flex items-center gap-2">
+          <li key={agent.id} className="flex flex-wrap items-center gap-2">
             <input
               type="radio"
               name="defaultAgent"
@@ -162,14 +206,17 @@ export function AgentsPart({ view, act }: { readonly view: ChatView; readonly ac
             />
             <strong>{agent.label}</strong>
             <span className="text-muted-foreground">{agent.protocol === "acp" ? "ACP" : "one-shot"}</span>
-            <code className="min-w-0 truncate rounded bg-muted px-1.5 py-0.5 text-xs" title={commandLineOf(agent)}>
-              {commandLineOf(agent)}
-            </code>
+            {/* Of no width of its own, so that a long command line is cut short rather than wrapped onto a line of its own; only a test's result goes there. */}
+            <span className="min-w-0 flex-1 basis-0 truncate">
+              <code className="rounded bg-muted px-1.5 py-0.5 text-xs" title={commandLineOf(agent)}>
+                {commandLineOf(agent)}
+              </code>
+            </span>
+            {agent.protocol === "acp" && <TestPermissions agent={agent} />}
             <Button
               type="button"
               size="xs"
               variant="outline"
-              className="ml-auto"
               disabled={agents.length === 1}
               onClick={() => {
                 save(
