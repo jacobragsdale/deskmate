@@ -68,6 +68,8 @@ function NewGrant({ repo, people, cannot, untested, act, onDone }: NewGrantProps
   const [lasts, setLasts] = useState<number>(LASTS[0].seconds);
   const [runs, setRuns] = useState(RUNS);
   const [confirming, setConfirming] = useState(false); // Asking the second yes, for full access posted directly for everyone.
+  const anyoneFull = mode === "full" && asker === "*"; // Said whatever the delivery: a review reads the answer only after the agent has acted.
+  const described = [untested === "" ? "" : "untested", anyoneFull ? "anyone-full" : ""].filter((id) => id !== "").join(" "); // What the mode's field points a screen reader to.
   const [sending, setSending] = useState(false); // While the desk makes the grant: Grant does nothing more, so a second click, or a double click, makes no second grant.
   const grant = (): void => {
     if (sending) {
@@ -138,7 +140,7 @@ function NewGrant({ repo, people, cannot, untested, act, onDone }: NewGrantProps
           <select
             name="mode"
             value={mode}
-            aria-describedby={untested === "" ? undefined : "untested"}
+            aria-describedby={described === "" ? undefined : described}
             onChange={(event) => {
               const chosen = event.currentTarget.value;
               setMode(usable.find((each) => each === chosen) ?? mode);
@@ -154,6 +156,12 @@ function NewGrant({ repo, people, cannot, untested, act, onDone }: NewGrantProps
         {untested !== "" && (
           <p id="untested" className="-mt-2 text-xs text-warn">
             Only full can be chosen. {untested}.
+          </p>
+        )}
+        {anyoneFull && (
+          <p id="anyone-full" className="-mt-2 text-xs text-warn">
+            Anyone on the hub, and anyone who joins it later, could have your {repo} agent do anything your account can on this machine, change any file and run any command, without asking you
+            {delivery === "review" ? ": you would review its answer, but only once it has acted." : "."}
           </p>
         )}
         <Label className={FIELD}>
