@@ -7,10 +7,12 @@ import { basename, delimiter, join } from "node:path";
 import { z } from "zod";
 
 import { quote } from "../core/install.ts";
+import { loadKey, publicHex } from "../core/sign.ts";
 import { problemOf } from "../core/text.ts";
 import { commandLineOf, defaultAgentOf, MAX_SKEW, PROTOCOL } from "../core/wire.ts";
 import type { Agent, Config, HubInfo } from "../core/wire.ts";
 import type { Check } from "../shared/ipc.ts";
+import { agentKeyFile } from "./agentKeys.ts";
 import { acpRunner, greet, SignInNeeded } from "./agents/acp.ts";
 import type { RunHandlers } from "./agents/runner.ts";
 import { http, loadClient, readConfig } from "./client.ts";
@@ -32,6 +34,7 @@ const CLOCK_WARN = 60; // Seconds apart at which the clocks are worth a warning.
 const CERTIFICATE = /CERT|SELF_SIGNED|UNABLE_TO_VERIFY|UNABLE_TO_GET_ISSUER/; // Node's codes for a certificate it does not trust.
 const JOIN = "Join from the window, or run: player-two join HUB NAME TOKEN";
 const ADD_CA = "sudo cp team-ca.crt /usr/local/share/ca-certificates/ && sudo update-ca-certificates";
+const REGISTER = "Quit Player Two and open it again: when it shares a repo, it makes the repo's agent a key if it has none, and tells the hub the key";
 const SET_CLOCK = "Set this machine's clock. In WSL, run `wsl --shutdown` in PowerShell and open Player Two again: WSL takes Windows' time when it starts";
 // How to install the agents the join form offers, by the program each one runs.
 const INSTALL = new Map([
@@ -221,18 +224,43 @@ async function protocol(client: Client | null, hubNow: number | null): Promise<{
       };
 }
 
-async function repos(dev: string, info: HubInfo | null, joined: boolean): Promise<{ readonly outcome: Outcome; readonly checkout: Checkout | undefined }> {
+async function repos(dev: string, info: HubInfo | null, joined: boolean): Promise<{ readonly outcome: Outcome; readonly checkouts: readonly Checkout[] }> {
   if (info === null) {
-    return { outcome: skip(joined ? "the hub did not say which repos it shares" : "not joined, so no hub has said which repos it shares"), checkout: undefined };
+    return { outcome: skip(joined ? "the hub did not say which repos it shares" : "not joined, so no hub has said which repos it shares"), checkouts: [] };
   }
   const scanned = await attempt(() => ({ found: scan(dev, info.repos), example: someOrigin(dev) }));
   if (!scanned.ok) {
-    return { outcome: fail(`${dev} cannot be read: ${scanned.problem}`), checkout: undefined };
+    return { outcome: fail(`${dev} cannot be read: ${scanned.problem}`), checkouts: [] };
   }
   const { found, example } = scanned.value;
   return found.length === 0
-    ? { outcome: warn(`no folder in ${dev} has an origin under ${info.repos}${example}`, `Clone one of the team's repos into ${dev}`), checkout: undefined }
-    : { outcome: ok(found.map((each) => each.remote.name).join(", ")), checkout: found[0] };
+    ? { outcome: warn(`no folder in ${dev} has an origin under ${info.repos}${example}`, `Clone one of the team's repos into ${dev}`), checkouts: [] }
+    : { outcome: ok(found.map((each) => each.remote.name).join(", ")), checkouts: found };
+}
+
+/**
+ * Whether the agent in each shared checkout has its key, readable by nobody else, and the hub has the same key for it: otherwise what it signs, its answers posted with nobody reviewing them
+ * and its run's reports, is refused or not believed. The first that is not right is the one reported.
+ */
+async function agentKeys(home: string, client: Client | null, checkouts: readonly Checkout[]): Promise<Outcome> {
+  if (client === null || checkouts.length === 0) {
+    return skip("no team repo is shared to look at");
+  }
+  for (const { remote } of checkouts) {
+    const file = agentKeyFile(home, remote.name);
+    if (!existsSync(file)) {
+      return fail(`your ${remote.name} agent has no key: there is no ${file}`, REGISTER);
+    }
+    const mode = statSync(file).mode & 0o777;
+    if ((mode & 0o077) !== 0) {
+      return fail(`${file} can be read by others: its mode is ${mode.toString(8)}`, `chmod 600 ${quote(file)}`);
+    }
+    const registered = await client.registeredKey(`${client.config.name}/${remote.name}`);
+    if (registered !== publicHex(loadKey(readFileSync(file, "utf8").trim()))) {
+      return fail(`${registered === null ? "the hub has no key" : "the hub has another key"} for your ${remote.name} agent than the one in ${file}`, REGISTER);
+    }
+  }
+  return ok(checkouts.map((each) => each.remote.name).join(", "));
 }
 
 async function gitAuth(checkout: Checkout): Promise<Outcome> {
@@ -348,7 +376,7 @@ function either(found: Found<Outcome>): Outcome {
 }
 
 /**
- * Check what Player Two needs here, in order: Node, the identity in `home`, the hub and the way to it, the clocks, the repos under `dev`, git, the agent, and each agent over ACP and how it did
+ * Check what Player Two needs here, in order: Node, the identity in `home`, the hub and the way to it, the clocks, the repos under `dev` and their agents' keys, git, the agent, and each agent over ACP and how it did
  * in the permission test, which runs only when asked for.
  * A check that needs what an earlier one could not find is skipped and says why. Nothing here throws, and nothing waits for long. Aborting `stop` ends every agent it started.
  */
@@ -358,7 +386,8 @@ export async function runChecks(home: string, dev: string, stop: AbortSignal = n
   const reached = await hub(config);
   const asked = await protocol(client, reached.now);
   const devFound = isDirectory(dev);
-  const found = devFound ? await repos(dev, asked.info, client !== null) : { outcome: skip("there is no repos folder"), checkout: undefined };
+  const found = devFound ? await repos(dev, asked.info, client !== null) : { outcome: skip("there is no repos folder"), checkouts: [] };
+  const [checkout] = found.checkouts;
   const version = await git(["--version"], GIT_TIMEOUT);
   const gitWords = version.stderr.trim() === "" ? "it is not installed, or not on the PATH" : version.stderr.trim();
   return [
@@ -378,11 +407,12 @@ export async function runChecks(home: string, dev: string, stop: AbortSignal = n
     },
     { id: "dev", title: "The repos folder exists", ...(devFound ? ok(dev) : fail(`there is no folder at ${dev}, where your repos are looked for; PLAYER_TWO_DEV moves it`, `mkdir -p ${quote(dev)}`)) },
     { id: "repos", title: "A team repo is checked out", ...found.outcome },
+    { id: "agent-keys", title: "Each shared repo's agent has its own key, and the hub has it", ...either(await attempt(() => agentKeys(home, client, found.checkouts))) },
     { id: "git", title: "git runs", ...(version.ok ? ok(version.stdout.trim()) : fail(`git does not run: ${gitWords}`, "sudo apt install git")) },
     {
       id: "git-auth",
       title: "git reaches the team's repos without asking",
-      ...(version.ok && found.checkout !== undefined ? await gitAuth(found.checkout) : skip(version.ok ? "no team repo is checked out to try" : "git does not run"))
+      ...(version.ok && checkout !== undefined ? await gitAuth(checkout) : skip(version.ok ? "no team repo is checked out to try" : "git does not run"))
     },
     { id: "agent", title: "The agent's command is found", ...(config === null ? skip("not joined, so no agent is chosen yet") : either(await attempt(() => agent(home, config)))) },
     ...(

@@ -3,18 +3,20 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { TestContext } from "node:test";
 
+import { publicHex } from "../src/core/sign.ts";
+import { agentKey, agentKeyFile } from "../src/desk/agentKeys.ts";
 import { http, loadClient } from "../src/desk/client.ts";
 import { permissionTests, runChecks, testPermissions } from "../src/desk/doctor.ts";
 import type { Check } from "../src/shared/ipc.ts";
 import { startHub, TEAM_REPOS } from "./startHub.ts";
 
-const IDS = ["node", "identity", "hub", "proxy", "protocol", "clock", "dev", "repos", "git", "git-auth", "agent"];
+const IDS = ["node", "identity", "hub", "proxy", "protocol", "clock", "dev", "repos", "agent-keys", "git", "git-auth", "agent"];
 
 interface Machine {
   readonly home: string;
@@ -23,11 +25,12 @@ interface Machine {
 
 /**
  * A machine that has joined a hub whose clock is `skew` seconds ahead of this one: its agent command on the PATH, and a checkout of a team repo
- * whose origin git is told to find in a bare repository on disk, so asking the remote needs no network and no credentials.
+ * whose origin git is told to find in a bare repository on disk, so asking the remote needs no network and no credentials, with its agent's key told to the hub as the desk tells it.
  */
 async function machine(t: TestContext, skew = 0): Promise<Machine> {
   const hub = await startHub(t, () => Date.now() / 1000 + skew);
-  await hub.join("alice"); // Its agent command is "fake-agent".
+  const alice = await hub.join("alice"); // Its agent command is "fake-agent".
+  await alice.publish("*", "agent.register", { repo: "uploader", pubkey: publicHex(agentKey(join(hub.dir, "alice"), "uploader")) });
   const tools = join(hub.dir, "tools");
   mkdirSync(tools);
   writeFileSync(join(tools, "fake-agent"), "#!/bin/sh\n", { mode: 0o755 });
@@ -73,7 +76,7 @@ await test("a hub clock 400 seconds ahead fails the clock, and the hub is not as
   assert.equal(clock?.status, "fail");
   assert.match(clock.detail, /^this clock is (399|40[01]) seconds behind the hub's, so the hub refuses this machine's signatures$/);
   assert.notEqual(clock.fix, "");
-  assert.deepEqual(statuses(checks), { ...Object.fromEntries(IDS.map((id) => [id, "ok"])), clock: "fail", protocol: "skip", repos: "skip", "git-auth": "skip" });
+  assert.deepEqual(statuses(checks), { ...Object.fromEntries(IDS.map((id) => [id, "ok"])), clock: "fail", protocol: "skip", repos: "skip", "agent-keys": "skip", "git-auth": "skip" });
 });
 
 await test("a missing key fails the identity", { timeout: 60_000 }, async (t) => {
@@ -87,6 +90,26 @@ await test("a missing key fails the identity", { timeout: 60_000 }, async (t) =>
   assert.equal(statuses(checks)["protocol"], "skip"); // Asking /info takes a signature, and there is no key to make one.
 });
 
+await test("an agent key that is missing, readable by others, or not the one the hub has for the agent fails agent-keys, saying what fixes it", { timeout: 60_000 }, async (t) => {
+  const { home, dev } = await machine(t);
+  const file = agentKeyFile(home, "uploader");
+  const agentKeys = async (): Promise<Check | undefined> => (await runChecks(home, dev)).find((check) => check.id === "agent-keys");
+  const title = "Each shared repo's agent has its own key, and the hub has it";
+  const again = "Quit Player Two and open it again: when it shares a repo, it makes the repo's agent a key if it has none, and tells the hub the key";
+  assert.deepEqual(await agentKeys(), { id: "agent-keys", title, status: "ok", detail: "uploader", fix: "" });
+
+  chmodSync(file, 0o640);
+  assert.deepEqual(await agentKeys(), { id: "agent-keys", title, status: "fail", detail: `${file} can be read by others: its mode is 640`, fix: `chmod 600 '${file}'` });
+  chmodSync(file, 0o600);
+
+  rmSync(file); // A new key, which the hub has never been told.
+  agentKey(home, "uploader");
+  assert.deepEqual(await agentKeys(), { id: "agent-keys", title, status: "fail", detail: `the hub has another key for your uploader agent than the one in ${file}`, fix: again });
+
+  rmSync(file);
+  assert.deepEqual(await agentKeys(), { id: "agent-keys", title, status: "fail", detail: `your uploader agent has no key: there is no ${file}`, fix: again });
+});
+
 await test("an unreachable hub fails the hub, and the checks that need its answer are skipped", { timeout: 60_000 }, async (t) => {
   const { home, dev } = await machine(t);
   const gone = createServer().listen(0, "127.0.0.1"); // A port nothing listens on once this has let it go.
@@ -98,7 +121,7 @@ await test("an unreachable hub fails the hub, and the checks that need its answe
   writeFileSync(join(home, "config.json"), JSON.stringify({ hub, name: "alice", agent: "fake-agent" }));
   const checks = await runChecks(home, dev);
   assert.equal(checks.find((check) => check.id === "hub")?.detail, `cannot reach ${hub}: connect ECONNREFUSED 127.0.0.1:${String(address.port)}`);
-  assert.deepEqual(statuses(checks), { ...Object.fromEntries(IDS.map((id) => [id, "ok"])), hub: "fail", protocol: "skip", clock: "skip", repos: "skip", "git-auth": "skip" });
+  assert.deepEqual(statuses(checks), { ...Object.fromEntries(IDS.map((id) => [id, "ok"])), hub: "fail", protocol: "skip", clock: "skip", repos: "skip", "agent-keys": "skip", "git-auth": "skip" });
 });
 
 await test("each agent over ACP is started and asked to open a session, and fails with its own words, or with how to sign in when that is what it needs", { timeout: 60_000 }, async (t) => {

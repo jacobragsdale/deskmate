@@ -126,7 +126,22 @@ await test("the desk by lines: the join form, joining, the chats, a message sent
   }
   say({ t: "command", id: 6, command: { do: "open", chat: "bob" } });
   assert.deepEqual(await reply(6), { ok: true });
-  assert.deepEqual(await checked(11), ["node", "identity", "hub", "proxy", "protocol", "clock", "dev", "repos", "git", "git-auth", "agent", "agent-acp:custom", "agent-permissions:custom"]); // With alice's own agent over ACP.
+  assert.deepEqual(await checked(11), [
+    "node",
+    "identity",
+    "hub",
+    "proxy",
+    "protocol",
+    "clock",
+    "dev",
+    "repos",
+    "agent-keys",
+    "git",
+    "git-auth",
+    "agent",
+    "agent-acp:custom",
+    "agent-permissions:custom"
+  ]); // With alice's own agent over ACP.
 
   // The permission test runs only when asked for, on an agent over ACP, and answers with its row.
   say({ t: "command", id: 12, command: { do: "testPermissions", agent: "custom" } });
