@@ -5,11 +5,14 @@
 
 import type { KeyObject } from "node:crypto";
 
+import { Cron } from "croner";
+
 import { readContent } from "../core/kinds.ts";
-import type { ContentOf, RunStatus } from "../core/kinds.ts";
+import type { Content, ContentOf, RunStatus } from "../core/kinds.ts";
 import { signEvent } from "../core/sign.ts";
+import { problemOf } from "../core/text.ts";
 import { fill, holds, parseWorkflow } from "../core/workflow.ts";
-import type { Values, Workflow } from "../core/workflow.ts";
+import type { Trigger, Values, Workflow } from "../core/workflow.ts";
 import { fitText, HUB, isAgent, isChannel } from "../core/wire.ts";
 import type { Event } from "../core/wire.ts";
 import type { Log } from "./app.ts";
@@ -19,6 +22,10 @@ import type { Database, Live, Run, RunState } from "./db.ts";
 export interface Workflows {
   /** Act on an event the hub has just stored, whoever signed it: a trigger it matches sets a run off. Never throws, as the event is kept whatever a run does. */
   readonly seen: (event: Event) => void;
+  /** The live workflow a webhook's id, the first 32 hex of its definition's id, names: the secret it asks for, and setting a run off with a request's body. Null for none. */
+  readonly hook: (id: string) => { readonly secret: string | null; readonly start: (body: unknown) => void } | null;
+  /** Stop for good, as the hub closes: no schedule fires after. */
+  readonly stop: () => void;
 }
 
 /** Which run a step is of: its number, and the channel, name and definition of the workflow it runs, as its row has them. */
@@ -36,13 +43,16 @@ interface Place {
   readonly state: RunState;
 }
 
-function problem(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+/** What an event stored in a channel would set off: which triggers it fires, and the values a run it sets off fills its templates with. */
+interface Firing {
+  readonly fires: (on: Trigger) => boolean;
+  readonly values: Values;
 }
 
 /** Run the workflows live in the hub's database, signing what they do with `key` as the hub, and calling `wake` once something is stored. */
 export function runWorkflows(db: Database, key: KeyObject, now: () => number, wake: () => void, log: Log): Workflows {
   const files = new Map<string, Workflow>(); // Each file as it reads, by the id of its definition, which never changes what it holds.
+  let crons: Cron[] = [];
 
   function fileOf(live: Live): Workflow {
     const known = files.get(live.event) ?? parseWorkflow(live.yaml); // It read when the hub took it, or it would not be live.
@@ -104,22 +114,44 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, wa
     }
   }
 
-  /** Set off a run of a live workflow with the values its templates are filled from. */
+  /** Set off a run of a live workflow with the values its templates are filled from. A failure is the hub's to log: whatever set the run off is not told. */
   function start(live: Live, values: Values): void {
-    const going = { run: db.addRun(live, values, Math.floor(now()), "running"), channel: live.channel, name: live.name, definition: live.event, file: fileOf(live), values };
-    go(going, 0);
+    try {
+      const going = { run: db.addRun(live, values, Math.floor(now()), "running"), channel: live.channel, name: live.name, definition: live.event, file: fileOf(live), values };
+      go(going, 0);
+    } catch (error) {
+      log("workflow failed", { channel: live.channel, workflow: live.name, error: problemOf(error) });
+    }
   }
 
-  /** Set off the runs an event stored in a channel calls for. The hub's own events, and agents', set nothing off. */
+  /** What a person's message or reaction stored in `channel` sets off. A reaction fires only as it is added, and only on a message in that channel, whose text a run is then given. */
+  function firing(event: Event, said: Content | { readonly kind: "unknown" }): Firing | null {
+    const values = (text: string): Values => ({ trigger: { text, author: event.author } });
+    if (said.kind === "message") {
+      return { fires: (on) => on.kind === "message" && said.content.text.includes(on.message.contains), values: values(said.content.text) };
+    }
+    if (said.kind !== "reaction" || !said.content.on) {
+      return null;
+    }
+    const target = db.event(event.author, event.refs[0] ?? "");
+    const message = target?.event.to === event.to ? readContent(target.event) : null;
+    return message?.kind !== "message" ? null : { fires: (on) => on.kind === "reaction" && on.reaction.emoji === said.content.emoji, values: values(message.content.text) };
+  }
+
+  /** Set off the runs an event stored in a channel calls for, and keep the schedules as the channel's workflows are. The hub's own events, and agents', set nothing off. */
   function trigger(event: Event): void {
     if (event.author === HUB || isAgent(event.author) || !isChannel(event.to)) {
       return;
     }
     const said = readContent(event);
-    for (const live of said.kind === "message" ? db.liveWorkflows(event.to) : []) {
-      const { on } = fileOf(live);
-      if (said.kind === "message" && on.kind === "message" && said.content.text.includes(on.message.contains)) {
-        start(live, { trigger: { text: said.content.text, author: event.author } });
+    if (said.kind === "workflow.define" || said.kind === "workflow.remove") {
+      schedule();
+      return;
+    }
+    const fired = firing(event, said);
+    for (const live of fired === null ? [] : db.liveWorkflows(event.to)) {
+      if (fired?.fires(fileOf(live).on) === true) {
+        start(live, fired.values);
       }
     }
   }
@@ -128,9 +160,51 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, wa
     try {
       trigger(event);
     } catch (error) {
-      log("workflow failed", { event: event.id, error: problem(error) });
+      log("workflow failed", { event: event.id, error: problemOf(error) });
     }
   }
 
-  return { seen };
+  /**
+   * Time each live workflow with a schedule, in place of every timer before. Each is named by its definition's id, which a test sets off by. croner reads the system's clock in the workflow's
+   * time zone, and a time that passed while the hub was down is not made up.
+   */
+  function schedule(): void {
+    for (const cron of crons) {
+      cron.stop();
+    }
+    crons = db.liveWorkflows().flatMap((live) => {
+      const { on } = fileOf(live);
+      return on.kind === "schedule"
+        ? [
+            new Cron(on.schedule.cron, { name: live.event, timezone: on.schedule.zone, mode: "5-part", unref: true }, () => {
+              start(live, {});
+            })
+          ]
+        : [];
+    });
+  }
+
+  schedule();
+
+  return {
+    seen,
+    hook: (id) => {
+      const live = db.liveWorkflows().find((each) => each.event.startsWith(id));
+      const on = live === undefined ? null : fileOf(live).on;
+      if (live === undefined || on?.kind !== "webhook") {
+        return null;
+      }
+      return {
+        secret: on.webhook.secret ?? null,
+        start: (body) => {
+          start(live, { body });
+        }
+      };
+    },
+    stop: () => {
+      for (const cron of crons) {
+        cron.stop();
+      }
+    }
+  };
 }

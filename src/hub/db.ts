@@ -427,9 +427,11 @@ export class Database {
     return Number(added.lastInsertRowid);
   }
 
-  /** Save where a run is: the step it is at, its state, and for one waiting, the message it waits on and until when. */
+  /** Save where a run is: the step it is at, its state, and for one waiting, the message it waits on and until when. A run that has ended keeps none of its values, which a hook's body may fill. */
   public saveRun(run: number, step: number, state: RunState, approval = "", until = 0): void {
-    this.db.prepare("UPDATE workflow_runs SET step = ?, state = ?, approval = ?, until = ? WHERE run = ?").run(step, state, approval, until, run);
+    this.db
+      .prepare("UPDATE workflow_runs SET step = :step, state = :state, approval = :approval, until = :until, input = CASE WHEN :state = 'ended' THEN '{}' ELSE input END WHERE run = :run")
+      .run({ step, state, approval, until, run });
   }
 
   /** The runs in one state, oldest first. */

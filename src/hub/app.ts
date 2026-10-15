@@ -3,7 +3,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createReadStream, readFileSync, statSync } from "node:fs";
 import { createServer } from "node:http";
-import type { IncomingMessage, Server, ServerResponse } from "node:http";
+import type { IncomingHttpHeaders, IncomingMessage, Server, ServerResponse } from "node:http";
 import { join as joinPath } from "node:path";
 import { pipeline } from "node:stream";
 
@@ -31,7 +31,8 @@ const MAX_QUERY = 200; // Most characters one search may be: far more than eight
 const TOO_MUCH = `a search holds 1 to ${String(MAX_WORDS)} words, in at most ${String(MAX_QUERY)} characters`;
 const PING = 20; // Seconds between the comment lines that keep an open stream from looking idle to a proxy.
 const MAX_REPOS = 500; // Most checkouts one person may advertise.
-const MAX_REQUEST = 4_000_000; // Most characters one request's body may hold: several times the longest list of repos or the longest event.
+const MAX_REQUEST = 4_000_000; // Most bytes one request's body may hold: several times the longest list of repos or the longest event.
+const MAX_HOOK = 256 * 1024; // Most bytes a workflow's hook takes: whatever a CI system says of one build, with room to spare.
 const RUNTIME = "wsl-runtime.tar.gz"; // The Linux runtime in the downloads folder, with its digest beside it in the same name and ".sha256".
 const INSTALLER = "player-two-setup.exe"; // The Windows installer, as electron-builder names it (`nsis.artifactName` in package.json).
 const PLAIN_FILE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/; // A file in the downloads folder is asked for by this name as it arrived: no slash, no "..", nothing percent-encoded.
@@ -79,8 +80,9 @@ const searchQuerySchema = z.object({
 interface Ask {
   readonly me: string; // Who is asking, proved by their signature, or the owner of the agent asking, who sees what its owner sees; "" on the routes open to anyone.
   readonly signer: string; // Whose signature it is: `me`, or one of their agents, "me/repo".
-  readonly id: string; // The event id the path names; "" on a route that names none.
+  readonly id: string; // The event id the path names, or a workflow's hook; "" on a route that names neither.
   readonly query: URLSearchParams;
+  readonly headers: IncomingHttpHeaders; // For a workflow's hook, whose secret comes in one.
   readonly body: string; // What the request carried, not yet parsed.
   readonly response: ServerResponse; // For the stream, which writes to it itself.
 }
@@ -89,8 +91,9 @@ type Answer = readonly [status: number, body: unknown];
 
 interface Route {
   readonly method: string;
-  readonly path: string; // With "{id}" where an event's id goes.
+  readonly path: string; // With "{id}" where an event's id goes, or "{hook}" a workflow's hook.
   readonly open?: true; // Answered without asking who is calling.
+  readonly most?: number; // Bytes its body may hold, when not MAX_REQUEST.
   readonly answer: (ask: Ask) => Answer | null; // Null when the route has answered by itself.
 }
 
@@ -125,13 +128,15 @@ function jsonBody<T>(schema: z.ZodType<T>, text: string): T {
   return parsed(schema, value, "body");
 }
 
-/** Read a request's body. One too long to be anything the hub accepts is cut off rather than held in memory. */
-function bodyText(request: IncomingMessage): Promise<string> {
+/** Read a request's body. One of more than `most` bytes is cut off as it arrives, rather than held in memory. */
+function bodyText(request: IncomingMessage, most = MAX_REQUEST): Promise<string> {
   return new Promise((resolve, reject) => {
     let text = "";
+    let bytes = 0;
     request.setEncoding("utf8").on("data", (chunk: string) => {
       text += chunk;
-      if (text.length > MAX_REQUEST) {
+      bytes += Buffer.byteLength(chunk);
+      if (bytes > most) {
         request.destroy(); // No client of the hub sends this much, so there is nobody to explain it to.
         reject(new Refusal(413, "the request is too large"));
       }
@@ -486,6 +491,23 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
   }
 
   /**
+   * Set off a run of the live workflow whose hook the path names, with the JSON the request carried, or none, once it gives the secret the workflow asks for, if it asks for one.
+   * Open to anyone who has the address, as a CI system calls it; it can do nothing but what the workflow's file says. Answered before the run's steps that take time.
+   */
+  function hook(ask: Ask): Answer {
+    const found = workflows.hook(ask.id);
+    if (found === null) {
+      throw new Refusal(404, "no live workflow has this hook");
+    }
+    const given = ask.headers["x-player-two-secret"];
+    if (found.secret !== null && !sameSecret(typeof given === "string" ? given : "", found.secret)) {
+      throw new Refusal(403, "wrong secret: X-Player-Two-Secret must hold the one the workflow names");
+    }
+    found.start(ask.body === "" ? {} : jsonBody(z.unknown(), ask.body));
+    return [202, {}];
+  }
+
+  /**
    * Hold the response open and send the caller every event they can see after `after`, then each new one as it is stored, and a comment line every PING seconds.
    * Each batch is read through the same rule as every other read, at the moment it is sent, so a channel left since the stream opened sends nothing more.
    */
@@ -535,11 +557,13 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     { method: "GET", path: "/events/{id}", answer: getEvent },
     { method: "GET", path: "/search", answer: search },
     { method: "GET", path: "/workflows", answer: getWorkflows },
+    { method: "POST", path: "/hooks/{hook}", open: true, most: MAX_HOOK, answer: hook },
     { method: "GET", path: "/stream", answer: stream },
     { method: "GET", path: "/audit/head", answer: () => [200, db.head()] }, // For comparing with what someone saw before: a log changed since cannot end in the same chain value.
     { method: "GET", path: "/channels", answer: () => [200, db.channels().map(channelInfo)] }
   ];
-  const table = routes.map((route) => ({ route, pattern: new RegExp(`^${route.path.replace("{id}", "([0-9a-f]{64})")}$`) })); // Any other id is no route at all, and answered 404.
+  // Any other id is no route at all, and answered 404.
+  const table = routes.map((route) => ({ route, pattern: new RegExp(`^${route.path.replace("{id}", "([0-9a-f]{64})").replace("{hook}", "([0-9a-f]{32})")}$`) }));
 
   /** The digest of the runtime in the downloads folder, from the file beside it. */
   function runtimeDigest(): string {
@@ -602,7 +626,8 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
       throw there.length === 0 ? new Refusal(404, "Not Found") : new Refusal(405, "Method Not Allowed");
     }
     const signer = hit.route.open === true ? "" : caller(request);
-    return hit.route.answer({ me: ownerOf(signer), signer, id: hit.id, query: new URLSearchParams(query.join("?")), body: await bodyText(request), response });
+    const body = await bodyText(request, hit.route.most);
+    return hit.route.answer({ me: ownerOf(signer), signer, id: hit.id, query: new URLSearchParams(query.join("?")), headers: request.headers, body, response });
   }
 
   const server = createServer((request, response) => {
@@ -623,6 +648,7 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     );
   });
   server.on("close", () => {
+    workflows.stop();
     db.close();
   });
   log("hub ready", { db: settings.db, repos: prefix, downloads: settings.downloads });

@@ -42,7 +42,7 @@ Ed25519, raw 32-byte keys in lowercase hex. Everything signed is the UTF-8 bytes
 
 ### Auth header
 
-Proves who is asking. Sent on every request except `POST /join`, `GET /healthz` and the download routes.
+Proves who is asking. Sent on every request except `POST /join`, `GET /healthz`, the download routes and, from phase 7, a workflow's hook, `POST /hooks/{id}`.
 
 ```text
 Authorization: PlayerTwo <name>:<ts>:<sig>
@@ -173,7 +173,7 @@ The `/notes` routes and the four channel-changing routes go. In their place:
 | `GET /audit/head` | `{ seq, chain }` for the newest event; `{ seq: 0, chain }` with 64 zeros before the first. |
 | `GET /search?q=Q&chat=A&limit=N` | Phase 2. Full-text search over messages and results in chats the caller can see, as last edited, in chat `A` when it is given: `[{ seq, event, snippet }]`, best match first, `limit` up to 50 and 20 when it is not given. A result holds every word of `Q`, each matched as a word and never as query syntax. A word is a run of letters and digits, everything else separating words as it separates the index's tokens; `Q` is at most 200 characters and holds 1 to 8 words, and anything else is `422 invalid q: a search holds 1 to 8 words, in at most 200 characters`. `snippet` is a stretch of the text with each word found between the characters U+0002 and U+0003, which the hub keeps out of what it indexes; the client replaces them. |
 | `GET /workflows?chat=C` | Phase 7. Channel `C`'s live workflows, each as the `workflow.define` that made it live, `{ seq, event }`, oldest first, so a reader can check who signed each; none for a caller not in it. `C`'s `#` is sent as `%23`. |
-| `POST /hooks/{id}` | Phase 7. A workflow's webhook. |
+| `POST /hooks/{id}` | Phase 7, and open to anyone: sets off a run of the live webhook workflow whose `workflow.define`'s id begins with `id`, 32 hex. The body is JSON, which the run's templates name as `body`, or nothing; at most 256 KB, and the connection is cut once more arrives. When the workflow names a `secret`, the `X-Player-Two-Secret` header must hold it. `202 {}` as soon as the run is set off, before any of its steps that take time; `404` when no live webhook workflow has that id, `403` for a wrong or missing secret, `422` for a body that is not JSON. A limit that stops the run is the run's own outcome (see `workflow.run`), and still `202`. |
 
 What a caller can see: events to them, events they or their agents wrote, events in channels they are in, and events to `*`. A direct chat holds the events between its two people, either of them or their agents writing.
 

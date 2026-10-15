@@ -6,6 +6,7 @@ import type { KeyObject } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Server } from "node:http";
 import type { TestContext } from "node:test";
 
 import { oneshotAgent } from "../src/desk/agents/presets.ts";
@@ -25,6 +26,7 @@ export interface Hub {
   readonly dir: string; // Holds the hub's database and a home folder for each person who joins.
   readonly join: (name: string, ownMode?: PermissionMode) => Promise<Client>; // Join under a name, with the mode its own requests run at when given, and return a client for that identity.
   readonly drop: () => void; // Cut every connection open to the hub, as a proxy that gives up on them would.
+  readonly restart: () => Promise<void>; // Stop the hub, and start it again on the same database and address.
 }
 
 /**
@@ -33,15 +35,21 @@ export interface Hub {
  */
 export async function startHub(t: TestContext, now: () => number = () => NOW, downloads = "", repos = TEAM_REPOS): Promise<Hub> {
   const dir = mkdtempSync(join(tmpdir(), "player-two-hub-"));
-  const server = createHub({ joinToken: TOKEN, db: join(dir, "hub.db"), repos, downloads }, now);
-  await new Promise<void>((resolve) => {
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  t.after(async () => {
-    await new Promise((resolve) => {
+  const listening = async (port: number): Promise<Server> => {
+    const started = createHub({ joinToken: TOKEN, db: join(dir, "hub.db"), repos, downloads }, now);
+    await new Promise<void>((resolve) => {
+      started.listen(port, "127.0.0.1", resolve);
+    });
+    return started;
+  };
+  const stop = (): Promise<unknown> =>
+    new Promise((resolve) => {
       server.close(resolve);
       server.closeAllConnections();
     });
+  let server = await listening(0);
+  t.after(async () => {
+    await stop();
     rmSync(dir, { recursive: true, force: true });
   });
   const address = server.address();
@@ -61,6 +69,10 @@ export async function startHub(t: TestContext, now: () => number = () => NOW, do
     },
     drop: () => {
       server.closeAllConnections();
+    },
+    restart: async () => {
+      await stop();
+      server = await listening(address.port);
     }
   };
 }
