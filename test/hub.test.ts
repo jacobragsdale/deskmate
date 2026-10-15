@@ -1680,6 +1680,30 @@ await test("a workflow is published only from a file named .yml or .yaml in the 
   );
 });
 
+await test("a channel's workflows the hub did not list are said to be so, and asked for again once a few seconds have passed", { timeout: 30_000 }, async (t) => {
+  const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+  const alice = await hub.join("alice");
+  await alice.publish("#ops", "channel.join", {});
+  await alice.publish("#ops", "workflow.define", { name: "p1", yaml: 'name: p1\non:\n  message: { contains: "P1" }\nsteps:\n  - post: "a P1"\n' });
+  let down = true;
+  let ahead = 0; // Seconds this desk's clock is moved on.
+  const flaky: Transport = (method, url, headers, body) => (down && url.includes("/workflows?") ? Promise.reject(new Error("socket hang up")) : http(method, url, headers, body));
+  const client = loadClient(join(hub.dir, "alice"), flaky, () => Date.now() / 1000 + ahead);
+  assert.ok(client !== null);
+  const { session } = deskOf(t, client, join(hub.dir, "dev"));
+  await until(session, "#ops listed", (view) => view.rows.some((row) => row.chat === "#ops"));
+  await session.handle({ do: "open", chat: "#ops" });
+
+  const failed = await until(session, "why the workflows are not listed", (view) => view.current !== null && view.current.unlisted !== "" && view.current);
+  assert.deepEqual([failed.workflows, failed.unlisted], [null, "socket hang up"]);
+  down = false;
+  await pause(200);
+  assert.equal(session.view().current?.unlisted, "socket hang up"); // Not asked again at once, however often the chat is drawn.
+  ahead = 6;
+  const listed = await until(session, "the workflows listed", (view) => view.current?.workflows?.length === 1 && view.current);
+  assert.equal(listed.unlisted, "");
+});
+
 await test(
   "the grant command lets teammates ask the user's agent from now for as long as asked, listed with its runs today until it is revoked or ends, and everyone in the chat sees an answer's run went ahead under it; only a checkout of one's own is granted, and only a grant of one's own revoked",
   { timeout: 30_000 },

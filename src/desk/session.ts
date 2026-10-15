@@ -347,8 +347,9 @@ export class Session {
   private readonly pulls = new Map<string, { readonly at: number; readonly found: PullRequest | null }>(); // Pull requests referred to, by repo key and id, as Azure DevOps answered when, Unix milliseconds.
   private watched: Watched | null = null; // The open branch room on Azure DevOps.
   private roomTimer: NodeJS.Timeout | undefined; // Until it is next looked at, while the user looks at the window.
-  // Each channel's live workflows, as the hub last listed them, `entries` null while it is being asked; asked again once one is published or removed there.
-  private readonly live = new Map<string, { readonly entries: readonly Entry[] | null }>();
+  // Each channel's live workflows, as the hub last listed them, `entries` null while it is being asked; asked again once one is published or removed there. When the hub could not list
+  // them, why, and when, on this desk's clock: they are asked again once RETRY_DELAY has passed.
+  private readonly live = new Map<string, { readonly entries: readonly Entry[] | null; readonly failed?: { readonly why: string; readonly at: number } }>();
   private readonly files = new Map<string, Workflow | string>(); // Each workflow.define's file as it reads, or why it does not, by the event's id: an event never changes.
   private lastChat: string | null; // The chat that was open when the session last ran.
   private people: readonly Person[] = [];
@@ -653,27 +654,12 @@ export class Session {
     const chat = this.current;
     const info = this.channels.find((channel) => channel.name === chat);
     const members = info?.members ?? [];
-    const pinned = info?.repo ?? null;
-    const branch = info?.branch ?? null;
-    const copies = pinned === null ? [] : this.team.filter((repo) => repo.key === pinned.key); // Everyone's checkout of the pinned repo, as each advertises it.
-    const elsewhere = copies.filter((copy) => copy.branch !== branch && members.includes(copy.user));
     return {
       chat,
       members: isChannel(chat) ? members : null,
       joined: members.includes(this.me),
       hasOlder: this.paged.get(chat) ?? false,
-      pinned:
-        pinned === null
-          ? null
-          : {
-              name: pinned.name,
-              have: members.filter((member) => copies.some((copy) => copy.user === member)).length,
-              mine: this.checkouts.has(pinned.name),
-              branch,
-              on: branch === null ? [] : copies.filter((copy) => copy.branch === branch).map((copy) => copy.user),
-              elsewhere: branch === null ? [] : elsewhere.map((copy) => ({ who: copy.user, branch: copy.branch })),
-              azure
-            },
+      pinned: info === undefined ? null : this.pinnedView(info, azure),
       newAfter: this.newAfter,
       messages: this.messages(chat, now),
       lines: this.lines(chat),
@@ -690,7 +676,26 @@ export class Session {
         waiting.chat === chat ? [{ id, run: waiting.run, action: waiting.ask.action, title: oneLine(waiting.ask.title, 200), detail: waiting.ask.detail }] : []
       ),
       focus: this.focus,
-      workflows: this.workflowsIn(chat)
+      workflows: this.workflowsIn(chat),
+      unlisted: this.live.get(chat)?.failed?.why ?? ""
+    };
+  }
+
+  /** What a channel is about when a repo is pinned to it: who has it, and in a room about a branch, who is on that branch, the members elsewhere, and its pull request and build. */
+  private pinnedView({ repo: pinned, branch, members }: ChannelInfo, azure: Watched["found"]): CurrentView["pinned"] {
+    if (pinned === null) {
+      return null;
+    }
+    const copies = this.team.filter((repo) => repo.key === pinned.key); // Everyone's checkout of the pinned repo, as each advertises it.
+    const elsewhere = copies.filter((copy) => copy.branch !== branch && members.includes(copy.user));
+    return {
+      name: pinned.name,
+      have: members.filter((member) => copies.some((copy) => copy.user === member)).length,
+      mine: this.checkouts.has(pinned.name),
+      branch,
+      on: branch === null ? [] : copies.filter((copy) => copy.branch === branch).map((copy) => copy.user),
+      elsewhere: branch === null ? [] : elsewhere.map((copy) => ({ who: copy.user, branch: copy.branch })),
+      azure
     };
   }
 
@@ -955,12 +960,12 @@ export class Session {
   }
 
   /**
-   * A channel's live workflows as the hub last listed them; null while it is asked, which this starts, once, and for a direct chat. When the hub cannot be reached they are asked again the next
-   * time the chat is drawn. What a list asked before a workflow was published or removed there says is not kept.
+   * A channel's live workflows as the hub last listed them; null while it is asked, which this starts, once, and for a direct chat. When the hub could not list them, the chat says why, and
+   * they are asked again when it is drawn once RETRY_DELAY seconds have passed. What a list asked before a workflow was published or removed there says is not kept.
    */
   private liveIn(chat: string): readonly Entry[] | null {
     const known = this.live.get(chat);
-    if (known !== undefined || !isChannel(chat)) {
+    if (!isChannel(chat) || (known !== undefined && (known.failed === undefined || this.client.now() - known.failed.at < RETRY_DELAY))) {
       return known?.entries ?? null;
     }
     const asking = { entries: null };
@@ -975,9 +980,10 @@ export class Session {
             this.hooks.changed();
           }
         },
-        () => {
+        (error: unknown) => {
           if (this.live.get(chat) === asking) {
-            this.live.delete(chat);
+            this.live.set(chat, { entries: null, failed: { why: problemOf(error), at: this.client.now() } });
+            this.hooks.changed();
           }
         }
       );

@@ -275,7 +275,8 @@ const currentSchema = z
     // The message or answer the user last opened a link to, for the window to scroll to and highlight; null once another chat is opened.
     // `nth` counts the links opened, so the same one opened again is scrolled to again.
     focus: z.strictObject({ id: z.string(), nth: z.int() }).readonly().nullable(),
-    workflows: z.array(workflowSchema).readonly().nullable() // A channel's live workflows, oldest first; null for a direct chat, and while the desk asks the hub for them.
+    workflows: z.array(workflowSchema).readonly().nullable(), // A channel's live workflows, oldest first; null for a direct chat, and while the desk asks the hub for them.
+    unlisted: z.string() // Why the hub last could not list them, while they are null until the desk asks again; "" otherwise.
   })
   .readonly();
 

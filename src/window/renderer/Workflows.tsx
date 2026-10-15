@@ -260,7 +260,12 @@ function Workflows({ current, me, act, onDone }: { readonly current: CurrentView
   return (
     <Modal title={`Workflows in ${chat}`} className="sm:max-w-2xl" onDismiss={onDone}>
       <div className="flex max-h-[70vh] min-w-0 flex-col gap-3 overflow-y-auto">
-        {workflows === null && <p className="text-muted-foreground">Loading…</p>}
+        {workflows === null && current.unlisted === "" && <p className="text-muted-foreground">Loading…</p>}
+        {workflows === null && current.unlisted !== "" && (
+          <p className="text-destructive wrap-anywhere" role="alert">
+            The hub did not list them: {current.unlisted}. They are asked for again in a few seconds.
+          </p>
+        )}
         {workflows?.length === 0 && <p className="text-muted-foreground">No workflows in {chat}.</p>}
         <ul className="flex flex-col gap-3">
           {workflows?.map((workflow) => (
