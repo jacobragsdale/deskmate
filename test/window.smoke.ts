@@ -205,7 +205,7 @@ async function addAgent(page: Page, program: string, args: readonly string[]): P
 }
 
 await test(
-  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command",
+  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, and offers only the modes the agent that answers can keep",
   { skip: NO_DISPLAY ? "no display: run it under xvfb-run" : false, timeout: 120_000 },
   async (t) => {
     assert.ok(existsSync(join(ROOT, "dist", "main.js")), "dist/ is not built: run `npm run build` first");
@@ -572,7 +572,7 @@ await test(
     // Carol asks again, and alice runs it from the menu: the answer posted directly, at supervised, where the agent asks before it edits. "Allow once" on the card under the request
     // lets it write the file and answer, and the chat's record says it ran supervised. Carol's next request is offered as alice ran this one, from app-state.json.
     const newest = `[...document.querySelectorAll("main article")].at(-1)`;
-    const another = `${newest}.querySelector('button[aria-label="Run it another way"]')`;
+    const another = `${newest}.querySelector('button[aria-label="Choose how to run it"]')`;
     await carol.publish("alice", "message", { text: "@alice/billing edit the README", via: "cli" });
     await page.click("nav button", "carol");
     await page.until("carol's second request, ready to run", `document.querySelector("main h1")?.textContent === "carol" && ${newest}.innerText.includes("edit the README") && ${another} !== null`);
@@ -606,6 +606,26 @@ await test(
       "carol's next request, offered as alice ran the last",
       `${newest}.innerText.includes("and once more") && [...${newest}.querySelectorAll("button")].some((each) => each.textContent === "▶▶ Run supervised and post")`
     );
+
+    // With Cursor's one-shot command answering, which keeps read-only and full and nothing between, that offer cannot be kept: there is no first button, and the menu offers the two modes it keeps and says why not the others.
+    await page.click("button", "Setup");
+    await page.until("her agents on the Setup page", `document.querySelector('input[aria-label="Cursor one-shot answers"]') !== null`);
+    await page.click('input[aria-label="Cursor one-shot answers"]');
+    await page.until("Cursor's one-shot command chosen", `document.querySelector('input[aria-label="Cursor one-shot answers"]').checked === true`);
+    await page.click("button", "Back");
+    await page.until("no first button", `document.querySelector("main h1")?.textContent === "carol" && ${another}?.textContent === "▶ Run…"`);
+    assert.ok(!String(await page.eval(`${newest}.innerText`)).includes("Run supervised"));
+    await page.eval(`${another}.focus()`);
+    await page.press("Enter");
+    await page.until("the menu again", `document.querySelector('[role="menuitem"][data-mode]') !== null`);
+    assert.deepEqual(await page.eval(`[...document.querySelectorAll('[role="menuitem"][data-mode]')].map((each) => each.dataset.mode)`), ["read-only", "full"]);
+    assert.ok(
+      String(await page.eval(`document.querySelector('[role="menu"]').innerText`)).includes(
+        "Cursor one-shot runs either read-only, when it only proposes changes, or with full access, and nothing between."
+      )
+    );
+    await page.shot("cannot");
+    await page.press("Escape");
 
     assert.deepEqual(page.problems, []);
   }

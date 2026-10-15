@@ -29,7 +29,7 @@ import { oneLine } from "../../core/text.ts";
 import { MODES } from "../../core/wire.ts";
 import type { PermissionMode } from "../../core/wire.ts";
 import { runOf } from "../../shared/ipc.ts";
-import type { AskView, CurrentView, MessageView, ReplyView, RequestView } from "../../shared/ipc.ts";
+import type { AskView, ChatView, CurrentView, MessageView, ReplyView, RequestView } from "../../shared/ipc.ts";
 import { AskCard, Spinner } from "./Activity.tsx";
 import type { Act } from "./App.tsx";
 
@@ -42,6 +42,7 @@ const BEFORE = { "": "", declined: "you declined · ", failed: "it failed · ", 
 export interface Runs {
   readonly kept: ReadonlySet<string>; // The runs, as `runOf` names them, whose activity the open chat holds.
   readonly asks: readonly AskView[]; // What they wait for the user to allow or refuse.
+  readonly cannot: ChatView["cannot"]; // Why the agent that answers cannot be held to each mode, "" for each it can: the modes a request may be run at.
   readonly show: (run: string, who: string, asked: string) => void; // Open the activity panel on a run, headed with whose agent and what it was asked.
 }
 
@@ -76,15 +77,71 @@ function runLabel(choice: Choice): string {
 }
 
 /**
- * One of the user's own agents, ready to run: a button that runs it as the user last ran that asker's requests of that repo, read-only with a review before they ever have;
- * a menu to choose how the answer is delivered and run it at another mode; and a button that declines it. A run carries `text`, the request as the user sees it here,
- * so the desk can refuse one edited since.
+ * The menu of other ways to run a request: how the answer is delivered, and a run at each mode the agent that answers can be held to, saying why it cannot be held to the others.
+ * `first` is whether the line has a first button beside it; when it does not, the menu's own button says what it is for.
+ */
+function RunMenu({ cannot, first, offer, run }: { readonly cannot: Runs["cannot"]; readonly first: boolean; readonly offer: Choice; readonly run: (choice: Choice) => void }): JSX.Element {
+  const [post, setPost] = useState(offer.post); // The delivery chosen here, for a run at a mode chosen here.
+  const why = [...new Set(MODES.map((mode) => cannot[mode]).filter((reason) => reason !== ""))];
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button size={first ? "icon-xs" : "xs"} variant="outline" className="text-foreground" type="button" aria-label="Choose how to run it" title="Choose how to run it">
+          {!first && "▶ Run…"}
+          <ChevronDownIcon />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-auto max-w-112">
+        <DropdownMenuLabel>The answer</DropdownMenuLabel>
+        <DropdownMenuRadioGroup
+          value={post ? "post" : "review"}
+          onValueChange={(value) => {
+            setPost(value === "post");
+          }}
+        >
+          {/* Choosing how the answer is delivered keeps the menu open, for the mode to be chosen next. */}
+          <DropdownMenuRadioItem value="review" onSelect={keepOpen}>
+            Review it before it is posted
+          </DropdownMenuRadioItem>
+          <DropdownMenuRadioItem value="post" onSelect={keepOpen}>
+            Post it directly
+          </DropdownMenuRadioItem>
+        </DropdownMenuRadioGroup>
+        <DropdownMenuSeparator />
+        <DropdownMenuLabel>Run it</DropdownMenuLabel>
+        {MODES.filter((mode) => cannot[mode] === "").map((mode) => (
+          <DropdownMenuItem
+            key={mode}
+            data-mode={mode}
+            onSelect={() => {
+              run({ mode, post });
+            }}
+          >
+            <span className="font-medium">{mode}</span>
+            <span className="text-muted-foreground">{ACCESS[mode]}</span>
+          </DropdownMenuItem>
+        ))}
+        {why.map((reason) => (
+          <DropdownMenuLabel key={reason} className="font-normal">
+            {reason}.
+          </DropdownMenuLabel>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/**
+ * One of the user's own agents, ready to run: a button that runs it as the user last ran that asker's requests of that repo, read-only with a review before they ever have,
+ * unless the agent that answers cannot be held to that mode; the menu of other ways to run it; and a button that declines it.
+ * A run carries `text`, the request as the user sees it here, so the desk can refuse one edited since.
  */
 function ReadyLine({
   request,
   text,
   who,
   status,
+  cannot,
   act,
   children
 }: {
@@ -92,12 +149,13 @@ function ReadyLine({
   readonly text: string;
   readonly who: string;
   readonly status: Extract<RequestView["status"], { kind: "ready" }>;
+  readonly cannot: Runs["cannot"];
   readonly act: Act;
   readonly children: ReactNode; // What else the line offers: the activity of the run before, when there is one.
 }): JSX.Element {
   const { id, repo } = request;
   const { offer } = status;
-  const [post, setPost] = useState(offer.post); // The delivery chosen in the menu, for a run at a mode chosen there.
+  const first = cannot[offer.mode] === "";
   const run = (choice: Choice): void => {
     act({ do: "run", id, repo, text, ...choice });
   };
@@ -105,55 +163,22 @@ function ReadyLine({
     <p className={MINE}>
       ◆ {BEFORE[status.before]}
       {who} ·{" "}
-      <Button
-        size="xs"
-        variant="outline"
-        className="text-foreground"
-        type="button"
-        onClick={() => {
-          run(offer);
-        }}
-      >
-        {runLabel(offer)}
-      </Button>{" "}
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button size="icon-xs" variant="outline" className="text-foreground" type="button" aria-label="Run it another way" title="Run it another way">
-            <ChevronDownIcon />
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="w-auto">
-          <DropdownMenuLabel>The answer</DropdownMenuLabel>
-          <DropdownMenuRadioGroup
-            value={post ? "post" : "review"}
-            onValueChange={(value) => {
-              setPost(value === "post");
+      {first && (
+        <>
+          <Button
+            size="xs"
+            variant="outline"
+            className="text-foreground"
+            type="button"
+            onClick={() => {
+              run(offer);
             }}
           >
-            {/* Choosing how the answer is delivered keeps the menu open, for the mode to be chosen next. */}
-            <DropdownMenuRadioItem value="review" onSelect={keepOpen}>
-              Review it before it is posted
-            </DropdownMenuRadioItem>
-            <DropdownMenuRadioItem value="post" onSelect={keepOpen}>
-              Post it directly
-            </DropdownMenuRadioItem>
-          </DropdownMenuRadioGroup>
-          <DropdownMenuSeparator />
-          <DropdownMenuLabel>Run it</DropdownMenuLabel>
-          {MODES.map((mode) => (
-            <DropdownMenuItem
-              key={mode}
-              data-mode={mode}
-              onSelect={() => {
-                run({ mode, post });
-              }}
-            >
-              <span className="font-medium">{mode}</span>
-              <span className="text-muted-foreground">{ACCESS[mode]}</span>
-            </DropdownMenuItem>
-          ))}
-        </DropdownMenuContent>
-      </DropdownMenu>
+            {runLabel(offer)}
+          </Button>{" "}
+        </>
+      )}
+      <RunMenu cannot={cannot} first={first} offer={offer} run={run} />
       {status.canDecline && (
         <>
           {" "}
@@ -305,7 +330,7 @@ function RequestLine({ request, text, asker, runs, act }: { readonly request: Re
       );
     case "ready":
       return (
-        <ReadyLine request={request} text={text} who={who} status={status} act={act}>
+        <ReadyLine request={request} text={text} who={who} status={status} cannot={runs.cannot} act={act}>
           {activity}
         </ReadyLine>
       );
