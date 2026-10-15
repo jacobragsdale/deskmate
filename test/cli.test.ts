@@ -77,6 +77,18 @@ await test("an untrusted message is never rendered with its text", () => {
   assert.ok(!render(delivered, false).includes("rm -rf everything"));
 });
 
+await test("an answer the agent signed itself is shown as not reviewed, one its owner signed is not, and one its agent signed claiming a review counts for nothing", () => {
+  const answer = (author: string, reviewed: boolean): string => {
+    const content = JSON.stringify({ repo: "uploader", branch: "main", text: "in queue.py", reviewed });
+    return render({ seq: 7, event: signEvent(loadKey("11".repeat(32)), { author, to: "bob", kind: "job.result", content, ts: 0, refs: ["ab".repeat(32)] }) }, true);
+  };
+  assert.match(answer("alice/uploader", false), /^┌ 7 · alice \(uploader agent, not reviewed\) · /);
+  assert.match(answer("alice", false), /^┌ 7 · alice \(uploader agent\) · /);
+  assert.match(answer("alice", true), /^┌ 7 · alice \(uploader agent\) · /);
+  // An agent cannot have reviewed its own answer: the hub refuses one that says so, and a reader shows one a hub let through without its text.
+  assert.doesNotMatch(answer("alice/uploader", true), /in queue\.py|uploader agent/);
+});
+
 await test("main joins sends and lists messages", async (t) => {
   const hub = await startHub(t);
   assert.deepEqual(await playerTwo(hub, "alice", ["join", hub.url, "alice", TOKEN]), {

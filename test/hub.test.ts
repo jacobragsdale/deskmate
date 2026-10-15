@@ -291,6 +291,7 @@ await test("two people, their agents and a channel, through the real hub", { tim
       seq: 0,
       ts: 0,
       sender: "jacob",
+      signer: "jacob", // He reviewed and sent it, so it is his, and the window says nothing of review.
       agent: "uploader",
       branch: "main ±",
       commit: COMMIT,

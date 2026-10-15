@@ -61,7 +61,9 @@ const noteSchema = z.discriminatedUnion("state", [
 const said = {
   id: z.string(), // The event's id: what a command about it names.
   seq: z.int(), // Its place in the hub's log, which is the order a chat is in.
-  sender: z.string(),
+  sender: z.string(), // A person: for an agent's answer, its owner.
+  // Who signed it: the sender, or for an answer posted with nobody reviewing it, the agent itself, "owner/repo". Only this says whether an answer was reviewed, never what the answer claims.
+  signer: z.string(),
   agent: z.string().nullable(), // The repo the sender's agent worked in, for an agent's answer; null when the sender typed it.
   branch: z.string(), // The branch that agent was on; "" when unknown.
   commit: z.string(), // The commit it was on, as its owner accepted the run; "" when unknown.

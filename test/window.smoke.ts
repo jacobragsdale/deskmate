@@ -13,6 +13,7 @@ import { z } from "zod";
 
 import { readContent } from "../src/core/kinds.ts";
 import { noteLink } from "../src/core/links.ts";
+import { newKey, publicHex } from "../src/core/sign.ts";
 import { commandLineOf } from "../src/core/wire.ts";
 import type { Client } from "../src/desk/client.ts";
 import { startHub, TOKEN } from "./startHub.ts";
@@ -212,7 +213,7 @@ async function addAgent(page: Page, program: string, args: readonly string[]): P
 }
 
 await test(
-  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, keeps a card in reach in a closed thread and brings one far above the end into view, refuses and allows for the run from a card, and offers only the modes the agent that answers can keep, full alone beside its reason when that is all, and a full chosen once not again in one click when less is there; and on My agents makes a grant from its dialog, which asks a second yes for full access posted directly for anyone, counts the run it lets go and revokes it, and holds a repo back, unshared and answering nobody under that grant, and lets it answer again; and says under whose grant a run went ahead, to its owner and to whoever asked",
+  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, keeps a card in reach in a closed thread and brings one far above the end into view, refuses and allows for the run from a card, and offers only the modes the agent that answers can keep, full alone beside its reason when that is all, and a full chosen once not again in one click when less is there; and on My agents makes a grant from its dialog, which asks a second yes for full access posted directly for anyone, counts the run it lets go and revokes it, and holds a repo back, unshared and answering nobody under that grant, and lets it answer again; and says under whose grant a run went ahead, to its owner and to whoever asked, and that an answer its agent signed was not reviewed",
   { skip: NO_DISPLAY ? "no display: run it under xvfb-run" : false, timeout: 120_000 },
   async (t) => {
     assert.ok(existsSync(join(ROOT, "dist", "main.js")), "dist/ is not built: run `npm run build` first");
@@ -439,6 +440,9 @@ await test(
     await page.until("what it is doing", `document.querySelector("main").innerText.includes("bob's uploader agent is editing files on main ± at c0ffee0 · full")`);
     await bob.publish("alice", "job.result", { repo: "uploader", branch: "main", text: "in queue.py", reviewed: false }, [asked.event.id]);
     await page.until("the answer, with where it ran", `document.querySelector("main").innerText.includes("/uploader agent on main ± at c0ffee0")`);
+    // Signed by bob, it is his own word, so nothing says it was not reviewed, whatever the answer itself claims.
+    const bobs = `[...document.querySelectorAll("main article")].find((each) => each.innerText.includes("in queue.py")).querySelector("header").innerText`;
+    assert.ok(!String(await page.eval(bobs)).includes("not reviewed"));
 
     // Alt+↑ and Alt+↓ move up and down the chat list from the message box, empty after a message was sent, where ↑ alone would bring that message back.
     await page.press("ArrowUp", ALT);
@@ -794,7 +798,7 @@ await test(
     await carol.publish("alice", "message", { text: "@alice/billing read it under the grant", via: "cli" });
     const answered = `[...document.querySelectorAll("main article")].find((each) => each.innerText.includes("carol: @alice/billing read it under the grant"))`;
     await page.until("carol's request answered", `${answered} !== undefined`);
-    assert.match(String(await page.eval(`${answered}.querySelector("header").innerText`)), /\/billing agent on main ± at [0-9a-f]{7} · ran under your grant, read-only, until /);
+    assert.match(String(await page.eval(`${answered}.querySelector("header").innerText`)), /\/billing agent on main ± at [0-9a-f]{7} · ran under your grant, read-only, until .+ · not reviewed\n/);
     assert.equal(await acceptedAt(carol, "alice"), "read-only");
     await page.click("footer button", "My agents");
     await page.until("the run counted", `${granted}?.innerText.includes(" · 1 of 2 runs today") === true`);
@@ -846,10 +850,13 @@ await test(
       underGrant.event.id
     ]);
     await page.until("whose grant it runs under", `${newest}.innerText.includes("bob's uploader agent is working on main at c0ffee0 · under bob's grant, read-only, until ")`);
-    await bob.publish("alice", "job.result", { repo: "uploader", branch: "main", text: "nothing yet", reviewed: false }, [underGrant.event.id]);
+    // The answer is posted by bob's agent itself, with its own key, which bob registered: it says it was not reviewed.
+    const bobsAgent = newKey();
+    await bob.publish("*", "agent.register", { repo: "uploader", pubkey: publicHex(bobsAgent) });
+    await bob.as("bob/uploader", bobsAgent).publish("alice", "job.result", { repo: "uploader", branch: "main", text: "nothing yet", reviewed: false }, [underGrant.event.id]);
     await page.until(
-      "the answer, with whose grant it ran under",
-      `${newest}.querySelector("header")?.innerText.includes("/uploader agent on main at c0ffee0 · ran under bob's grant, read-only, until ") === true`
+      "the answer, with whose grant it ran under and that nobody reviewed it",
+      `/\\/uploader agent on main at c0ffee0 · ran under bob's grant, read-only, until .+ · not reviewed\\n/.test(${newest}.querySelector("header")?.innerText ?? "")`
     );
     await page.shot("under-grant");
 

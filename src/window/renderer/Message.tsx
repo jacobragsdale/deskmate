@@ -26,7 +26,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { spans } from "../../core/chat.ts";
 import { noteLink, noteOf, notesIn } from "../../core/links.ts";
 import { oneLine } from "../../core/text.ts";
-import { MODES } from "../../core/wire.ts";
+import { isAgent, MODES } from "../../core/wire.ts";
 import type { PermissionMode } from "../../core/wire.ts";
 import { runOf } from "../../shared/ipc.ts";
 import type { AskView, ChatView, CurrentView, MessageView, ReplyView, RequestView } from "../../shared/ipc.ts";
@@ -754,7 +754,10 @@ function Reactions({ message, me, react }: { readonly message: ReplyView; readon
   );
 }
 
-/** Who wrote a message, and when; for an agent's answer, which agent, the branch and commit its owner let it run on, and the grant of theirs it ran under, if one let it. */
+/**
+ * Who wrote a message, and when; for an agent's answer, which agent, the branch and commit its owner let it run on, the grant of theirs it ran under, if one let it, and "not reviewed"
+ * when the agent signed it itself: posted with nobody reading it first. One its owner reviewed and sent is signed by them, and says nothing more.
+ */
 function Header({ message, me }: { readonly message: ReplyView; readonly me: string }): JSX.Element {
   const when = new Date(message.ts * 1000);
   return (
@@ -773,6 +776,14 @@ function Header({ message, me }: { readonly message: ReplyView; readonly me: str
             <>
               {" · ran "}
               <Granted whose={message.sender === me ? "your" : `${message.sender}'s`} mode={message.grant.mode} expires={message.grant.expires} />
+            </>
+          )}
+          {isAgent(message.signer) && (
+            <>
+              {" · "}
+              <span className="text-warn" title={`Posted by ${message.signer} itself, signed with its own key, before anyone read it`}>
+                not reviewed
+              </span>
             </>
           )}
         </span>

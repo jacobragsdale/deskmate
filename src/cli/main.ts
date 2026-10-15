@@ -11,7 +11,7 @@ import type { Entry, Message } from "../core/chat.ts";
 import { readContent } from "../core/kinds.ts";
 import { noteLink, noteOf } from "../core/links.ts";
 import { problemOf } from "../core/text.ts";
-import { channelSchema, commandLineOf, defaultAgentOf, fitText, isChannel, ownerOf } from "../core/wire.ts";
+import { channelSchema, commandLineOf, defaultAgentOf, fitText, isAgent, isChannel, ownerOf } from "../core/wire.ts";
 import type { ChannelInfo, Delivered, Event } from "../core/wire.ts";
 import { DEFAULT_PRESET, oneshotAgent, PRESETS } from "../desk/agents/presets.ts";
 import { defaultDev, defaultHome, http, join, loadClient, PlayerTwoError } from "../desk/client.ts";
@@ -118,16 +118,19 @@ function vouched(entry: Entry): Omit<Entry, "event"> & { readonly event: Omit<Ev
   return entry.trusted ? entry : { ...entry, event: { ...entry.event, content: null } };
 }
 
-/** What a message or an agent's answer says, and which agent's answer it is; null for an event of any other kind, or one the fold counts for nothing from its author, which the inbox passes over. */
-function saying(event: Event): { readonly text: string; readonly agent: string | null } | null {
+/**
+ * What a message or an agent's answer says, and for an answer whose agent it is, as its header puts it after the owner's name: " (uploader agent)", with ", not reviewed" when the agent signed it
+ * itself, which it does only for an answer posted with nobody reading it first. Null for an event of any other kind, or one the fold counts for nothing from its author, which the inbox passes over.
+ */
+function saying(event: Event): { readonly text: string; readonly whose: string } | null {
   const said = readContent(event);
   if (!mayCome(event, said)) {
     return null;
   }
   if (said.kind === "message") {
-    return { text: said.content.text, agent: null };
+    return { text: said.content.text, whose: "" };
   }
-  return said.kind === "job.result" ? { text: said.content.text, agent: said.content.repo } : null;
+  return said.kind === "job.result" ? { text: said.content.text, whose: ` (${said.content.repo} agent${isAgent(event.author) ? ", not reviewed" : ""})` } : null;
 }
 
 /**
@@ -142,13 +145,12 @@ export function render(delivered: Delivered, trusted: boolean, cite: { readonly 
   const said = saying(event);
   const when = new Date(event.ts * 1000).toLocaleString("en-GB", { weekday: "short", hour: "2-digit", minute: "2-digit" }); // "Fri 14:05", in this machine's own time.
   const lines = (cite?.text ?? said?.text ?? `(${event.kind})`).split(/\r\n|\r|\n/).map((line) => `│ ${line}`);
-  const agent = said?.agent ?? null;
   const writer = ownerOf(event.author); // An agent's answer under its owner's name, as the window shows it.
   let where = isChannel(event.to) ? ` in ${event.to}` : "";
   if (cite?.me === writer && where === "") {
     where = ` to ${event.to}`;
   }
-  return [`┌ ${String(seq)} · ${writer}${agent === null ? "" : ` (${agent} agent)`}${where} · ${when}`, ...lines, cite === null ? "└" : `└ ${noteLink(event.id)}`].join("\n");
+  return [`┌ ${String(seq)} · ${writer}${said?.whose ?? ""}${where} · ${when}`, ...lines, cite === null ? "└" : `└ ${noteLink(event.id)}`].join("\n");
 }
 
 /** The setup check as aligned text: how each item stands, what was checked and what was found, and under one that is not right, the fix to copy. */

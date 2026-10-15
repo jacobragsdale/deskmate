@@ -502,7 +502,8 @@ export class Session {
     return {
       id: event.id,
       seq,
-      sender: ownerOf(event.author), // An agent's answer under its owner's name, as it was before agents signed their own: `agent` says it is the agent's.
+      sender: ownerOf(event.author), // An agent's answer under its owner's name, as it was before agents signed their own: `agent` says it is the agent's, and `signer` whether the owner read it first.
+      signer: event.author,
       agent: message.agent,
       branch: accepted === null ? message.branch : ranOn(accepted),
       commit: accepted?.commit ?? "",
@@ -534,7 +535,7 @@ export class Session {
   /** An event whose signature failed: who it claims to be from and when, and never what it says. */
   private warningView({ seq, event }: Entry): MessageView {
     const nothing = { agent: null, branch: "", commit: "", grant: null, body: "", edited: false, deleted: false, reactions: [], notes: [], quote: "", requests: [], replyCount: 0, replies: [] };
-    return { id: event.id, seq, sender: event.author, ts: event.ts, trusted: false, header: true, ...nothing };
+    return { id: event.id, seq, sender: event.author, signer: event.author, ts: event.ts, trusted: false, header: true, ...nothing };
   }
 
   /**
