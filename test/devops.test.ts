@@ -475,6 +475,24 @@ await test("a pull request is opened only from the branch the user's checkout is
   assert.deepEqual(questions, []);
 });
 
+await test("where origin is pushed to is shown with no user name or token in it, as the push dialog shows it", async () => {
+  const repo = mkdtempSync(join(tmpdir(), "player-two-push-"));
+  git(repo, "init", "-q");
+  git(repo, "remote", "add", "origin", "https://dev.azure.com/acme/Platform/_git/uploader");
+  for (const [set, shown] of Object.entries({
+    "https://a-token@dev.azure.com/acme/Platform/_git/uploader": "https://dev.azure.com/acme/Platform/_git/uploader",
+    "https://jacob:a-token@dev.azure.com/acme/Platform/_git/uploader": "https://dev.azure.com/acme/Platform/_git/uploader",
+    "ssh://git@ssh.dev.azure.com/v3/acme/Platform/uploader": "ssh://ssh.dev.azure.com/v3/acme/Platform/uploader",
+    "git@ssh.dev.azure.com:v3/acme/Platform/uploader": "git@ssh.dev.azure.com:v3/acme/Platform/uploader",
+    "jacob:a-token@example.com:acme/uploader.git": "example.com:acme/uploader.git", // No "://": URL's parser would take "jacob:" for its scheme and find no user name.
+    "https://jacob:a-token@[not a host/uploader": "[not a host/uploader",
+    "/srv/git/uploader.git": "/srv/git/uploader.git"
+  })) {
+    git(repo, "config", "remote.origin.pushurl", set);
+    assert.equal(await repos.pushUrl(repo), shown, set);
+  }
+});
+
 await test("a patch applied to a new branch opens its pull request from that branch, with its title, once the push is said yes to, and not before it was applied there", async (t) => {
   const { project } = await azure(t);
   const hub = await startHub(t, () => Date.now() / 1000);

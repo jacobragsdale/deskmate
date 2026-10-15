@@ -299,13 +299,34 @@ export async function againstOrigin(path: string, rev: string, branch: string): 
   return (await isAncestor(mine, theirs)) ? "behind" : "diverged";
 }
 
-/** Where git pushes the checkout's origin to, as its configuration says, rewrites and all. */
+/** Where git pushes the checkout's origin to, as its configuration says, rewrites and all, with no user name or password in it: see `withoutCredentials`. */
 export async function pushUrl(path: string): Promise<string> {
   const url = await git(["-C", path, "remote", "get-url", "--push", "origin"], STATUS_TIMEOUT);
   if (!url.ok) {
     throw new Error(`git cannot say where ${path}'s origin is: ${lastWords(url)}`);
   }
-  return url.stdout.trim();
+  return withoutCredentials(url.stdout.trim());
+}
+
+/**
+ * A remote's address as it may be shown: a URL, `scheme://`, without its user name and password, as `https://<token>@dev.azure.com/…` is a common way to keep a token for Azure
+ * DevOps; and any other, as the scp-like `git@host:path`, as it is unless what comes before its first `@` holds a `:`, which then goes, `@` and all.
+ */
+export function withoutCredentials(address: string): string {
+  if (address.includes("://")) {
+    try {
+      const url = new URL(address);
+      if (url.username === "" && url.password === "") {
+        return address;
+      }
+      url.username = "";
+      url.password = "";
+      return url.href;
+    } catch {
+      // Not one the WHATWG parser takes, as git may: read as any other.
+    }
+  }
+  return address.replace(/^[^@]*:[^@]*@/, "");
 }
 
 /** Push `branch` to origin and have it track origin's, with the user's own git credentials: `git push -u origin -- <branch>`. A branch that is not `pushable` is refused. */
