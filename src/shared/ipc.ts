@@ -30,6 +30,7 @@ const requestSchema = z
       z.strictObject({ kind: z.literal("drafted") }), // Mine: an answer is waiting for my review.
       z.strictObject({ kind: z.literal("running"), startedAt: z.number(), branch: z.string() }), // Mine: at work since `startedAt`, Unix milliseconds.
       z.strictObject({ kind: z.literal("noCheckout") }), // Mine: I have no copy of the repo.
+      z.strictObject({ kind: z.literal("held") }), // Mine: I hold the repo back, so its agent answers nobody until I let it.
       // Mine: I can run it. `offer` is how I last ran its asker's requests of that repo, which the window offers first; read-only with a review before I ever have.
       z.strictObject({
         kind: z.literal("ready"),
@@ -190,7 +191,8 @@ export const viewSchema = z.discriminatedUnion("kind", [
       unread: z.int(),
       team: z.array(teamRepoSchema).readonly(),
       myRepos: z.array(z.string()).readonly(),
-      checkouts: z.array(z.strictObject({ repo: z.string(), branch: z.string() }).readonly()).readonly(), // The user's agents: their checkout of each team repo, with the branch it is on.
+      // The user's agents: their checkout of each team repo, with the branch it is on, and whether they hold it back: not shared with the team, and its agent answering nobody.
+      checkouts: z.array(z.strictObject({ repo: z.string(), branch: z.string(), held: z.boolean() }).readonly()).readonly(),
       grants: z.array(grantSchema).readonly(), // The user's grants that stand, first made first.
       otherChannels: z.array(z.strictObject({ name: z.string(), members: z.array(z.string()).readonly() }).readonly()).readonly(), // Channels the user could join.
       busy: z.strictObject({ working: z.int(), unsent: z.int() }).readonly(), // What quitting now would lose: agents at work and drafts not sent. Here so the window can warn without asking first.
@@ -238,6 +240,7 @@ export const commandSchema = z.discriminatedUnion("do", [
     runsPerDay: z.int().min(1).max(1000)
   }),
   z.strictObject({ do: z.literal("revoke"), id }), // Take back a grant of the user's, by its event's id: a request after it waits for their click, and a run going under it stops.
+  z.strictObject({ do: z.literal("hold"), repo, held: z.boolean() }), // Hold back the user's agent in `repo`, or with `held` false let it answer again. Kept in config.json.
   z.strictObject({ do: z.literal("joinChannel"), name: z.string().max(40) }),
   z.strictObject({ do: z.literal("leaveChannel"), chat }),
   z.strictObject({ do: z.literal("pin"), chat, repo }),

@@ -407,7 +407,19 @@ export async function runChecks(home: string, dev: string, stop: AbortSignal = n
     },
     { id: "dev", title: "The repos folder exists", ...(devFound ? ok(dev) : fail(`there is no folder at ${dev}, where your repos are looked for; PLAYER_TWO_DEV moves it`, `mkdir -p ${quote(dev)}`)) },
     { id: "repos", title: "A team repo is checked out", ...found.outcome },
-    { id: "agent-keys", title: "Each shared repo's agent has its own key, and the hub has it", ...either(await attempt(() => agentKeys(home, client, found.checkouts))) },
+    {
+      id: "agent-keys",
+      title: "Each shared repo's agent has its own key, and the hub has it",
+      ...either(
+        await attempt(() =>
+          agentKeys(
+            home,
+            client,
+            found.checkouts.filter((each) => config?.held?.includes(each.remote.name) !== true)
+          )
+        )
+      )
+    },
     { id: "git", title: "git runs", ...(version.ok ? ok(version.stdout.trim()) : fail(`git does not run: ${gitWords}`, "sudo apt install git")) },
     {
       id: "git-auth",

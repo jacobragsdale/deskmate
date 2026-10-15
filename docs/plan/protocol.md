@@ -227,7 +227,7 @@ Inside WSL (or the home folder on Linux and macOS):
 
 | Path | Holds |
 |---|---|
-| `~/.config/player-two/config.json` | Hub address, name, agents. |
+| `~/.config/player-two/config.json` | Hub address, name, agents, and from phase 4 the repos held back. |
 | `~/.config/player-two/key` | The person's private key. Mode `0600`. |
 | `~/.config/player-two/known.json` | The key first seen for each teammate. An agent's key is not kept here: it is learned from its owner's registrations, which that pinned key vouches for, each time a client starts. |
 | `~/.config/player-two/app-state.json` | Read marks, last open chat, and the mode and delivery each asker's requests of each repo were last run at, with the agent that ran them (phase 3). Safe to delete. |

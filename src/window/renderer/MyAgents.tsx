@@ -3,6 +3,7 @@
  * revoked, and made in a dialog. A grant of full access, posted directly, for everyone needs a second yes that says what it means.
  */
 
+import { cn } from "cn";
 import { useState } from "react";
 import type { JSX, SyntheticEvent } from "react";
 
@@ -229,13 +230,23 @@ export function MyAgents({ view, act, onClose }: { readonly view: ChatView; read
       </p>
       {view.checkouts.length === 0 && <p>You have no team repo checked out in {view.dev}.</p>}
       <ul className="flex flex-col gap-4">
-        {view.checkouts.map(({ repo, branch }) => (
+        {view.checkouts.map(({ repo, branch, held }) => (
           <li key={repo} data-repo={repo} className="flex flex-col gap-1.5">
             <p className="flex items-baseline gap-2">
               <strong>{repo}</strong>
-              <span className="flex-1 truncate text-muted-foreground">
-                on {branch} · {answering} answers
+              <span className={cn("flex-1 truncate", held ? "text-warn" : "text-muted-foreground")}>
+                on {branch} · {held ? "held back: not shared with the team, and it answers nobody" : `${answering} answers`}
               </span>
+              <Button
+                type="button"
+                size="xs"
+                variant="outline"
+                onClick={() => {
+                  act({ do: "hold", repo, held: !held });
+                }}
+              >
+                {held ? "Let it answer" : "Hold back"}
+              </Button>
               <Button
                 type="button"
                 size="xs"

@@ -299,6 +299,9 @@ export class Session {
         case "clone":
           await this.clone(command.repo);
           break;
+        case "hold":
+          await this.hold(command.repo, command.held);
+          break;
         case "agents":
           this.client.saveAgents(command.agents, command.defaultAgent);
           if (this.agentRunner?.which !== JSON.stringify(defaultAgentOf(this.client.config))) {
@@ -389,7 +392,7 @@ export class Session {
     const now = this.client.now();
     const rows = this.rows();
     const working = new Set([...this.runs.values()].map((run) => chatOf(run.entry.event, this.me)));
-    const asked = new Map(rows.map((row) => [row.chat, this.chats.waitingForMe(row.chat, now).length]));
+    const asked = new Map(rows.map((row) => [row.chat, this.chats.waitingForMe(row.chat, now).filter((request) => !this.isHeld(request.repo)).length]));
     const rowViews: RowView[] = rows.map((row) => {
       let mark: RowView["mark"] = "";
       if (working.has(row.chat)) {
@@ -426,7 +429,7 @@ export class Session {
       unread: rows.reduce((sum, row) => sum + row.unread, 0),
       team: this.team,
       myRepos: [...this.checkouts.keys()],
-      checkouts: [...this.checkouts.values()].map((checkout) => ({ repo: checkout.remote.name, branch: checkout.branch })),
+      checkouts: [...this.checkouts.values()].map(({ remote, branch }) => ({ repo: remote.name, branch, held: this.isHeld(remote.name) })),
       grants: this.myGrants(now),
       otherChannels: this.channels.filter((channel) => !channel.members.includes(this.me)).map((channel) => ({ name: channel.name, members: channel.members })),
       busy: { working: this.runs.size, unsent: [...this.drafts.values()].reduce((sum, drafts) => sum + drafts.length, 0) },
@@ -631,6 +634,9 @@ export class Session {
     if (!this.checkouts.has(repo)) {
       return { kind: "noCheckout" };
     }
+    if (this.isHeld(repo)) {
+      return { kind: "held" };
+    }
     const before = state === "working" ? "interrupted" : state === "waiting" || state === "answered" ? "" : state;
     return { kind: "ready", before, canDecline: event.author !== this.me && state !== "declined", offer: this.offerFor(event.author, repo) };
   }
@@ -730,15 +736,16 @@ export class Session {
     this.prefix = info.repos;
   }
 
-  /** Look under ~/dev for the team's repos, tell the hub when the list or a branch has changed, and tell everyone the key of each one's agent. */
+  /** Look under ~/dev for the team's repos, tell the hub when the list or a branch has changed, and tell everyone the key of each one's agent; of those the user holds back, nothing. */
   private async share(): Promise<void> {
     const found = repos.scan(this.dev, this.prefix);
-    const adverts = found.map((checkout) => ({ ...checkout.remote, branch: checkout.branch }));
+    const shared = found.filter((checkout) => !this.isHeld(checkout.remote.name));
+    const adverts = shared.map((checkout) => ({ ...checkout.remote, branch: checkout.branch }));
     if (JSON.stringify(adverts) !== this.advertised) {
       await this.client.advertise(adverts);
       this.advertised = JSON.stringify(adverts);
     }
-    await this.register(found);
+    await this.register(shared);
     this.checkouts = new Map(found.map((checkout) => [checkout.remote.name, checkout]));
     this.hooks.changed();
   }
@@ -933,7 +940,7 @@ export class Session {
     const sent = await this.publish(chat, "message", { text: body, via: "window" }, refs);
     const message = this.chats.message(sent.event.id);
     for (const request of message === null ? [] : this.chats.requests(message, this.client.now())) {
-      if (message !== null && request.owner === this.me && request.state === "waiting" && this.checkouts.has(request.repo)) {
+      if (message !== null && request.owner === this.me && request.state === "waiting" && this.answers(request.repo)) {
         const mode = this.ownMode();
         const why = this.cannotRun(mode);
         if (why === "") {
@@ -1231,7 +1238,7 @@ export class Session {
         continue;
       }
       for (const { owner, repo, state } of this.chats.requests(message, now)) {
-        const grant = owner === this.me && state === "waiting" && this.checkouts.has(repo) ? this.grantFor(repo, event.author, now) : null;
+        const grant = owner === this.me && state === "waiting" && this.answers(repo) ? this.grantFor(repo, event.author, now) : null;
         if (grant === null) {
           continue;
         }
@@ -1263,6 +1270,26 @@ export class Session {
       throw new PlayerTwoError(`there is no checkout of ${repo} under ${this.dev}, so no agent of yours answers for it`);
     }
     await this.publish("*", "grant", { agent: `${this.me}/${repo}`, askers, mode, delivery, expires: Math.floor(this.client.now()) + lasts, runsPerDay });
+  }
+
+  /** Whether the user holds back their agent in `repo`: the hub is not told of it, and it answers nobody, under a grant or not. */
+  private isHeld(repo: string): boolean {
+    return this.client.config.held?.includes(repo) === true;
+  }
+
+  /** Whether the user's agent in `repo` answers: they have a checkout of it and do not hold it back. */
+  private answers(repo: string): boolean {
+    return this.checkouts.has(repo) && !this.isHeld(repo);
+  }
+
+  /**
+   * Hold back the user's agent in `repo`, or let it answer again, and tell the hub at once what they share. A run already going is left to finish, or to be stopped by hand:
+   * holding back stops the agent being asked, not what it was let do.
+   */
+  private async hold(repo: string, held: boolean): Promise<void> {
+    const others = (this.client.config.held ?? []).filter((each) => each !== repo);
+    this.client.saveHeld(held ? [...others, repo] : others);
+    await this.share();
   }
 
   /** Take back a grant of the user's: it lets nothing run from now on, and a run going under it is stopped (see `keep`). */
@@ -1325,6 +1352,9 @@ export class Session {
     }
     if (checkout === undefined) {
       throw new PlayerTwoError(`there is no checkout of ${repo} under ${this.dev}`);
+    }
+    if (this.isHeld(repo)) {
+      throw new PlayerTwoError(`you hold back your ${repo} agent, so it answers nobody: let it answer on My agents first`);
     }
     const why = this.cannotRun(mode);
     if (why !== "") {

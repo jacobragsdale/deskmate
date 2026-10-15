@@ -317,10 +317,27 @@ function WaitingLine({ request, away, asker, act }: { readonly request: RequestV
   );
 }
 
+/** What the line under a request says when it is only words: nothing anyone reading it can do about it here. */
+const WORDS = {
+  nobody: ({ owner }: RequestView) => `? nobody named ${owner} has joined`,
+  lacksRepo: ({ owner, repo }: RequestView) => `? ${owner} has no checkout of ${repo}`,
+  declined: ({ owner }: RequestView) => `× ${owner} declined`,
+  withdrawn: () => "↩ the request was taken back",
+  held: ({ repo }: RequestView) => `◆ you hold back your ${repo} agent, so it answers nobody · My agents lets it answer again`
+} as const;
+
+/** Whether the line under a request is only words. */
+function wordsOnly(status: RequestView["status"]): status is Extract<RequestView["status"], { kind: keyof typeof WORDS }> {
+  return Object.hasOwn(WORDS, status.kind);
+}
+
 /** Where one agent a message tags stands, and what the reader can do about it. `text` is the message as shown; `asker` is whether the reader wrote it. */
 function RequestLine({ request, text, asker, runs, act }: { readonly request: RequestView; readonly text: string; readonly asker: boolean; readonly runs: Runs; readonly act: Act }): JSX.Element {
   const { id, owner, repo, status } = request;
   const who = request.mine ? `your ${repo} agent` : `${owner}'s ${repo} agent`;
+  if (wordsOnly(status)) {
+    return <p className={LINE}>{WORDS[status.kind](request)}</p>;
+  }
   const activity = <Kept request={request} who={who} text={text} runs={runs} />;
   switch (status.kind) {
     case "drafted":
@@ -390,16 +407,6 @@ function RequestLine({ request, text, asker, runs, act }: { readonly request: Re
       );
     case "waiting":
       return <WaitingLine request={request} away={status.away} asker={asker} act={act} />;
-    case "nobody":
-      return <p className={LINE}>? nobody named {owner} has joined</p>;
-    case "lacksRepo":
-      return (
-        <p className={LINE}>
-          ? {owner} has no checkout of {repo}
-        </p>
-      );
-    case "declined":
-      return <p className={LINE}>× {owner} declined</p>;
     case "failed":
       return (
         <p className={LINE}>
@@ -414,8 +421,6 @@ function RequestLine({ request, text, asker, runs, act }: { readonly request: Re
           <Ran accepted={request.accepted} />
         </p>
       );
-    case "withdrawn":
-      return <p className={LINE}>↩ the request was taken back</p>;
   }
 }
 

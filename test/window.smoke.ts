@@ -212,7 +212,7 @@ async function addAgent(page: Page, program: string, args: readonly string[]): P
 }
 
 await test(
-  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, keeps a card in reach in a closed thread and brings one far above the end into view, refuses and allows for the run from a card, and offers only the modes the agent that answers can keep, full alone beside its reason when that is all, and a full chosen once not again in one click when less is there; and on My agents makes a grant from its dialog, which asks a second yes for full access posted directly for anyone, counts the run it lets go and revokes it",
+  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, keeps a card in reach in a closed thread and brings one far above the end into view, refuses and allows for the run from a card, and offers only the modes the agent that answers can keep, full alone beside its reason when that is all, and a full chosen once not again in one click when less is there; and on My agents makes a grant from its dialog, which asks a second yes for full access posted directly for anyone, counts the run it lets go and revokes it, and holds a repo back, unshared and answering nobody under that grant, and lets it answer again",
   { skip: NO_DISPLAY ? "no display: run it under xvfb-run" : false, timeout: 120_000 },
   async (t) => {
     assert.ok(existsSync(join(ROOT, "dist", "main.js")), "dist/ is not built: run `npm run build` first");
@@ -796,6 +796,28 @@ await test(
     assert.equal(await acceptedAt(carol, "alice"), "read-only");
     await page.click("footer button", "My agents");
     await page.until("the run counted", `${granted}?.innerText.includes(" · 1 of 2 runs today") === true`);
+
+    // Held back, her billing agent is no longer shared with the team, config.json says so, and carol's next request waits, though the grant stands. Let answer again, it is shared again.
+    const shared = async (expected: boolean): Promise<void> => {
+      for (let tries = 0; (await carol.repos()).some((repo) => repo.user === "alice" && repo.name === "billing") !== expected; tries += 1) {
+        assert.ok(tries < 100, `billing is ${expected ? "still not" : "still"} shared after 10 seconds`);
+        await pause(100);
+      }
+    };
+    await shared(true);
+    await page.eval(`[...${billing}.querySelectorAll("button")].find((each) => each.textContent === "Hold back").click()`);
+    await page.until("billing held back", `${billing}.innerText.includes("held back: not shared with the team, and it answers nobody")`);
+    await shared(false);
+    assert.deepEqual(z.object({ held: z.array(z.string()) }).parse(JSON.parse(readFileSync(join(home, ".config", "player-two", "config.json"), "utf8"))).held, ["billing"]);
+    await page.shot("held");
+    await page.click("button", "Back");
+    await carol.publish("alice", "message", { text: "@alice/billing read it while held", via: "cli" });
+    await page.until("carol's request, held", `${newest}.innerText.includes("read it while held") && ${newest}.innerText.includes("◆ you hold back your billing agent, so it answers nobody")`);
+    await page.click("footer button", "My agents");
+    await page.until("still one run today", `${granted}?.innerText.includes(" · 1 of 2 runs today") === true`);
+    await page.eval(`[...${billing}.querySelectorAll("button")].find((each) => each.textContent === "Let it answer").click()`);
+    await page.until("billing answering again", `${billing}.innerText.includes(${JSON.stringify(`on main · ${process.execPath} answers`)})`);
+    await shared(true);
 
     // Revoked, it is gone.
     await page.eval(`[...${granted}.querySelectorAll("button")].find((each) => each.textContent === "Revoke").click()`);

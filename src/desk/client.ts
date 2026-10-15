@@ -160,7 +160,16 @@ export class Client {
 
   /** Replace the agents and which of them answers: in config.json first, then here. */
   public saveAgents(agents: readonly Agent[], defaultAgent: string): void {
-    const config = configSchema.parse({ ...this.settings, agents, defaultAgent });
+    this.save({ ...this.settings, agents, defaultAgent });
+  }
+
+  /** Replace the repos held back, whose agents answer nobody and which the hub is not told of: in config.json first, then here. */
+  public saveHeld(held: readonly string[]): void {
+    this.save({ ...this.settings, held });
+  }
+
+  private save(changed: Config): void {
+    const config = configSchema.parse(changed);
     writeFileSync(joinPath(this.home, "config.json"), JSON.stringify(config, null, 1));
     this.settings = config;
   }

@@ -104,9 +104,19 @@ export const agentSchema = z
   .strictObject({ id: nameSchema, label: z.string().min(1), protocol: z.enum(["acp", "oneshot"]), command: z.string().min(1), args: z.array(z.string()).readonly() })
   .readonly();
 
-/** config.json: who this is on which hub, the agents they can run, which of them answers, and the mode their own requests of their own agents run at. */
+/**
+ * config.json: who this is on which hub, the agents they can run, which of them answers, the mode their own requests of their own agents run at, and the repos they hold back:
+ * not shared with the team, and their agents answering nobody. A config from before there was anything to hold back has no `held`.
+ */
 export const configSchema = z
-  .strictObject({ hub: z.string().regex(/^https?:\/\/\S*[^/\s]$/), name: nameSchema, agents: z.array(agentSchema).min(1).readonly(), defaultAgent: nameSchema, ownMode: permissionModeSchema })
+  .strictObject({
+    hub: z.string().regex(/^https?:\/\/\S*[^/\s]$/),
+    name: nameSchema,
+    agents: z.array(agentSchema).min(1).readonly(),
+    defaultAgent: nameSchema,
+    ownMode: permissionModeSchema,
+    held: z.array(repoNameSchema).readonly().optional()
+  })
   .refine((config) => new Set(config.agents.map((agent) => agent.id)).size === config.agents.length, { message: "two agents have the same id", path: ["agents"] })
   .refine((config) => config.agents.some((agent) => agent.id === config.defaultAgent), { message: "the default agent is not one of the agents", path: ["defaultAgent"] })
   .readonly();
