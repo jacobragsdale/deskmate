@@ -64,8 +64,8 @@ function Elapsed({ since }: { readonly since: number }): JSX.Element {
 /** How a request is run: at which mode, and whether the answer is posted without a review. */
 type Choice = Extract<RequestView["status"], { kind: "ready" }>["offer"];
 
-/** What each mode lets the agent do without asking, as the menu explains it. */
-const ACCESS: Record<PermissionMode, string> = {
+/** What each mode lets the agent do without asking, as the menu explains it, and the dialog that makes a grant. */
+export const ACCESS: Record<PermissionMode, string> = {
   "read-only": "reads and searches, and changes nothing",
   supervised: "asks you before it changes a file or runs a command",
   "auto-edits": "changes files, and asks before it runs a command",
@@ -252,6 +252,23 @@ function Kept({ request, who, text, runs }: { readonly request: RequestView; rea
       · <ShowActivity request={request} who={who} text={text} runs={runs} />
     </>
   ) : null;
+}
+
+/** When a grant ends, as a person would say it after "until": the time when that is today, the day of the week within six days, or else the date. Hovering it gives the full date. */
+export function Until({ expires }: { readonly expires: number }): JSX.Element {
+  const end = new Date(expires * 1000);
+  const days = Math.round((new Date(expires * 1000).setHours(0, 0, 0, 0) - new Date().setHours(0, 0, 0, 0)) / 86_400_000);
+  let said = end.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+  if (days === 0) {
+    said = end.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  } else if (days > 0 && days < 7) {
+    said = end.toLocaleDateString(undefined, { weekday: "long" });
+  }
+  return (
+    <time dateTime={end.toISOString()} title={end.toLocaleString(undefined, { dateStyle: "full", timeStyle: "short" })}>
+      {said}
+    </time>
+  );
 }
 
 /** The short form of a commit, with the whole of it on hover. */

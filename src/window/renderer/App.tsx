@@ -21,6 +21,7 @@ import type { Shown } from "./Activity.tsx";
 import { AgentPicker, AgentsPart, FIELD, ownAgent } from "./Agents.tsx";
 import { Composer } from "./Composer.tsx";
 import { JoinChannel, PickRepo, Search } from "./dialogs.tsx";
+import { MyAgents } from "./MyAgents.tsx";
 import { runSetupCheck, SetupPage } from "./SetupPage.tsx";
 import { Sidebar } from "./Sidebar.tsx";
 import { Thread } from "./Thread.tsx";
@@ -116,7 +117,15 @@ function linkLine(link: ChatView["link"]): string {
   }
 }
 
-function Chat({ view, act, tell, onSetup }: { readonly view: ChatView; readonly act: Act; readonly tell: (notice: Notice) => void; readonly onSetup: () => void }): JSX.Element {
+interface ChatProps {
+  readonly view: ChatView;
+  readonly act: Act;
+  readonly tell: (notice: Notice) => void;
+  readonly onSetup: () => void;
+  readonly onAgents: () => void; // Open the My agents page.
+}
+
+function Chat({ view, act, tell, onSetup, onAgents }: ChatProps): JSX.Element {
   const [dialog, setDialog] = useState<"" | "join" | "pin" | "search">("");
   const [sidebar, setSidebar] = useState(true);
   const [shown, setShown] = useState<Shown | null>(null); // The run the activity panel was opened on; its panel shows while its chat is open and holds something of it.
@@ -205,6 +214,10 @@ function Chat({ view, act, tell, onSetup }: { readonly view: ChatView; readonly 
             </span>
             <span className={cn("max-w-1/2 flex-none truncate", view.link.state === "down" && "text-destructive")}>
               {linkLine(view.link)} ·{" "}
+              <Button type="button" variant="link" size="xs" className="h-auto p-0" onClick={onAgents}>
+                My agents
+              </Button>{" "}
+              ·{" "}
               <Button type="button" variant="link" size="xs" className="h-auto p-0" onClick={onSetup}>
                 Setup
               </Button>
@@ -267,6 +280,7 @@ function Chat({ view, act, tell, onSetup }: { readonly view: ChatView; readonly 
 export function App(): JSX.Element {
   const [view, setView] = useState<View | null>(null);
   const [setup, setSetup] = useState<{ readonly initial: readonly Check[] | null } | null>(null); // The setup page while it is open, with the list it opened on if there was one.
+  const [agents, setAgents] = useState(false); // Whether the My agents page is open.
   const checkedAtLaunch = useRef(false);
   const up = view !== null && view.kind !== "stopped";
 
@@ -331,6 +345,16 @@ export function App(): JSX.Element {
     );
   } else if (view?.kind === "setup") {
     page = <Setup presets={view.presets} tell={tell} />;
+  } else if (view?.kind === "chat" && agents) {
+    page = (
+      <MyAgents
+        view={view}
+        act={act}
+        onClose={() => {
+          setAgents(false);
+        }}
+      />
+    );
   } else if (view?.kind === "chat") {
     page = (
       <Chat
@@ -339,6 +363,9 @@ export function App(): JSX.Element {
         tell={tell}
         onSetup={() => {
           setSetup({ initial: null });
+        }}
+        onAgents={() => {
+          setAgents(true);
         }}
       />
     );

@@ -190,6 +190,7 @@ export const viewSchema = z.discriminatedUnion("kind", [
       unread: z.int(),
       team: z.array(teamRepoSchema).readonly(),
       myRepos: z.array(z.string()).readonly(),
+      checkouts: z.array(z.strictObject({ repo: z.string(), branch: z.string() }).readonly()).readonly(), // The user's agents: their checkout of each team repo, with the branch it is on.
       grants: z.array(grantSchema).readonly(), // The user's grants that stand, first made first.
       otherChannels: z.array(z.strictObject({ name: z.string(), members: z.array(z.string()).readonly() }).readonly()).readonly(), // Channels the user could join.
       busy: z.strictObject({ working: z.int(), unsent: z.int() }).readonly(), // What quitting now would lose: agents at work and drafts not sent. Here so the window can warn without asking first.

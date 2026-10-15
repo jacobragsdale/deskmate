@@ -212,7 +212,7 @@ async function addAgent(page: Page, program: string, args: readonly string[]): P
 }
 
 await test(
-  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, keeps a card in reach in a closed thread and brings one far above the end into view, refuses and allows for the run from a card, and offers only the modes the agent that answers can keep, full alone beside its reason when that is all, and a full chosen once not again in one click when less is there",
+  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, keeps a card in reach in a closed thread and brings one far above the end into view, refuses and allows for the run from a card, and offers only the modes the agent that answers can keep, full alone beside its reason when that is all, and a full chosen once not again in one click when less is there; and on My agents makes a grant from its dialog, which asks a second yes for full access posted directly for anyone, counts the run it lets go and revokes it",
   { skip: NO_DISPLAY ? "no display: run it under xvfb-run" : false, timeout: 120_000 },
   async (t) => {
     assert.ok(existsSync(join(ROOT, "dist", "main.js")), "dist/ is not built: run `npm run build` first");
@@ -751,6 +751,56 @@ await test(
     assert.equal(await page.eval(described), "Permissions not tested — Setup → Test permissions.");
     await page.shot("untested");
     await page.press("Escape");
+
+    // My agents, with the scripted agent answering again: a row for her billing agent, on its branch, and who answers for it. From its dialog, which offers the modes that agent can keep, she
+    // grants carol read-only, posted directly, twice a day; full access posted directly for anyone would have asked a second yes first. Carol's next request runs with nobody touching
+    // the window, and the grant counts it.
+    await chooseAgent(process.execPath);
+    await page.click("footer button", "My agents");
+    const billing = `document.querySelector('li[data-repo="billing"]')`;
+    await page.until("her billing agent", `${billing}?.innerText.includes(${JSON.stringify(`on main · ${process.execPath} answers`)}) === true && ${billing}.innerText.includes("No grants")`);
+    await page.eval(`[...${billing}.querySelectorAll("button")].find((each) => each.textContent === "New grant").click()`);
+    const form = `document.querySelector('[role="dialog"] form')`;
+    await page.until("the grant's dialog", `${form} !== null`);
+    assert.deepEqual(await page.eval(`[...${form}.querySelector('select[name="mode"]').options].map((each) => each.value)`), ["read-only", "supervised", "auto-edits", "full"]);
+    const choose = async (name: string, value: string): Promise<void> => {
+      await page.eval(
+        `(() => { const select = ${form}.querySelector('select[name="${name}"]'); select.value = ${JSON.stringify(value)}; select.dispatchEvent(new Event("change", { bubbles: true })); })()`
+      );
+      await page.until(`${name} chosen`, `${form}.querySelector('select[name="${name}"]').value === ${JSON.stringify(value)}`);
+    };
+    // Kept for her review unless she says otherwise; posted directly, the dialog warns her what the agent can read.
+    const unread = `${form}.innerText.includes("The answer goes to them unread.")`;
+    assert.deepEqual([await page.eval(`${form}.querySelector('select[name="delivery"]').value`), await page.eval(unread)], ["review", false]);
+    await choose("asker", "*");
+    await choose("mode", "full");
+    await choose("delivery", "post");
+    await page.until("the warning", unread);
+    await page.click('[role="dialog"] button[type="submit"]');
+    await page.until("the second yes", `document.querySelector('[role="dialog"]')?.innerText.includes("Let anyone run your billing agent with full access?") === true`);
+    await page.shot("grant-everyone");
+    await page.click('[role="dialog"] button', "Back");
+    await page.until("the grant's dialog again", `${form}?.querySelector('select[name="mode"]').value === "full"`);
+    await choose("asker", "carol");
+    await choose("mode", "read-only");
+    await page.type(`[role="dialog"] input[name="runs"]`, "2");
+    await page.shot("grant");
+    await page.click('[role="dialog"] button[type="submit"]');
+    const granted = `document.querySelector('li[data-grant]')`;
+    await page.until("the grant listed", `document.querySelector('[role="dialog"]') === null && ${granted}?.innerText.includes("carol · read-only · posted directly · until ") === true`);
+    assert.match(String(await page.eval(`${granted}.innerText`)), / · 0 of 2 runs today/);
+    await page.shot("my-agents");
+    await page.click("button", "Back");
+    await carol.publish("alice", "message", { text: "@alice/billing read it under the grant", via: "cli" });
+    await page.until("carol's request answered", `[...document.querySelectorAll("main article")].some((each) => each.innerText.includes("carol: @alice/billing read it under the grant"))`);
+    assert.equal(await acceptedAt(carol, "alice"), "read-only");
+    await page.click("footer button", "My agents");
+    await page.until("the run counted", `${granted}?.innerText.includes(" · 1 of 2 runs today") === true`);
+
+    // Revoked, it is gone.
+    await page.eval(`[...${granted}.querySelectorAll("button")].find((each) => each.textContent === "Revoke").click()`);
+    await page.until("the grant gone", `${granted} === null && ${billing}.innerText.includes("No grants")`);
+    await page.click("button", "Back");
 
     assert.deepEqual(page.problems, []);
   }

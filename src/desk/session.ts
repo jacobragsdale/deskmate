@@ -426,6 +426,7 @@ export class Session {
       unread: rows.reduce((sum, row) => sum + row.unread, 0),
       team: this.team,
       myRepos: [...this.checkouts.keys()],
+      checkouts: [...this.checkouts.values()].map((checkout) => ({ repo: checkout.remote.name, branch: checkout.branch })),
       grants: this.myGrants(now),
       otherChannels: this.channels.filter((channel) => !channel.members.includes(this.me)).map((channel) => ({ name: channel.name, members: channel.members })),
       busy: { working: this.runs.size, unsent: [...this.drafts.values()].reduce((sum, drafts) => sum + drafts.length, 0) },

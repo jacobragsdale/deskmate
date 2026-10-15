@@ -16,7 +16,7 @@ const CHOICE = "h-auto w-full justify-start px-2 py-1 font-normal"; // One of th
 const PAUSE = 250; // Milliseconds without typing before the words are searched for.
 
 /** A modal dialog, open for as long as it is drawn, that reports "" when it is dismissed with Esc, its close button or a click outside it. */
-function Modal({ title, onDismiss, className, children }: { readonly title: string; readonly onDismiss: () => void; readonly className?: string; readonly children: ReactNode }): JSX.Element {
+export function Modal({ title, onDismiss, className, children }: { readonly title: string; readonly onDismiss: () => void; readonly className?: string; readonly children: ReactNode }): JSX.Element {
   return (
     <Dialog
       open
