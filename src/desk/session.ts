@@ -13,6 +13,7 @@ import type {
   ActivityItem,
   Arrival,
   AskView,
+  Build,
   ChatView,
   Check,
   Command,
@@ -82,6 +83,7 @@ const EVERYONE = 200; // Events to everyone read at a time when the desk starts:
 const PULL_KEPT = 60;
 const PULLS = 100;
 const PULLS_EACH = 5;
+const ROOM_EVERY = 60; // Seconds between looks at the open branch room's pull request and build on Azure DevOps, while the user looks at the window.
 
 /**
  * How the user last ran a request: at which mode, whether its answer was posted without a review, and the agent that answered, by its id and command line.
@@ -124,6 +126,18 @@ export interface Options {
   readonly heartbeat?: number; // Seconds after which an unchanged job.progress is sent again; a test shortens it.
   readonly limit?: number; // Seconds of its own a run over ACP may take; a test shortens it.
   readonly rootTime?: number; // Seconds after its owner let it go that a run let ask other agents on a person's request is stopped, with everything under it; a test shortens it.
+  readonly rooms?: number; // Seconds between looks at the open branch room's pull request and build; a test shortens it.
+}
+
+/** The open branch room whose repo is on Azure DevOps, and what was last found there of its branch: see `watchRoom`. */
+interface Watched {
+  readonly id: string; // The chat, the repo's key and the branch together: another of any of them is another room.
+  readonly repo: RepoRef;
+  readonly branch: string;
+  readonly at: number; // When it was last looked at, Unix milliseconds; 0 before it has been.
+  readonly looking: boolean; // While it is being looked at.
+  readonly found: NonNullable<CurrentView["pinned"]>["azure"];
+  readonly build: Build | null | undefined; // Its latest build as last found, null for none; undefined before one was found.
 }
 
 /** An agent's answer waiting for its owner to review, edit and send. */
@@ -277,6 +291,7 @@ export class Session {
   private readonly heartbeat: number;
   private readonly limit: number;
   private readonly rootTime: number;
+  private readonly roomEvery: number;
   private readonly me: string;
   private readonly chats: ChatLog;
   private readonly stopping = new AbortController();
@@ -292,6 +307,8 @@ export class Session {
   private readonly linked = new Map<string, NoteView | null>(); // Notes linked to that are not loaded here, as the hub answered for each; null while it is being asked.
   private readonly azure: Azure; // Every call to Azure DevOps, with the user's own token.
   private readonly pulls = new Map<string, { readonly at: number; readonly found: PullRequest | null }>(); // Pull requests referred to, by repo key and id, as Azure DevOps answered when, Unix milliseconds.
+  private watched: Watched | null = null; // The open branch room on Azure DevOps.
+  private roomTimer: NodeJS.Timeout | undefined; // Until it is next looked at, while the user looks at the window.
   private lastChat: string | null; // The chat that was open when the session last ran.
   private people: readonly Person[] = [];
   private channels: readonly ChannelInfo[] = [];
@@ -331,6 +348,7 @@ export class Session {
     this.heartbeat = options.heartbeat ?? HEARTBEAT;
     this.limit = options.limit ?? AGENT_TIMEOUT;
     this.rootTime = options.rootTime ?? ROOT_TIME;
+    this.roomEvery = options.rooms ?? ROOM_EVERY;
     this.me = client.config.name;
     this.chats = new ChatLog(this.me);
     const saved = this.loadSaved();
@@ -352,6 +370,7 @@ export class Session {
    */
   public async stop(): Promise<void> {
     this.stopping.abort();
+    clearTimeout(this.roomTimer);
     const runs = [...this.runs.values()];
     for (const run of runs) {
       run.cancel.abort();
@@ -369,6 +388,7 @@ export class Session {
   /** Say whether the user is looking at the window. Coming back marks the open chat read, with a line where they left off. */
   public attend(attentive: boolean): void {
     this.attentive = attentive;
+    this.watchRoom();
     const mark = this.read[this.current] ?? 0;
     if (attentive && this.current !== "" && this.chats.unread(this.current, mark) > 0) {
       this.newAfter = mark;
@@ -576,6 +596,7 @@ export class Session {
   }
 
   private currentView(now: number): CurrentView {
+    const azure = this.watchRoom();
     const chat = this.current;
     const info = this.channels.find((channel) => channel.name === chat);
     const members = info?.members ?? [];
@@ -597,7 +618,8 @@ export class Session {
               mine: this.checkouts.has(pinned.name),
               branch,
               on: branch === null ? [] : copies.filter((copy) => copy.branch === branch).map((copy) => copy.user),
-              elsewhere: branch === null ? [] : elsewhere.map((copy) => ({ who: copy.user, branch: copy.branch }))
+              elsewhere: branch === null ? [] : elsewhere.map((copy) => ({ who: copy.user, branch: copy.branch })),
+              azure
             },
       newAfter: this.newAfter,
       messages: this.messages(chat, now),
@@ -796,6 +818,74 @@ export class Session {
       () => undefined // It answers with a problem rather than failing.
     );
     return kept?.found ?? null;
+  }
+
+  /**
+   * Keep an eye on the open chat when it is a room about a branch of a repo on Azure DevOps: look at its pull request and build at once, and again every ROOM_EVERY seconds while it stays
+   * open and the user is looking at the window. Leaving it, or looking away, stops that; coming back looks again once ROOM_EVERY seconds have passed since it last looked.
+   */
+  private watchRoom(): Watched["found"] {
+    const open = this.openRoom();
+    if (open?.id !== this.watched?.id) {
+      clearTimeout(this.roomTimer);
+      this.roomTimer = undefined;
+      this.watched = open;
+    }
+    const watched = this.watched;
+    if (watched === null || !this.attentive || this.stopping.signal.aborted) {
+      clearTimeout(this.roomTimer);
+      this.roomTimer = undefined;
+    } else if (this.roomTimer === undefined && !watched.looking) {
+      this.roomTimer = setTimeout(
+        () => {
+          this.roomTimer = undefined;
+          this.lookAtRoom(watched.id).catch((error: unknown) => {
+            this.lookedAt(watched.id, { ok: false, problem: problemOf(error) }, undefined);
+          });
+        },
+        Math.max(0, watched.at + this.roomEvery * 1000 - Date.now())
+      );
+    }
+    return watched?.found ?? null;
+  }
+
+  /** The open chat as a room about a branch of a repo on Azure DevOps, not looked at yet; null when it is not one. */
+  private openRoom(): Watched | null {
+    const info = this.channels.find((channel) => channel.name === this.current);
+    const repo = info === undefined || info.repo === null ? null : onAzure(info.repo.key);
+    const branch = info?.branch ?? null;
+    return repo === null || branch === null ? null : { id: JSON.stringify([this.current, repo.key, branch]), repo, branch, at: 0, looking: false, found: null, build: undefined };
+  }
+
+  /** Ask Azure DevOps for the pull requests from the branch of the room `id`, while it is the one open, and the branch's latest build. */
+  private async lookAtRoom(id: string): Promise<void> {
+    const room = this.watched;
+    if (room?.id !== id) {
+      return;
+    }
+    this.watched = { ...room, at: Date.now(), looking: true };
+    const pulls = await this.azure.pullRequestsFor(room.repo, room.branch);
+    const build = pulls.ok ? await this.azure.latestBuild(room.repo, room.branch) : pulls;
+    let found: NonNullable<Watched["found"]>;
+    if (!pulls.ok) {
+      found = pulls;
+    } else if (!build.ok) {
+      found = build;
+    } else {
+      const from = pulls.data.filter((pull) => pull.source === room.branch); // Asked for by its branch: one from any other that a list holds is not believed.
+      found = { ok: true, pull: from.find((pull) => pull.status === "active") ?? from[0] ?? null, build: build.data };
+    }
+    this.lookedAt(id, found, build.ok ? build.data : undefined);
+  }
+
+  /** Keep what was found of the room `id`, and its latest build when that was found, while it is the one open; and look at it again in time. */
+  private lookedAt(id: string, found: NonNullable<Watched["found"]>, build: Build | null | undefined): void {
+    const room = this.watched;
+    if (room?.id === id) {
+      this.watched = { ...room, looking: false, found, build: build === undefined ? room.build : build };
+    }
+    this.hooks.changed();
+    this.watchRoom();
   }
 
   /** Someone joined, left, pinned or unpinned in the open chat, in order. */

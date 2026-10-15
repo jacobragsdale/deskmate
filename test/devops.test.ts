@@ -145,3 +145,54 @@ await test("no more than a hundred answers are kept fresh at once, and while the
   await delay(300);
   assert.equal(asked(calls).length, 100);
 });
+
+await test("a branch room on Azure DevOps shows its branch's pull request, an active one first, and its latest build, looked at again while it is open and the user looks, and not otherwise", async (t) => {
+  const { calls } = await azure(t);
+  const hub = await startHub(t, () => Date.now() / 1000);
+  const [bob, jacob] = [await hub.join("bob"), await hub.join("jacob")];
+  for (const chat of ["#room", "#whole", "#odd"]) {
+    for (const person of [bob, jacob]) {
+      await person.publish(chat, "channel.join", {});
+    }
+  }
+  await bob.publish("#room", "channel.pin", { repo: UPLOADER, branch: "npaulk/my_work" });
+  await bob.publish("#whole", "channel.pin", { repo: UPLOADER, branch: null });
+  await bob.publish("#odd", "channel.pin", { repo: UPLOADER, branch: "x&$top=500#y" });
+  const { session } = await deskOf(t, jacob, join(hub.dir, "dev-jacob"), "#room", { rooms: 0.2 });
+  const found = await until("the pull request and the build", () => session.view().current?.pinned?.azure ?? undefined);
+  assert.ok(found.ok);
+  assert.deepEqual(
+    [found.pull?.id, found.pull?.status, found.pull?.web, found.build],
+    [
+      22,
+      "active",
+      "https://dev.azure.com/acme/platform/_git/uploader/pullrequest/22",
+      { id: 391, name: "AnotherRepository-CI", status: "completed", result: "failed", web: "https://dev.azure.com/acme/platform/_build/results?buildId=391" }
+    ]
+  ); // Pull request 20, from the same branch, is completed.
+
+  // Looked at again while it is open and the user looks; not while they look away, and again once they are back.
+  const builds = (): number => calls.filter((call) => call.path.endsWith("/build/builds")).length;
+  await until("looked at again", () => builds() >= 3);
+  session.attend(false);
+  await delay(300); // For a look under way to end.
+  const away = builds();
+  await delay(600);
+  assert.equal(builds(), away);
+  session.attend(true);
+  await until("looked at once the user is back", () => builds() > away);
+
+  // Not in a room about the whole repo.
+  await session.handle({ do: "open", chat: "#whole" });
+  await delay(300);
+  const left = builds();
+  await delay(600);
+  assert.deepEqual([builds(), session.view().current?.pinned?.azure], [left, null]);
+
+  // A branch goes to Azure DevOps as one value of the query, whatever it holds; and with no pull request from it, there is none.
+  await session.handle({ do: "open", chat: "#odd" });
+  const odd = await until("the odd branch's room", () => (session.view().current?.pinned?.azure?.ok === true ? session.view().current?.pinned?.azure : undefined));
+  assert.equal(odd?.ok === true ? odd.pull : undefined, null);
+  const asked = calls.findLast((call) => call.path.endsWith("/pullrequests"));
+  assert.deepEqual([asked?.query.get("searchCriteria.sourceRefName"), asked?.query.get("$top")], ["refs/heads/x&$top=500#y", "5"]);
+});

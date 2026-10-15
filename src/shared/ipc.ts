@@ -100,6 +100,9 @@ const pullRequestSchema = z
   })
   .readonly();
 
+/** A build on Azure DevOps: its pipeline's name, its status, its result once it has one, null while it runs, as Azure gives them, and its address in the browser. */
+const buildSchema = z.strictObject({ id: z.int(), name: z.string(), status: z.string(), result: z.string().nullable(), web: z.string() }).readonly();
+
 /** What a message and a reply both show. */
 const said = {
   id: z.string(), // The event's id: what a command about it names.
@@ -213,7 +216,15 @@ const currentSchema = z
         mine: z.boolean(),
         branch: z.string().nullable(),
         on: z.array(z.string()).readonly(),
-        elsewhere: z.array(z.strictObject({ who: z.string(), branch: z.string() }).readonly()).readonly()
+        elsewhere: z.array(z.strictObject({ who: z.string(), branch: z.string() }).readonly()).readonly(),
+        // In a branch room whose repo is on Azure DevOps, the branch's pull request, an active one first, null for none, and its latest build, null for none, as the desk last
+        // looked them up, or the problem that kept it from them; null before it first has, and in any other room.
+        azure: z
+          .discriminatedUnion("ok", [
+            z.strictObject({ ok: z.literal(true), pull: pullRequestSchema.nullable(), build: buildSchema.nullable() }).readonly(),
+            z.strictObject({ ok: z.literal(false), problem: z.string() }).readonly()
+          ])
+          .nullable()
       })
       .nullable(),
     newAfter: z.int().nullable(), // Messages after this seq arrived while the user was elsewhere.
@@ -422,6 +433,7 @@ export type MessageView = z.infer<typeof messageSchema>;
 export type ReplyView = z.infer<typeof replySchema>;
 export type PatchView = z.infer<typeof patchSchema>;
 export type PullRequest = z.infer<typeof pullRequestSchema>;
+export type Build = z.infer<typeof buildSchema>;
 export type LineView = z.infer<typeof lineSchema>;
 export type RowView = z.infer<typeof rowSchema>;
 export type CurrentView = z.infer<typeof currentSchema>;

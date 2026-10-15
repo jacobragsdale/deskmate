@@ -1,5 +1,5 @@
 /**
- * Azure DevOps pull requests and builds as a chat shows them: the references to a pull request in a message's text, the words for its votes and a build's result, a repo on Azure
+ * Azure DevOps pull requests and builds as a chat shows them: the references to a pull request in a message's text, the words for its votes and a build's state, a repo on Azure
  * DevOps by its key alone, and which web addresses the window opens. No IO.
  */
 
@@ -64,6 +64,11 @@ export function votes(reviewers: readonly { readonly vote: number }[]): string {
   const known = VOTES.flatMap(([vote, words]) => (counts.has(vote) ? [`${String(counts.get(vote))} ${words}`] : []));
   const other = [...counts].filter(([vote]) => !VOTES.some(([each]) => each === vote)).map(([vote, count]) => `${String(count)} voted ${String(vote)}`);
   return [...known, ...other].join(", ");
+}
+
+/** A build in words: its pipeline's name, then its result, or while it has none its status, as Azure gives either, "inProgress" read as "in progress". */
+export function buildWords(build: { readonly name: string; readonly status: string; readonly result: string | null }): string {
+  return `${build.name}: ${(build.result ?? build.status).replace(/[A-Z]/g, (letter) => ` ${letter.toLowerCase()}`)}`;
 }
 
 /** A web address from Azure DevOps that the window may open: https on dev.azure.com and nowhere else, with nobody's name in it; null for any other. */

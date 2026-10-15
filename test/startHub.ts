@@ -76,6 +76,7 @@ export function ownHome(): string {
   process.env["HOME"] = home;
   process.env["GIT_CONFIG_GLOBAL"] = config;
   process.env["GIT_CONFIG_NOSYSTEM"] = "1";
+  Reflect.deleteProperty(process.env, "AZURE_DEVOPS_EXT_PAT"); // A token of the user's own, which a room on Azure DevOps would take to the real one.
   process.once("exit", () => {
     rmSync(home, { recursive: true, force: true });
   });

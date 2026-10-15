@@ -11,6 +11,7 @@ import type { ChatView, CurrentView, LineView, MessageView } from "../../shared/
 import type { Act } from "./App.tsx";
 import { Message } from "./Message.tsx";
 import type { Runs } from "./Message.tsx";
+import { RoomLine } from "./Pulls.tsx";
 
 const NEAR_BOTTOM = 80; // Pixels from the end within which new messages keep the view pinned to the end.
 const NEAR_TOP = 40; // Pixels from the top within which scrolling loads the page before what is shown.
@@ -200,6 +201,7 @@ export function Thread({
         )}
       </header>
       {pinned !== null && <OnBranch pinned={pinned} />}
+      {pinned !== null && <RoomLine azure={pinned.azure} />}
       {pinned !== null && !pinned.mine && view.loaded && (
         <p className="border-b px-4 py-1.5 text-warn">
           ◆ This channel is about {pinned.name}, which you have no checkout of ·{" "}

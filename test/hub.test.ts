@@ -246,11 +246,11 @@ async function branchRooms(jacob: Person, bob: Person, hub: string, people: Pers
   );
   assert.deepEqual(jacob.notices.at(-1), { title: "", body: "#uploader-feature-retry was started for uploader on feature/retry already: it is open, and you are in it.", severity: "info" });
   // The room says who is on its branch: both, and once bob is back on main, jacob, with bob elsewhere.
-  const pinned = { name: "uploader", have: 2, mine: true, branch: "feature/retry" };
-  assert.deepEqual(jacob.session.view().current?.pinned, { ...pinned, on: ["bob", "jacob"], elsewhere: [] });
+  const pinned = { name: "uploader", have: 2, mine: true, branch: "feature/retry", azure: null }; // What Azure DevOps says of the room is not this test's: devops.test.ts holds it.
+  assert.deepEqual({ ...jacob.session.view().current?.pinned, azure: null }, { ...pinned, on: ["bob", "jacob"], elsewhere: [] });
   execFileSync("git", ["-C", uploaderOf("bob"), "checkout", "-q", "main"]);
   const moved = await until(jacob.session, "bob elsewhere", (view) => view.current?.pinned?.elsewhere.length === 1 && view.current.pinned);
-  assert.deepEqual(moved, { ...pinned, on: ["jacob"], elsewhere: [{ who: "bob", branch: "main" }] });
+  assert.deepEqual({ ...moved, azure: null }, { ...pinned, on: ["jacob"], elsewhere: [{ who: "bob", branch: "main" }] });
 }
 
 /** The hub in this process, or the one PLAYER_TWO_TEST_HUB names: a container from the image, say, started with TOKEN as its join token and PLAYER_TWO_REPOS=https://dev.azure.com/acme/. */
@@ -458,7 +458,7 @@ await test("two people, their agents and a channel, through the real hub", { tim
   await until(bob.session, "bob can join it", (view) => view.otherChannels.some((channel) => channel.name === "#backend"));
   await bob.session.handle({ do: "joinChannel", name: "#backend" });
   const channel = await until(bob.session, "bob is in the channel with its earlier message", (view) => (view.current?.chat === "#backend" && messages(view).length === 1 ? view.current : undefined));
-  assert.deepEqual([channel.members, channel.joined, channel.pinned], [["bob", "jacob"], true, { name: "uploader", have: 2, mine: true, branch: null, on: [], elsewhere: [] }]);
+  assert.deepEqual([channel.members, channel.joined, channel.pinned], [["bob", "jacob"], true, { name: "uploader", have: 2, mine: true, branch: null, on: [], elsewhere: [], azure: null }]);
   assert.deepEqual(
     channel.lines.map((line) => [line.who, line.did, line.repo]),
     [

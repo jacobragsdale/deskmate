@@ -12,7 +12,7 @@ import { z } from "zod";
 
 import { problemOf } from "../core/text.ts";
 import type { RepoRef } from "../core/wire.ts";
-import type { PullRequest } from "../shared/ipc.ts";
+import type { Build, PullRequest } from "../shared/ipc.ts";
 
 export const AZURE = "https://dev.azure.com";
 // For the window's smoke test alone, which has a fake Azure DevOps of its own: where Azure DevOps is, taken only when it names a port on this machine's loopback address, so that a
@@ -104,7 +104,6 @@ const failureSchema = z.object({ message: z.string() }); // What Azure DevOps an
 
 // Every web address is made from the repo's own and an id: Microsoft documents none for a pull request, and does not name the links a build carries.
 export type Repository = z.output<typeof repositorySchema> & { readonly web: string };
-export type Build = z.output<typeof buildListSchema>["value"][number] & { readonly web: string };
 
 /** What a new pull request is: from which branch into which, with what words, and whether it is a draft. */
 export interface NewPullRequest {
