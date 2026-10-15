@@ -125,7 +125,7 @@ The hub gives each stored event a sequence number, `seq`, and a chain value: `ch
 
 A job is one agent asked to do one thing. Its identity is the request's event id plus the agent, `owner/repo`. The request is a `message` whose text tags the agent, or from phase 5 a `job.request`.
 
-Only the agent's owner (from phase 4, or the agent itself) moves a job forward; the same event from anyone else is ignored. `src/core/chat.ts` folds a job's events into one state:
+Only the agent's owner (from phase 4, or the agent itself, with a report of its own run about its own repo, which counts exactly as its owner's would) moves a job forward; the same event from anyone else is ignored, and anything else from an agent counts for nothing. `src/core/chat.ts` folds a job's events into one state:
 
 ```text
 waiting ──accepted──► working ──result──► answered
@@ -229,7 +229,7 @@ Inside WSL (or the home folder on Linux and macOS):
 |---|---|
 | `~/.config/player-two/config.json` | Hub address, name, agents. |
 | `~/.config/player-two/key` | The person's private key. Mode `0600`. |
-| `~/.config/player-two/known.json` | The key first seen for each teammate and agent. |
+| `~/.config/player-two/known.json` | The key first seen for each teammate. An agent's key is not kept here: it is learned from its owner's registrations, which that pinned key vouches for, each time a client starts. |
 | `~/.config/player-two/app-state.json` | Read marks, last open chat, and the mode and delivery each asker's requests of each repo were last run at, with the agent that ran them (phase 3). Safe to delete. |
 | `~/.config/player-two/agent-permissions.json` | Phase 3. How each agent over ACP did in the permission test, by its command line, with its version. Deleting it makes every agent untested again. |
 | `~/.config/player-two/agents/<repo>.key` | Phase 4. One key per checkout's agent. Mode `0600`. |

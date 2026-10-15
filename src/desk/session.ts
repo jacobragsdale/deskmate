@@ -30,7 +30,7 @@ import * as repos from "./repos.ts";
 import type { Checkout, Head } from "./repos.ts";
 import { cloneFolder } from "../core/remotes.ts";
 import { oneLine, problemOf } from "../core/text.ts";
-import { commandLineOf, defaultAgentOf, fitText, isChannel, MODES, nameSchema, permissionModeSchema, PROTOCOL } from "../core/wire.ts";
+import { commandLineOf, defaultAgentOf, fitText, isChannel, MODES, nameSchema, ownerOf, permissionModeSchema, PROTOCOL } from "../core/wire.ts";
 import type { Agent, ChannelInfo, Delivered, PermissionMode, Person, RepoRef, TeamRepo } from "../core/wire.ts";
 
 const PRESENCE = 25; // Seconds between asking the hub who is here, which channels there are and who has which repo. Each is a signed request, which is what says the user is here; the repo scan runs on the same beat.
@@ -455,7 +455,7 @@ export class Session {
         continue;
       }
       const { seq, event } = item.kind === "message" ? item.message.entry : item.entry;
-      const firstNew: boolean = !marked && this.newAfter !== null && seq > this.newAfter && event.author !== this.me;
+      const firstNew: boolean = !marked && this.newAfter !== null && seq > this.newAfter && ownerOf(event.author) !== this.me;
       marked ||= firstNew;
       if (firstNew || (previous !== null && dayOf(previous.entry.event.ts) !== dayOf(event.ts))) {
         previous = null; // The first message of a day, and the first after the "new" line, says who wrote it.
@@ -483,7 +483,7 @@ export class Session {
     return {
       id: event.id,
       seq,
-      sender: event.author,
+      sender: ownerOf(event.author), // An agent's answer under its owner's name, as it was before agents signed their own: `agent` says it is the agent's.
       agent: message.agent,
       branch: accepted === null ? message.branch : ranOn(accepted),
       commit: accepted?.commit ?? "",
@@ -525,7 +525,7 @@ export class Session {
     return [...new Set(notesIn(text).flatMap((piece) => piece.note ?? []))].flatMap((id): NoteView[] => {
       const loaded = this.chats.message(id);
       if (loaded !== null) {
-        return [{ state: "seen", id, author: loaded.entry.event.author, words: loaded.deleted ? "message deleted" : oneLine(loaded.text) }];
+        return [{ state: "seen", id, author: ownerOf(loaded.entry.event.author), words: loaded.deleted ? "message deleted" : oneLine(loaded.text) }];
       }
       if (!this.linked.has(id)) {
         this.linked.set(id, null);
@@ -544,8 +544,8 @@ export class Session {
   private async lookUp(id: string): Promise<void> {
     try {
       const found = await this.client.event(id);
-      const trusted = found !== null && (await this.client.isTrusted(found.event));
-      this.linked.set(id, found !== null && trusted ? { state: "elsewhere", id, author: found.event.author, chat: chatOf(found.event, this.me) } : { state: "hidden", id });
+      const trusted = found !== null && (await this.client.isTrusted(found));
+      this.linked.set(id, found !== null && trusted ? { state: "elsewhere", id, author: ownerOf(found.event.author), chat: chatOf(found.event, this.me) } : { state: "hidden", id });
       this.hooks.changed();
     } catch {
       this.linked.delete(id);
@@ -560,7 +560,7 @@ export class Session {
   /** What an answer's run was let go ahead with: from the job it answers, when its request is loaded in the answer's own chat. */
   private acceptedFor(message: Message, now: number): Accepted | null {
     const request = this.chats.answered(message);
-    const job = request === null ? undefined : this.chats.requests(request, now).find((each) => each.owner === message.entry.event.author && each.repo === message.agent);
+    const job = request === null ? undefined : this.chats.requests(request, now).find((each) => each.owner === ownerOf(message.entry.event.author) && each.repo === message.agent);
     return job?.accepted ?? null;
   }
 
@@ -783,7 +783,7 @@ export class Session {
   private async trust(found: readonly Delivered[]): Promise<Entry[]> {
     const entries: Entry[] = [];
     for (const delivered of found) {
-      entries.push({ ...delivered, trusted: await this.client.isTrusted(delivered.event) });
+      entries.push({ ...delivered, trusted: await this.client.isTrusted(delivered) });
     }
     return entries;
   }
@@ -792,7 +792,7 @@ export class Session {
     const fresh = this.chats.add(entries);
     this.openFirst();
     if (announce) {
-      this.announce(fresh.filter((entry) => (entry.event.kind === "message" || entry.event.kind === "job.result") && entry.event.author !== this.me));
+      this.announce(fresh.filter((entry) => (entry.event.kind === "message" || entry.event.kind === "job.result") && ownerOf(entry.event.author) !== this.me));
     }
     this.markRead();
     this.hooks.changed();
@@ -815,7 +815,7 @@ export class Session {
       const text = textOf(entry);
       const tagged = entry.trusted && event.kind === "message" ? mentions(text).filter(([owner]) => owner === this.me) : [];
       const where = isChannel(event.to) ? ` in ${event.to}` : "";
-      const title = tagged[0] === undefined ? `${event.author}${where}` : `${event.author} tagged your ${tagged[0][1]} agent${where}`;
+      const title = tagged[0] === undefined ? `${ownerOf(event.author)}${where}` : `${event.author} tagged your ${tagged[0][1]} agent${where}`;
       this.hooks.arrived({
         chat: chatOf(event, this.me),
         title,
@@ -931,7 +931,7 @@ export class Session {
     if (this.chats.message(id) === null) {
       const found = await this.client.event(id);
       const chat = found === null ? "" : chatOf(found.event, this.me);
-      if (found !== null && this.rows().some((row) => row.chat === chat) && (await this.client.isTrusted(found.event))) {
+      if (found !== null && this.rows().some((row) => row.chat === chat) && (await this.client.isTrusted(found))) {
         await this.pageAround(chat, found.seq);
       }
     }
@@ -954,10 +954,10 @@ export class Session {
       throw error instanceof Refused && error.status === 422 ? new PlayerTwoError("a search holds 1 to 8 words, in at most 200 characters") : error;
     }
     const hits: Hit[] = [];
-    for (const { event, snippet } of found) {
+    for (const { seq, event, snippet } of found) {
       const said = readContent(event);
-      if (await this.client.isTrusted(event)) {
-        hits.push({ id: event.id, chat: chatOf(event, this.me), sender: event.author, agent: said.kind === "job.result" ? said.content.repo : null, snippet });
+      if (await this.client.isTrusted({ seq, event })) {
+        hits.push({ id: event.id, chat: chatOf(event, this.me), sender: ownerOf(event.author), agent: said.kind === "job.result" ? said.content.repo : null, snippet });
       }
     }
     return hits;

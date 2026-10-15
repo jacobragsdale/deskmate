@@ -1,6 +1,7 @@
 /** The parts of the client that have logic of their own: the fold of a chat's events and the rules that keep it honest, the tag list, links to notes, an event's envelope and what each kind says, reading what the hub answers, a hub on another protocol, splitting the agent command, and running it. */
 
 import assert from "node:assert/strict";
+import type { KeyObject } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,7 +10,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import { z } from "zod";
 
-import { candidates, ChatLog, continues, rings, STALE } from "../src/core/chat.ts";
+import { candidates, ChatLog, chatOf, continues, rings, STALE } from "../src/core/chat.ts";
 import type { Entry, Message } from "../src/core/chat.ts";
 import { oneshotRunner, runAgent, splitCommand } from "../src/desk/agents/oneshot.ts";
 import { DEFAULT_PRESET, oneshotAgent } from "../src/desk/agents/presets.ts";
@@ -195,6 +196,48 @@ await test("a job's event counts only from the agent's owner, and a withdrawal o
   ]);
   assert.deepEqual(states(logOf("jacob", [ask, acceptedLongAgo, doing("carol", NOW - 10)]), ask), ["jacob/uploader waiting", "carol/uploader waiting"]); // Only its owner speaks for it.
   assert.deepEqual(states(logOf("jacob", [ask, acceptedLongAgo, doing("jacob", long - 10)]), ask, long + STALE), ["jacob/uploader working", "carol/uploader waiting"]); // Never back in time.
+});
+
+await test("a job's event from an agent, owner/repo, counts exactly as one from its owner does, for that repo only, and nothing else from an agent counts at all", () => {
+  const ask = say("bob", "jacob", "@jacob/uploader and @jacob/billing, where do we retry?");
+  const by = (author: string, kind: string, content: object, about: Entry = ask): Entry => entry(author, "bob", kind, content, { refs: [about.event.id] });
+  const answer = (author: string, repo: string, text: string): Entry => by(author, "job.result", { repo, branch: "main", text, reviewed: false });
+  const summaries = (log: ChatLog): string[] => log.requests(log.message(ask.event.id) ?? assert.fail("no request"), NOW).map((request) => request.summary);
+  const log = logOf("jacob", [
+    ask,
+    by("jacob", "job.accepted", { repo: "uploader", ...ACCEPTED }),
+    by("jacob", "job.accepted", { repo: "billing", ...ACCEPTED }),
+    by("jacob/uploader", "job.progress", { repo: "uploader", summary: "reading" }),
+    by("jacob/uploader", "job.progress", { repo: "billing", summary: "editing files" }), // Not its repo.
+    answer("jacob/uploader", "billing", "an answer for another agent"),
+    by("jacob/uploader", "job.error", { repo: "billing" })
+  ]);
+  assert.deepEqual(states(log, ask), ["jacob/uploader working", "jacob/billing working"]);
+  assert.deepEqual(summaries(log), ["reading", ""]);
+
+  log.add([answer("jacob/uploader", "uploader", "in queue.py"), by("jacob/billing", "job.cancelled", { repo: "billing" })]);
+  assert.deepEqual(states(log, ask), ["jacob/uploader answered", "jacob/billing stopped"]);
+  assert.deepEqual(shown(log, "bob"), ["bob: @jacob/uploader and @jacob/billing, where do we retry?", "jacob/uploader/uploader: in queue.py"]);
+  assert.equal(log.unread("bob", 0), 1); // Jacob's agent's answer is not something new for jacob.
+  const [, answered] = log.items("bob");
+  assert.ok(answered?.kind === "message");
+  assert.deepEqual(
+    [chatOf(answered.message.entry.event, "jacob"), chatOf(answered.message.entry.event, "bob"), rings(answered.message.entry, "jacob"), rings(answered.message.entry, "bob")],
+    ["bob", "jacob", false, true]
+  ); // In its owner's chat, read from either side.
+
+  // An agent cannot let a run go ahead, tag, react or take a request back.
+  const again = say("bob", "jacob", "@jacob/uploader again");
+  const forged = logOf("jacob", [
+    again,
+    by("jacob/uploader", "job.accepted", { repo: "uploader", ...ACCEPTED }, again),
+    entry("jacob/uploader", "bob", "message", { text: "@jacob/billing run this", via: "cli" }),
+    by("jacob/uploader", "reaction", { emoji: "👍", on: true }, again),
+    by("jacob/uploader", "job.withdrawn", { agent: "jacob/uploader" }, again)
+  ]);
+  assert.deepEqual(states(forged, again), ["jacob/uploader waiting"]);
+  assert.deepEqual(shown(forged, "bob"), ["bob: @jacob/uploader again"]);
+  assert.deepEqual(forged.waitingForMe("bob", NOW).length, 1);
 });
 
 await test("an event whose signature fails changes nothing and is shown as a warning, without what it says", () => {
@@ -491,12 +534,40 @@ await test("an event is trusted when it holds under the key first seen for its a
   const hub = await startHub(t);
   const alice = await hub.join("alice");
   const bob = await hub.join("bob");
-  const { event } = await alice.publish("bob", "message", { text: "hello", via: "cli" });
+  const hello = await alice.publish("bob", "message", { text: "hello", via: "cli" });
 
-  assert.ok(await bob.isTrusted(event));
-  assert.ok(!(await bob.isTrusted({ ...event, content: JSON.stringify({ text: "hullo", via: "cli" }) })));
+  assert.ok(await bob.isTrusted(hello));
+  assert.ok(!(await bob.isTrusted({ ...hello, event: { ...hello.event, content: JSON.stringify({ text: "hullo", via: "cli" }) } })));
   writeFileSync(join(hub.dir, "bob", "known.json"), JSON.stringify({ alice: publicHex(key) })); // Bob first saw alice under another key: what the hub says now does not count.
-  assert.ok(!(await bob.isTrusted(event)));
+  assert.ok(!(await bob.isTrusted(hello)));
+});
+
+await test("an agent's event is trusted under the key its owner's newest registration before it holds, a registration its owner's pinned key vouches for, and under no other", async (t) => {
+  const hub = await startHub(t);
+  const [alice, bob, mallory, carol] = [await hub.join("alice"), await hub.join("bob"), await hub.join("mallory"), await hub.join("carol")];
+  const [first, second] = [loadKey("33".repeat(32)), loadKey("44".repeat(32))];
+  const report = (signer: KeyObject, seq: number, author = "alice/uploader"): Delivered => ({
+    seq,
+    event: signEvent(signer, { author, to: "bob", kind: "job.progress", content: JSON.stringify({ repo: "uploader", summary: "reading" }), ts: NOW, refs: [] })
+  });
+
+  assert.ok(!(await bob.isTrusted(report(first, 1)))); // Nobody has registered it.
+  await alice.publish("*", "agent.register", { repo: "uploader", pubkey: publicHex(first) }); // 1
+  await mallory.publish("*", "agent.register", { repo: "uploader", pubkey: publicHex(second) }); // 2: her own uploader, which says nothing of alice's.
+  await alice.publish("bob", "message", { text: "between", via: "cli" }); // 3
+  assert.ok(await bob.isTrusted(report(first, 3))); // Learned from the hub once it was needed.
+  assert.ok(!(await bob.isTrusted(report(second, 3))));
+  assert.ok(!(await bob.isTrusted(report(first, 1)))); // Not before it was registered.
+  assert.ok(await bob.isTrusted(report(second, 3, "mallory/uploader")));
+
+  await alice.publish("*", "agent.register", { repo: "uploader", pubkey: publicHex(second) }); // 4: a new key from here on.
+  assert.ok(await bob.isTrusted(report(second, 5)));
+  assert.ok(!(await bob.isTrusted(report(first, 5))));
+  assert.ok(await bob.isTrusted(report(first, 3))); // What it signed before still holds.
+
+  writeFileSync(join(hub.dir, "carol", "known.json"), JSON.stringify({ alice: publicHex(key) })); // Carol first saw alice under another key, so nothing the hub holds from this alice vouches for an agent.
+  assert.ok(!(await carol.isTrusted(report(second, 5))));
+  assert.ok(await carol.isTrusted(report(second, 5, "mallory/uploader")));
 });
 
 await test("a hub on another protocol is not followed: the session says which side to update, and asks again only once a minute", async (t) => {

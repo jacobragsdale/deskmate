@@ -15,7 +15,7 @@ import type { Entry, Message } from "../core/chat.ts";
 import { readContent } from "../core/kinds.ts";
 import { noteLink, noteOf } from "../core/links.ts";
 import { VERSION } from "../core/version.ts";
-import { addressSchema, channelSchema, fitText } from "../core/wire.ts";
+import { addressSchema, channelSchema, fitText, ownerOf } from "../core/wire.ts";
 import { PlayerTwoError } from "../desk/client.ts";
 import type { Client } from "../desk/client.ts";
 import { agentOf, ask, chatFrom, glance, readNote, trust } from "../desk/notes.ts";
@@ -73,7 +73,7 @@ function noted(entry: Entry, me: string, message: Message | null = null): Record
     link: noteLink(event.id),
     seq: entry.seq,
     chat: chatOf(event, me),
-    author: event.author,
+    author: event.author, // Who signed it: a person, or for an answer nobody reviewed, the agent itself, "owner/repo".
     agent: said.kind === "job.result" ? said.content.repo : null, // The repo of the agent whose answer it is; null for a message a person wrote.
     at: new Date(event.ts * 1000).toISOString(),
     trusted: entry.trusted,
@@ -256,7 +256,7 @@ export function createServer(client: Client, allowSend: boolean): McpServer {
       if (found === null || job === undefined) {
         throw new PlayerTwoError(`there is no request of ${agent.owner}/${agent.repo} with that id that you can see`);
       }
-      const answer = found.answers.findLast((each) => each.agent === agent.repo && each.entry.event.author === agent.owner);
+      const answer = found.answers.findLast((each) => each.agent === agent.repo && ownerOf(each.entry.event.author) === agent.owner);
       return data({ agent: `${agent.owner}/${agent.repo}`, state: job.state, answer: job.state === "answered" && answer !== undefined ? noted(answer.entry, me, answer) : null });
     }
   );

@@ -5,7 +5,7 @@
 
 import { ChatLog, chatOf } from "../core/chat.ts";
 import type { Entry, Message, Request, Row, State } from "../core/chat.ts";
-import { fitText, NAME, REPO_NAME } from "../core/wire.ts";
+import { fitText, NAME, ownerOf, REPO_NAME } from "../core/wire.ts";
 import type { Delivered } from "../core/wire.ts";
 import type { Client } from "./client.ts";
 
@@ -30,7 +30,7 @@ export function agentOf(given: string): Agent | null {
 export async function trust(client: Client, found: readonly Delivered[]): Promise<Entry[]> {
   const entries: Entry[] = [];
   for (const delivered of found) {
-    entries.push({ ...delivered, trusted: await client.isTrusted(delivered.event) });
+    entries.push({ ...delivered, trusted: await client.isTrusted(delivered) });
   }
   return entries;
 }
@@ -77,7 +77,7 @@ export async function readNote(client: Client, id: string): Promise<Note | null>
   log.add(entries);
   const message = log.message(id);
   return {
-    entry: entries.find((entry) => entry.event.id === id) ?? { ...found, trusted: await client.isTrusted(found.event) },
+    entry: entries.find((entry) => entry.event.id === id) ?? { ...found, trusted: await client.isTrusted(found) },
     chat,
     message,
     jobs: message === null ? [] : log.requests(message, client.now()),
@@ -138,6 +138,6 @@ export async function ask(client: Client, agent: Agent, chat: string, text: stri
   clearTimeout(timer);
   const state = where();
   // The answer that settled it: once a job is answered nothing moves it again, so it is the newest from the owner's agent to this request.
-  const answer = state === "answered" ? messagesIn(log, chat).findLast((each) => each.answers === sent.event.id && each.agent === repo && each.entry.event.author === owner) : undefined;
+  const answer = state === "answered" ? messagesIn(log, chat).findLast((each) => each.answers === sent.event.id && each.agent === repo && ownerOf(each.entry.event.author) === owner) : undefined;
   return { sent, state, answer: answer ?? null };
 }

@@ -20,6 +20,7 @@ import {
   HIT_CLOSE,
   HIT_OPEN,
   hubInfoSchema,
+  isAgent,
   personSchema,
   receiptSchema,
   repoSchema,
@@ -275,9 +276,28 @@ export class Client {
     return this.keyAt(agent, Infinity);
   }
 
-  /** Check an event against the key first seen for its author, so a hub that later swaps a key cannot forge one. */
-  public async isTrusted(event: Event): Promise<boolean> {
-    return this.pinned(event);
+  /**
+   * Whether an event, at its place in the log, holds under its author's key. A person's is the key first seen for them, so a hub that later swaps a key cannot forge one.
+   * An agent's is the one its owner's newest registration before the event holds, among those that hold under the owner's: an agent with none, or whose owner's key is not the one pinned, is not trusted.
+   * A registration is learned as it passes; one this client has not seen is asked of the hub before an agent's event is refused.
+   */
+  public async isTrusted({ seq, event }: Delivered): Promise<boolean> {
+    if (!isAgent(event.author)) {
+      const trusted = await this.pinned(event);
+      if (event.kind === "agent.register" && event.to === "*") {
+        this.registrations.set(event.id, { seq, event, trusted });
+      }
+      return trusted;
+    }
+    const holds = (): boolean => {
+      const pubkey = this.keyAt(event.author, seq);
+      return pubkey !== null && eventIsAuthentic(event, pubkey);
+    };
+    if (holds()) {
+      return true;
+    }
+    await this.learnRegistrations();
+    return holds();
   }
 
   /**
@@ -307,7 +327,7 @@ export class Client {
           break;
         }
       }
-      for (const delivered of found.filter((each) => each.event.kind === "agent.register")) {
+      for (const delivered of found.filter((each) => each.event.kind === "agent.register" && !isAgent(each.event.author))) {
         this.registrations.set(delivered.event.id, { ...delivered, trusted: await this.pinned(delivered.event) });
       }
       this.registeredTo = Math.max(this.registeredTo, found[0]?.seq ?? 0);

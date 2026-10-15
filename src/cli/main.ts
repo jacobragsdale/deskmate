@@ -11,7 +11,7 @@ import type { Entry, Message } from "../core/chat.ts";
 import { readContent } from "../core/kinds.ts";
 import { noteLink, noteOf } from "../core/links.ts";
 import { problemOf } from "../core/text.ts";
-import { channelSchema, commandLineOf, defaultAgentOf, fitText, isChannel } from "../core/wire.ts";
+import { channelSchema, commandLineOf, defaultAgentOf, fitText, isChannel, ownerOf } from "../core/wire.ts";
 import type { ChannelInfo, Delivered, Event } from "../core/wire.ts";
 import { DEFAULT_PRESET, oneshotAgent, PRESETS } from "../desk/agents/presets.ts";
 import { defaultDev, defaultHome, http, join, loadClient, PlayerTwoError } from "../desk/client.ts";
@@ -139,11 +139,12 @@ export function render(delivered: Delivered, trusted: boolean, cite: { readonly 
   const when = new Date(event.ts * 1000).toLocaleString("en-GB", { weekday: "short", hour: "2-digit", minute: "2-digit" }); // "Fri 14:05", in this machine's own time.
   const lines = (cite?.text ?? said?.text ?? `(${event.kind})`).split(/\r\n|\r|\n/).map((line) => `│ ${line}`);
   const agent = said?.agent ?? null;
+  const writer = ownerOf(event.author); // An agent's answer under its owner's name, as the window shows it.
   let where = isChannel(event.to) ? ` in ${event.to}` : "";
-  if (cite?.me === event.author && where === "") {
+  if (cite?.me === writer && where === "") {
     where = ` to ${event.to}`;
   }
-  return [`┌ ${String(seq)} · ${event.author}${agent === null ? "" : ` (${agent} agent)`}${where} · ${when}`, ...lines, cite === null ? "└" : `└ ${noteLink(event.id)}`].join("\n");
+  return [`┌ ${String(seq)} · ${writer}${agent === null ? "" : ` (${agent} agent)`}${where} · ${when}`, ...lines, cite === null ? "└" : `└ ${noteLink(event.id)}`].join("\n");
 }
 
 /** The setup check as aligned text: how each item stands, what was checked and what was found, and under one that is not right, the fix to copy. */
@@ -156,7 +157,7 @@ function layout(checks: readonly Check[]): string {
 function fromOthers(client: Client, found: readonly Delivered[]): Promise<Entry[]> {
   return trust(
     client,
-    found.filter((delivered) => delivered.event.author !== client.config.name && saying(delivered.event) !== null)
+    found.filter((delivered) => ownerOf(delivered.event.author) !== client.config.name && saying(delivered.event) !== null)
   );
 }
 
