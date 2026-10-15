@@ -121,7 +121,8 @@ export function ActivityPanel({ panel, act, onClose }: { readonly panel: Panel; 
   const scroller = useRef<HTMLDivElement>(null);
   const atEnd = useRef(true);
   const last = items.at(-1);
-  const step = `${run} ${String(items.length)} ${last?.status ?? ""} ${last?.outcome ?? ""} ${String(last?.detail.length ?? 0)} ${String(asks.length)}`; // Changes with each new item, as the newest grows, and with each ask.
+  // Changes with each new item, by its id since the count stays at 500 once the oldest are dropped, as the newest grows, and with each ask.
+  const step = `${run} ${String(items.length)} ${last?.id ?? ""} ${last?.status ?? ""} ${last?.outcome ?? ""} ${String(last?.detail.length ?? 0)} ${String(asks.length)}`;
   const [stalled, setStalled] = useState(""); // The step the run was at when it last went STALLED without a new one.
 
   useEffect(() => {
