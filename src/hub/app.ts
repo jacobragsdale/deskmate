@@ -260,27 +260,35 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     return isAgent(author) ? db.agentKeyOf(owner, author.slice(owner.length + 1)) : db.pubkeyOf(author);
   }
 
+  /** What an agent may send: its run's own reports, about its own repo, never an answer said to be reviewed, and requests of other agents as the last agent each came through. */
+  function mayAgentSend(event: Event): void {
+    const said = readContent(event);
+    const own = event.author.slice(ownerOf(event.author).length + 1);
+    if (!AGENT_KINDS.has(event.kind)) {
+      throw new Refusal(403, `agents cannot send ${event.kind}: only a person can`);
+    }
+    if (said.kind === "unknown") {
+      throw new Refusal(422, `invalid content: not what ${event.kind} holds`); // Nobody could read whose report it is.
+    }
+    if ("repo" in said.content && said.content.repo !== own) {
+      throw new Refusal(403, `${event.author} reports only on its own repo, ${own}`); // Every reader would count it for nothing (mayCome in src/core/chat.ts).
+    }
+    if (said.kind === "job.request" && said.content.chain.at(-1) !== event.author) {
+      throw new Refusal(403, `a job.request's chain ends with the agent that sends it, ${event.author}`); // As every reader would count it for nothing.
+    }
+    if (said.kind === "job.result" && said.content.reviewed) {
+      throw new Refusal(403, "an agent cannot say its answer was reviewed: one its owner reviewed is sent by its owner"); // As every reader would count it for nothing.
+    }
+  }
+
   /**
    * The fourth of the checks an event passes: whether its author may write to whom it is for. Anyone may write to everyone, "*", but only the public kinds.
-   * An agent writes only its run's own reports, about its own repo, never an answer said to be reviewed, and only where its owner may write.
+   * An agent sends only what `mayAgentSend` lets it, and only where its owner may write.
    */
   function mayWrite(event: Event): void {
     const writer = ownerOf(event.author);
     if (isAgent(event.author)) {
-      const said = readContent(event);
-      const own = event.author.slice(writer.length + 1);
-      if (!AGENT_KINDS.has(event.kind)) {
-        throw new Refusal(403, `agents cannot send ${event.kind}: only a person can`);
-      }
-      if (said.kind === "unknown") {
-        throw new Refusal(422, `invalid content: not what ${event.kind} holds`); // Nobody could read whose report it is.
-      }
-      if ("repo" in said.content && said.content.repo !== own) {
-        throw new Refusal(403, `${event.author} reports only on its own repo, ${own}`); // Every reader would count it for nothing (mayCome in src/core/chat.ts).
-      }
-      if (said.kind === "job.result" && said.content.reviewed) {
-        throw new Refusal(403, "an agent cannot say its answer was reviewed: one its owner reviewed is sent by its owner"); // As every reader would count it for nothing.
-      }
+      mayAgentSend(event);
     }
     if (event.to === "*") {
       if (!PUBLIC_KINDS.has(event.kind)) {
