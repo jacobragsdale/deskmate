@@ -24,14 +24,22 @@ function conflicted(stderr: string): boolean {
 
 /**
  * Whether the patch applies to the checkout as it stands, three ways where its context has moved on, as `apply` would apply it: rejects with git's words when it does not, as when a file
- * it changes has changes of the user's that are not committed. Resolves with whether it would leave conflicts.
+ * it changes has changes of the user's that are not committed. Resolves with whether it would leave conflicts. Applying three ways writes what the patch's files become into git's object
+ * store, even to check: so git writes them in a folder of their own, removed afterwards, and reads the repository's own objects beside it, and nothing of someone else's patch is kept
+ * before the user has said yes.
  */
 export async function check(path: string, diff: string): Promise<{ readonly conflicts: boolean }> {
-  const done = await git(["-C", path, "apply", "--check", "--3way"], LIMIT, diff);
-  if (!done.ok) {
-    throw new Error(`it does not apply to ${path}: ${done.timedOut ? `git gave no answer within ${String(LIMIT)} seconds` : lastWords(done.stderr)}`);
+  const objects = (await run(["-C", path, "rev-parse", "--path-format=absolute", "--git-path", "objects"], `git rev-parse in ${path}`)).trim();
+  const folder = mkdtempSync(join(tmpdir(), "player-two-objects-"));
+  try {
+    const done = await git(["-C", path, "apply", "--check", "--3way"], LIMIT, diff, { GIT_OBJECT_DIRECTORY: folder, GIT_ALTERNATE_OBJECT_DIRECTORIES: objects });
+    if (!done.ok) {
+      throw new Error(`it does not apply to ${path}: ${done.timedOut ? `git gave no answer within ${String(LIMIT)} seconds` : lastWords(done.stderr)}`);
+    }
+    return { conflicts: conflicted(done.stderr) };
+  } finally {
+    rmSync(folder, { recursive: true, force: true });
   }
-  return { conflicts: conflicted(done.stderr) };
 }
 
 /** Apply the patch to the checkout's working tree and index, three ways. Resolves with whether it left conflicts to resolve; rejects with git's words when it applied nothing. */

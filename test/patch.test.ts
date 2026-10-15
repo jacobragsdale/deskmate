@@ -526,6 +526,51 @@ await test(
 );
 
 await test(
+  "nothing of a patch is written into the recipient's repository before the dialog's yes, by Apply or by Apply to a new branch, one that would leave conflicts among them, which the dialog warns of and which yes applies with its conflicts marked",
+  { timeout: 60_000 },
+  async (t) => {
+    const { jacob, asker, mine, theirs, questions, reply } = await two(t);
+    const base = git(mine, "rev-parse", "HEAD").trim();
+    // As git writes it, with the blobs before and after, which applying three ways reads and writes.
+    const changing = (line: string): string => {
+      const after = execFileSync("git", ["-C", mine, "hash-object", "--stdin"], { input: `one\n${line}\nthree\n`, encoding: "utf8" }).trim();
+      return `diff --git a/notes.txt b/notes.txt\nindex ${git(mine, "rev-parse", "--short", "HEAD:notes.txt").trim()}..${after.slice(0, 7)} 100644\n--- a/notes.txt\n+++ b/notes.txt\n@@ -1,3 +1,3 @@\n one\n-two\n+${line}\n three\n`;
+    };
+    const sends = async (diff: string): Promise<string> => {
+      const { id } = (await jacob.publish("#team", "patch", { repo: UPLOADER, base, branch: "main", title: "Change the second note", diff })).event;
+      await until("bob sees the patch", () => asker.view().current?.messages.find((message) => message.id === id)?.patch?.checkout === true);
+      return id;
+    };
+    const clean = await sends(changing("TWO, which no repository has yet"));
+    writeFileSync(join(theirs, "notes.txt"), "one\nzwei\nthree\n");
+    git(theirs, "commit", "-qam", "bob's second note"); // The very line the next one changes.
+    const conflicting = await sends(changing("TWO, nor this"));
+    const objects = git(theirs, "count-objects", "-v");
+    const scratch = mkdtempSync(join(tmpdir(), "player-two-scratch-")); // Where the desk's own scratch folders go meanwhile: none is left.
+    const was = process.env["TMPDIR"];
+    process.env["TMPDIR"] = scratch;
+    try {
+      await asker.handle({ do: "applyPatch", id: conflicting });
+      await asker.handle({ do: "applyPatch", id: clean, newBranch: true });
+    } finally {
+      if (was === undefined) {
+        Reflect.deleteProperty(process.env, "TMPDIR");
+      } else {
+        process.env["TMPDIR"] = was;
+      }
+    }
+    assert.deepEqual(readdirSync(scratch), []);
+    assert.match(questions[0]?.detail ?? "", /\n⚠ It does not apply cleanly: git will leave conflict markers in what it cannot merge, for you to resolve\.\n/);
+    assert.equal(questions.length, 2);
+    assert.equal(git(theirs, "count-objects", "-v"), objects);
+
+    reply.yes = true;
+    await asker.handle({ do: "applyPatch", id: conflicting });
+    assert.match(readFileSync(join(theirs, "notes.txt"), "utf8"), /^one\n<<<<<<< ours\nzwei\n=======\nTWO, nor this\n>>>>>>> theirs\nthree\n$/);
+  }
+);
+
+await test(
   "Apply to a new branch makes player-two/ and the first 8 of the patch's id from the commit it was made on, with the patch as one commit, after a dialog, leaving the branch the checkout is on, its working tree and its index as they were; refused before asking when that commit is not there, the branch is, or the patch does not apply to it",
   { timeout: 60_000 },
   async (t) => {
