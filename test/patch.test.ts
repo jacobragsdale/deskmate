@@ -554,6 +554,7 @@ await test(
     symlinkSync(elsewhere, join(theirs, "docs"));
     mkdirSync(join(theirs, "src"));
     symlinkSync(elsewhere, join(theirs, "src", "lib"));
+    symlinkSync(join(elsewhere, "not-there"), join(theirs, "dangling")); // A link to nothing, which cannot be followed to see where it is.
     const base = git(mine, "rev-parse", "HEAD").trim();
     const sends = async (diff: string): Promise<string> => {
       const { id } = (await jacob.publish("#team", "patch", { repo: UPLOADER, base, branch: "main", title: "Through a link", diff })).event;
@@ -566,7 +567,8 @@ await test(
       ["diff --git a/docs/x.txt b/docs/x.txt\nnew file mode 100644\n--- /dev/null\n+++ b/docs/x.txt\n@@ -0,0 +1 @@\n+written\n", "docs/x.txt", "docs"],
       ["diff --git a/src/lib/deep/y.txt b/src/lib/deep/y.txt\nnew file mode 100644\n--- /dev/null\n+++ b/src/lib/deep/y.txt\n@@ -0,0 +1 @@\n+written\n", "src/lib/deep/y.txt", "src/lib"],
       // A rename, whose new name only its "rename to" line gives.
-      ["diff --git a/notes.txt b/docs/notes.txt\nsimilarity index 100%\nrename from notes.txt\nrename to docs/notes.txt\n", "docs/notes.txt", "docs"]
+      ["diff --git a/notes.txt b/docs/notes.txt\nsimilarity index 100%\nrename from notes.txt\nrename to docs/notes.txt\n", "docs/notes.txt", "docs"],
+      ["diff --git a/dangling/z.txt b/dangling/z.txt\nnew file mode 100644\n--- /dev/null\n+++ b/dangling/z.txt\n@@ -0,0 +1 @@\n+written\n", "dangling/z.txt", "dangling"]
     ] as const) {
       const id = await sends(diff);
       for (const newBranch of [false, true]) {

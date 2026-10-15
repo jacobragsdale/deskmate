@@ -116,8 +116,8 @@ export function refuseLinks(path: string, diff: string): void {
       } catch {
         break; // Not there.
       }
-      const inside = relative(root, realpathSync(folder));
-      if (link || inside === ".." || inside.startsWith("../") || isAbsolute(inside)) {
+      const outside = (inside: string): boolean => inside === ".." || inside.startsWith("../") || isAbsolute(inside);
+      if (link || outside(relative(root, realpathSync(folder)))) {
         throw new Error(`not applied: ${plain(name)} is in ${plain(parts.slice(0, at).join("/"))}, which in ${path} is a link to elsewhere, so git would write where it points`);
       }
     }
