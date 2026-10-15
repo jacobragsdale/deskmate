@@ -76,7 +76,7 @@ export const contentSchema = z
         content: z
           .object({
             agent: z.string().regex(new RegExp(`^${NAME}/${REPO_NAME}$`)), // One of its author's agents, or it grants nothing.
-            askers: z.array(askerSchema).readonly(), // Names, "*" for anyone on the hub, or from phase 7 "workflow:<name>", which "*" does not cover.
+            askers: z.array(askerSchema).readonly(), // Names, "*" for anyone on the hub, or from phase 7 "workflow:#ops/ci-failure", a workflow in one channel, which "*" does not cover.
             mode: permissionModeSchema,
             delivery: z.enum(["review", "post"]),
             expires: z.int(), // Unix seconds.

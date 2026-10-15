@@ -383,7 +383,7 @@ await test("a tag counts in the hub's message only when it says it is a workflow
   assert.deepEqual([states(log, workflow), states(log, unnamed), states(log, plain), states(log, person)], [["jacob/uploader waiting"], [], [], ["jacob/uploader waiting"]]);
   assert.deepEqual(
     [workflow, unnamed, plain, person].map((each) => askerOf(each.event)),
-    ["workflow:ci-failure", null, null, "bob"]
+    ["workflow:#ops/ci-failure", null, null, "bob"]
   );
   assert.deepEqual(shown(log, "#ops"), ["hub: the build failed: @jacob/uploader what broke?", "hub: @jacob/uploader what broke?", "hub: @jacob/uploader what broke?", "bob: @jacob/uploader too"]);
   assert.deepEqual(

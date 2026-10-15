@@ -29,8 +29,8 @@ function within(text: string, max: number): boolean {
 }
 
 export const nameSchema = z.string().regex(new RegExp(`^${NAME}$`));
-// Whom a grant may name as asking: a person, "*" for anyone on the hub, or from phase 7 a workflow, "workflow:" and its name, which no person's name can be.
-export const askerSchema = z.string().regex(new RegExp(`^(${NAME}|\\*|workflow:${NAME})$`));
+// Whom a grant may name as asking: a person, "*" for anyone on the hub, or from phase 7 a workflow, "workflow:", its channel, "/" and its name, which no person's or agent's name can be.
+export const askerSchema = z.string().regex(new RegExp(`^(${NAME}|\\*|workflow:#${NAME}/${NAME})$`));
 export const authorSchema = z.string().regex(new RegExp(`^${AUTHOR}$`)); // A person, or one of their agents.
 export const channelSchema = z.string().regex(new RegExp(`^#${NAME}$`));
 export const addressSchema = z.string().regex(new RegExp(`^#?${NAME}$`)); // A person, or a channel when it starts with "#".
@@ -198,18 +198,22 @@ export function fitText(text: string): string {
 }
 
 /**
- * The asker a grant names to let a channel's workflow ask, as `askerOf` in chat.ts names the asker of a workflow's message, the channel named as a chat is, "#ops". The window makes a grant's
- * asker only with this. The channel is not in it yet: `workflow:<name>` covers a workflow of that name in any channel (P7-A2), and adding the channel to the form changes this alone here.
+ * Whom a workflow's request asks as, for grants and delegation, as `askerOf` in chat.ts names the asker of a workflow's message: `workflow:#ops/ci-failure` for ci-failure in #ops, the
+ * channel written as a chat is. A workflow's name is its channel's own, as any member there may publish or replace one, so a grant naming one in one channel says nothing of a workflow of
+ * that name elsewhere. The window makes a grant's asker only with this.
  */
 export function workflowAsker(workflow: { readonly channel: string; readonly name: string }): string {
-  return `workflow:${workflow.name}`;
+  return `workflow:${workflow.channel}/${workflow.name}`;
 }
 
-/** An asker of a grant as the window says it: a person's name, "anyone on the hub" for "*", and a workflow as "workflow ci-failure in #ops", or for one that names no channel, "in any channel". */
+/**
+ * An asker of a grant as the window says it: a person's name, "anyone on the hub" for "*", and a workflow as "workflow ci-failure in #ops", with the channel as the asker writes it, "#"
+ * and all. Words only: what is not a workflow's asker in this form, a half-typed one included, is said as it is written, whether or not a grant could name it.
+ */
 export function askerWords(asker: string): string {
-  const workflow = /^workflow:(?:([^/]+)\/)?(.+)$/.exec(asker);
-  if (workflow === null) {
-    return asker === "*" ? "anyone on the hub" : asker;
+  const [, channel, name] = /^workflow:(#[^/]*)\/(.*)$/.exec(asker) ?? [];
+  if (channel !== undefined && name !== undefined) {
+    return `workflow ${name} in ${channel}`;
   }
-  return `workflow ${workflow[2] ?? ""}${workflow[1] === undefined ? ", in any channel" : ` in #${workflow[1]}`}`;
+  return asker === "*" ? "anyone on the hub" : asker;
 }

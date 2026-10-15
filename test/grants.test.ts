@@ -3,11 +3,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { askerOf } from "../src/core/chat.ts";
 import type { Entry } from "../src/core/chat.ts";
 import { peopleInvolved } from "../src/core/delegation.ts";
 import { DAY, liveGrant } from "../src/core/grants.ts";
 import { MAX_GRANT, PUBLIC_KINDS, readContent } from "../src/core/kinds.ts";
 import { loadKey, signEvent } from "../src/core/sign.ts";
+import { askerWords, workflowAsker } from "../src/core/wire.ts";
 
 const NOW = 1_800_000_000;
 const key = loadKey("11".repeat(32));
@@ -47,9 +49,9 @@ await test("a grant is read when it lasts at most 30 days from its own time and 
 let lastSeq = 0;
 
 /** An event as the hub would deliver it, the next in its log. */
-function entry(author: string, kind: string, content: unknown, more: { readonly refs?: readonly string[]; readonly ts?: number; readonly trusted?: boolean } = {}): Entry {
+function entry(author: string, kind: string, content: unknown, more: { readonly to?: string; readonly refs?: readonly string[]; readonly ts?: number; readonly trusted?: boolean } = {}): Entry {
   lastSeq += 1;
-  return { seq: lastSeq, event: signEvent(key, { author, to: "*", kind, content: JSON.stringify(content), ts: more.ts ?? NOW, refs: more.refs ?? [] }), trusted: more.trusted ?? true };
+  return { seq: lastSeq, event: signEvent(key, { author, to: more.to ?? "*", kind, content: JSON.stringify(content), ts: more.ts ?? NOW, refs: more.refs ?? [] }), trusted: more.trusted ?? true };
 }
 
 /** jacob's acceptance of a run under a grant, or as its owner when `grant` is null. */
@@ -120,25 +122,41 @@ await test("a grant covers an agent's request of another only when it names ever
   assert.ok(covering(["carol"], ["jacob"])); // A request on its author's say alone: the session never asks a grant for one (see P4-B4's note).
 });
 
-await test("a workflow's request asks as workflow:<name>, which a grant covers only when it names that workflow, never as anyone, and an agent it asks runs on that say too", () => {
+await test("a workflow's request asks as that workflow in its channel, workflow:#ops/ci-failure, which a grant covers only when it names both, never as anyone, and an agent it asks runs on that say too", () => {
   const covering = (askers: readonly string[], people: readonly string[]): boolean =>
     liveGrant([entry("jacob", "grant", { ...GRANT, askers })], [], [], { agent: "jacob/uploader", people, now: NOW }) !== null;
   const read = (askers: readonly string[]): string => readContent(signEvent(key, { author: "jacob", to: "*", kind: "grant", content: JSON.stringify({ ...GRANT, askers }), ts: NOW, refs: [] })).kind;
 
-  assert.equal(read(["workflow:ci-failure", "bob", "*"]), "grant");
-  assert.equal(read(["workflow:CI"]), "unknown");
+  assert.equal(read(["workflow:#ops/ci-failure", "bob", "*"]), "grant");
+  assert.equal(read(["workflow:#ops/CI"]), "unknown");
   assert.equal(read(["workflow:"]), "unknown");
-  assert.ok(covering(["workflow:ci-failure"], ["workflow:ci-failure"]));
-  assert.ok(!covering(["*"], ["workflow:ci-failure"])); // Anyone on the hub is not whoever can call a workflow's webhook.
-  assert.ok(!covering(["ci-failure"], ["workflow:ci-failure"])); // A person of that name is someone else.
-  assert.ok(!covering(["workflow:ci-failure"], ["ci-failure"]));
-  assert.ok(!covering(["workflow:nightly"], ["workflow:ci-failure"]));
+  assert.equal(read(["workflow:ci-failure"]), "unknown"); // Every workflow is some channel's.
+  assert.equal(read(["workflow:ops/ci-failure"]), "unknown"); // Its channel written as a channel is, with its "#".
+  assert.equal(read(["workflow:#ops/bob/uploader"]), "unknown");
+  assert.ok(covering(["workflow:#ops/ci-failure"], ["workflow:#ops/ci-failure"]));
+  assert.ok(!covering(["*"], ["workflow:#ops/ci-failure"])); // Anyone on the hub is not whoever can call a workflow's webhook.
+  assert.ok(!covering(["ci-failure"], ["workflow:#ops/ci-failure"])); // A person of that name is someone else.
+  assert.ok(!covering(["workflow:#ops/ci-failure"], ["ci-failure"]));
+  assert.ok(!covering(["workflow:#ops/nightly"], ["workflow:#ops/ci-failure"]));
+
+  // The same name published in another channel, by whoever is in that one, is another workflow; and the hub posts a workflow's message nowhere but in a channel.
+  const said = { text: "@jacob/uploader the build failed", via: "workflow", workflow: "ci-failure" };
+  const [ops, general, nowhere] = [entry("hub", "message", said, { to: "#ops" }), entry("hub", "message", said, { to: "#general" }), entry("hub", "message", said)].map((each) => askerOf(each.event));
+  assert.deepEqual([ops, general, nowhere], ["workflow:#ops/ci-failure", "workflow:#general/ci-failure", null]);
+  assert.ok(covering(["workflow:#ops/ci-failure"], [ops ?? ""]));
+  assert.ok(!covering(["workflow:#ops/ci-failure"], [general ?? ""]));
+  // The window's dialog holds a channel as "#ops", and says what the grant names while its name is still being typed: one "#", and the words as typed.
+  const named = (name: string): string => workflowAsker({ channel: "#ops", name });
+  assert.deepEqual(
+    [named("ci-failure"), ...[named("ci-failure"), named("…"), "*", "bob"].map(askerWords)],
+    ["workflow:#ops/ci-failure", "workflow ci-failure in #ops", "workflow … in #ops", "anyone on the hub", "bob"]
+  );
 
   // A workflow's message tagging carol's agent, which asks jacob's: the request runs on the workflow's say and carol's.
-  const root = entry("hub", "message", { text: "@carol/api the build failed", via: "workflow", workflow: "ci-failure" });
+  const root = entry("hub", "message", { text: "@carol/api the build failed", via: "workflow", workflow: "ci-failure" }, { to: "#ops" });
   const people = peopleInvolved([root], entry("carol/api", "job.request", { target: "jacob/uploader", text: "why?", chain: ["carol/api"] }, { refs: [root.event.id, root.event.id] }));
-  assert.deepEqual(people, ["workflow:ci-failure", "carol"]);
-  assert.ok(covering(["workflow:ci-failure", "carol"], people));
+  assert.deepEqual(people, ["workflow:#ops/ci-failure", "carol"]);
+  assert.ok(covering(["workflow:#ops/ci-failure", "carol"], people));
   assert.ok(!covering(["*"], people));
   const plain = entry("hub", "message", { text: "@carol/api the build failed", via: "cli" }); // The hub's, but not for a workflow: no root at all.
   assert.equal(peopleInvolved([plain], entry("carol/api", "job.request", { target: "jacob/uploader", text: "why?", chain: ["carol/api"] }, { refs: [plain.event.id, plain.event.id] })), null);

@@ -24,8 +24,8 @@ export function revoked(grant: Entry, revocations: readonly Entry[]): boolean {
 }
 
 /**
- * Whether a grant's askers include `asker`: by name, or for a person "*", anyone on the hub. A workflow, `workflow:<name>`, only by name: whoever can reach its trigger, a webhook's caller
- * from outside the hub among them, can set it off, which "*" never said.
+ * Whether a grant's askers include `asker`: by name, or for a person "*", anyone on the hub. A workflow, `workflow:#ops/ci-failure`, only by its channel and name: whoever can reach its
+ * trigger, a webhook's caller from outside the hub among them, can set it off, which "*" never said.
  */
 function covers(askers: readonly string[], asker: string): boolean {
   return askers.includes(asker) || (askers.includes("*") && !asker.startsWith("workflow:"));
@@ -62,7 +62,7 @@ export function standing(grants: readonly Entry[], revocations: readonly Entry[]
 /**
  * A request of an agent ("owner/repo"), on whose say it runs, and when, in Unix seconds; and, as `standing` takes them, the runs let go under a grant that the log does not hold yet.
  * `people` is the asker alone for a request in a message, as src/core/chat.ts's `askerOf` gives it, and for an agent's request of another what src/core/delegation.ts's `peopleInvolved` gives:
- * whoever asked first and the owner of each agent it came through. A workflow's request asks as `workflow:<name>`.
+ * whoever asked first and the owner of each agent it came through. A workflow's request asks as `workflow:#ops/ci-failure`, its channel and its name.
  */
 interface Asked {
   readonly agent: string;

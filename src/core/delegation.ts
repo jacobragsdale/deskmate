@@ -202,7 +202,7 @@ export function checkRequest(log: readonly Entry[], request: Entry): Verdict {
 }
 
 /**
- * Everyone a request runs on the say of: whoever made the root request, `workflow:<name>` for a workflow's, and the owner of each agent it came through, each once.
+ * Everyone a request runs on the say of: whoever made the root request, `workflow:#ops/ci-failure` for a workflow's, and the owner of each agent it came through, each once.
  * Null when it is not a job.request whose signature holds, or its root is not a request in the log.
  */
 export function peopleInvolved(log: readonly Entry[], request: Entry): string[] | null {

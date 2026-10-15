@@ -1601,7 +1601,7 @@ await test(
     assert.deepEqual(
       bob.arrivals.map((arrival) => [arrival.title, arrival.body, arrival.forMe]),
       [
-        ["workflow:ci-failure tagged your uploader agent in #ops", "the build failed: @bob/uploader what broke?", true],
+        ["workflow:#ops/ci-failure tagged your uploader agent in #ops", "the build failed: @bob/uploader what broke?", true],
         ["hub in #ops", "the build failed: @bob/uploader what broke?", false],
         ["hub in #ops", "a message failed its signature check", false]
       ]
@@ -1611,7 +1611,7 @@ await test(
     assert.deepEqual(await read(forged), { trusted: false, text: null, jobs: [] });
 
     // Under a grant naming the workflow, its next request runs at once; a forgery's does not.
-    await grant(["workflow:ci-failure"]);
+    await grant(["workflow:#ops/ci-failure"]);
     await until(bob.session, "the grant kept", (view) => view.grants.length === 2);
     const [runs = "", forgedAgain = ""] = await hubSays([hubKey, workflow], [forger, workflow]);
     await until(bob.session, "the workflow's request run", () => shownTo(bob.session, runs)?.requests[0]?.status.kind === "running" || bob.ran.length > 0);

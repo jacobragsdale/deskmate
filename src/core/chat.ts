@@ -5,7 +5,7 @@ import type { Node } from "./delegation.ts";
 import { AGENT_KINDS, readContent, repoOf } from "./kinds.ts";
 import type { Content, Summary } from "./kinds.ts";
 import { byCodeUnit, head } from "./text.ts";
-import { HUB, isAgent, isChannel, NAME, ownerOf, REPO_NAME } from "./wire.ts";
+import { HUB, isAgent, isChannel, NAME, ownerOf, REPO_NAME, workflowAsker } from "./wire.ts";
 import type { ChannelInfo, Event, RepoRef, TeamRepo } from "./wire.ts";
 
 export const GROUP_WINDOW = 300; // Seconds within which one person's consecutive messages share a single header.
@@ -185,8 +185,8 @@ export function rings(entry: Entry, me: string): boolean {
 }
 
 /**
- * Whom the tags in a message ask for, as grants and delegation name them: the person who wrote it, or for one the hub posted for a workflow, saying so with `via: "workflow"` and naming it,
- * `workflow:<name>`. Null for anything else, an agent's or another of the hub's among them, whose tags count for nothing.
+ * Whom the tags in a message ask for, as grants and delegation name them: the person who wrote it, or for one the hub posted in a channel for a workflow, saying so with `via: "workflow"`
+ * and naming it, the workflow in that channel, `workflow:#ops/ci-failure` (see `workflowAsker`). Null for anything else, an agent's or another of the hub's among them, whose tags count for nothing.
  */
 export function askerOf(event: Event, said: ReturnType<typeof readContent> = readContent(event)): string | null {
   if (said.kind !== "message" || isAgent(event.author)) {
@@ -195,7 +195,7 @@ export function askerOf(event: Event, said: ReturnType<typeof readContent> = rea
   if (event.author !== HUB) {
     return event.author;
   }
-  return said.content.via === "workflow" && said.content.workflow !== undefined ? `workflow:${said.content.workflow}` : null;
+  return said.content.via === "workflow" && said.content.workflow !== undefined && isChannel(event.to) ? workflowAsker({ channel: event.to, name: said.content.workflow }) : null;
 }
 
 /**

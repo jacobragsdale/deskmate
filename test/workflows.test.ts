@@ -805,12 +805,10 @@ await test(
     };
     await shown("bob's checkout", () => bob.view().loaded && bob.view().myRepos.includes("uploader"));
     await bob.handle({ do: "open", chat: "#ops" });
-    const { event: definition } = await alice.publish("#ops", "workflow.define", {
-      name: "ci-failure",
-      yaml: hooked("ci-failure", 'tag: "@bob/uploader"\n    text: "The build {{body.id}} failed. What broke?"')
-    });
-    const request = async (id: number): Promise<string> => {
-      await setOff(hub, definition.id, { id });
+    const yaml = hooked("ci-failure", 'tag: "@bob/uploader"\n    text: "The build {{body.id}} failed. What broke?"');
+    const { event: definition } = await alice.publish("#ops", "workflow.define", { name: "ci-failure", yaml });
+    const request = async (id: number, hook = definition.id): Promise<string> => {
+      await setOff(hub, hook, { id });
       return shown(`the request for build ${String(id)}`, () => bob.view().current?.messages.find((message) => message.body.includes(`build ${String(id)} failed`))?.id);
     };
     const status = (id: string): string | undefined => bob.view().current?.messages.find((message) => message.id === id)?.requests[0]?.status.kind;
@@ -821,7 +819,7 @@ await test(
     });
     assert.deepEqual([status(first), ran], ["ready", []]); // Waiting for bob's click.
 
-    await owner.publish("*", "grant", { agent: "bob/uploader", askers: ["workflow:ci-failure"], mode: "full", delivery: "post", expires: NOW + 3_600, runsPerDay: 10 });
+    await owner.publish("*", "grant", { agent: "bob/uploader", askers: ["workflow:#ops/ci-failure"], mode: "full", delivery: "post", expires: NOW + 3_600, runsPerDay: 10 });
     await shown("the grant", () => bob.view().grants.length === 1);
     await request(2);
     await until(alice, /^bob\/uploader: job\.result$/);
@@ -829,5 +827,18 @@ await test(
     assert.equal(ran.length, 1);
     assert.match(ran[0] ?? "", /The build 2 failed\. What broke\?/);
     assert.equal(status(first), "ready"); // The grant lets go what comes from now on, not what was waiting.
+
+    // A workflow of the same name in another channel, which whoever is in that one may publish, is another workflow, and the grant does not name it.
+    for (const each of [alice, owner]) {
+      await each.publish("#general", "channel.join", {});
+    }
+    const { event: elsewhere } = await alice.publish("#general", "workflow.define", { name: "ci-failure", yaml });
+    await shown("#general in bob's list", () => bob.view().rows.some((row) => row.chat === "#general"));
+    await bob.handle({ do: "open", chat: "#general" });
+    const third = await request(3, elsewhere.id);
+    await new Promise((resolve) => {
+      setTimeout(resolve, 300);
+    });
+    assert.deepEqual([status(third), ran.length], ["ready", 1]);
   }
 );

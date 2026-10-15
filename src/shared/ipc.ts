@@ -367,7 +367,7 @@ export const commandSchema = z.discriminatedUnion("do", [
   z.strictObject({ do: z.literal("permit"), ask: z.string().max(40), answer: z.enum(["allow-once", "allow-run", "refuse"]) }), // The user's answer to an ask in the view.
   z.strictObject({ do: z.literal("stopAll"), chat }), // Stop every agent of the user's at work on a request in this chat, in a thread or not.
   z.strictObject({ do: z.literal("decline"), id, repo }),
-  // Let `askers`, names, "*" for anyone on the hub, or "workflow:<name>" for a workflow, ask the user's agent in `repo` with nobody at the desk, from now for `lasts` seconds, at most 30 days: at `mode`, its answer posted or kept
+  // Let `askers`, names, "*" for anyone on the hub, or "workflow:#ops/ci-failure" for a workflow in a channel, ask the user's agent in `repo` with nobody at the desk, from now for `lasts` seconds, at most 30 days: at `mode`, its answer posted or kept
   // for review as `delivery` says, and at most `runsPerDay` times in any 24 hours. Sent to everyone as a grant.
   z.strictObject({
     do: z.literal("grant"),

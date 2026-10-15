@@ -729,17 +729,17 @@ async function workflows(page: Page, bob: Client, hub: string, home: string): Pr
   await choose("channel", "#ops");
   await page.type('[role="dialog"] input[name="workflow"]', "ci-failure");
   await choose("mode", "read-only");
-  await page.until("what the grant names", `${form}.innerText.includes("The grant names workflow ci-failure, in any channel.")`);
+  await page.until("what the grant names", `${form}.innerText.includes("The grant names workflow ci-failure in #ops.")`);
   await page.shot("grant-workflow");
   await page.click('[role="dialog"] button[type="submit"]');
   const granted = `document.querySelector('li[data-grant]')`;
   await page.until(
     "the grant listed",
-    `document.querySelector('[role="dialog"]') === null && ${granted}?.innerText.startsWith("workflow ci-failure, in any channel · read-only · kept for your review · until ") === true`
+    `document.querySelector('[role="dialog"]') === null && ${granted}?.innerText.startsWith("workflow ci-failure in #ops · read-only · kept for your review · until ") === true`
   );
   const grant = (await bob.events({ chat: "*" })).map(({ event }) => ({ author: event.author, said: readContent(event) })).find((each) => each.author === "alice" && each.said.kind === "grant");
   assert.ok(grant?.said.kind === "grant");
-  assert.deepEqual(grant.said.content.askers, ["workflow:ci-failure"]);
+  assert.deepEqual(grant.said.content.askers, ["workflow:#ops/ci-failure"]);
   await page.eval(`${granted}.querySelector("button").click()`);
   await page.until("the grant revoked", `${billing}?.innerText.includes("No grants") === true`);
   await page.click("button", "Back");

@@ -2135,7 +2135,7 @@ export class Session {
     const now = this.client.now();
     for (const { trusted, event } of arrived) {
       const fresh = now - event.ts <= 2 * MAX_SKEW;
-      const asker = askerOf(event); // A workflow's request asks as `workflow:<name>`, which a grant must name.
+      const asker = askerOf(event); // A workflow's request asks as `workflow:#ops/ci-failure`, which a grant must name.
       const message = trusted && fresh && asker !== null && event.author !== this.me ? this.chats.message(event.id) : null;
       if (message === null || asker === null) {
         continue;

@@ -97,7 +97,7 @@ const stepSchema = byKey(
 /** A workflow file's contents. */
 const workflowSchema = z
   .strictObject({
-    name: nameSchema, // Grants name it as `workflow:<name>`, so it is a name like a person's.
+    name: nameSchema, // Grants name it with its channel, `workflow:#ops/ci-failure`, so it is a name like a person's.
     on: triggerSchema,
     steps: z
       .array(stepSchema)
