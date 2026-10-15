@@ -341,6 +341,9 @@ async function patches(page: Page, erin: Client, home: string): Promise<void> {
     " keep",
     "-old",
     "+<b>new</b>",
+    "diff --git a/run.sh b/run.sh",
+    "old mode 100644",
+    "new mode 100755",
     ""
   ].join("\n");
   await erin.publish("alice", "patch", { repo: billing, base: "a".repeat(40), branch: "main", title: 'Tidy <img src=x onerror="window.pwned = 10"> up', diff: hostile });
@@ -349,7 +352,7 @@ async function patches(page: Page, erin: Client, home: string): Promise<void> {
   const card = `document.querySelector('main section[aria-label="Patch"]')`;
   await page.until("erin's patch, as a card", `document.querySelector("main h1")?.textContent === "erin" && ${card} !== null`);
   assert.equal(await page.eval(`${card}.querySelector("p").textContent`), 'Tidy <img src=x onerror="window.pwned = 10"> up');
-  assert.deepEqual(await page.eval(`[...${card}.querySelectorAll("summary")].map((each) => each.textContent)`), ["page.html +2 −0", "<b>x</b>.md +1 −1"]);
+  assert.deepEqual(await page.eval(`[...${card}.querySelectorAll("summary")].map((each) => each.textContent)`), ["page.html +2 −0", "<b>x</b>.md +1 −1", "run.sh +0 −0 · mode 100644 → 100755"]);
   assert.equal(await page.eval(`${card}.querySelector("pre")`), null); // Folded, each file.
   await page.eval(`[...${card}.querySelectorAll("summary")].forEach((each) => { each.click(); })`);
   await page.until("both files open", `${card}.querySelectorAll("pre").length === 2`);

@@ -464,7 +464,7 @@ await test(
     await asker.handle({ do: "applyPatch", id: link });
     assert.match(
       questions.at(-1)?.detail ?? "",
-      /\n⚠ It makes symbolic links, which point wherever their author chose: see where each points before anything reads through one\.\n\nFiles:\n {2}key {2}\+1 −0$/
+      /\n⚠ It makes symbolic links, which point wherever their author chose: see where each points before anything reads through one\.\n\nFiles:\n {2}key {2}\+1 −0 {2}symbolic link$/
     );
     assert.equal(snapshot(theirs), withMine);
     // The warnings come before the files, however many there are, and a long name is cut to its end, so that neither puts a warning out of sight.
@@ -486,6 +486,20 @@ await test(
       `  ${cut}  +1 −0`,
       ...many.slice(0, 19).map((path) => `  ${path}  +1 −0`),
       "  and 6 more"
+    ]);
+    assert.equal(snapshot(theirs), withMine);
+    // A file made executable, which a diff shows as no line changed, and a new one, are named in a warning, and the change of mode beside the file.
+    await asker.handle({
+      do: "applyPatch",
+      id: await sends(`diff --git a/notes.txt b/notes.txt\nold mode 100644\nnew mode 100755\n${adding("run.sh").replace("new file mode 100644", "new file mode 100755")}`)
+    });
+    assert.deepEqual(questions.at(-1)?.detail.split("\n").slice(5), [
+      "⚠ Your checkout has changes you have not committed. The patch goes in beside them, and is added to the index.",
+      "⚠ It makes files executable, which run whatever they hold when anything starts them: notes.txt, run.sh.",
+      "",
+      "Files:",
+      "  notes.txt  +0 −0  mode 100644 → 100755",
+      "  run.sh  +1 −0  executable"
     ]);
     assert.equal(snapshot(theirs), withMine);
 

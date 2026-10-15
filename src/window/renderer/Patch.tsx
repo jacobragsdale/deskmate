@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
 
-import { parseDiff } from "../../core/diff.ts";
+import { modeOf, parseDiff } from "../../core/diff.ts";
 import type { DiffFile } from "../../core/diff.ts";
 import type { PatchView } from "../../shared/ipc.ts";
 import type { Act } from "./App.tsx";
@@ -29,6 +29,7 @@ function FileDiff({ file }: { readonly file: DiffFile }): JSX.Element {
           <span className="wrap-anywhere">{file.from === null ? file.path : `${file.from} → ${file.path}`}</span> <span className={MARKS["+"]}>+{file.added}</span>{" "}
           <span className={MARKS["-"]}>−{file.removed}</span>
           {file.binary && <span className="text-muted-foreground"> · binary</span>}
+          {modeOf(file) !== "" && <span className="text-muted-foreground"> · {modeOf(file)}</span>}
         </summary>
         {open &&
           (file.hunks.length === 0 ? (

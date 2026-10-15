@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { parseDiff, touchesInstructions, unsafePaths } from "../src/core/diff.ts";
+import { makesExecutable, modeOf, parseDiff, touchesInstructions, unsafePaths } from "../src/core/diff.ts";
 
 // What `git diff --cached --binary HEAD` wrote for a rename with a change, a new file whose name git quotes, a binary file, a file with two hunks
 // (one removing a line that starts "--", the other ending without a newline), a deleted file, and a file whose name has a space, after which git puts a tab.
@@ -132,6 +132,70 @@ await test("changed lines that look like a file's header are counted as the hunk
   assert.equal(files.length, 1);
   assert.deepEqual([files[0]?.added, files[0]?.removed], [1, 1]);
   assert.deepEqual(unsafePaths(diff), []);
+});
+
+await test("a file's mode is read from the lines git writes it on: a change is shown as one, a new file that is not a plain one as what it is, and the files made executable are listed", () => {
+  // What git diff wrote for a file made executable, a new script, a new link, a new submodule, a script deleted, a new plain file, and a script made plain again.
+  const diff = [
+    "diff --git a/build.sh b/build.sh",
+    "old mode 100644",
+    "new mode 100755",
+    "diff --git a/run.sh b/run.sh",
+    "new file mode 100755",
+    "index 0000000..4b44b7a",
+    "--- /dev/null",
+    "+++ b/run.sh",
+    "@@ -0,0 +1 @@",
+    "+echo hi",
+    "diff --git a/key b/key",
+    "new file mode 120000",
+    "index 0000000..1d9c7a1",
+    "--- /dev/null",
+    "+++ b/key",
+    "@@ -0,0 +1 @@",
+    "+/home/bob/.ssh/id_ed25519",
+    "\\ No newline at end of file",
+    "diff --git a/lib b/lib",
+    "new file mode 160000",
+    "index 0000000..a1d6e4a",
+    "--- /dev/null",
+    "+++ b/lib",
+    "@@ -0,0 +1 @@",
+    "+Subproject commit a1d6e4aaadd5708c728f3b947fae1172ac1c83bf",
+    "diff --git a/old.sh b/old.sh",
+    "deleted file mode 100755",
+    "index 4b44b7a..0000000",
+    "--- a/old.sh",
+    "+++ /dev/null",
+    "@@ -1 +0,0 @@",
+    "-echo hi",
+    "diff --git a/notes.txt b/notes.txt",
+    "new file mode 100644",
+    "index 0000000..5626abf",
+    "--- /dev/null",
+    "+++ b/notes.txt",
+    "@@ -0,0 +1 @@",
+    "+one",
+    "diff --git a/tame.sh b/tame.sh",
+    "old mode 100755",
+    "new mode 100644",
+    ""
+  ].join("\n");
+  assert.deepEqual(
+    parseDiff(diff).map((file) => [file.path, file.added, file.removed, modeOf(file)]),
+    [
+      ["build.sh", 0, 0, "mode 100644 → 100755"],
+      ["run.sh", 1, 0, "executable"],
+      ["key", 1, 0, "symbolic link"],
+      ["lib", 1, 0, "submodule"],
+      ["old.sh", 0, 1, ""],
+      ["notes.txt", 1, 0, ""],
+      ["tame.sh", 0, 0, "mode 100755 → 100644"]
+    ]
+  );
+  assert.deepEqual(makesExecutable(diff), ["build.sh", "run.sh"]);
+  // A line in a hunk that reads like one is the hunk's.
+  assert.deepEqual(makesExecutable("diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new mode 100755\n"), []);
 });
 
 await test("files an agent reads as instructions are listed, wherever the folder they are in and whatever the case of their name", () => {

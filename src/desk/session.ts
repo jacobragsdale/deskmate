@@ -32,7 +32,7 @@ import type {
 import { agentPrompt, ChatLog, chatOf, continues, mayCome, mentions, ONLINE, refOf, rings } from "../core/chat.ts";
 import type { Accepted, Delegation, Entry, Message, PatchContent, Request } from "../core/chat.ts";
 import { checkRequest, jobIn, peopleInvolved, ROOT_TIME } from "../core/delegation.ts";
-import { parseDiff, touchesInstructions, unsafePaths } from "../core/diff.ts";
+import { makesExecutable, modeOf, parseDiff, touchesInstructions, unsafePaths } from "../core/diff.ts";
 import type { Node } from "../core/delegation.ts";
 import { DAY, liveGrant, revoked, standing } from "../core/grants.ts";
 import type { Standing } from "../core/grants.ts";
@@ -1484,14 +1484,19 @@ export class Session {
   ): Promise<boolean> {
     const { author } = message.entry.event;
     const from = isAgent(author) ? `${agentWords(author, this.me)}, which nobody reviewed,` : author === this.me ? "you" : author;
-    const files = parseDiff(patch.diff).map((file) => `  ${file.from === null ? named(file.path) : `${named(file.from)} → ${named(file.path)}`}  +${String(file.added)} −${String(file.removed)}`);
+    const files = parseDiff(patch.diff).map((file) => {
+      const mode = modeOf(file);
+      return `  ${file.from === null ? named(file.path) : `${named(file.from)} → ${named(file.path)}`}  +${String(file.added)} −${String(file.removed)}${mode === "" ? "" : `  ${mode}`}`;
+    });
     const instructions = touchesInstructions(patch.diff);
+    const executables = makesExecutable(patch.diff);
     const warned = [
       ...warnings,
       // A header line, as git writes one: no line of a hunk starts so.
       ...(/^(?:new file mode|new mode) 120000$/m.test(patch.diff)
         ? ["⚠ It makes symbolic links, which point wherever their author chose: see where each points before anything reads through one."]
         : []),
+      ...(executables.length > 0 ? [`⚠ It makes files executable, which run whatever they hold when anything starts them: ${listed(executables)}.`] : []),
       ...(instructions.length > 0 ? [`⚠ It changes files your agents read as instructions: ${listed(instructions)}. Read them before an agent works here again.`] : [])
     ];
     const lines = [plain(patch.title), "", `Repo: ${checkout.remote.name}, in ${checkout.path}`, where, "", ...(warned.length > 0 ? [...warned, ""] : []), "Files:", ...files.slice(0, 20)];

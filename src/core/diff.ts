@@ -10,6 +10,7 @@ const ESCAPES: Readonly<Record<string, number>> = { a: 7, b: 8, f: 12, n: 10, r:
 const INSTRUCTION_NAMES = ["agents.md", "claude.md", ".cursorrules"];
 const INSTRUCTION_FOLDERS = [".cursor", ".player-two"];
 const INSTRUCTION_PATHS = [".github/copilot-instructions.md", ".github/instructions/"];
+const KINDS: Readonly<Record<string, string>> = { "100755": "executable", "120000": "symbolic link", "160000": "submodule" }; // What a new file is, by its mode, when it is not a plain one.
 
 /** One stretch of changed lines and the "@@ -a,b +c,d @@" line that places it. */
 export interface Hunk {
@@ -26,6 +27,8 @@ export interface DiffFile {
   readonly hunks: readonly Hunk[];
   readonly names: readonly string[]; // Every name its headers give, as written: what `git apply` would act on.
   readonly paths: readonly string[]; // The same names as paths in the repo, as `git apply` takes them: without "a/" or "b/" where git takes it off.
+  readonly oldMode: string | null; // Its mode before, as an "old mode" or "deleted file mode" line gives it, such as "100644"; null when none does.
+  readonly newMode: string | null; // Its mode after, as a "new mode" or "new file mode" line gives it, such as "100755"; null when none does.
 }
 
 interface Draft {
@@ -36,13 +39,15 @@ interface Draft {
   from: string | null;
   binary: boolean;
   minus: boolean; // Whether a "--- " line has been read for it.
+  oldMode: string | null;
+  newMode: string | null;
   hunks: Hunk[];
   added: number;
   removed: number;
 }
 
 /** What one header line says: the names it gives, and what they mean for the file. */
-type Header = Partial<Pick<Draft, "before" | "after" | "from" | "binary" | "minus">> & { readonly names: readonly string[]; readonly paths: readonly string[] };
+type Header = Partial<Pick<Draft, "before" | "after" | "from" | "binary" | "minus" | "oldMode" | "newMode">> & { readonly names: readonly string[]; readonly paths: readonly string[] };
 
 /** Undo git's quoting of a name: "\303\251" is the bytes of "é", "\t" a tab. Null when the quoting is not git's. */
 function unquote(text: string): { readonly name: string; readonly end: number } | null {
@@ -113,6 +118,15 @@ function headerOf(line: string): Header | null {
   return line.startsWith("GIT binary patch") || line.startsWith("Binary files ") ? { names: [], paths: [], binary: true } : null;
 }
 
+/** What a header line giving a file's mode says: its mode before, or after. Null for a line that is not one. */
+function modeLine(line: string): Header | null {
+  const mode = /^(old mode|deleted file mode|new mode|new file mode) ([0-7]{6})$/u.exec(line);
+  if (mode?.[1] === undefined || mode[2] === undefined) {
+    return null;
+  }
+  return mode[1].startsWith("new") ? { names: [], paths: [], newMode: mode[2] } : { names: [], paths: [], oldMode: mode[2] };
+}
+
 /** The hunk whose "@@" line is at `at`, its lines counted as its header says, as git counts them. Null when the line is not a hunk's header. */
 function hunkAt(lines: readonly string[], at: number): { readonly hunk: Hunk; readonly added: number; readonly removed: number; readonly next: number } | null {
   const header = lines[at] ?? "";
@@ -158,7 +172,7 @@ export function parseDiff(diff: string): DiffFile[] {
   let file: Draft | null = null;
   for (let at = 0; at < lines.length; at += 1) {
     if (startsFile(lines, at, file)) {
-      file = { names: [], paths: [], before: null, after: null, from: null, binary: false, minus: false, hunks: [], added: 0, removed: 0 };
+      file = { names: [], paths: [], oldMode: null, newMode: null, before: null, after: null, from: null, binary: false, minus: false, hunks: [], added: 0, removed: 0 };
       files.push(file);
     }
     if (file === null) {
@@ -172,7 +186,7 @@ export function parseDiff(diff: string): DiffFile[] {
       at = found.next - 1; // The loop's step takes it to the line after the hunk.
       continue;
     }
-    const header = headerOf(lines[at] ?? "");
+    const header = headerOf(lines[at] ?? "") ?? modeLine(lines[at] ?? "");
     if (header !== null) {
       Object.assign(file, header, { names: [...file.names, ...header.names], paths: [...file.paths, ...header.paths] });
     }
@@ -187,9 +201,24 @@ export function parseDiff(diff: string): DiffFile[] {
       binary: draft.binary,
       hunks: draft.hunks,
       names: draft.names,
-      paths: draft.paths
+      paths: draft.paths,
+      oldMode: draft.oldMode,
+      newMode: draft.newMode
     };
   });
+}
+
+/** What a file's mode says to a reader: its change, as "mode 100644 → 100755", or what a new file is when it is not a plain one, as "executable"; "" for neither. */
+export function modeOf(file: DiffFile): string {
+  if (file.oldMode !== null && file.newMode !== null && file.oldMode !== file.newMode) {
+    return `mode ${file.oldMode} → ${file.newMode}`;
+  }
+  return file.oldMode === null && file.newMode !== null ? (KINDS[file.newMode] ?? "") : "";
+}
+
+/** The files a diff makes executable, new or not executable before: whatever they hold runs when anything starts one. */
+export function makesExecutable(diff: string): string[] {
+  return parseDiff(diff).flatMap((file) => (file.newMode === "100755" && file.oldMode !== "100755" ? [file.path] : []));
 }
 
 function isUnsafe(name: string): boolean {
