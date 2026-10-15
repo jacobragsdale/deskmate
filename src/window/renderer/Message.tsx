@@ -1,7 +1,7 @@
 /** One message in the open chat and what hangs off it: its author's edit and delete, its reactions, where each agent it tags stands, and its thread, with a box to reply in. Everything in it that someone else wrote is drawn as text. */
 
 import { cn } from "cn";
-import { ActivityIcon, ChevronDownIcon, EllipsisIcon, LinkIcon, PencilIcon, ReplyIcon, SmilePlusIcon, Trash2Icon } from "lucide-react";
+import { ActivityIcon, ChevronDownIcon, EllipsisIcon, LinkIcon, PencilIcon, ReplyIcon, SmilePlusIcon, Trash2Icon, WorkflowIcon } from "lucide-react";
 import { Fragment, useEffect, useId, useState } from "react";
 import type { JSX, ReactNode, SyntheticEvent } from "react";
 import Markdown, { defaultUrlTransform } from "react-markdown";
@@ -994,6 +994,19 @@ function Reactions({ message, me, react }: { readonly message: ReplyView; readon
   );
 }
 
+/** Who wrote a message: "you", a person, or for a message the hub posted for a workflow, the workflow, with its mark and its own colour, so that it is taken for neither a person nor an agent. */
+function Writer({ message, me }: { readonly message: ReplyView; readonly me: string }): JSX.Element {
+  if (message.workflow !== null) {
+    return (
+      <strong className="flex items-center gap-1 self-center text-workflow">
+        <WorkflowIcon aria-hidden className="size-3.5" />
+        workflow: {message.workflow}
+      </strong>
+    );
+  }
+  return <strong className={cn(message.agent !== null && "text-agent")}>{message.sender === me ? "you" : message.sender}</strong>;
+}
+
 /**
  * Who wrote a message, and when; for an agent's answer, which agent, the branch and commit its owner let it run on, the grant of theirs it ran under, if one let it, and "not reviewed"
  * when the agent signed it itself: posted with nobody reading it first. One its owner reviewed and sent is signed by them, and says nothing more.
@@ -1002,7 +1015,7 @@ function Header({ message, me }: { readonly message: ReplyView; readonly me: str
   const when = new Date(message.ts * 1000);
   return (
     <header className="mt-2.5 flex items-baseline gap-1.5">
-      <strong className={cn(message.agent !== null && "text-agent")}>{message.sender === me ? "you" : message.sender}</strong>
+      <Writer message={message} me={me} />
       {message.agent !== null && (
         <span className="text-xs text-muted-foreground">
           /{message.agent} agent{message.branch === "" ? "" : ` on ${message.branch}`}
@@ -1082,7 +1095,12 @@ function Said({
     <article
       data-id={message.id}
       data-focused={focused}
-      className={cn("group relative", message.agent !== null && "mt-1 border-l-3 border-agent pl-2.5", focused && "rounded-md bg-tag/10 ring-1 ring-tag/40")}
+      className={cn(
+        "group relative",
+        message.agent !== null && "mt-1 border-l-3 border-agent pl-2.5",
+        message.workflow !== null && "mt-1 border-l-3 border-workflow pl-2.5",
+        focused && "rounded-md bg-tag/10 ring-1 ring-tag/40"
+      )}
     >
       {message.header && <Header message={message} me={me} />}
       {message.quote !== "" && <p className="my-0.5 truncate border-l-3 pl-2 text-muted-foreground">{message.quote}</p>}

@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
-import { MODES } from "../../core/wire.ts";
+import { askerWords, MODES, workflowAsker } from "../../core/wire.ts";
 import type { PermissionMode } from "../../core/wire.ts";
 import type { ChatView, GrantView } from "../../shared/ipc.ts";
 import { FIELD } from "./Agents.tsx";
@@ -26,10 +26,77 @@ const LASTS = [
   { seconds: 2_592_000, label: "30 days" }
 ] as const;
 const RUNS = "20"; // The daily limit a grant is offered with.
+const A_WORKFLOW = "workflow:"; // What "Who may ask" holds while a workflow is chosen: no person's name, as none holds a colon.
 
-/** Who a grant lets ask. */
-function askersOf(grant: GrantView): string {
-  return grant.askers.includes("*") ? "anyone on the hub" : grant.askers.join(", ");
+/** Who a grant lets ask, in words. */
+function askersIn(grant: GrantView): string {
+  return grant.askers.map(askerWords).join(", ");
+}
+
+/** Whom a grant lets ask, from "Who may ask": the person or "*" chosen there, or the workflow named under it, as `workflowAsker` names one. */
+function askersOf(asker: string, workflow: Parameters<typeof workflowAsker>[0]): string[] {
+  return [asker === A_WORKFLOW ? workflowAsker(workflow) : asker];
+}
+
+/**
+ * While "Who may ask" is a workflow, the fields that name it: one of the user's channels and the workflow's name there, and what the grant then names, in words, from `workflowAsker`, which
+ * makes the asker itself; and that whatever sets the workflow off can then run the agent.
+ */
+function WorkflowFields({
+  asker,
+  repo,
+  channels,
+  chosen,
+  choose
+}: {
+  readonly asker: string;
+  readonly repo: string;
+  readonly channels: readonly string[];
+  readonly chosen: { readonly channel: string; readonly name: string };
+  readonly choose: (chosen: { readonly channel: string; readonly name: string }) => void;
+}): JSX.Element | null {
+  if (asker !== A_WORKFLOW) {
+    return null;
+  }
+  return (
+    <>
+      <Label className={FIELD}>
+        In the channel
+        <select
+          name="channel"
+          value={chosen.channel}
+          onChange={(event) => {
+            choose({ ...chosen, channel: event.currentTarget.value });
+          }}
+        >
+          {channels.map((channel) => (
+            <option key={channel} value={channel}>
+              {channel}
+            </option>
+          ))}
+        </select>
+      </Label>
+      <Label className={FIELD}>
+        The workflow&rsquo;s name
+        <Input
+          className="font-normal"
+          name="workflow"
+          pattern="[a-z0-9][a-z0-9_\-]{0,31}"
+          title="lowercase letters, digits, - and _, at most 32 characters"
+          placeholder="ci-failure"
+          required
+          value={chosen.name}
+          onChange={(event) => {
+            choose({ ...chosen, name: event.currentTarget.value });
+          }}
+        />
+      </Label>
+      <p id="a-workflow" className="-mt-2 text-xs text-warn">
+        The grant names {askerWords(workflowAsker({ ...chosen, name: chosen.name === "" ? "…" : chosen.name }))}. Whatever sets it off, anyone with its webhook&rsquo;s address among them, could then
+        have your {repo} agent run as the grant says, with nobody at your desk.
+      </p>
+    </>
+  );
 }
 
 /**
@@ -52,6 +119,7 @@ function deliveryOf(delivery: GrantView["delivery"]): string {
 interface NewGrantProps {
   readonly repo: string;
   readonly people: readonly string[]; // Everyone else on the hub, who may be named as the one to ask.
+  readonly channels: readonly string[]; // The user's channels, in one of which a workflow may be named as the one to ask.
   readonly cannot: ChatView["cannot"];
   readonly untested: string; // Why a grant below full would never run, the agent that answers being over ACP and untested, so that only full can be chosen; "" when it is not.
   readonly act: Act;
@@ -59,10 +127,11 @@ interface NewGrantProps {
 }
 
 /** The dialog that makes a grant on the user's agent in `repo`: who may ask, at which of the modes the agent that answers can be held to, how its answers go out, for how long, and how often a day. */
-function NewGrant({ repo, people, cannot, untested, act, onDone }: NewGrantProps): JSX.Element {
+function NewGrant({ repo, people, channels, cannot, untested, act, onDone }: NewGrantProps): JSX.Element {
   const modes = MODES.filter((mode) => cannot[mode] === "");
   const usable = untested === "" ? modes : modes.filter((mode) => mode === "full"); // Those listed but not these are shown, and cannot be chosen.
   const [asker, setAsker] = useState(people[0] ?? "*");
+  const [workflow, setWorkflow] = useState(() => ({ channel: channels[0] ?? "", name: "" })); // The workflow named, while "Who may ask" is a workflow.
   const [mode, setMode] = useState<PermissionMode>(usable[0] ?? "full");
   const [delivery, setDelivery] = useState<GrantView["delivery"]>("review");
   const [lasts, setLasts] = useState<number>(LASTS[0].seconds);
@@ -76,7 +145,7 @@ function NewGrant({ repo, people, cannot, untested, act, onDone }: NewGrantProps
       return;
     }
     setSending(true);
-    act({ do: "grant", repo, askers: [asker], mode, delivery, lasts, runsPerDay: Number(runs) }, (ok) => {
+    act({ do: "grant", repo, askers: askersOf(asker, workflow), mode, delivery, lasts, runsPerDay: Number(runs) }, (ok) => {
       setSending(false);
       if (ok) {
         onDone();
@@ -132,9 +201,13 @@ function NewGrant({ repo, people, cannot, untested, act, onDone }: NewGrantProps
                 {person}
               </option>
             ))}
-            <option value="*">Anyone on the hub</option>
+            <option value="*">Anyone on the hub, not a workflow</option>
+            <option value={A_WORKFLOW} disabled={channels.length === 0}>
+              A workflow in one of your channels
+            </option>
           </select>
         </Label>
+        <WorkflowFields asker={asker} repo={repo} channels={channels} chosen={workflow} choose={setWorkflow} />
         <Label className={FIELD}>
           What the agent may do
           <select
@@ -235,7 +308,7 @@ function Grants({ grants, view, act }: { readonly grants: readonly GrantView[]; 
       {grants.map((grant) => (
         <li key={grant.id} data-grant={grant.id} className="flex items-center gap-2">
           <span className="flex-1">
-            {askersOf(grant)} · {grant.mode} · {deliveryOf(grant.delivery)} · until <Until expires={grant.expires} /> · {grant.runsToday} of {grant.runsPerDay} runs today
+            {askersIn(grant)} · {grant.mode} · {deliveryOf(grant.delivery)} · until <Until expires={grant.expires} /> · {grant.runsToday} of {grant.runsPerDay} runs today
             {stalled(view, grant.mode) !== "" && <span className="block text-xs text-warn">A request under it waits for you: {stalled(view, grant.mode)}.</span>}
           </span>
           <Button
@@ -342,6 +415,7 @@ export function MyAgents({ view, act, onClose }: { readonly view: ChatView; read
         <NewGrant
           repo={granting}
           people={people}
+          channels={view.rows.flatMap((row) => (row.here === null ? [row.chat] : []))}
           cannot={view.cannot}
           untested={view.untested ? stalled(view, "read-only") : ""}
           act={act}

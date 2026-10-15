@@ -196,3 +196,20 @@ export function fitText(text: string): string {
   }
   return fitted;
 }
+
+/**
+ * The asker a grant names to let a channel's workflow ask, as `askerOf` in chat.ts names the asker of a workflow's message, the channel named as a chat is, "#ops". The window makes a grant's
+ * asker only with this. The channel is not in it yet: `workflow:<name>` covers a workflow of that name in any channel (P7-A2), and adding the channel to the form changes this alone here.
+ */
+export function workflowAsker(workflow: { readonly channel: string; readonly name: string }): string {
+  return `workflow:${workflow.name}`;
+}
+
+/** An asker of a grant as the window says it: a person's name, "anyone on the hub" for "*", and a workflow as "workflow ci-failure in #ops", or for one that names no channel, "in any channel". */
+export function askerWords(asker: string): string {
+  const workflow = /^workflow:(?:([^/]+)\/)?(.+)$/.exec(asker);
+  if (workflow === null) {
+    return asker === "*" ? "anyone on the hub" : asker;
+  }
+  return `workflow ${workflow[2] ?? ""}${workflow[1] === undefined ? ", in any channel" : ` in #${workflow[1]}`}`;
+}

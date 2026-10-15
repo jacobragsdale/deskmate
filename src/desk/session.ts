@@ -71,7 +71,7 @@ import * as worktree from "./worktree.ts";
 import type { Worktree } from "./worktree.ts";
 import { cloneFolder } from "../core/remotes.ts";
 import { byCodeUnit, oneLine, problemOf } from "../core/text.ts";
-import { commandLineOf, defaultAgentOf, fitText, isAgent, isChannel, MAX_PATCH, MAX_SKEW, MODES, nameSchema, ownerOf, permissionModeSchema, PROTOCOL } from "../core/wire.ts";
+import { commandLineOf, defaultAgentOf, fitText, HUB, isAgent, isChannel, MAX_PATCH, MAX_SKEW, MODES, nameSchema, ownerOf, permissionModeSchema, PROTOCOL } from "../core/wire.ts";
 import type { Agent, ChannelInfo, Delivered, Event, PermissionMode, Person, RepoRef, TeamRepo } from "../core/wire.ts";
 
 const PRESENCE = 25; // Seconds between asking the hub who is here, which channels there are and who has which repo. Each is a signed request, which is what says the user is here; the repo scan runs on the same beat.
@@ -262,15 +262,27 @@ function agentWords(agent: string, me: string): string {
   return `${owner === me ? "your" : `${owner}'s`} ${agent.slice(owner.length + 1)} agent`;
 }
 
+/** The workflow a message of the hub's was posted for, by its name; null for any other event. */
+function workflowOf(event: Event): string | null {
+  const said = readContent(event);
+  return event.author === HUB && said.kind === "message" && said.content.via === "workflow" ? (said.content.workflow ?? null) : null;
+}
+
+/** Who wrote an event, as the window names them: a person, or an agent's owner; and for a message the hub posted for a workflow, the workflow, "workflow: ci-failure". */
+function writerWords(event: Event): string {
+  const workflow = workflowOf(event);
+  return workflow === null ? ownerOf(event.author) : `workflow: ${workflow}`;
+}
+
 /**
  * Who an arrival is from, as its title says: a person; for an answer nobody reviewed, its owner, saying so, as its header does, since it is the one its agent signed, `owner/repo`;
- * and for an agent's request of another, the agent.
+ * for an agent's request of another, the agent; and for a workflow's message, the workflow, once its signature holds, as what it says counts for nothing until then.
  */
-function fromWords(event: Event, me: string): string {
+function fromWords({ event, trusted }: Entry, me: string): string {
   if (event.kind === "job.request") {
     return agentWords(event.author, me);
   }
-  return `${ownerOf(event.author)}${event.kind === "job.result" && isAgent(event.author) ? ` (${event.author.slice(ownerOf(event.author).length + 1)} agent, not reviewed)` : ""}`;
+  return `${trusted ? writerWords(event) : ownerOf(event.author)}${event.kind === "job.result" && isAgent(event.author) ? ` (${event.author.slice(ownerOf(event.author).length + 1)} agent, not reviewed)` : ""}`;
 }
 
 /** Where an agent's request of another came from, in words for the user: "bob asked jacob's uploader agent, which is asking your billing agent". */
@@ -737,7 +749,8 @@ export class Session {
       notes: this.notesOf(message.text),
       pulls: this.pullsOf(message.text, chatOf(event, this.me)),
       quote: answered === null ? "" : `${answered.entry.event.author}: ${oneLine(answered.text)}`,
-      header: !continues(previous, message),
+      header: !continues(previous, message) || (previous !== null && workflowOf(previous.entry.event) !== workflowOf(event)), // Two workflows' messages are the hub's alike.
+      workflow: workflowOf(event),
       requests: (message.deleted ? this.stillMine(message, now) : this.chats.requests(message, now)).flatMap((request) => this.requestView(request)),
       delegation:
         message.delegation === null ? null : { first: message.delegation.first, chain: message.delegation.chain, target: message.delegation.target, words: chainWords(message.delegation, this.me) },
@@ -761,6 +774,7 @@ export class Session {
   /** An event whose signature failed: who it claims to be from and when, and never what it says. */
   private warningView({ seq, event }: Entry): MessageView {
     const nothing = {
+      workflow: null,
       agent: null,
       branch: "",
       commit: "",
@@ -791,7 +805,7 @@ export class Session {
     return [...new Set(notesIn(text).flatMap((piece) => piece.note ?? []))].flatMap((id): NoteView[] => {
       const loaded = this.chats.message(id);
       if (loaded !== null) {
-        return [{ state: "seen", id, author: ownerOf(loaded.entry.event.author), words: loaded.deleted ? "message deleted" : oneLine(loaded.text) }];
+        return [{ state: "seen", id, author: writerWords(loaded.entry.event), words: loaded.deleted ? "message deleted" : oneLine(loaded.text) }];
       }
       if (!this.linked.has(id)) {
         this.linked.set(id, null);
@@ -1443,7 +1457,7 @@ export class Session {
       const tagged = entry.trusted && asker !== null ? mentions(text).filter(([owner]) => owner === this.me) : asked;
       const where = isChannel(event.to) ? ` in ${event.to}` : "";
       const who = asked.length > 0 ? agentWords(event.author, this.me) : (asker ?? event.author);
-      const title = tagged[0] === undefined ? `${fromWords(event, this.me)}${where}` : `${who} ${asked.length > 0 ? "asked" : "tagged"} your ${tagged[0][1]} agent${where}`;
+      const title = tagged[0] === undefined ? `${fromWords(entry, this.me)}${where}` : `${who} ${asked.length > 0 ? "asked" : "tagged"} your ${tagged[0][1]} agent${where}`;
       this.hooks.arrived({
         chat: chatOf(event, this.me),
         title,
@@ -1586,7 +1600,7 @@ export class Session {
     for (const { seq, event, snippet } of found) {
       const said = readContent(event);
       if (mayCome(event, said) && (await this.client.isTrusted({ seq, event }))) {
-        hits.push({ id: event.id, chat: chatOf(event, this.me), sender: ownerOf(event.author), signer: event.author, agent: said.kind === "job.result" ? said.content.repo : null, snippet });
+        hits.push({ id: event.id, chat: chatOf(event, this.me), sender: writerWords(event), signer: event.author, agent: said.kind === "job.result" ? said.content.repo : null, snippet });
       }
     }
     return hits;

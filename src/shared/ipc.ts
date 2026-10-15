@@ -111,6 +111,7 @@ const said = {
   // Who signed it: the sender, or for an answer posted with nobody reviewing it, the agent itself, "owner/repo". Only this says whether an answer was reviewed, never what the answer claims.
   signer: z.string(),
   agent: z.string().nullable(), // The repo the sender's agent worked in, for an agent's answer; null when the sender typed it.
+  workflow: z.string().nullable(), // For a message the hub posted for a workflow, the workflow's name, which the window draws in place of who wrote it, as "workflow: ci-failure"; null for any other.
   branch: z.string(), // The branch that agent was on; "" when unknown.
   commit: z.string(), // The commit it was on, as its owner accepted the run; "" when unknown.
   // For an agent's answer whose run its owner let go under a grant of theirs: the grant, by its id, the mode the run had, and when the grant ends, null when this desk holds no such grant
@@ -411,7 +412,7 @@ const hitSchema = z
   .strictObject({
     id: z.string(),
     chat: z.string(),
-    sender: z.string(),
+    sender: z.string(), // Who wrote it, as `writerWords` in src/desk/session.ts names them: a person, an agent's owner, or "workflow: ci-failure".
     signer: z.string(), // Who signed it: for an answer posted with nobody reviewing it, the agent, `owner/repo`, and the window says it was not reviewed.
     agent: z.string().nullable(), // The repo of the agent whose answer it is; null for a message a person typed.
     snippet: z.array(z.strictObject({ text: z.string(), hit: z.boolean() }).readonly()).readonly()

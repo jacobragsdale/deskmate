@@ -334,6 +334,7 @@ await test("two people, their agents and a channel, through the real hub", { tim
       sender: "jacob",
       signer: "jacob", // He reviewed and sent it, so it is his, and the window says nothing of review.
       agent: "uploader",
+      workflow: null,
       branch: "main", // A clean copy has nothing uncommitted.
       commit: baseOf(join(root, "dev-jacob", "uploader")),
       grant: null,
