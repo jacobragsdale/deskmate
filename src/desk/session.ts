@@ -959,7 +959,7 @@ export class Session {
 
   /** Look under ~/dev for the team's repos, tell the hub when the list or a branch has changed, and tell everyone the key of each one's agent; of those the user holds back, nothing. */
   private async share(): Promise<void> {
-    const found = repos.scan(this.dev, this.prefix);
+    const found = await repos.scan(this.dev, this.prefix);
     const shared = found.filter((checkout) => !this.isHeld(checkout.remote.name));
     const adverts = shared.map((checkout) => ({ ...checkout.remote, branch: checkout.branch }));
     if (JSON.stringify(adverts) !== this.advertised) {

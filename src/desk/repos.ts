@@ -49,16 +49,32 @@ export function origin(path: string): string | null {
   return null;
 }
 
-function branchOf(path: string): string {
-  const head = readOrNull(join(path, ".git", "HEAD"))?.trim();
+/**
+ * What a checkout's HEAD, or another ref of its own, holds: "ref: " and the ref it points to, or a commit; undefined when it has none. Read from its file, except in a repository whose refs
+ * are in a reftable, which only git reads: its .git/HEAD holds only "ref: refs/heads/.invalid", so that a git too old to read them takes it for no repository, and git is asked.
+ */
+async function refIn(path: string, ref: string): Promise<string | undefined> {
+  if (readOrNull(join(path, ".git", "HEAD"))?.trim() !== "ref: refs/heads/.invalid") {
+    return readOrNull(join(path, ".git", ref))?.trim();
+  }
+  const to = await git(["-C", path, "symbolic-ref", "-q", ref], STATUS_TIMEOUT);
+  if (to.ok) {
+    return `ref: ${to.stdout.trim()}`;
+  }
+  const commit = await git(["-C", path, "rev-parse", "-q", "--verify", ref], STATUS_TIMEOUT); // A detached head points to no ref.
+  return commit.ok ? commit.stdout.trim() : undefined;
+}
+
+async function branchOf(path: string): Promise<string> {
+  const head = await refIn(path, "HEAD");
   if (head === undefined) {
     return "unknown";
   }
   return head.startsWith("ref: ") ? head.replace(/^ref: refs\/heads\//, "") : `detached at ${head.slice(0, 7)}`;
 }
 
-function defaultBranchOf(path: string): string | null {
-  const head = readOrNull(join(path, ".git", "refs", "remotes", "origin", "HEAD"))?.trim() ?? "";
+async function defaultBranchOf(path: string): Promise<string | null> {
+  const head = (await refIn(path, "refs/remotes/origin/HEAD")) ?? "";
   return head.startsWith("ref: refs/remotes/origin/") ? head.slice("ref: refs/remotes/origin/".length) : null;
 }
 
@@ -71,14 +87,14 @@ function isDirectory(path: string): boolean {
 }
 
 /** The team's repos checked out directly under `dev`, by name. With two clones of one repo, the folder named like the repo wins. */
-export function scan(dev: string, prefix: string): Checkout[] {
+export async function scan(dev: string, prefix: string): Promise<Checkout[]> {
   const found = new Map<string, Checkout>();
   const folders = isDirectory(dev) ? readdirSync(dev).sort(byCodeUnit) : [];
   for (const folder of folders) {
     const path = join(dev, folder);
     const remote = isDirectory(join(path, ".git")) ? parseRemote(origin(path) ?? "") : null;
     if (remote !== null && isUnder(remote.key, prefix) && (!found.has(remote.name) || folder.toLowerCase() === remote.name)) {
-      found.set(remote.name, { remote, path, branch: branchOf(path), defaultBranch: defaultBranchOf(path) });
+      found.set(remote.name, { remote, path, branch: await branchOf(path), defaultBranch: await defaultBranchOf(path) });
     }
   }
   return [...found.values()].sort((a, b) => byCodeUnit(a.remote.name, b.remote.name));
@@ -132,7 +148,7 @@ export async function describe(checkout: Checkout): Promise<Head> {
   if (!status.ok) {
     throw new Error(`git cannot say whether ${checkout.path} has uncommitted changes: ${lastWords(status)}`);
   }
-  return { branch: branchOf(checkout.path), commit, dirty: status.stdout.trim() !== "" };
+  return { branch: await branchOf(checkout.path), commit, dirty: status.stdout.trim() !== "" };
 }
 
 /** The commit a checkout is on, which a run on a clean copy of it starts from; "" when git cannot say, as in a repository with no commits yet. */

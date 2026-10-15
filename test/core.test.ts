@@ -902,14 +902,35 @@ await test("a checkout's default branch is the one its origin names, as git clon
   await repos.git(["init", "-q", "-b", "main", path], 20);
   await repos.git(["-C", path, "remote", "add", "origin", "https://dev.azure.com/acme/Platform/_git/uploader"], 20);
   assert.deepEqual(
-    repos.scan(dev, "dev.azure.com/acme").map((checkout) => [checkout.branch, checkout.defaultBranch]),
+    (await repos.scan(dev, "dev.azure.com/acme")).map((checkout) => [checkout.branch, checkout.defaultBranch]),
     [["main", null]]
   );
   await repos.git(["-C", path, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop"], 20);
   assert.deepEqual(
-    repos.scan(dev, "dev.azure.com/acme").map((checkout) => [checkout.branch, checkout.defaultBranch]),
+    (await repos.scan(dev, "dev.azure.com/acme")).map((checkout) => [checkout.branch, checkout.defaultBranch]),
     [["main", "develop"]]
   );
+});
+
+await test("a reftable repository's branch and default branch, which no file under its .git holds, are asked of git, and so is the commit of a detached head", async (t) => {
+  const dev = mkdtempSync(join(tmpdir(), "player-two-reftable-"));
+  t.after(() => {
+    rmSync(dev, { recursive: true, force: true });
+  });
+  const path = join(dev, "uploader");
+  const git = (...args: string[]): ReturnType<typeof repos.git> => repos.git(["-C", path, "-c", "user.name=t", "-c", "user.email=t@example.com", ...args], 20);
+  const scanned = async (): Promise<unknown> => (await repos.scan(dev, "dev.azure.com/acme")).map((checkout) => [checkout.branch, checkout.defaultBranch]);
+  await repos.git(["init", "-q", "--ref-format=reftable", "-b", "main", path], 20);
+  await git("remote", "add", "origin", "https://dev.azure.com/acme/Platform/_git/uploader");
+  assert.equal(readFileSync(join(path, ".git", "HEAD"), "utf8"), "ref: refs/heads/.invalid\n"); // All its HEAD file says.
+  assert.deepEqual(await scanned(), [["main", null]]);
+  await git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop");
+  await git("commit", "-q", "--allow-empty", "-m", "first");
+  await git("checkout", "-q", "-b", "feature/retry");
+  assert.deepEqual(await scanned(), [["feature/retry", "develop"]]);
+  await git("checkout", "-q", "--detach");
+  const commit = (await git("rev-parse", "HEAD")).stdout.trim();
+  assert.deepEqual(await scanned(), [[`detached at ${commit.slice(0, 7)}`, "develop"]]);
 });
 
 await test("a checkout's head is its branch, the commit it is at and whether anything is uncommitted, and one with no commit, or whose status git cannot read, cannot be described", async (t) => {

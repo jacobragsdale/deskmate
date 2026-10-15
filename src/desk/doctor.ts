@@ -231,7 +231,7 @@ async function repos(dev: string, info: HubInfo | null, joined: boolean): Promis
   if (info === null) {
     return { outcome: skip(joined ? "the hub did not say which repos it shares" : "not joined, so no hub has said which repos it shares"), checkouts: [] };
   }
-  const scanned = await attempt(() => ({ found: scan(dev, info.repos), example: someOrigin(dev) }));
+  const scanned = await attempt(async () => ({ found: await scan(dev, info.repos), example: someOrigin(dev) }));
   if (!scanned.ok) {
     return { outcome: fail(`${dev} cannot be read: ${scanned.problem}`), checkouts: [] };
   }
