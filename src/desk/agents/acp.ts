@@ -59,7 +59,7 @@ export class SignInNeeded extends PlayerTwoError {
   }
 }
 
-/** What one prompt turn is doing: the mode and handlers it runs with, what the agent has said so far, and its feed. */
+/** What one prompt turn is doing: the mode and handlers it runs with, and its feed, which keeps what the agent has said so far. */
 interface Turn {
   readonly mode: PermissionMode;
   readonly handlers: RunHandlers;
@@ -67,7 +67,6 @@ interface Turn {
   readonly clock: Clock; // The run's time limit, which waiting for the owner does not count against.
   readonly feed: Feed;
   readonly allowed: Set<Action>; // Kinds of action the owner allowed for this run. Never kept past it.
-  text: string;
 }
 
 /**
@@ -266,7 +265,7 @@ class Conversation {
       if (stopReason !== "end_turn") {
         throw new PlayerTwoError(`${this.agent.label} stopped before it finished: ${stopReason}`);
       }
-      return turn.text.trim();
+      return turn.feed.answer();
     } finally {
       this.turn = null;
     }
@@ -366,16 +365,12 @@ class Conversation {
     return optionFor(request.options, decision);
   }
 
-  /** What the agent streams while it works: its message, which is the answer, and every step, for the owner's feed. */
+  /** What the agent streams while it works: its messages, which are the answer, and every step, for the owner's feed. */
   private update({ sessionId, update }: acp.SessionNotification): void {
     const turn = this.turn;
-    if (turn === null || sessionId !== this.sessionId) {
-      return;
+    if (turn !== null && sessionId === this.sessionId) {
+      turn.feed.update(update);
     }
-    if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text") {
-      turn.text += update.content.text;
-    }
-    turn.feed.update(update);
   }
 }
 
@@ -487,7 +482,7 @@ export function acpRunner(agent: Agent, seconds: { readonly limit: number; reado
         const feed = new Feed(cwd, (item, doing) => {
           handlers.activity(item, doing);
         });
-        const turn: Turn = { mode, handlers, cancel, clock, feed, allowed: new Set(), text: "" };
+        const turn: Turn = { mode, handlers, cancel, clock, feed, allowed: new Set() };
         const answer = await conversation.prompt(reused === null || followUp === undefined ? prompt : followUp.text, turn);
         answered = true;
         return answer;

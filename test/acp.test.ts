@@ -147,7 +147,7 @@ function recorder(answer: "allow-once" | "allow-run" | "refuse" = "refuse"): { r
 }
 
 await test(
-  "an ACP agent's answer is its message, its session has Player Two's MCP server without --allow-send, and nothing it started is left once it has answered",
+  "an ACP agent's answer is its messages, a blank line between each, its session has Player Two's MCP server without --allow-send, and nothing it started is left once it has answered",
   { timeout: 20_000 },
   async (t) => {
     const dir = folder(t);
@@ -162,6 +162,8 @@ await test(
       ]
     );
     assert.deepEqual(await left(dir), []);
+    // Each message the agent sends in its turn is in the answer, a blank line between them.
+    assert.equal(await acpRunner(fake()).run("twice", dir, "full", handlers, never), "Looking at it.\n\nturn 1: said twice");
   }
 );
 

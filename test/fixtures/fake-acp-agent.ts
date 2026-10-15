@@ -1,6 +1,6 @@
 /**
  * A scripted ACP agent for the tests, built on the SDK's agent side and run with `node`. What it does depends on words in the prompt:
- * `read` reports a read tool call; each `edit` asks to edit and writes edited.txt only if allowed; `run` asks to execute; `switch` asks to switch its session to a mode in which it edits without asking,
+ * `twice` says something in a message of its own first, with a step after it; `read` reports a read tool call; each `edit` asks to edit and writes edited.txt only if allowed; `run` asks to execute; `switch` asks to switch its session to a mode in which it edits without asking,
  * as ACP lets an agent's modes differ in what they ask; `takeback` asks to edit and takes the request back 300 ms later; `slow` waits until cancelled, with a child process of its own;
  * `deaf` does the same but takes no notice of a cancel; `mcp` says which MCP servers its session has. Whatever it did, it says so in a short message streamed in two chunks,
  * after the number of the turn in its session. Started with --signed-out it says it needs signing in, and signing in fails; with --always-only it offers no way to be allowed just once;
@@ -80,6 +80,11 @@ async function takeBack(client: acp.AgentContext, sessionId: string): Promise<st
   return answered ? "answered" : "took it back";
 }
 
+/** One chunk of a message. */
+async function say(client: acp.AgentContext, sessionId: string, text: string): Promise<void> {
+  await client.notify("session/update", { sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } } });
+}
+
 /** Standard input as the web stream the SDK reads. */
 function input(): ReadableStream<Uint8Array> {
   let done = false;
@@ -127,6 +132,11 @@ acp
     const text = params.prompt.map((block) => (block.type === "text" ? block.text : "")).join(" ");
     const has = (word: string): boolean => new RegExp(`\\b${word}\\b`).test(text) || (deaf && word === "deaf");
     const did: string[] = [];
+    if (has("twice")) {
+      await say(client, sessionId, "Looking at it.");
+      await client.notify("session/update", { sessionId, update: { sessionUpdate: "tool_call", toolCallId: "look", title: "Look around", kind: "think", status: "completed" } });
+      did.push("said twice");
+    }
     if (has("read")) {
       await client.notify("session/update", { sessionId, update: { sessionUpdate: "tool_call", toolCallId: "read", title: "Read README.md", kind: "read", status: "in_progress" } });
       await client.notify("session/update", { sessionId, update: { sessionUpdate: "tool_call_update", toolCallId: "read", status: "completed" } });
@@ -162,8 +172,8 @@ acp
         // Deaf: it never ends by itself.
       });
     }
-    await client.notify("session/update", { sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `turn ${String(session.turns)}: ` } } });
-    await client.notify("session/update", { sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: did.join("; ") } } });
+    await say(client, sessionId, `turn ${String(session.turns)}: `);
+    await say(client, sessionId, did.join("; "));
     return { stopReason: "end_turn" };
   })
   .onNotification("session/cancel", ({ params }) => {

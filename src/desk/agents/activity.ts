@@ -131,6 +131,7 @@ export class Feed {
   private readonly report: (item: ActivityItem, doing: Summary) => void;
   private readonly calls = new Map<string, Call>(); // By the tool call's id.
   private said: { id: string; readonly kind: "message" | "thought"; readonly messageId: string | null; text: string } | null = null; // The message or thought being streamed, until something else comes.
+  private readonly messages: { readonly text: string }[] = []; // Every message of the agent's so far, each whole: its answer.
   private count = 0; // Messages and thoughts so far, for each one's id.
 
   constructor(cwd: string, report: (item: ActivityItem, doing: Summary) => void) {
@@ -154,6 +155,14 @@ export class Feed {
     return head(diffs.length > 0 ? diffs.map((diff) => diff.text).join("\n\n") : call.rawInput === undefined ? "" : JSON.stringify(call.rawInput, null, 1), DETAIL);
   }
 
+  /** What the agent has said: every one of its messages, narration and all, a blank line between each. */
+  public answer(): string {
+    return this.messages
+      .map((message) => message.text.trim())
+      .filter((text) => text !== "")
+      .join("\n\n");
+  }
+
   /** Take one of the agent's updates. Those that are not a step of its work, such as the commands it offers or the tokens it has used, change nothing. */
   public update(update: acp.SessionUpdate): void {
     if (update.sessionUpdate === "agent_message_chunk" || update.sessionUpdate === "agent_thought_chunk") {
@@ -175,6 +184,9 @@ export class Feed {
     if (!same || this.said === null) {
       this.count += 1;
       this.said = { id: `${kind} ${String(this.count)}`, kind, messageId, text: "" };
+      if (kind === "message") {
+        this.messages.push(this.said);
+      }
     }
     this.said.text += text;
     const { id, text: said } = this.said;
