@@ -1154,6 +1154,7 @@ export class Session {
       telling: undefined
     };
     this.runs.set(key, run);
+    this.keepFeed(key, chatOf(message.entry.event, this.me)); // Now, so that the line saying it runs never shows an earlier run's steps under it while git is asked where it stands.
     run.done = this.work(key, run, checkout, this.runnerFor(agent), prompt, followUp);
     this.hooks.changed();
   }
@@ -1270,7 +1271,6 @@ export class Session {
         throw new AgentCancelledError(`Stopped your ${repo} agent before it started.`); // While git was asked where the checkout stands: nothing ran, so the chat hears nothing.
       }
       await this.client.publish(chat, "job.accepted", { repo, ...head, delivery: run.post ? "post" : "review", mode: run.mode, by: "owner" }, request);
-      this.keepFeed(key, chat);
       this.noted(key, startedItem(run.agent, run.mode));
     } catch (error) {
       this.hooks.notice(

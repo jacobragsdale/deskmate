@@ -18,6 +18,7 @@ import type { Client, Runner, Transport } from "../src/desk/client.ts";
 import { Session } from "../src/desk/session.ts";
 import type { Options } from "../src/desk/session.ts";
 import { createHub } from "../src/hub/app.ts";
+import { runOf } from "../src/shared/ipc.ts";
 import type { Arrival, ChatView, MessageView, Notice } from "../src/shared/ipc.ts";
 import { startHub as hubOfItsOwn, ownMode } from "./startHub.ts";
 
@@ -818,6 +819,40 @@ await test("a teammate's request runs at the mode its owner chose, which job.acc
   for (const session of [bob.session, restarted.session]) {
     assert.deepEqual(await offered(session, "alice", last.event.id), { mode: "full", post: false });
   }
+});
+
+await test("a request run again shows none of its earlier run's steps, from the moment it is run", { timeout: 30_000 }, async (t) => {
+  const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+  const alice = await hub.join("alice");
+  const owner = await hub.join("bob");
+  const dev = join(hub.dir, "dev-bob");
+  checkout(dev, "uploader");
+  let held: Promise<unknown> = Promise.resolve(); // What git is waited for before it says where the checkout stands.
+  const bob = deskOf(t, owner, dev, { describe: () => held.then(() => ({ branch: "main", commit: COMMIT, dirty: false })) });
+  const { event } = await alice.publish("bob", "message", { text: "@bob/uploader have a look", via: "cli" });
+  const status = (): string | undefined => shownTo(bob.session, event.id)?.requests[0]?.status.kind;
+  const steps = (): string[] | undefined =>
+    bob.session
+      .view()
+      .current?.activity.filter((item) => item.run === runOf(event.id, "uploader"))
+      .map((item) => item.title);
+  await until(bob.session, "the request", () => {
+    bob.session.handle({ do: "open", chat: "alice" }).catch(() => undefined);
+    return status() === "ready";
+  });
+  await run(bob.session, event.id, false);
+  await until(bob.session, "its draft", () => status() === "drafted");
+  assert.deepEqual(steps(), ["Started fake-agent, full", "Answered"]);
+  await bob.session.handle({ do: "discardDraft", chat: "alice", id: event.id, repo: "uploader" });
+  await until(bob.session, "the request, ready again", () => status() === "ready");
+
+  const git = Promise.withResolvers();
+  held = git.promise;
+  await run(bob.session, event.id, false);
+  assert.deepEqual([status(), steps()], ["running", []]); // Before the chat is told it runs: nothing of the run before.
+  git.resolve(undefined);
+  await until(bob.session, "its second draft", () => status() === "drafted");
+  assert.deepEqual(steps(), ["Started fake-agent, full", "Answered"]);
 });
 
 await test(
