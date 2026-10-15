@@ -539,7 +539,11 @@ await test(
     // A home of its own: the identity, the repos folder and Electron's own settings all go there. Started before the hub, it is stopped before the hub is.
     const home = mkdtempSync(join(tmpdir(), "player-two-window-"));
     mkdirSync(join(home, "dev"));
-    writeFileSync(join(home, ".gitconfig"), "[user]\n\tname = alice\n\temail = alice@example.com\n"); // Who git commits as, as on anyone's machine: Apply to a new branch commits.
+    // Who git commits as, as on anyone's machine: Apply to a new branch commits. And her origins on dev.azure.com are folders here, which git is pointed at by its own configuration,
+    // so that nothing git does in this test leaves the machine, the setup check's git ls-remote among it; billing's is there from the start, for that check to reach.
+    const remotes = join(home, "remotes");
+    writeFileSync(join(home, ".gitconfig"), `[user]\n\tname = alice\n\temail = alice@example.com\n[url "file://${remotes}/"]\n\tinsteadOf = https://dev.azure.com/\n`);
+    execFileSync("git", ["init", "-q", "--bare", join(remotes, "acme", "Platform", "_git", "billing")]);
     // Alice's own checkout, of a repo nobody else has, for her agent to be asked about.
     repository(join(home, "dev", "billing"), "https://dev.azure.com/acme/Platform/_git/billing");
     // A run let ask other agents gives its agent Player Two's MCP server, started as `player-two` from the PATH: here, the command just built.
@@ -859,6 +863,13 @@ await test(
     await page.until(
       "the Azure DevOps check, failed for want of a token",
       `${azureRow}?.querySelector('[title="fail"]') !== null && ${azureRow}?.innerText.includes("no Azure DevOps token was found") === true && ${azureRow}.innerText.includes("Code (read and write) and Build (read)")`
+    );
+    // git reached billing's origin, the folder its configuration names in place of dev.azure.com.
+    assert.equal(
+      await page.eval(
+        `[...document.querySelectorAll("li")].find((each) => each.textContent.includes("git reaches the team's repos without asking"))?.innerText.includes("git reached billing's origin")`
+      ),
+      true
     );
     await page.eval(`${azureRow}.scrollIntoView()`);
     await page.shot("azure");
