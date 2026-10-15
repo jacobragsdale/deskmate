@@ -246,7 +246,7 @@ await test(
     // Bob sees it where an answer would be: from jacob's agent, not reviewed, the title its text.
     const shown = await until("bob sees the patch", () => asker.view().current?.messages.find((message) => message.patch !== null));
     assert.deepEqual([shown.sender, shown.signer, shown.agent, shown.body, shown.quote], ["jacob", "jacob/uploader", "uploader", "turn 1: read; edit allowed", "bob: @jacob/uploader edit the README"]);
-    assert.deepEqual(shown.patch, { repo: "uploader", base: head, branch: "main", title: "turn 1: read; edit allowed", diff: patch.content.diff, applied: [], checkout: true });
+    assert.deepEqual(shown.patch, { repo: "uploader", base: head, branch: "main", title: "turn 1: read; edit allowed", diff: patch.content.diff, applied: [], reviews: [], checkout: true });
 
     // Kept for review: nothing is sent while the draft waits, and the patch is beside it; sending sends the patch and then the answer, both signed by jacob.
     const reviewed = await asks("@jacob/uploader edit the README", "auto-edits", false);
@@ -457,5 +457,35 @@ await test(
     await assert.rejects(asker.handle({ do: "applyPatch", id: stale, newBranch: true }), /^Error: it does not apply to [0-9a-f]{7}: error: .*notes\.txt/);
     assert.equal(questions.length, 1);
     assert.equal(snapshot(theirs), before);
+  }
+);
+
+await test(
+  "Approve and Request changes on a patch, with a comment or none, are shown on its card as who said what, in order, to everyone in the chat; only a person may say either, and only of a patch",
+  { timeout: 60_000 },
+  async (t) => {
+    const { bob, jacob, asker, owner, mine } = await two(t);
+    const diff = "diff --git a/notes.txt b/notes.txt\n--- a/notes.txt\n+++ b/notes.txt\n@@ -1,3 +1,3 @@\n one\n-two\n+TWO\n three\n";
+    const { id } = (await jacob.publish("#team", "patch", { repo: UPLOADER, base: git(mine, "rev-parse", "HEAD").trim(), branch: "main", title: "Shout", diff })).event;
+    await until("bob sees the patch", () => asker.view().current?.messages.find((message) => message.id === id));
+    await asker.handle({ do: "review", id, verdict: "approve", text: "  <b>looks</b> good \n" });
+    await owner.handle({ do: "review", id, verdict: "changes", text: "" });
+    const reviews = [
+      { who: "bob", verdict: "approve", text: "<b>looks</b> good" },
+      { who: "jacob", verdict: "changes", text: "" }
+    ];
+    for (const session of [asker, owner]) {
+      await until("both reviews", () => session.view().current?.messages.find((message) => message.id === id)?.patch?.reviews.length === 2);
+      assert.deepEqual(session.view().current?.messages.find((message) => message.id === id)?.patch?.reviews, reviews);
+    }
+
+    // Not an agent, whose say the hub refuses as it refuses anything but a report of its own run; and not of a message.
+    await assert.rejects(
+      jacob.as("jacob/uploader", agentKey(jacob.home, "uploader")).publish("#team", "review", { verdict: "approve", text: "" }, [id]),
+      /agents cannot send review: only a person can/
+    );
+    const { id: said } = (await bob.publish("#team", "message", { text: "a plain message", via: "cli" })).event;
+    await until("jacob sees the message", () => owner.view().current?.messages.find((message) => message.id === said));
+    await assert.rejects(owner.handle({ do: "review", id: said, verdict: "approve", text: "" }), { message: "only a patch is approved, or changes asked for" });
   }
 );

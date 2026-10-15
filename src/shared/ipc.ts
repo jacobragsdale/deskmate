@@ -66,7 +66,8 @@ const noteSchema = z.discriminatedUnion("state", [
 
 /**
  * A patch, as its author signed it: the repo by name, the commit and branch it was made on, its title and its diff. Every word of it is someone else's, and is drawn as text.
- * `applied` is who said they applied it, and to which branch, in order; `checkout` whether the user has a checkout of its repo to apply it to. Neither means anything beside a draft.
+ * `applied` is who said they applied it, and to which branch, and `reviews` who approved it or asked for changes, with what they said, each in order; `checkout` whether the user has
+ * a checkout of its repo to apply it to. None of them means anything beside a draft.
  */
 const patchSchema = z
   .strictObject({
@@ -76,6 +77,7 @@ const patchSchema = z
     title: z.string(),
     diff: z.string(),
     applied: z.array(z.strictObject({ who: z.string(), branch: z.string() }).readonly()).readonly(),
+    reviews: z.array(z.strictObject({ who: z.string(), verdict: z.enum(["approve", "changes"]), text: z.string() }).readonly()).readonly(),
     checkout: z.boolean()
   })
   .readonly();
@@ -300,6 +302,7 @@ export const commandSchema = z.discriminatedUnion("do", [
   // Apply the patch with this id to the user's checkout of its repo, once its paths are checked, git says it applies, and the user has said yes to a dialog of the system's own:
   // on the branch the checkout is on, or with `newBranch` on a branch of its own, made from the commit the patch was made on, leaving the checkout as it is.
   z.strictObject({ do: z.literal("applyPatch"), id, newBranch: z.boolean().optional() }),
+  z.strictObject({ do: z.literal("review"), id, verdict: z.enum(["approve", "changes"]), text: z.string().max(4000) }), // Approve the patch with this id, or ask for changes, with a comment, "" for none.
   z.strictObject({ do: z.literal("older") }), // Load the page before the oldest event shown in the open chat.
   z.strictObject({ do: z.literal("search"), q: z.string().min(1).max(500) }), // Search every chat the user can see. The reply's `found` is what the hub found.
   z.strictObject({ do: z.literal("openNote"), id }), // Open the chat a message or an answer is in, with it loaded, and set the view's `focus` on it.

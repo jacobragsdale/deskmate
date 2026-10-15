@@ -56,10 +56,18 @@ export interface Applied {
   readonly branch: string;
 }
 
-/** A patch as the chat shows it: what it holds, and who said they applied it where, in order. */
+/** Someone's word on a patch: approve, or changes requested, and a comment, "" for none. */
+export interface Review {
+  readonly who: string;
+  readonly verdict: "approve" | "changes";
+  readonly text: string;
+}
+
+/** A patch as the chat shows it: what it holds, who said they applied it where, and who said what of it, each in order. */
 export interface Patch {
   readonly content: PatchContent;
   readonly applied: readonly Applied[];
+  readonly reviews: readonly Review[];
 }
 
 /** A message someone typed, an agent's answer, an agent's request of another, or a patch, as it stands after everything said about it since. */
@@ -210,7 +218,7 @@ export function refOf(repo: RepoRef): RepoRef {
 // ── the fold ─────────────────────────────────────────────────────────────────
 
 type MessageKind = "message" | "message.edit" | "message.delete" | "reaction";
-type PatchKind = "patch" | "patch.applied";
+type PatchKind = "patch" | "patch.applied" | "review";
 type JobKind = "job.accepted" | "job.declined" | "job.result" | "job.error" | "job.cancelled" | "job.withdrawn";
 
 /** A message while its chat is being folded: what later events change is open to change. */
@@ -220,7 +228,7 @@ interface Folding {
   readonly answers: string | null;
   readonly branch: string;
   readonly delegation: Delegation | null;
-  readonly patch: { readonly content: PatchContent; readonly applied: Applied[] } | null;
+  readonly patch: { readonly content: PatchContent; readonly applied: Applied[]; readonly reviews: Review[] } | null;
   readonly root: string | null;
   text: string;
   edited: boolean;
@@ -360,21 +368,27 @@ function applyRequest(folded: Folded, entry: Entry, said: Extract<Content, { rea
 
 /**
  * A patch, shown where an answer is: in its request's thread, or at the top of the chat when the request is not a reply, or is not loaded, or there is none. Its title is its text.
- * Or what someone said of one: that they applied it.
+ * Or what someone said of one: that they applied it, or what they make of it.
  */
 function applyPatch(folded: Folded, entry: Entry, said: Extract<Content, { readonly kind: PatchKind }>): void {
   const [ref] = entry.event.refs;
   const target = ref === undefined ? undefined : folded.messages.get(ref);
   if (said.kind === "patch") {
-    const about = { ...TYPED, agent: said.content.repo.name, answers: ref ?? null, branch: said.content.branch, patch: { content: said.content, applied: [] } };
+    const about = { ...TYPED, agent: said.content.repo.name, answers: ref ?? null, branch: said.content.branch, patch: { content: said.content, applied: [], reviews: [] } };
     place(folded, newMessage(entry, said.content.title, target?.root === null ? undefined : target, about));
-  } else {
+  } else if (said.kind === "patch.applied") {
     target?.patch?.applied.push({ who: entry.event.author, branch: said.content.branch }); // Its refs[0] is the patch. Only a person sends it: see mayCome.
+  } else {
+    target?.patch?.reviews.push({ who: entry.event.author, ...said.content }); // As for patch.applied.
   }
 }
 
 function aboutMessage(said: ReturnType<typeof readContent>): said is Extract<Content, { readonly kind: MessageKind }> {
   return said.kind === "message" || said.kind === "message.edit" || said.kind === "message.delete" || said.kind === "reaction";
+}
+
+function aboutPatch(said: ReturnType<typeof readContent>): said is Extract<Content, { readonly kind: PatchKind }> {
+  return said.kind === "patch" || said.kind === "patch.applied" || said.kind === "review";
 }
 
 function aboutJob(said: ReturnType<typeof readContent>): said is Extract<Content, { readonly kind: JobKind }> {
@@ -424,7 +438,7 @@ function apply(folded: Folded, entry: Entry): void {
     applyToJob(folded, entry, said);
   } else if (said.kind === "job.progress") {
     applyProgress(folded, entry, said);
-  } else if (said.kind === "patch" || said.kind === "patch.applied") {
+  } else if (aboutPatch(said)) {
     applyPatch(folded, entry, said);
   } else if (said.kind === "channel.join" || said.kind === "channel.leave") {
     folded.items.push({ kind: "line", entry, did: said.kind === "channel.join" ? "joined" : "left", repo: "" });

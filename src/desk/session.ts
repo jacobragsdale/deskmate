@@ -147,10 +147,10 @@ interface AgentRun {
 }
 
 type ChatCommand = Exclude<Command, { do: "join" | "doctor" | "search" | "testPermissions" | "saveAzureToken" }>;
-type MessageDo = "send" | "reply" | "react" | "edit" | "delete" | "applyPatch"; // What the user does to a message: a patch's among them.
+type MessageDo = "send" | "reply" | "react" | "edit" | "delete" | "applyPatch" | "review"; // What the user does to a message: a patch's among them.
 type JobDo = "sendDraft" | "discardDraft" | "run" | "stop" | "stopAll" | "permit" | "decline" | "withdraw" | "grant" | "revoke";
 
-const MESSAGE_DOS: ReadonlySet<string> = new Set<MessageDo>(["send", "reply", "react", "edit", "delete", "applyPatch"]);
+const MESSAGE_DOS: ReadonlySet<string> = new Set<MessageDo>(["send", "reply", "react", "edit", "delete", "applyPatch", "review"]);
 const JOB_DOS: ReadonlySet<string> = new Set<JobDo>(["sendDraft", "discardDraft", "run", "stop", "stopAll", "permit", "decline", "withdraw", "grant", "revoke"]);
 
 function isAboutMessages(command: ChatCommand): command is Extract<ChatCommand, { readonly do: MessageDo }> {
@@ -226,8 +226,8 @@ function chainWords({ first, chain, target }: Delegation, me: string): string {
 }
 
 /** A patch as the window draws it: the repo by name, and everything else as its author wrote it. */
-function patchView({ repo, base, branch, title, diff }: PatchContent, applied: PatchView["applied"] = [], checkout = false): PatchView {
-  return { repo: repo.name, base, branch, title, diff, applied, checkout };
+function patchView({ repo, base, branch, title, diff }: PatchContent, { applied, reviews }: Pick<PatchView, "applied" | "reviews"> = { applied: [], reviews: [] }, checkout = false): PatchView {
+  return { repo: repo.name, base, branch, title, diff, applied, reviews, checkout };
 }
 
 /** The lesser of two modes. */
@@ -420,6 +420,14 @@ export class Session {
       case "applyPatch":
         await (command.newBranch === true ? this.applyToBranch(command.id) : this.applyPatch(command.id));
         break;
+      case "review": {
+        const patch = this.found(command.id);
+        if (patch.patch === null) {
+          throw new PlayerTwoError("only a patch is approved, or changes asked for");
+        }
+        await this.publish(chatOf(patch.entry.event, this.me), "review", { verdict: command.verdict, text: fitText(command.text.trim()) }, [command.id]);
+        break;
+      }
     }
   }
 
@@ -608,7 +616,7 @@ export class Session {
       delegation:
         message.delegation === null ? null : { first: message.delegation.first, chain: message.delegation.chain, target: message.delegation.target, words: chainWords(message.delegation, this.me) },
       tree: this.treeView(message, now),
-      patch: message.patch === null ? null : patchView(message.patch.content, message.patch.applied, this.checkoutOf(message.patch.content.repo) !== undefined)
+      patch: message.patch === null ? null : patchView(message.patch.content, message.patch, this.checkoutOf(message.patch.content.repo) !== undefined)
     };
   }
 

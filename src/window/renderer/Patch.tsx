@@ -4,6 +4,8 @@ import { Fragment, useMemo, useState } from "react";
 import type { JSX, ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Textarea } from "@/components/ui/textarea";
 
 import { parseDiff } from "../../core/diff.ts";
 import type { DiffFile } from "../../core/diff.ts";
@@ -69,10 +71,67 @@ export function PatchCard({ patch, children }: { readonly patch: PatchView; read
   );
 }
 
+/** What the reader makes of a patch, from a popover: Approve or Request changes, with a comment if they like, which goes with it and is drawn as text. */
+function Review({ id, act }: { readonly id: string; readonly act: Act }): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("");
+  const review = (verdict: "approve" | "changes"): void => {
+    act({ do: "review", id, verdict, text: text.trim() }, (ok) => {
+      if (ok) {
+        setText("");
+        setOpen(false);
+      }
+    });
+  };
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button size="xs" variant="outline" className="text-foreground" type="button">
+          Review…
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-80 p-2">
+        <Textarea
+          className="mb-1.5 field-sizing-fixed"
+          aria-label="Comment"
+          placeholder="A comment, if you like"
+          rows={3}
+          maxLength={4000}
+          value={text}
+          onChange={(event) => {
+            setText(event.target.value);
+          }}
+        />
+        <p className="flex gap-1.5">
+          <Button
+            size="xs"
+            type="button"
+            onClick={() => {
+              review("approve");
+            }}
+          >
+            Approve
+          </Button>
+          <Button
+            size="xs"
+            variant="outline"
+            type="button"
+            onClick={() => {
+              review("changes");
+            }}
+          >
+            Request changes
+          </Button>
+        </p>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 /**
- * What has been done with a patch in the chat, and what the reader can do: who applied it to which branch, and for a reader with a checkout of its repo, Apply, to the branch it is on,
- * and Apply to a new branch, made from the commit the patch was made on. The desk checks its paths and whether git takes it, then asks in a dialog of the system's own; the buttons wait
- * until it has its answer.
+ * What has been done with a patch in the chat, and what the reader can do: who applied it to which branch, and who approved it or asked for changes, saying what, each in order; for
+ * a reader with a checkout of its repo, Apply, to the branch it is on, and Apply to a new branch, made from the commit the patch was made on; and for anyone, Review. The desk checks a
+ * patch's paths and whether git takes it, then asks in a dialog of the system's own; the buttons wait until it has its answer.
  */
 export function PatchActions({ id, patch, me, act }: { readonly id: string; readonly patch: PatchView; readonly me: string; readonly act: Act }): JSX.Element {
   const [busy, setBusy] = useState(false);
@@ -90,36 +149,47 @@ export function PatchActions({ id, patch, me, act }: { readonly id: string; read
           ✓ {each.who === me ? "you" : each.who} applied it to {each.branch}
         </p>
       ))}
-      {patch.checkout && (
-        <p className="mt-1.5 flex flex-wrap gap-1.5">
-          <Button
-            size="xs"
-            variant="outline"
-            className="text-foreground"
-            type="button"
-            disabled={busy}
-            title="Apply it to your checkout, on the branch it is on, once you have said yes to what it changes"
-            onClick={() => {
-              apply(false);
-            }}
-          >
-            Apply
-          </Button>
-          <Button
-            size="xs"
-            variant="outline"
-            className="text-foreground"
-            type="button"
-            disabled={busy}
-            title={`Make player-two/${id.slice(0, 8)} from the commit it was made on, with it applied, and leave your branch and working tree as they are`}
-            onClick={() => {
-              apply(true);
-            }}
-          >
-            Apply to a new branch
-          </Button>
+      {patch.reviews.map((each, at) => (
+        <p key={at} className="text-xs wrap-anywhere whitespace-pre-wrap" data-verdict={each.verdict}>
+          <span className={each.verdict === "approve" ? MARKS["+"] : "text-warn"}>
+            {each.who === me ? "you" : each.who} {each.verdict === "approve" ? "approved" : "asked for changes"}
+          </span>
+          {each.text === "" ? "" : `: ${each.text}`}
         </p>
-      )}
+      ))}
+      <p className="mt-1.5 flex flex-wrap gap-1.5">
+        {patch.checkout && (
+          <>
+            <Button
+              size="xs"
+              variant="outline"
+              className="text-foreground"
+              type="button"
+              disabled={busy}
+              title="Apply it to your checkout, on the branch it is on, once you have said yes to what it changes"
+              onClick={() => {
+                apply(false);
+              }}
+            >
+              Apply
+            </Button>
+            <Button
+              size="xs"
+              variant="outline"
+              className="text-foreground"
+              type="button"
+              disabled={busy}
+              title={`Make player-two/${id.slice(0, 8)} from the commit it was made on, with it applied, and leave your branch and working tree as they are`}
+              onClick={() => {
+                apply(true);
+              }}
+            >
+              Apply to a new branch
+            </Button>
+          </>
+        )}
+        <Review id={id} act={act} />
+      </p>
     </>
   );
 }

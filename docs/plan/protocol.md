@@ -116,7 +116,7 @@ The hub gives each stored event a sequence number, `seq`, and a chain value: `ch
 | `job.request` | 5 | the root request | `{ target, text, chain }` | Authored by the asking agent, the last in `chain`. `refs[1]` is the request the asker is working on: the root again when the asker is the root's agent. `target`: the agent asked. `chain`: the agents it came through, from the root's down to the asker, at least one. |
 | `patch` | 6 | the request, if any | `{ repo, base, branch, title, diff }` | `repo` is a `RepoRef`. `base` is a commit, `branch` the one it was made on, `title` 1 to 200 characters (its desk takes the answer's first line, cut to 80), `diff` what `git diff --cached --binary` wrote from `base`. What a run on a clean copy changed, sent just before its answer and signed as the answer is: by the agent when nobody reviewed it, by its owner when they reviewed and sent it. From an agent, only about its own repo, `repo.name`. Shown where an answer is, its title its text. |
 | `patch.applied` | 6 | the patch | `{ branch }` | Its author applied the patch to their checkout, on `branch`. A person's alone: agents cannot send it. |
-| `review` | 6 | the patch | `{ verdict, text }` | `verdict`: `approve` or `changes`. |
+| `review` | 6 | the patch | `{ verdict, text }` | `verdict`: `approve` or `changes`. `text`: a comment, `""` for none. A person's alone: agents cannot send it. Every one is shown, in order, as who said what. |
 | `workflow.define` | 7 | | `{ name, yaml }` | Structural: makes a workflow live for the channel in `to`. |
 | `workflow.remove` | 7 | | `{ name }` | Structural. |
 | `workflow.run` | 7 | the trigger | `{ workflow, step, status, detail }` | Authored by the hub's own identity, `hub`. |
