@@ -611,6 +611,20 @@ await test("a step the hub cannot take ends its run as failed, a detail is cut t
   assert.deepEqual(runs(hub, "name, step, state, input"), ["odd 0 ended {}", "long 0 ended {}"]);
 });
 
+await test("a post or an approval whose text is empty once filled in fails its step and posts nothing, as no reader takes an empty message", async (t) => {
+  const hub = await startHub(t);
+  const [alice] = await team(hub, "alice");
+  assert.ok(alice !== undefined);
+  const { event: says } = await alice.publish("#ops", "workflow.define", { name: "says", yaml: hooked("says", 'post: "{{body.text}}"', 'post: "after"') });
+  const { event: asks } = await alice.publish("#ops", "workflow.define", { name: "asks", yaml: hooked("asks", 'approve: { from: anyone, text: "{{body.text}}" }') });
+
+  await setOff(hub, says.id, { text: "" });
+  await setOff(hub, asks.id, { text: "" });
+
+  assert.deepEqual((await channel(alice)).slice(-2), ["hub: says run 1 step 0 failed: its text is empty once filled in", "hub: asks run 2 step 0 failed: its text is empty once filled in"]);
+  assert.deepEqual(runs(hub), ["says 1 0 ended", "asks 2 0 ended"]);
+});
+
 /**
  * Have every name looked up in this process, until the test ends, answered by `answer` with its addresses or the error the system would give, and no resolver asked: an IP address,
  * which a server listening is looked up by, is itself. The answer comes back as the system's does, with no addresses beside an error.

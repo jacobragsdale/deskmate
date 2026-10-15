@@ -270,22 +270,31 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, al
     return untagged(template, fitText(fill(template, values)));
   }
 
-  /** Take step `at` of a run, one that takes no time, and record how it came out: whether the run goes on to the next. */
+  /**
+   * Take step `at` of a run, one that takes no time, and record how it came out: whether the run goes on to the next. A text that is empty once filled in, as a value filled in was,
+   * fails the step: a message holds at least one character, and one that does not is no message any reader takes.
+   */
   function took(going: Going, at: number, step: Step): boolean {
     if (step.if !== undefined && !holds(step.if, going.values)) {
       record(going, at, "skipped", "", onward(going, at));
       return true;
     }
-    if (step.kind === "post" || step.kind === "tag") {
-      // A tag is a message like a person's, and the step ends once it is stored: the job it makes waits for the agent's owner, or a grant naming the workflow, on their own desk.
-      record(going, at, "done", "", onward(going, at), told(step.kind === "post" ? step.post : `${step.tag} ${step.text}`, going.values));
-      return true;
+    if (step.kind === "webhook") {
+      return false; // One whose `if` holds is `called`.
+    }
+    const text = told(step.kind === "post" ? step.post : step.kind === "tag" ? `${step.tag} ${step.text}` : step.approve.text, going.values);
+    if (text === "") {
+      record(going, at, "failed", "its text is empty once filled in", { step: at, state: "ended" });
+      return false;
     }
     if (step.kind === "approve") {
       const from = step.approve.from === "anyone" ? `anyone in ${going.channel}` : step.approve.from;
-      record(going, at, "waiting", `for a 👍 from ${from}`, { step: at, state: "waiting", within: step.approve.within }, told(step.approve.text, going.values));
+      record(going, at, "waiting", `for a 👍 from ${from}`, { step: at, state: "waiting", within: step.approve.within }, text);
+      return false; // Until `approve` hears the 👍, or `sweep` finds the time has passed.
     }
-    return false; // Until `approve` hears the 👍, or `sweep` finds the time has passed.
+    // A tag is a message like a person's, and the step ends once it is stored: the job it makes waits for the agent's owner, or a grant naming the workflow, on their own desk.
+    record(going, at, "done", "", onward(going, at), text);
+    return true;
   }
 
   /** Why a run can no longer go on: its workflow replaced or removed since it began; "" while the file it started under is live. */
