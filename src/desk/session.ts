@@ -1262,12 +1262,22 @@ export class Session {
   }
 
   /**
-   * Put an agent's ask to its owner, in the view and, for when they are not looking, as an arrival, and wait for their answer. A run that ends first takes its asks with it: see `work`.
+   * Put an agent's ask to its owner, in the view and, for when they are not looking, as an arrival, and wait for their answer. An ask nobody waits for any more, `gone`, as when the agent
+   * takes it back or its run is stopped, goes from the view, and answering it then says so; a run that ends first takes its asks with it: see `work`.
    */
-  private askOwner(key: string, chat: string, repo: string, ask: PermissionAsk): Promise<Answer> {
+  private askOwner(key: string, chat: string, repo: string, ask: PermissionAsk, gone: AbortSignal): Promise<Answer> {
     return new Promise((answer) => {
       this.asked += 1;
-      this.waiting.set(String(this.asked), { run: key, chat, ask, answer });
+      const id = String(this.asked);
+      this.waiting.set(id, { run: key, chat, ask, answer });
+      gone.addEventListener(
+        "abort",
+        () => {
+          this.waiting.delete(id);
+          this.hooks.changed();
+        },
+        { once: true }
+      );
       this.hooks.arrived({ chat, title: `Your ${repo} agent is waiting for your answer`, body: oneLine(ask.title, 120), forMe: true, rings: true });
       this.hooks.changed();
     });
@@ -1284,7 +1294,7 @@ export class Session {
       activity: (item, doing) => {
         this.noted(key, item, doing);
       },
-      permission: (ask) => this.askOwner(key, chat, repo, ask)
+      permission: (ask, gone) => this.askOwner(key, chat, repo, ask, gone)
     };
     const request = [entry.event.id];
     const stopped = (): boolean => run.cancel.signal.aborted; // Asked afresh each time: the user may stop it while this waits.

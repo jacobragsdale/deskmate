@@ -349,7 +349,8 @@ class Conversation {
     if (decision === "ask") {
       item("", "running", "waiting for approval");
       turn.clock.pause();
-      const answer = await Promise.race([turn.handlers.permission(ask), aborted(turn.cancel), aborted(signal)]).finally(() => {
+      const gone = AbortSignal.any([turn.cancel, signal]);
+      const answer = await Promise.race([turn.handlers.permission(ask, gone), aborted(gone)]).finally(() => {
         turn.clock.resume();
       });
       if (answer === "aborted") {

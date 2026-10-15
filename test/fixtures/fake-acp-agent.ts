@@ -1,7 +1,7 @@
 /**
  * A scripted ACP agent for the tests, built on the SDK's agent side and run with `node`. What it does depends on words in the prompt:
  * `read` reports a read tool call; each `edit` asks to edit and writes edited.txt only if allowed; `run` asks to execute; `switch` asks to switch its session to a mode in which it edits without asking,
- * as ACP lets an agent's modes differ in what they ask; `slow` waits until cancelled, with a child process of its own;
+ * as ACP lets an agent's modes differ in what they ask; `takeback` asks to edit and takes the request back 300 ms later; `slow` waits until cancelled, with a child process of its own;
  * `deaf` does the same but takes no notice of a cancel; `mcp` says which MCP servers its session has. Whatever it did, it says so in a short message streamed in two chunks,
  * after the number of the turn in its session. Started with --signed-out it says it needs signing in, and signing in fails; with --always-only it offers no way to be allowed just once;
  * with --no-asking it edits without asking first, as an agent that cannot be limited would; with --deaf every prompt is also `deaf`.
@@ -68,6 +68,18 @@ async function edit(client: acp.AgentContext, sessionId: string, session: Sessio
   return allowed ? "edit allowed" : "edit refused";
 }
 
+/** Ask to edit, and take the request back 300 ms later, as an agent that thinks better of it may. */
+async function takeBack(client: acp.AgentContext, sessionId: string): Promise<string> {
+  const toolCall = { toolCallId: "takeback", title: "Edit taken-back.txt", kind: "edit" } as const;
+  await client.notify("session/update", { sessionId, update: { sessionUpdate: "tool_call", ...toolCall, status: "pending" } });
+  const options = [{ optionId: "yes", name: "Allow", kind: "allow_once" } as const];
+  const answered = await client.request("session/request_permission", { sessionId, toolCall, options }, { cancellationSignal: AbortSignal.timeout(300) }).then(
+    () => true,
+    () => false
+  );
+  return answered ? "answered" : "took it back";
+}
+
 /** Standard input as the web stream the SDK reads. */
 function input(): ReadableStream<Uint8Array> {
   let done = false;
@@ -128,6 +140,9 @@ acp
     }
     if (has("run")) {
       did.push((await permitted(client, sessionId, `run-${String(session.turns)}`, "execute", "Run npm test")) ? "run allowed" : "run refused");
+    }
+    if (has("takeback")) {
+      did.push(await takeBack(client, sessionId));
     }
     if (has("mcp")) {
       did.push(`servers ${session.servers}`);

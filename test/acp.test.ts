@@ -469,6 +469,26 @@ await test(
   }
 );
 
+await test("an ask the agent takes back goes from its owner's view while the run goes on, and answering it then says it is no longer waiting", { timeout: 30_000 }, async (t) => {
+  const { session, checkout, ask } = await bobsDesk(t);
+  const id = await ask("@bob/uploader takeback, then slow", "supervised", true);
+  const card = await until("bob is asked", () => session.view().current?.asks[0]);
+  assert.equal(card.title, "Edit taken-back.txt");
+  await until("the card goes", () => session.view().current?.asks.length === 0);
+  assert.equal(session.view().current?.running, true); // Taken back by the agent, not by the run's end.
+  await assert.rejects(session.handle({ do: "permit", ask: card.id, answer: "allow-once" }), { message: "your agent is no longer waiting for that answer" });
+  assert.deepEqual(
+    session
+      .view()
+      .current?.activity.filter((item) => item.kind === "permission")
+      .map((item) => [item.title, item.outcome]),
+    [["Edit taken-back.txt", "cancelled"]]
+  );
+  await session.handle({ do: "stop", id, repo: "uploader" });
+  await session.stop();
+  assert.deepEqual(await left(checkout), []);
+});
+
 await test(
   "an agent that fails the permission test is held to no mode from then on, in this session and the next: the view says why for every mode but full, and a run at any of them is refused",
   { timeout: 30_000 },

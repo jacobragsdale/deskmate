@@ -14,7 +14,8 @@ export interface PermissionAsk {
 export interface RunHandlers {
   // New, or a newer version of one with the same id, and what the agent is doing as of it in the coarse words the chat is told. The runner leaves `run` as "": the session, which knows the run, fills it in.
   activity(item: ActivityItem, doing: Summary): void;
-  permission(ask: PermissionAsk): Promise<"allow-once" | "allow-run" | "refuse">;
+  // `gone` is aborted once nobody waits for the answer any more: the agent took the request back or went, or the run was stopped.
+  permission(ask: PermissionAsk, gone: AbortSignal): Promise<"allow-once" | "allow-run" | "refuse">;
 }
 
 /** A request that may carry on from an earlier one: `key` names its thread's root, its asker, the agent, and the mode and delivery it was let go at; `text` is the request alone, without the usual context. */
