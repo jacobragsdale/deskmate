@@ -21,10 +21,10 @@ npm ci && npm run build
 docker build -t player-two .
 ```
 
-The hub also hands teammates the Windows installer, from a folder of three files: `player-two-setup.exe`, `wsl-runtime.tar.gz` and `wsl-runtime.tar.gz.sha256`. Pushing a version tag such as `v0.5.0` to GitHub runs the Release workflow, which builds all three and keeps them with its run as the artifact `player-two-v0.5.0`. Fetch them into a folder named `downloads`:
+The hub also hands teammates the Windows installer, from a folder of three files: `player-two-setup.exe`, `wsl-runtime.tar.gz` and `wsl-runtime.tar.gz.sha256`. Pushing a version tag such as `v0.6.0` to GitHub runs the Release workflow, which builds all three and keeps them with its run as the artifact `player-two-v0.6.0`. Fetch them into a folder named `downloads`:
 
 ```sh
-gh run download RUN_ID --name player-two-v0.5.0 --dir artifact
+gh run download RUN_ID --name player-two-v0.6.0 --dir artifact
 mkdir downloads
 cp artifact/release/player-two-setup.exe artifact/dist/wsl-runtime.tar.gz artifact/dist/wsl-runtime.tar.gz.sha256 downloads/
 ```
@@ -310,8 +310,8 @@ To deploy the hub:
 
    ```sh
    npm ci && npm run build
-   docker build -t REGISTRY/player-two:0.5.0 .
-   docker push REGISTRY/player-two:0.5.0
+   docker build -t REGISTRY/player-two:0.6.0 .
+   docker push REGISTRY/player-two:0.6.0
    ```
 
 2. Create the join token.
@@ -320,7 +320,7 @@ To deploy the hub:
    kubectl create secret generic player-two --from-literal=join-token="$(openssl rand -hex 16)"
    ```
 
-3. In `deploy/k8s.yaml`, replace `REGISTRY/player-two:0.5.0` with your image, `https://dev.azure.com/YOUR-ORGANISATION/` with the address your repos live under, and `player-two.example.internal` and `player-two-tls` with your host name and TLS secret.
+3. In `deploy/k8s.yaml`, replace `REGISTRY/player-two:0.6.0` with your image, `https://dev.azure.com/YOUR-ORGANISATION/` with the address your repos live under, and `player-two.example.internal` and `player-two-tls` with your host name and TLS secret.
 
 4. Apply the manifest.
 

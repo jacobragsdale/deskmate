@@ -246,6 +246,6 @@ Inside WSL (or the home folder on Linux and macOS):
 | 0.3 | | Python hub and client. Today. |
 | 0.4 | 1 | Phase 0. Auth header version 2. `/info` reports version and protocol. |
 | 0.5 | 2 | Phase 1. Events replace notes. Fresh database. |
-| | 3 | Phase 4. An event's author may be an agent, `owner/repo`, which a client of protocol 2 cannot read. Schema 7. |
+| 0.6 | 3 | Phase 4. An event's author may be an agent, `owner/repo`, which a client of protocol 2 cannot read. Schema 7. |
 
 From 0.5 on, a new kind is not a protocol change. The hub refuses to start on a database made by another schema version, except 0.5's (schema 5) and phase 2's (schema 6): to 5 it adds the search index of phase 2, filled from the events it holds, and to both the agents table of phase 4 (schema 7), empty.

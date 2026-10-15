@@ -38,7 +38,7 @@ items:
             fsGroup: 10001
           containers:
             - name: hub
-              image: REGISTRY/player-two:0.5.0
+              image: REGISTRY/player-two:0.6.0
               ports:
                 - containerPort: 8787
               env:
