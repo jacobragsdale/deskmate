@@ -2,7 +2,10 @@
 
 import { z } from "zod";
 
-import { agentSchema, permissionModeSchema, teamRepoSchema } from "../core/wire.ts";
+import { MAX_GRANT } from "../core/kinds.ts";
+import { agentSchema, nameSchema, permissionModeSchema, teamRepoSchema } from "../core/wire.ts";
+
+const deliverySchema = z.enum(["review", "post"]); // Whether an answer waits for its owner to review it, or is posted as soon as it is ready.
 
 /** Where one tagged agent stands, already worked out for the reader: `mine` says whether it is their own agent. `id` is the request's. */
 const requestSchema = z
@@ -11,8 +14,18 @@ const requestSchema = z
     owner: z.string(),
     repo: z.string(),
     mine: z.boolean(),
-    // What its owner last let it run on, and at which permission mode; null when they never have.
-    accepted: z.strictObject({ branch: z.string(), commit: z.string(), dirty: z.boolean(), mode: permissionModeSchema }).readonly().nullable(),
+    // What its owner last let it run on, and at which permission mode; null when they never have. `grant` is the grant of the owner's it ran under, by its id, and when that grant ends,
+    // `expires` null when this desk holds no such grant of theirs; null when the owner let it run themselves.
+    accepted: z
+      .strictObject({
+        branch: z.string(),
+        commit: z.string(),
+        dirty: z.boolean(),
+        mode: permissionModeSchema,
+        grant: z.strictObject({ id: z.string(), expires: z.int().nullable() }).readonly().nullable()
+      })
+      .readonly()
+      .nullable(),
     status: z.discriminatedUnion("kind", [
       z.strictObject({ kind: z.literal("drafted") }), // Mine: an answer is waiting for my review.
       z.strictObject({ kind: z.literal("running"), startedAt: z.number(), branch: z.string() }), // Mine: at work since `startedAt`, Unix milliseconds.
@@ -51,6 +64,9 @@ const said = {
   agent: z.string().nullable(), // The repo the sender's agent worked in, for an agent's answer; null when the sender typed it.
   branch: z.string(), // The branch that agent was on; "" when unknown.
   commit: z.string(), // The commit it was on, as its owner accepted the run; "" when unknown.
+  // For an agent's answer whose run its owner let go under a grant of theirs: the grant, by its id, the mode the run had, and when the grant ends, null when this desk holds no such grant
+  // of theirs. Null for anything else, and when where the run went ahead is unknown, as `commit` is.
+  grant: z.strictObject({ id: z.string(), mode: permissionModeSchema, expires: z.int().nullable() }).readonly().nullable(),
   ts: z.int(),
   trusted: z.boolean(),
   body: z.string(), // As last edited. "" when deleted, and when the message failed its signature check: its text never reaches the window.
@@ -132,6 +148,23 @@ const currentSchema = z
   })
   .readonly();
 
+/**
+ * A grant of the user's that stands, not revoked and not expired: who may ask (names, or "*" for anyone on the hub) their agent in `repo`, at which mode, whether its answer is posted or kept for review,
+ * until when (Unix seconds), and how many runs a day, with how many it let go in the last 24 hours, a run going now among them.
+ */
+const grantSchema = z
+  .strictObject({
+    id: z.string(), // The grant's event id: what `revoke` names.
+    repo: z.string(),
+    askers: z.array(z.string()).readonly(),
+    mode: permissionModeSchema,
+    delivery: deliverySchema,
+    expires: z.int(),
+    runsPerDay: z.int(),
+    runsToday: z.int()
+  })
+  .readonly();
+
 export const viewSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("setup"), presets: z.array(agentSchema).readonly() }).readonly(), // Nobody has joined a hub from this machine yet. The join form offers the presets, the first at first.
   z.strictObject({ kind: z.literal("stopped"), problem: z.string() }).readonly(), // The desk has gone and will not start again. The window makes this one itself: there is no desk to send it.
@@ -157,6 +190,7 @@ export const viewSchema = z.discriminatedUnion("kind", [
       unread: z.int(),
       team: z.array(teamRepoSchema).readonly(),
       myRepos: z.array(z.string()).readonly(),
+      grants: z.array(grantSchema).readonly(), // The user's grants that stand, first made first.
       otherChannels: z.array(z.strictObject({ name: z.string(), members: z.array(z.string()).readonly() }).readonly()).readonly(), // Channels the user could join.
       busy: z.strictObject({ working: z.int(), unsent: z.int() }).readonly(), // What quitting now would lose: agents at work and drafts not sent. Here so the window can warn without asking first.
       current: currentSchema.nullable()
@@ -187,6 +221,22 @@ export const commandSchema = z.discriminatedUnion("do", [
   z.strictObject({ do: z.literal("permit"), ask: z.string().max(40), answer: z.enum(["allow-once", "allow-run", "refuse"]) }), // The user's answer to an ask in the view.
   z.strictObject({ do: z.literal("stopAll"), chat }), // Stop every agent of the user's at work on a request in this chat, in a thread or not.
   z.strictObject({ do: z.literal("decline"), id, repo }),
+  // Let `askers`, names or "*" for anyone on the hub, ask the user's agent in `repo` with nobody at the desk, from now for `lasts` seconds, at most 30 days: at `mode`, its answer posted or kept
+  // for review as `delivery` says, and at most `runsPerDay` times in any 24 hours. Sent to everyone as a grant.
+  z.strictObject({
+    do: z.literal("grant"),
+    repo,
+    askers: z
+      .array(z.union([nameSchema, z.literal("*")]))
+      .min(1)
+      .max(100)
+      .readonly(),
+    mode: permissionModeSchema,
+    delivery: deliverySchema,
+    lasts: z.int().min(1).max(MAX_GRANT),
+    runsPerDay: z.int().min(1).max(1000)
+  }),
+  z.strictObject({ do: z.literal("revoke"), id }), // Take back a grant of the user's, by its event's id: a request after it waits for their click, and a run going under it stops.
   z.strictObject({ do: z.literal("joinChannel"), name: z.string().max(40) }),
   z.strictObject({ do: z.literal("leaveChannel"), chat }),
   z.strictObject({ do: z.literal("pin"), chat, repo }),
@@ -277,6 +327,7 @@ export type CurrentView = z.infer<typeof currentSchema>;
 export type View = z.infer<typeof viewSchema>;
 export type ChatView = Extract<View, { kind: "chat" }>;
 export type Check = z.infer<typeof checkSchema>;
+export type GrantView = z.infer<typeof grantSchema>;
 export type ActivityItem = z.infer<typeof activityItemSchema>;
 export type AskView = z.infer<typeof askSchema>;
 export type Hit = z.infer<typeof hitSchema>;

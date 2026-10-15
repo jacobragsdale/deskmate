@@ -33,34 +33,42 @@ function reach(grant: Grant): number {
   return MODES.indexOf(grant.mode) * 2 + Number(grant.delivery === "post");
 }
 
-/** A request of an agent ("owner/repo"), by whom, and when, in Unix seconds. */
+/** A grant from the log that stands, with how many runs it let go in the 24 hours before the time it was looked at. */
+export type Standing = Grant & { readonly runsToday: number };
+
+/** A grant from the log as it stands at `now`, or null when it does not: see `standing`. */
+function stands(grant: Entry, revocations: readonly Entry[], accepted: readonly Entry[], now: number, unlogged: readonly string[]): Standing | null {
+  const said = readContent(grant.event);
+  const { id, author } = grant.event;
+  if (!grant.trusted || said.kind !== "grant" || !said.content.agent.startsWith(`${author}/`) || revoked(grant, revocations) || now >= said.content.expires) {
+    return null;
+  }
+  const logged = accepted.filter((entry) => entry.trusted && entry.event.author === author && now - entry.event.ts < DAY && grantOf(entry.event) === id).length;
+  return { id, ...said.content, runsToday: logged + unlogged.filter((each) => each === id).length };
+}
+
+/**
+ * The grants that stand at `now`, first in the log first: each made by the owner of the agent it names, not revoked by its author, and not expired. An entry whose signature does not hold counts for nothing.
+ * Each comes with how many jobs its author accepted under it in the 24 hours before `now`, and the runs `unlogged` names: the grant of each run its owner's desk has let go under one
+ * and not told the log of yet, as it does once git has said where the checkout stands. Counting from job.accepted in the log, rather than in memory, is what lets the count survive a restart.
+ */
+export function standing(grants: readonly Entry[], revocations: readonly Entry[], accepted: readonly Entry[], now: number, unlogged: readonly string[] = []): Standing[] {
+  return grants.toSorted((a, b) => a.seq - b.seq).flatMap((grant) => stands(grant, revocations, accepted, now, unlogged) ?? []);
+}
+
+/** A request of an agent ("owner/repo"), by whom, and when, in Unix seconds; and, as `standing` takes them, the runs let go under a grant that the log does not hold yet. */
 interface Asked {
   readonly agent: string;
   readonly asker: string;
   readonly now: number;
-  // The grant of each run the owner's desk has let go under one and not told the log of yet, as it does once git has said where the checkout stands: counted as the runs they are.
   readonly unlogged?: readonly string[];
 }
 
-/** A grant from the log as it applies to a request, or null when it does not: see `liveGrant`. */
-function applying(grant: Entry, revocations: readonly Entry[], accepted: readonly Entry[], { agent, asker, now, unlogged = [] }: Asked): Grant | null {
-  const said = readContent(grant.event);
-  const { id, author } = grant.event;
-  if (!grant.trusted || said.kind !== "grant" || said.content.agent !== agent || !agent.startsWith(`${author}/`)) {
-    return null;
-  }
-  const logged = accepted.filter((entry) => entry.trusted && entry.event.author === author && now - entry.event.ts < DAY && grantOf(entry.event) === id).length;
-  const runs = logged + unlogged.filter((each) => each === id).length;
-  return covers(said.content.askers, asker) && !revoked(grant, revocations) && now < said.content.expires && runs < said.content.runsPerDay ? { id, ...said.content } : null;
-}
-
 /**
- * The grant that lets `asker`'s request of `agent` run at `now`, or null when none does. An entry whose signature does not hold counts for nothing.
- * A grant applies when its author owns the agent, it names the asker or "*", its author has not revoked it, `now` is before it expires, and its author accepted fewer than its `runsPerDay` jobs under it in the 24 hours before `now`,
- * counting the runs `unlogged` names. Counting from job.accepted in the log, rather than in memory, is what lets the limit survive a restart.
- * When several apply, the one that allows least wins: the lowest mode, then review before posting directly, then the first in the log.
+ * The grant that lets `asker`'s request of `agent` run at `now`, or null when none does: one that stands, names the agent, names the asker or "*", and let go fewer than its `runsPerDay` jobs
+ * in the 24 hours before `now`. When several apply, the one that allows least wins: the lowest mode, then review before posting directly, then the first in the log.
  */
-export function liveGrant(grants: readonly Entry[], revocations: readonly Entry[], accepted: readonly Entry[], request: Asked): Grant | null {
-  const live = grants.toSorted((a, b) => a.seq - b.seq).flatMap((grant) => applying(grant, revocations, accepted, request) ?? []);
+export function liveGrant(grants: readonly Entry[], revocations: readonly Entry[], accepted: readonly Entry[], { agent, asker, now, unlogged = [] }: Asked): Standing | null {
+  const live = standing(grants, revocations, accepted, now, unlogged).filter((grant) => grant.agent === agent && covers(grant.askers, asker) && grant.runsToday < grant.runsPerDay);
   return live.toSorted((a, b) => reach(a) - reach(b))[0] ?? null;
 }

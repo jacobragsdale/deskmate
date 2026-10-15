@@ -12,7 +12,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
 
 import { main } from "../src/cli/main.ts";
-import { readContent } from "../src/core/kinds.ts";
+import { MAX_GRANT, readContent } from "../src/core/kinds.ts";
 import { noteLink, notesIn } from "../src/core/links.ts";
 import { authHeader, eventIsAuthentic, loadKey, publicHex, signEvent } from "../src/core/sign.ts";
 import type { Event, PermissionMode } from "../src/core/wire.ts";
@@ -25,7 +25,7 @@ import { Session } from "../src/desk/session.ts";
 import type { Options } from "../src/desk/session.ts";
 import { createHub } from "../src/hub/app.ts";
 import { createServer } from "../src/mcp/server.ts";
-import { runOf } from "../src/shared/ipc.ts";
+import { commandSchema, runOf } from "../src/shared/ipc.ts";
 import type { Arrival, ChatView, MessageView, Notice } from "../src/shared/ipc.ts";
 import { startHub as hubOfItsOwn, ownMode } from "./startHub.ts";
 
@@ -291,6 +291,7 @@ await test("two people, their agents and a channel, through the real hub", { tim
       agent: "uploader",
       branch: "main ±",
       commit: COMMIT,
+      grant: null,
       trusted: true,
       body: "Retries live in /dev-jacob/uploader/queue.py (edited)",
       edited: false,
@@ -343,7 +344,7 @@ await test("two people, their agents and a channel, through the real hub", { tim
   const working = await until(bob.session, "bob sees it working, on the branch it reported", (view) =>
     messages(view).find((message) => message.requests[0]?.status.kind === "working" && message.requests[0].status.branch === "main ±")
   );
-  assert.deepEqual(working.requests[0]?.accepted, { branch: "main", commit: COMMIT, dirty: true, mode: "full" }); // Where its owner let it run, and what it may do.
+  assert.deepEqual(working.requests[0]?.accepted, { branch: "main", commit: COMMIT, dirty: true, mode: "full", grant: null }); // Where its owner let it run, what it may do, and that he let it himself.
   assert.equal(jacob.session.view().busy.working, 1);
   await jacob.session.handle({ do: "stop", id: slow.id, repo: "uploader" });
   await until(bob.session, "bob sees it stopped", (view) => messages(view).some((message) => message.requests[0]?.status.kind === "stopped"));
@@ -1331,5 +1332,55 @@ await test(
     await until(bob.session, "his own requests waiting for him", (view) => view.waiting === 3);
     await pause(300);
     assert.deepEqual([bob.ran.length, own.map((id) => shownTo(bob.session, id)?.requests[0]?.status.kind)], [3, ["ready", "ready"]]);
+  }
+);
+
+await test(
+  "the grant command lets teammates ask the user's agent from now for as long as asked, listed with its runs today until it is revoked or ends, and everyone in the chat sees an answer's run went ahead under it; only a checkout of one's own is granted, and only a grant of one's own revoked",
+  { timeout: 30_000 },
+  async (t) => {
+    let clock = Math.floor(Date.now() / 1000); // Everyone's, and the hub's.
+    const hub = await hubOfItsOwn(t, () => clock);
+    const alice = await hub.join("alice");
+    const owner = await hub.join("bob");
+    const dev = join(hub.dir, "dev-bob");
+    checkout(dev, "uploader");
+    const bob = deskOf(t, owner, dev, { describe: () => Promise.resolve({ branch: "main", commit: COMMIT, dirty: false }) });
+    const asker = deskOf(t, alice, join(hub.dir, "dev-alice"));
+    await until(bob.session, "the checkout shared", (view) => view.loaded && view.myRepos.includes("uploader"));
+    await until(asker.session, "alice's chats loaded", (view) => view.loaded);
+    const grant = { do: "grant", askers: ["alice"], mode: "full", delivery: "post", lasts: 3600, runsPerDay: 5 } as const;
+    for (const wrong of [{ lasts: MAX_GRANT + 1 }, { lasts: 0 }, { askers: [] }, { askers: ["Alice"] }, { runsPerDay: 0 }, { delivery: "email" }]) {
+      assert.equal(commandSchema.safeParse({ ...grant, repo: "uploader", ...wrong }).success, false, JSON.stringify(wrong));
+    }
+
+    // Granted for an hour: sent to everyone, and listed for him with no runs yet.
+    await assert.rejects(bob.session.handle({ ...grant, repo: "billing" }), { message: `there is no checkout of billing under ${dev}, so no agent of yours answers for it` });
+    await bob.session.handle({ ...grant, repo: "uploader" });
+    const [made] = bob.session.view().grants;
+    assert.ok(made !== undefined);
+    assert.deepEqual({ ...made, id: "" }, { id: "", repo: "uploader", askers: ["alice"], mode: "full", delivery: "post", expires: clock + 3600, runsPerDay: 5, runsToday: 0 });
+    assert.deepEqual(
+      (await alice.events({ chat: "*" })).flatMap(({ event }) => (event.kind === "grant" ? [event.id] : [])),
+      [made.id]
+    );
+
+    // Alice asks from her window: her answer says the grant its run went ahead under, at which mode and until when, and his list counts the run.
+    await asker.session.handle({ do: "send", chat: "bob", text: "@bob/uploader have a look" });
+    const answer = await until(asker.session, "the answer", (view) => messages(view).find((message) => message.agent === "uploader"));
+    assert.deepEqual(answer.grant, { id: made.id, mode: "full", expires: clock + 3600 });
+    await until(bob.session, "its run counted", (view) => view.grants[0]?.runsToday === 1);
+
+    // Only his own grant is his to revoke; revoked, or ended, it leaves his list.
+    const theirs = (await alice.publish("*", "grant", { agent: "alice/uploader", askers: ["bob"], mode: "read-only", delivery: "review", expires: clock + 60, runsPerDay: 1 })).event.id;
+    for (const id of [theirs, "0".repeat(64)]) {
+      await assert.rejects(bob.session.handle({ do: "revoke", id }), { message: "that is not a grant of yours" });
+    }
+    await bob.session.handle({ do: "revoke", id: made.id });
+    assert.deepEqual(bob.session.view().grants, []);
+    await bob.session.handle({ ...grant, repo: "uploader", lasts: 60 });
+    assert.equal(bob.session.view().grants.length, 1);
+    clock += 60;
+    assert.deepEqual(bob.session.view().grants, []);
   }
 );

@@ -63,7 +63,7 @@ await test("a grant lets a request run when its author owns the agent, it names 
     liveGrant(grants, revocations, accepted, { agent, asker, now })?.id ?? null;
   const id = grant.event.id;
 
-  assert.deepEqual(liveGrant([grant], [], [], { agent: "jacob/uploader", asker: "bob", now: NOW }), { id, ...GRANT, runsPerDay: 2 });
+  assert.deepEqual(liveGrant([grant], [], [], { agent: "jacob/uploader", asker: "bob", now: NOW }), { id, ...GRANT, runsPerDay: 2, runsToday: 0 });
   assert.equal(live([grant], [], [], "carol"), null); // Not named.
   const everyone = entry("jacob", "grant", { ...GRANT, askers: ["*"] });
   assert.equal(live([everyone], [], [], "carol"), everyone.event.id);

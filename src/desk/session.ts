@@ -8,11 +8,11 @@ import { join as joinPath } from "node:path";
 import { z } from "zod";
 
 import { runOf } from "../shared/ipc.ts";
-import type { ActivityItem, Arrival, AskView, ChatView, Check, Command, CurrentView, Hit, LineView, MessageView, NoteView, Notice, ReplyView, RequestView, RowView } from "../shared/ipc.ts";
+import type { ActivityItem, Arrival, AskView, ChatView, Check, Command, CurrentView, GrantView, Hit, LineView, MessageView, NoteView, Notice, ReplyView, RequestView, RowView } from "../shared/ipc.ts";
 import { agentPrompt, ChatLog, chatOf, continues, mentions, ONLINE, refOf, rings } from "../core/chat.ts";
 import type { Accepted, Entry, Message, Request } from "../core/chat.ts";
-import { DAY, liveGrant, revoked } from "../core/grants.ts";
-import type { Grant } from "../core/grants.ts";
+import { DAY, liveGrant, revoked, standing } from "../core/grants.ts";
+import type { Standing } from "../core/grants.ts";
 import { readContent } from "../core/kinds.ts";
 import { notesIn } from "../core/links.ts";
 import type { Content, ContentOf, Summary } from "../core/kinds.ts";
@@ -113,10 +113,10 @@ interface AgentRun {
 
 type ChatCommand = Exclude<Command, { do: "join" | "doctor" | "search" | "testPermissions" }>;
 type MessageDo = "send" | "reply" | "react" | "edit" | "delete";
-type JobDo = "sendDraft" | "discardDraft" | "run" | "stop" | "stopAll" | "permit" | "decline" | "withdraw";
+type JobDo = "sendDraft" | "discardDraft" | "run" | "stop" | "stopAll" | "permit" | "decline" | "withdraw" | "grant" | "revoke";
 
 const MESSAGE_DOS: ReadonlySet<string> = new Set<MessageDo>(["send", "reply", "react", "edit", "delete"]);
-const JOB_DOS: ReadonlySet<string> = new Set<JobDo>(["sendDraft", "discardDraft", "run", "stop", "stopAll", "permit", "decline", "withdraw"]);
+const JOB_DOS: ReadonlySet<string> = new Set<JobDo>(["sendDraft", "discardDraft", "run", "stop", "stopAll", "permit", "decline", "withdraw", "grant", "revoke"]);
 
 function isAboutMessages(command: ChatCommand): command is Extract<ChatCommand, { readonly do: MessageDo }> {
   return MESSAGE_DOS.has(command.do);
@@ -374,6 +374,12 @@ export class Session {
       case "withdraw":
         await this.withdraw(command.id, command.owner, command.repo);
         break;
+      case "grant":
+        await this.grant(command);
+        break;
+      case "revoke":
+        await this.revoke(command.id);
+        break;
     }
   }
 
@@ -420,6 +426,7 @@ export class Session {
       unread: rows.reduce((sum, row) => sum + row.unread, 0),
       team: this.team,
       myRepos: [...this.checkouts.keys()],
+      grants: this.myGrants(now),
       otherChannels: this.channels.filter((channel) => !channel.members.includes(this.me)).map((channel) => ({ name: channel.name, members: channel.members })),
       busy: { working: this.runs.size, unsent: [...this.drafts.values()].reduce((sum, drafts) => sum + drafts.length, 0) },
       current: this.current === "" ? null : this.currentView(now)
@@ -495,6 +502,7 @@ export class Session {
       agent: message.agent,
       branch: accepted === null ? message.branch : ranOn(accepted),
       commit: accepted?.commit ?? "",
+      grant: this.answeredUnder(ownerOf(event.author), accepted),
       ts: event.ts,
       trusted: true,
       body: message.text,
@@ -521,7 +529,7 @@ export class Session {
 
   /** An event whose signature failed: who it claims to be from and when, and never what it says. */
   private warningView({ seq, event }: Entry): MessageView {
-    const nothing = { agent: null, branch: "", commit: "", body: "", edited: false, deleted: false, reactions: [], notes: [], quote: "", requests: [], replyCount: 0, replies: [] };
+    const nothing = { agent: null, branch: "", commit: "", grant: null, body: "", edited: false, deleted: false, reactions: [], notes: [], quote: "", requests: [], replyCount: 0, replies: [] };
     return { id: event.id, seq, sender: event.author, ts: event.ts, trusted: false, header: true, ...nothing };
   }
 
@@ -576,8 +584,34 @@ export class Session {
   private requestView(request: Request): RequestView[] {
     const { owner, repo } = request;
     const mine = owner === this.me;
-    const accepted = request.accepted === null ? null : { branch: request.accepted.branch, commit: request.accepted.commit, dirty: request.accepted.dirty, mode: request.accepted.mode };
+    const accepted =
+      request.accepted === null
+        ? null
+        : { branch: request.accepted.branch, commit: request.accepted.commit, dirty: request.accepted.dirty, mode: request.accepted.mode, grant: this.ranUnder(owner, request.accepted) };
     return request.state === "answered" ? [] : [{ id: request.message.entry.event.id, owner, repo, mine, accepted, status: mine ? this.myStatus(request) : this.theirStatus(request) }];
+  }
+
+  /** The grant of `owner`'s a run went ahead under, by the id its acceptance names, and when it ends: null when the owner let it run themselves, and `expires` null when no such grant of theirs is held here. */
+  private ranUnder(owner: string, { by }: Accepted): NonNullable<RequestView["accepted"]>["grant"] {
+    if (by === "owner") {
+      return null;
+    }
+    const grant = this.grants.get(by.grant);
+    const said = grant === undefined ? null : readContent(grant.event);
+    return { id: by.grant, expires: grant?.trusted === true && grant.event.author === owner && said?.kind === "grant" ? said.content.expires : null };
+  }
+
+  /** The grant an answer's run went ahead under, with the mode it ran at, from its acceptance: null when its owner let it run themselves, or where it ran is unknown. */
+  private answeredUnder(owner: string, accepted: Accepted | null): MessageView["grant"] {
+    const grant = accepted === null ? null : this.ranUnder(owner, accepted);
+    return accepted === null || grant === null ? null : { ...grant, mode: accepted.mode };
+  }
+
+  /** The user's grants that stand, first made first, each with the runs it let go in the last 24 hours. */
+  private myGrants(now: number): GrantView[] {
+    return standing([...this.grants.values()], [...this.revocations.values()], [...this.acceptances.values()], now, this.unlogged()).flatMap(({ agent, ...grant }) =>
+      agent.startsWith(`${this.me}/`) ? [{ ...grant, repo: agent.slice(this.me.length + 1) }] : []
+    );
   }
 
   private myStatus(request: Request): RequestView["status"] {
@@ -1208,10 +1242,33 @@ export class Session {
     }
   }
 
-  /** The grant of the user's that lets `asker`'s request of their agent in `repo` run at `now`, counting each run started under one that the log does not hold yet; null when none does. */
-  private grantFor(repo: string, asker: string, now: number): Grant | null {
-    const unlogged = [...this.runs.values()].flatMap((run) => (run.accepting && run.grant !== null ? [run.grant] : []));
-    return liveGrant([...this.grants.values()], [...this.revocations.values()], [...this.acceptances.values()], { agent: `${this.me}/${repo}`, asker, now, unlogged });
+  /** The grant of the user's that lets `asker`'s request of their agent in `repo` run at `now`; null when none does. */
+  private grantFor(repo: string, asker: string, now: number): Standing | null {
+    return liveGrant([...this.grants.values()], [...this.revocations.values()], [...this.acceptances.values()], { agent: `${this.me}/${repo}`, asker, now, unlogged: this.unlogged() });
+  }
+
+  /** The grant of each run going under one that the log does not hold the acceptance of yet. */
+  private unlogged(): string[] {
+    return [...this.runs.values()].flatMap((run) => (run.accepting && run.grant !== null ? [run.grant] : []));
+  }
+
+  /**
+   * Let teammates ask the user's agent in `repo` with nobody at the desk, by a grant to everyone: from now for `lasts` seconds, at a mode, with its answers posted or kept for review, so many times a day.
+   * Whether the agent that answers can keep the mode is asked when a request comes: it may be another agent by then.
+   */
+  private async grant({ repo, askers, mode, delivery, lasts, runsPerDay }: Extract<ChatCommand, { readonly do: "grant" }>): Promise<void> {
+    if (!this.checkouts.has(repo)) {
+      throw new PlayerTwoError(`there is no checkout of ${repo} under ${this.dev}, so no agent of yours answers for it`);
+    }
+    await this.publish("*", "grant", { agent: `${this.me}/${repo}`, askers, mode, delivery, expires: Math.floor(this.client.now()) + lasts, runsPerDay });
+  }
+
+  /** Take back a grant of the user's: it lets nothing run from now on, and a run going under it is stopped (see `keep`). */
+  private async revoke(id: string): Promise<void> {
+    if (this.grants.get(id)?.event.author !== this.me) {
+      throw new PlayerTwoError("that is not a grant of yours");
+    }
+    await this.publish("*", "grant.revoke", {}, [id]);
   }
 
   // ── running an agent ──────────────────────────────────────────────────────
