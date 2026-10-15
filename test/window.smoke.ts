@@ -234,7 +234,7 @@ async function addAgent(page: Page, program: string, args: readonly string[]): P
 }
 
 await test(
-  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, keeps a card in reach in a closed thread and brings one far above the end into view, refuses and allows for the run from a card, and offers only the modes the agent that answers can keep, full alone beside its reason when that is all, and a full chosen once not again in one click when less is there, and for a grant full alone while it is untested; and on My agents makes grants from its dialog, which warns of full access for anyone however its answers go and asks a second yes when they are posted directly, one grant for each double click, revokes one with a double click and not the next, counts the run a grant lets go, and holds a repo back with a double click, unshared and answering nobody under that grant, and lets it answer again; and says under whose grant a run went ahead, to its owner and to whoever asked, and that an answer its agent signed was not reviewed, where it is shown and where it is found; and while a grant is live stays open on close, saying why, where it cannot say it went to the tray, and once told hides on close, answering on, until started again; lists a grant apart once its repo is not checked out here, and revokes it there; and quits on close once none is",
+  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, keeps a card in reach in a closed thread and brings one far above the end into view, refuses and allows for the run from a card, and offers only the modes the agent that answers can keep, full alone beside its reason when that is all, and a full chosen once not again in one click when less is there, and for a grant full alone while it is untested; and on My agents makes grants from its dialog, which warns of full access for anyone however its answers go and asks a second yes when they are posted directly, one grant for each double click, revokes one with a double click and not the next, counts the run a grant lets go, and holds a repo back with a double click, unshared and answering nobody under that grant, and lets it answer again; and says under whose grant a run went ahead, to its owner while it runs and in its answer, and to whoever asked, and that an answer its agent signed was not reviewed, where it is shown and where it is found; and while a grant is live stays open on close, saying why, where it cannot say it went to the tray, and once told hides on close, answering on, until started again; lists a grant apart once its repo is not checked out here, and revokes it there; and quits on close once none is",
   { skip: NO_DISPLAY ? "no display: run it under xvfb-run" : false, timeout: 120_000 },
   async (t) => {
     assert.ok(existsSync(join(ROOT, "dist", "main.js")), "dist/ is not built: run `npm run build` first");
@@ -803,7 +803,7 @@ await test(
     await page.click("button", "Back");
 
     // My agents, with the scripted agent answering again: a row for her billing agent, on its branch, and who answers for it. From its dialog, which offers the modes that agent can keep, she
-    // grants full access posted directly for anyone, which asks a second yes first, and carol read-only, posted directly, twice a day, double-clicking each time: each makes one grant.
+    // grants full access posted directly for anyone, which asks a second yes first, and carol read-only, posted directly, three times a day, double-clicking each time: each makes one grant.
     // She revokes the first, double-clicking, and it alone goes. Carol's next request runs with nobody touching the window, and the grant counts it.
     await chooseAgent(process.execPath);
     await page.click("footer button", "My agents");
@@ -849,7 +849,7 @@ await test(
     await choose("asker", "carol");
     await choose("mode", "read-only");
     await choose("delivery", "post");
-    await page.type(`[role="dialog"] input[name="runs"]`, "2");
+    await page.type(`[role="dialog"] input[name="runs"]`, "3");
     await page.shot("grant");
     await page.doubleClick(`document.querySelector('[role="dialog"] button[type="submit"]')`);
     const carols = `document.querySelectorAll('li[data-grant]')[1]`;
@@ -866,7 +866,7 @@ await test(
     );
     assert.equal(await toEveryone("grant.revoke"), 1);
     assert.equal(await page.eval(`document.querySelectorAll('li[data-grant]').length`), 1);
-    assert.match(String(await page.eval(`${granted}.innerText`)), / · 0 of 2 runs today/);
+    assert.match(String(await page.eval(`${granted}.innerText`)), / · 0 of 3 runs today/);
     await page.shot("my-agents");
     await page.click("button", "Back");
     await carol.publish("alice", "message", { text: "@alice/billing read it under the grant", via: "cli" });
@@ -874,8 +874,20 @@ await test(
     await page.until("carol's request answered", `${answered} !== undefined`);
     assert.match(String(await page.eval(`${answered}.querySelector("header").innerText`)), /\/billing agent on main ± at [0-9a-f]{7} · ran under your grant, read-only, until .+ · not reviewed\n/);
     assert.equal(await acceptedAt(carol, "alice"), "read-only");
+    // A slow one of hers in #history runs under the grant too: the line under it tells alice, its owner, that it runs under her grant, until she stops it.
+    await carol.publish("#history", "message", { text: "@alice/billing slow, under the grant", via: "cli" });
+    await page.click("nav button", "#history");
+    const slowly = `[...document.querySelectorAll("main article")].find((each) => each.innerText.includes("slow, under the grant"))`;
+    await page.until(
+      "the line under it saying it runs under her grant",
+      `/your billing agent is working on main (± )?at [0-9a-f]{7} · under your grant, read-only, until /.test(${slowly}?.innerText ?? "")`
+    );
+    await page.eval(`[...${slowly}.querySelectorAll("button")].find((each) => each.textContent.includes("Stop")).click()`);
+    await page.until("it stopped", `${slowly}.innerText.includes("◆ stopped · your billing agent")`);
+    await page.click("nav button", "carol");
+    await page.until("the chat with carol again", `document.querySelector("main h1")?.textContent === "carol"`);
     await page.click("footer button", "My agents");
-    await page.until("the run counted", `${granted}?.innerText.includes(" · 1 of 2 runs today") === true`);
+    await page.until("both runs counted", `${granted}?.innerText.includes(" · 2 of 3 runs today") === true`);
 
     // Held back, her billing agent is no longer shared with the team, config.json says so, and carol's next request waits, though the grant stands. Let answer again, it is shared again.
     const shared = async (expected: boolean): Promise<void> => {
@@ -897,7 +909,7 @@ await test(
     await carol.publish("alice", "message", { text: "@alice/billing read it while held", via: "cli" });
     await page.until("carol's request, held", `${newest}.innerText.includes("read it while held") && ${newest}.innerText.includes("◆ you hold back your billing agent, so it answers nobody")`);
     await page.click("footer button", "My agents");
-    await page.until("still one run today", `${granted}?.innerText.includes(" · 1 of 2 runs today") === true`);
+    await page.until("still two runs today", `${granted}?.innerText.includes(" · 2 of 3 runs today") === true`);
     await page.eval(`[...${billing}.querySelectorAll("button")].find((each) => each.textContent === "Let it answer").click()`);
     await page.until("billing answering again", `${billing}.innerText.includes(${JSON.stringify(`on main · ${process.execPath} answers`)})`);
     await shared(true);
@@ -926,7 +938,7 @@ await test(
     await startAgain([]);
     await page.until("the window shown again", `document.visibilityState === "visible"`);
     await page.click("footer button", "My agents");
-    await page.until("both runs counted", `${granted}?.innerText.includes(" · 2 of 2 runs today") === true`);
+    await page.until("all three runs counted", `${granted}?.innerText.includes(" · 3 of 3 runs today") === true`);
 
     // Once her checkout is no longer of a team repo, its row goes and the grant on it is listed apart, where she revokes it; checked out again, billing has no grant.
     // The desk looks under ~/dev again on its next beat, or at once when told what is held back, which is asked here so as not to wait.
