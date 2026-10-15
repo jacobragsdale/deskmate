@@ -220,7 +220,7 @@ async function addAgent(page: Page, program: string, args: readonly string[]): P
 }
 
 await test(
-  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, keeps a card in reach in a closed thread and brings one far above the end into view, refuses and allows for the run from a card, and offers only the modes the agent that answers can keep, full alone beside its reason when that is all, and a full chosen once not again in one click when less is there; and on My agents makes a grant from its dialog, which asks a second yes for full access posted directly for anyone, counts the run it lets go and revokes it, and holds a repo back, unshared and answering nobody under that grant, and lets it answer again; and says under whose grant a run went ahead, to its owner and to whoever asked, and that an answer its agent signed was not reviewed; and while a grant is live hides on close, answering on, until started again, and quits on close once none is",
+  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, keeps a card in reach in a closed thread and brings one far above the end into view, refuses and allows for the run from a card, and offers only the modes the agent that answers can keep, full alone beside its reason when that is all, and a full chosen once not again in one click when less is there; and on My agents makes a grant from its dialog, which asks a second yes for full access posted directly for anyone, counts the run it lets go, and holds a repo back, unshared and answering nobody under that grant, and lets it answer again; and says under whose grant a run went ahead, to its owner and to whoever asked, and that an answer its agent signed was not reviewed; and while a grant is live hides on close, answering on, until started again; lists a grant apart once its repo is not checked out here, and revokes it there; and quits on close once none is",
   { skip: NO_DISPLAY ? "no display: run it under xvfb-run" : false, timeout: 120_000 },
   async (t) => {
     assert.ok(existsSync(join(ROOT, "dist", "main.js")), "dist/ is not built: run `npm run build` first");
@@ -851,9 +851,23 @@ await test(
     await page.click("footer button", "My agents");
     await page.until("both runs counted", `${granted}?.innerText.includes(" · 2 of 2 runs today") === true`);
 
-    // Revoked, it is gone.
-    await page.eval(`[...${granted}.querySelectorAll("button")].find((each) => each.textContent === "Revoke").click()`);
-    await page.until("the grant gone", `${granted} === null && ${billing}.innerText.includes("No grants")`);
+    // Once her checkout is no longer of a team repo, its row goes and the grant on it is listed apart, where she revokes it; checked out again, billing has no grant.
+    // The desk looks under ~/dev again on its next beat, or at once when told what is held back, which is asked here so as not to wait.
+    const origin = (url: string): void => {
+      execFileSync("git", ["-C", join(home, "dev", "billing"), "remote", "set-url", "origin", url]);
+    };
+    const lookAgain = `window.playerTwo.command({ do: "hold", repo: "billing", held: false })`;
+    const away = `document.querySelector('li[data-away="billing"]')`;
+    origin("https://example.com/elsewhere/billing.git");
+    await page.eval(lookAgain);
+    await page.until("the grant listed apart", `${billing} === null && ${away}?.querySelector("li[data-grant]")?.innerText.includes("carol · read-only · posted directly") === true`);
+    assert.ok(String(await page.eval("document.body.innerText")).includes("Grants on repos not checked out here"));
+    await page.shot("away");
+    await page.eval(`[...${away}.querySelectorAll("button")].find((each) => each.textContent === "Revoke").click()`);
+    await page.until("the grant gone", `${away} === null`);
+    origin("https://dev.azure.com/acme/Platform/_git/billing");
+    await page.eval(lookAgain);
+    await page.until("billing back, with no grant", `${billing}?.innerText.includes("No grants") === true`);
     await page.click("button", "Back");
 
     // Alice asks bob's agent, and a grant of bob's lets it run: the line under her request says whose grant it runs under, at which mode and until when, and so does the answer.

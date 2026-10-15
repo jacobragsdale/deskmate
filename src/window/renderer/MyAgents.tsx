@@ -1,6 +1,6 @@
 /**
  * The user's agents, one for each team repo they have checked out, with the grants that let teammates' requests of each run with nobody at the desk: listed with how many runs each let go today,
- * revoked, and made in a dialog. A grant of full access, posted directly, for everyone needs a second yes that says what it means.
+ * revoked, and made in a dialog. A grant of full access, posted directly, for everyone needs a second yes that says what it means. Grants on repos not checked out here are listed apart, to revoke.
  */
 
 import { cn } from "cn";
@@ -221,6 +221,8 @@ export function MyAgents({ view, act, onClose }: { readonly view: ChatView; read
   const [granting, setGranting] = useState(""); // The repo a grant is being made on; "" while none is.
   const answering = view.agents.find((agent) => agent.id === view.defaultAgent)?.label ?? "";
   const people = view.rows.flatMap((row) => (row.here === null ? [] : [row.chat]));
+  // Repos with a grant that stands but no checkout here: nothing answers under it now, but it is still the user's to revoke, and answers again if the repo is checked out again.
+  const away = [...new Set(view.grants.map((grant) => grant.repo))].filter((repo) => !view.checkouts.some((checkout) => checkout.repo === repo));
   return (
     <div className="flex h-full flex-col gap-3 overflow-y-auto px-[max(16px,calc((100%_-_720px)/2))] py-[6vh]">
       <h1 className="text-2xl font-bold">My agents</h1>
@@ -262,6 +264,20 @@ export function MyAgents({ view, act, onClose }: { readonly view: ChatView; read
           </li>
         ))}
       </ul>
+      {away.length > 0 && (
+        <>
+          <h2 className="mt-2 text-lg font-semibold">Grants on repos not checked out here</h2>
+          <p className="text-muted-foreground">Nothing answers under these while the repo is not checked out in {view.dev}, but they stand: check it out again and its agent answers under them.</p>
+          <ul className="flex flex-col gap-4">
+            {away.map((repo) => (
+              <li key={repo} data-away={repo} className="flex flex-col gap-1.5">
+                <strong>{repo}</strong>
+                <Grants grants={view.grants.filter((grant) => grant.repo === repo)} act={act} />
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
       <p>
         <Button type="button" variant="outline" onClick={onClose}>
           Back
