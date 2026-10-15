@@ -28,7 +28,7 @@ import type { Action, Decision, PermissionMode } from "../permissions.ts";
 import { actionOf, Feed, LINE, summaryOf } from "./activity.ts";
 import { AGENT_TIMEOUT } from "./oneshot.ts";
 import { signInFor } from "./presets.ts";
-import type { AgentRunner, FollowUp, RunHandlers } from "./runner.ts";
+import type { AgentRunner, FollowUp, Pausable, RunHandlers } from "./runner.ts";
 
 const AUTH_REQUIRED = -32000; // The JSON-RPC error code an ACP agent answers with when it needs signing in first.
 const SAID = 500; // Characters of what the agent last wrote on standard error that a failure quotes.
@@ -145,8 +145,8 @@ function readable(output: Readable): ReadableStream<Uint8Array> {
   });
 }
 
-/** A run's time limit, which stands still while the owner is asked: `expire` is called once the agent has had `seconds` of its own. */
-class Clock {
+/** A run's time limit, which stands still while the owner is asked, or while the agent waits on agents it asked: `expire` is called once the agent has had `seconds` of its own. */
+class Clock implements Pausable {
   private readonly expire: () => void;
   private left: number; // Milliseconds.
   private since = Date.now();
@@ -159,8 +159,11 @@ class Clock {
     this.timer = setTimeout(expire, this.left);
   }
 
-  /** The owner is asked: stop counting until every ask is answered. */
+  /** The owner is asked, or an agent the run asked is at work: stop counting until every such wait is over. */
   public pause(): void {
+    if (this.waiting < 0) {
+      return; // Stopped: it never counts again.
+    }
     this.waiting += 1;
     if (this.waiting === 1) {
       clearTimeout(this.timer);
@@ -169,6 +172,9 @@ class Clock {
   }
 
   public resume(): void {
+    if (this.waiting <= 0) {
+      return; // Stopped, or not paused.
+    }
     this.waiting -= 1;
     if (this.waiting === 0) {
       this.since = Date.now();
@@ -428,7 +434,8 @@ export async function greet(agent: Agent, seconds: number, stop: AbortSignal): P
  * An agent over ACP as an agent runner: a process and a session for each run, ended when the run ends; or, for a run that may be followed up, kept open until
  * IDLE seconds pass without a follow-up, a fresh run with the same key takes its place, or the runner is closed.
  */
-export function acpRunner(agent: Agent, seconds: { readonly limit: number; readonly idle: number } = { limit: AGENT_TIMEOUT, idle: IDLE }): AgentRunner {
+export function acpRunner(agent: Agent, { limit = AGENT_TIMEOUT, idle = IDLE }: { readonly limit?: number; readonly idle?: number } = {}): AgentRunner {
+  const seconds = { limit, idle };
   const kept = new Map<string, Kept>();
   let closed = false;
   const end = (conversation: Conversation): void => {
@@ -472,6 +479,7 @@ export function acpRunner(agent: Agent, seconds: { readonly limit: number; reado
         late.abort();
         end(conversation);
       });
+      handlers.hold?.(clock);
       // A stop asks the agent to end its turn, and ends the agent itself if it has not within STOP_GRACE.
       let grace: NodeJS.Timeout | undefined;
       const onCancel = (): void => {

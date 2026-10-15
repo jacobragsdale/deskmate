@@ -16,6 +16,14 @@ export interface RunHandlers {
   activity(item: ActivityItem, doing: Summary): void;
   // `gone` is aborted once nobody waits for the answer any more: the agent took the request back or went, or the run was stopped.
   permission(ask: PermissionAsk, gone: AbortSignal): Promise<"allow-once" | "allow-run" | "refuse">;
+  // The run's time limit, once it starts counting, for the session to stop it while the agent waits on agents it asked, and start it again once none is open. A runner without one never calls it.
+  hold?(limit: Pausable): void;
+}
+
+/** A time limit that can stand still: each pause is matched by one resume, and it counts again once every pause has been. Neither does anything once the run has ended. */
+export interface Pausable {
+  pause(): void;
+  resume(): void;
 }
 
 /** A request that may carry on from an earlier one: `key` names its thread's root, its asker, the agent, and the mode and delivery it was let go at; `text` is the request alone, without the usual context. */

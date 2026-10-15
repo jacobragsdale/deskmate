@@ -63,6 +63,11 @@ function path(nodes: readonly Node[], parent: string, asker: string): Node[] | n
   return null;
 }
 
+/** The job `agent` was asked by the request `request`, under these roots; null when there is none. */
+export function jobIn(nodes: readonly Node[], request: string, agent: string): Node | null {
+  return path(nodes, request, agent)?.at(-1) ?? null;
+}
+
 /** A run of a job: what its owner let it do, and when. */
 interface Run {
   readonly accepted: Accepted;

@@ -19,7 +19,7 @@ import { ChatLog, STALE } from "../src/core/chat.ts";
 import { readContent, SUMMARIES } from "../src/core/kinds.ts";
 import type { Summary } from "../src/core/kinds.ts";
 import { eventIsAuthentic, publicHex } from "../src/core/sign.ts";
-import type { Agent, PermissionMode } from "../src/core/wire.ts";
+import type { Agent, Delivered, PermissionMode } from "../src/core/wire.ts";
 import { acpRunner } from "../src/desk/agents/acp.ts";
 import { agentEnv, agentKey } from "../src/desk/agentKeys.ts";
 import { permissionTests } from "../src/desk/doctor.ts";
@@ -440,6 +440,7 @@ async function until<T>(what: string, find: () => T | undefined | false): Promis
 /** What bobsDesk gives a test. */
 interface Desk {
   readonly alice: Client;
+  readonly bob: Client;
   readonly session: Session; // Bob's.
   readonly checkout: string; // Bob's checkout of uploader, where his agent works.
   // Alice asks in #team, in the thread of `root` when given, and bob lets his agent run it at `mode`, posting its answer or reviewing it. Resolves with the request's id.
@@ -494,7 +495,7 @@ async function bobsDesk(t: TestContext, args: readonly string[] = [], options: O
     }
     throw new Error(`no answer to ${id}`);
   };
-  return { alice, session, checkout, ask, answer };
+  return { alice, bob, session, checkout, ask, answer };
 }
 
 await test(
@@ -1121,5 +1122,55 @@ await test(
     await session.handle({ do: "send", chat: "#team", text: "@bob/uploader mcp, mine" });
     const own = await until("bob's own request", () => session.view().current?.messages.find((message) => message.body === "@bob/uploader mcp, mine"));
     assert.deepEqual(await given(own.id), [["mcp", "--job", own.id], true]);
+  }
+);
+
+/** Try `find` every 50 ms, for fifteen seconds, until it finds something. */
+async function eventually<T>(what: string, find: () => Promise<T | undefined>): Promise<T> {
+  for (let tries = 0; tries < 300; tries += 1) {
+    const found = await find();
+    if (found !== undefined) {
+      return found;
+    }
+    await delay(50);
+  }
+  throw new Error(`never happened: ${what}`);
+}
+
+await test(
+  "time a run spends with an agent it asked at work is not its own; and once the root's time has passed since its owner let it ask others it is stopped, taking back what its agent asked that is still open",
+  { timeout: 60_000 },
+  async (t) => {
+    const { alice, bob, session } = await bobsDesk(t, [], { limit: 2, rootTime: 6 });
+    const agent = bob.as("bob/uploader", agentKey(bob.home, "uploader"));
+    /** Alice asks bob's agent to take its time, and bob lets it ask others. Resolves once it has been let go, with the request's id. */
+    const run = async (): Promise<string> => {
+      const { id } = (await alice.publish("#team", "message", { text: "@bob/uploader slow", via: "cli" })).event;
+      await until("bob can run it", () => session.view().current?.messages.some((message) => message.id === id && message.requests[0]?.status.kind === "ready"));
+      await session.handle({ do: "run", id, repo: "uploader", post: true, mode: "read-only", text: "@bob/uploader slow", delegate: true });
+      await said(id, "bob", "job.accepted");
+      return id;
+    };
+    /** The event of `kind` from `author` about the request `id`, once alice can see it. */
+    const said = (id: string, author: string, kind: string): Promise<Delivered> =>
+      eventually(`${author}'s ${kind}`, async () => (await alice.events({ chat: "#team" })).find(({ event }) => event.refs[0] === id && event.author === author && event.kind === kind));
+    /** Bob's agent asks alice's billing agent, as its MCP server would. */
+    const ask = async (id: string): Promise<string> => (await agent.publish("#team", "job.request", { target: "alice/billing", text: "is it yours?", chain: ["bob/uploader"] }, [id, id])).event.id;
+
+    // While alice's agent is asked, bob's outlives its two seconds; once she declines, its time runs again.
+    const first = await run();
+    const child = await ask(first);
+    await delay(3_000);
+    assert.equal(session.view().busy.working, 1);
+    await alice.publish("#team", "job.declined", { repo: "billing", reason: "" }, [child]);
+    const failed = await said(first, "bob/uploader", "job.error");
+    assert.ok(failed.event.ts - (await said(child, "alice", "job.declined")).event.ts >= 1);
+
+    // Its child left waiting, the next is stopped once six seconds have passed since bob let it go, and bob's agent takes back what it asked.
+    const second = await run();
+    const left = await ask(second);
+    await said(second, "bob/uploader", "job.cancelled");
+    const withdrawn = await said(left, "bob/uploader", "job.withdrawn");
+    assert.deepEqual(readContent(withdrawn.event), { kind: "job.withdrawn", content: { agent: "alice/billing" } });
   }
 );

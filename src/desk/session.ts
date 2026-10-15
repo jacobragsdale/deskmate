@@ -11,6 +11,7 @@ import { runOf } from "../shared/ipc.ts";
 import type { ActivityItem, Arrival, AskView, ChatView, Check, Command, CurrentView, GrantView, Hit, LineView, MessageView, NoteView, Notice, ReplyView, RequestView, RowView } from "../shared/ipc.ts";
 import { agentPrompt, ChatLog, chatOf, continues, mayCome, mentions, ONLINE, refOf, rings } from "../core/chat.ts";
 import type { Accepted, Entry, Message, Request } from "../core/chat.ts";
+import { jobIn, ROOT_TIME } from "../core/delegation.ts";
 import { DAY, liveGrant, revoked, standing } from "../core/grants.ts";
 import type { Standing } from "../core/grants.ts";
 import { readContent } from "../core/kinds.ts";
@@ -20,9 +21,9 @@ import { publicHex } from "../core/sign.ts";
 import { acpRunner, greet } from "./agents/acp.ts";
 import { agentEnv, agentKey, keyIn } from "./agentKeys.ts";
 import { endedItem, startedItem } from "./agents/activity.ts";
-import { oneshotRunner, runAgent } from "./agents/oneshot.ts";
+import { AGENT_TIMEOUT, oneshotRunner, runAgent } from "./agents/oneshot.ts";
 import { PRESETS } from "./agents/presets.ts";
-import type { AgentRunner, FollowUp, PermissionAsk, RunHandlers } from "./agents/runner.ts";
+import type { AgentRunner, FollowUp, Pausable, PermissionAsk, RunHandlers } from "./agents/runner.ts";
 import { AgentCancelledError, AgentTimedOutError, PlayerTwoError, Refused } from "./client.ts";
 import type { Client, Found, Runner } from "./client.ts";
 import { ACP_TIMEOUT, permissionTests, testPermissions } from "./doctor.ts";
@@ -73,6 +74,8 @@ export interface Options {
   readonly presence?: number; // Seconds between presence checks; a test shortens it.
   readonly progress?: number; // Least seconds between two job.progress events of one run; a test shortens it.
   readonly heartbeat?: number; // Seconds after which an unchanged job.progress is sent again; a test shortens it.
+  readonly limit?: number; // Seconds of its own a run over ACP may take; a test shortens it.
+  readonly rootTime?: number; // Seconds after its owner let it go that a run let ask other agents on a person's request is stopped, with everything under it; a test shortens it.
 }
 
 /** An agent's answer waiting for its owner to review, edit and send. */
@@ -107,6 +110,8 @@ interface AgentRun {
   done: Promise<void>; // Settles once the agent's process is gone and the chat has been told how it ended.
   doing: Summary | ""; // What the agent is doing now, in job.progress's words; "" until it has said.
   told: Summary | ""; // What the chat was last told it is doing.
+  clock: Pausable | null; // Its time limit, once its runner has started it, which stands still while an agent it asked is at work; null for a runner without one.
+  held: boolean; // Whether its time limit stands still for that.
   toldAt: number; // When, Unix milliseconds; 0 before it ever was.
   telling: NodeJS.Timeout | undefined; // Set while the chat is to be told: once PROGRESS seconds have passed since it last was, or HEARTBEAT.
   tellAt: number; // When it is to be told, Unix milliseconds.
@@ -177,6 +182,8 @@ export class Session {
   private readonly presence: number;
   private readonly progressEvery: number;
   private readonly heartbeat: number;
+  private readonly limit: number;
+  private readonly rootTime: number;
   private readonly me: string;
   private readonly chats: ChatLog;
   private readonly stopping = new AbortController();
@@ -225,6 +232,8 @@ export class Session {
     this.presence = options.presence ?? PRESENCE;
     this.progressEvery = options.progress ?? PROGRESS;
     this.heartbeat = options.heartbeat ?? HEARTBEAT;
+    this.limit = options.limit ?? AGENT_TIMEOUT;
+    this.rootTime = options.rootTime ?? ROOT_TIME;
     this.me = client.config.name;
     this.chats = new ChatLog(this.me);
     const saved = this.loadSaved();
@@ -860,6 +869,9 @@ export class Session {
   private take(entries: readonly Entry[], announce: boolean): void {
     const fresh = this.chats.add(entries);
     this.keep(entries);
+    for (const key of this.runs.keys()) {
+      this.holdFor(key);
+    }
     this.openFirst();
     if (announce) {
       this.announce(fresh.filter((entry) => (entry.event.kind === "message" || entry.event.kind === "job.result") && ownerOf(entry.event.author) !== this.me && mayCome(entry.event)));
@@ -1417,6 +1429,8 @@ export class Session {
       done: Promise.resolve(),
       doing: "",
       told: "",
+      clock: null,
+      held: false,
       toldAt: 0,
       telling: undefined,
       tellAt: 0
@@ -1432,7 +1446,7 @@ export class Session {
     const which = JSON.stringify(agent);
     if (this.agentRunner?.which !== which) {
       this.retire().catch(() => undefined); // It cannot fail: it waits for the agents to go.
-      this.agentRunner = { which, runner: agent.protocol === "acp" ? acpRunner(agent) : oneshotRunner(agent, this.runner) };
+      this.agentRunner = { which, runner: agent.protocol === "acp" ? acpRunner(agent, { limit: this.limit }) : oneshotRunner(agent, this.runner) };
     }
     return this.agentRunner.runner;
   }
@@ -1549,11 +1563,19 @@ export class Session {
       activity: (item, doing) => {
         this.noted(key, item, doing);
       },
-      permission: (ask, gone) => this.askOwner(key, chat, repo, ask, gone)
+      permission: (ask, gone) => this.askOwner(key, chat, repo, ask, gone),
+      hold: (limit) => {
+        const going = this.runs.get(key); // The same run.
+        if (going !== undefined) {
+          going.clock = limit;
+          this.holdFor(key);
+        }
+      }
     };
     const request = [entry.event.id];
     const stopped = (): boolean => run.cancel.signal.aborted; // Asked afresh each time: the user may stop it while this waits.
     let head: Head;
+    let hour: NodeJS.Timeout | undefined;
     try {
       head = await this.describe(checkout);
       await this.register([checkout]); // The run is given the file its key is in, which may have been replaced since the last beat.
@@ -1563,6 +1585,7 @@ export class Session {
       }
       await this.accept(key, run, chat, head);
       this.noted(key, startedItem(run.agent, run.mode));
+      hour = this.hourOf(run);
     } catch (error) {
       const title = run.grant === null ? `your ${repo} agent did not start` : `your ${repo} agent did not run ${entry.event.author}'s request under your grant`;
       this.hooks.notice(error instanceof AgentCancelledError ? { title: "", body: error.message, severity: "info" } : { title, body: problemOf(error), severity: "error" });
@@ -1602,6 +1625,8 @@ export class Session {
       this.hooks.notice({ title: `your ${repo} agent`, body: ending, severity: "error" });
     }
     clearTimeout(run.telling);
+    clearTimeout(hour);
+    await this.withdrawChildren(run, chat);
     for (const [id, waiting] of this.waiting) {
       if (waiting.run === key) {
         this.waiting.delete(id); // Nobody is asking any more: the runner stopped waiting for it when the run ended.
@@ -1619,6 +1644,59 @@ export class Session {
   private toolsOf(run: AgentRun): [Readonly<Record<string, string>>, string | undefined] {
     const chat = run.grant === null ? undefined : chatOf(run.entry.event, this.me);
     return [agentEnv(this.client.home, this.me, run.repo, chat), run.delegate ? run.entry.event.id : undefined];
+  }
+
+  /** The jobs a run's agent asked that have not ended, waiting for their owners or at work, as request id and agent. */
+  private openChildren(run: AgentRun): { readonly id: string; readonly agent: string }[] {
+    const { id, kind, refs } = run.entry.event;
+    const job = jobIn(this.chats.tree(kind === "job.request" ? (refs[0] ?? "") : id), id, `${this.me}/${run.repo}`);
+    return (job?.children ?? []).flatMap(({ request, agent }) => {
+      const asked = this.chats.message(request.event.id);
+      const state = asked === null ? undefined : this.chats.requests(asked, this.client.now()).find((each) => `${each.owner}/${each.repo}` === agent)?.state;
+      return state === "waiting" || state === "working" ? [{ id: request.event.id, agent }] : [];
+    });
+  }
+
+  /** Stop a run's time limit while an agent it asked has not ended, and start it again once none is open: time spent waiting on them is not the agent's own. */
+  private holdFor(key: string): void {
+    const run = this.runs.get(key);
+    const open = run?.delegate === true && this.openChildren(run).length > 0;
+    if (run !== undefined && run.clock !== null && open !== run.held) {
+      run.held = open;
+      if (open) {
+        run.clock.pause();
+      } else {
+        run.clock.resume();
+      }
+    }
+  }
+
+  /**
+   * For a run let ask other agents on a person's request, the root of all it asks, a timer that stops it once `rootTime` has passed since it was let go, whatever is still waiting:
+   * its end then withdraws what it asked (see `withdrawChildren`). Undefined for any other run.
+   */
+  private hourOf(run: AgentRun): NodeJS.Timeout | undefined {
+    if (!run.delegate || run.entry.event.kind !== "message") {
+      return undefined;
+    }
+    return setTimeout(() => {
+      const minutes = String(Math.round(this.rootTime / 60));
+      this.hooks.notice({
+        title: `your ${run.repo} agent ran out of time`,
+        body: `${minutes} minutes have passed since it was let ask other agents on ${run.entry.event.author}'s request.`,
+        severity: "info"
+      });
+      run.cancel.abort();
+    }, this.rootTime * 1000);
+  }
+
+  /** Once a run let ask other agents has ended, however it ended, take back what its agent asked that has not ended, signed by the agent that asked. Best effort, as any job's end is. */
+  private async withdrawChildren(run: AgentRun, chat: string): Promise<void> {
+    for (const child of run.delegate ? this.openChildren(run) : []) {
+      await this.agentOf(run.repo)
+        .publish(chat, "job.withdrawn", { agent: child.agent }, [child.id])
+        .catch(() => undefined);
+    }
   }
 
   /**

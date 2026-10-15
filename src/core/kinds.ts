@@ -73,8 +73,11 @@ export const contentSchema = z
   ])
   .readonly();
 
-/** The kinds an agent may author: its run's own reports, and from phase 5 a request of another agent. Everything else, a message and a grant among them, only a person may. */
-export const AGENT_KINDS: ReadonlySet<string> = new Set(["job.progress", "job.result", "job.error", "job.cancelled", "job.request"]);
+/**
+ * The kinds an agent may author: its run's own reports, and from phase 5 a request of another agent and taking one back. Everything else, a message and a grant among them, only a person may.
+ * A withdrawal counts only from whoever asked, so an agent's takes back only what it asked.
+ */
+export const AGENT_KINDS: ReadonlySet<string> = new Set(["job.progress", "job.result", "job.error", "job.cancelled", "job.request", "job.withdrawn"]);
 
 /** The kinds that may be sent to everyone, "*". */
 export const PUBLIC_KINDS: ReadonlySet<string> = new Set(["agent.register", "grant", "grant.revoke"]);

@@ -729,6 +729,7 @@ await test("an agent's event is stored when its registered key signs it, it is a
   // From phase 5 it may ask another agent, as the last agent its request came through: whether the request may go is for its target's desk to judge.
   const asking = { target: "bob/billing", text: "does it break your caller?", chain: ["alice/uploader"] };
   assert.equal((await post(hub, "alice", signed(hub, "alice/uploader", "#backend", "job.request", asking, about)))[0], 201);
+  assert.equal((await post(hub, "alice", signed(hub, "alice/uploader", "#backend", "job.withdrawn", { agent: "bob/billing" }, about)))[0], 201); // And take one back: every reader counts that only from whoever asked.
   assert.deepEqual(await post(hub, "alice", signed(hub, "alice/uploader", "#backend", "job.request", { ...asking, chain: ["alice/billing"] }, about)), [
     403,
     "a job.request's chain ends with the agent that sends it, alice/uploader"
@@ -762,7 +763,7 @@ await test("an agent's event is stored when its registered key signs it, it is a
   assert.deepEqual(await said(hub, "bob", "chat=alice&limit=10"), kinds.toReversed()); // The agent's events are in the chat between its owner and bob, for both of them.
   assert.deepEqual(await said(hub, "alice", "chat=bob&limit=10"), kinds.toReversed());
   assert.deepEqual(await said(hub, "carol"), ["agent.register"]);
-  assert.deepEqual(await said(hub, "alice", "chat=%23backend"), ["job.request", "job.progress", "channel.join"]);
+  assert.deepEqual(await said(hub, "alice", "chat=%23backend"), ["job.withdrawn", "job.request", "job.progress", "channel.join"]);
 });
 
 await test("a request an agent signs reads what its owner sees, may post its events, and changes nothing else of its owner's, not even when they were last here", async (t) => {
