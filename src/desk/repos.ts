@@ -85,11 +85,19 @@ interface GitResult {
   readonly stderr: string;
 }
 
+// What a git that started this process, from a hook say, leaves set to send git to its own repository, as `git rev-parse --local-env-vars` lists them; and GIT_DIFF_OPTS,
+// which overrides the context lines a diff is asked for. Not passed on: every call here names the repository it means.
+const NOT_PASSED = new Set([
+  ...["GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_OBJECT_DIRECTORY", "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE"],
+  ...["GIT_INDEX_FILE", "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE", "GIT_PREFIX", "GIT_SHALLOW_FILE", "GIT_COMMON_DIR", "GIT_DIFF_OPTS"]
+]);
+
 /** Run git with no terminal to prompt on, within a time limit. Resolves however it ends. */
 export function git(args: readonly string[], timeoutSeconds: number): Promise<GitResult> {
   return new Promise((resolve) => {
     // No terminal prompt: there is no terminal to ask on, so git must fail rather than wait for a password.
-    const child = execFile("git", args, { timeout: timeoutSeconds * 1000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }, maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
+    const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !NOT_PASSED.has(name))), GIT_TERMINAL_PROMPT: "0" };
+    const child = execFile("git", args, { timeout: timeoutSeconds * 1000, env, maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
       resolve({ ok: error === null, timedOut: error?.killed === true, stdout, stderr });
     });
     child.stdin?.end();

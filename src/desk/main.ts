@@ -13,6 +13,7 @@ import { runChecks, WITHOUT_IDENTITY } from "./doctor.ts";
 import { Session } from "./session.ts";
 import type { Hooks } from "./session.ts";
 import { shellPath } from "./shellEnv.ts";
+import { sweep } from "./worktree.ts";
 
 class Desk {
   private readonly home = defaultHome();
@@ -50,6 +51,7 @@ class Desk {
   public async run(input: NodeJS.ReadableStream): Promise<void> {
     this.write({ t: "hello", version: VERSION, protocol: PROTOCOL });
     process.env["PATH"] = await shellPath(); // Agents and git are started with this process's environment, so from here on they are looked for where the user's own shell would find them.
+    await sweep(defaultDev()); // Before any run can make a worktree of its own.
     this.start();
     this.changed();
     for await (const text of createInterface({ input })) {
