@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
 );
 CREATE INDEX IF NOT EXISTS workflow_runs_by_workflow ON workflow_runs (channel, name, started);
 CREATE INDEX IF NOT EXISTS workflow_runs_by_state ON workflow_runs (state);
+CREATE INDEX IF NOT EXISTS workflow_runs_by_approval ON workflow_runs (approval);
 `;
 const INDEXED = "('message', 'job.result', 'message.edit', 'message.delete')"; // The kinds that change what the search index holds.
 
@@ -118,25 +119,27 @@ const liveSchema = z.array(
 /** Where a run of a workflow stands, as workflow_runs keeps it. */
 export const RUN_STATES = ["running", "waiting", "ended", "throttled"] as const;
 export type RunState = (typeof RUN_STATES)[number];
-const RUN_COLUMNS = "run, channel, name, definition, input, started, step, state, approval, until";
+const RUN_COLUMNS = "run, channel, name, definition, started, step, state, approval, until"; // All but `input`, up to a hook's 256 KB, which only a run going on reads.
 const runSchema = z.strictObject({
   run: z.int(),
   channel: z.string(),
   name: z.string(),
   definition: z.string(),
-  input: z.string().transform(parseJson).pipe(z.record(z.string(), z.unknown())),
   started: z.int(),
   step: z.int(),
   state: z.enum(RUN_STATES),
   approval: z.string(),
   until: z.int()
 });
+const waitingSchema = runSchema.extend({ input: z.string().transform(parseJson).pipe(z.record(z.string(), z.unknown())) });
 const runCountsSchema = z.strictObject({ lately: z.int(), waiting: z.int(), last: z.enum(RUN_STATES).nullable() });
 
 /** A live workflow: the channel and name it is live under, the id of the workflow.define that made it live, and the file that holds. */
 export type Live = z.infer<typeof liveSchema>[number];
-/** One run of a workflow, as workflow_runs keeps it, with the values its templates are filled from. */
+/** One run of a workflow, as workflow_runs keeps it. */
 export type Run = z.infer<typeof runSchema>;
+/** A run waiting on an approval, with the values its templates are filled from, to go on with. */
+export type Waiting = z.infer<typeof waitingSchema>;
 
 /** Whether the database has a table of this name: what a version before it lacks. */
 function hasTable(db: DatabaseSync, name: string): boolean {
@@ -408,6 +411,11 @@ export class Database {
     return eventRowsSchema.parse(rows);
   }
 
+  /** The id of the workflow.define live in `channel` under `name`; null when none is. */
+  public liveDefinition(channel: string, name: string): string | null {
+    return z.strictObject({ event: z.string() }).optional().parse(this.db.prepare("SELECT event FROM workflows WHERE channel = ? AND name = ?").get(channel, name))?.event ?? null;
+  }
+
   /** The live workflows of one channel, or of every channel, with their files. */
   public liveWorkflows(channel: string | null = null): readonly Live[] {
     const where = channel === null ? "" : "WHERE workflows.channel = ?";
@@ -434,9 +442,15 @@ export class Database {
       .run({ step, state, approval, until, run });
   }
 
-  /** The runs in one state, oldest first. */
+  /** The runs in one state, oldest first, without their values. */
   public runsIn(state: RunState): readonly Run[] {
     return z.array(runSchema).parse(this.db.prepare(`SELECT ${RUN_COLUMNS} FROM workflow_runs WHERE state = ? ORDER BY run`).all(state));
+  }
+
+  /** The run in `channel` waiting for a 👍 on the message `approval`, with its values; null when none is. */
+  public waitingOn(approval: string, channel: string): Waiting | null {
+    const row = this.db.prepare(`SELECT ${RUN_COLUMNS}, input FROM workflow_runs WHERE approval = ? AND channel = ? AND state = 'waiting'`).get(approval, channel);
+    return row === undefined ? null : waitingSchema.parse(row);
   }
 
   /** Of one workflow's runs: how many started after `since` and were not throttled, how many are waiting, and the state of the newest, null when it has none. */

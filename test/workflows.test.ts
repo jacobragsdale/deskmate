@@ -252,6 +252,8 @@ await test("POST /hooks/ID sets off the live webhook workflow whose definition's
   const { event: replaced } = await alice.publish("#ops", "workflow.define", { name: "ci-failure", yaml: CI });
   assert.deepEqual([await hook(definition.id, failed), await hook(replaced.id, failed)], [404, 202]);
   assert.deepEqual(runs(hub), ["ci-failure 1 1 ended", "no-secret 2 1 ended", "ci-failure 3 1 ended", "ci-failure 4 1 ended"]);
+  await alice.publish("#ops", "workflow.remove", { name: "ci-failure" });
+  assert.deepEqual([await hook(replaced.id, failed), await hook(open.id, "", null)], [404, 202]); // One removed has none, and the others are as they were.
 });
 
 await test("the hook compares the secret it is given with the workflow's by timingSafeEqual over two buffers of the same length, whatever length it was given", async (t) => {

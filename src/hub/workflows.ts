@@ -22,7 +22,7 @@ import type { Step, Trigger, Values, Workflow } from "../core/workflow.ts";
 import { fitText, HUB, isAgent, isChannel } from "../core/wire.ts";
 import type { Event } from "../core/wire.ts";
 import type { Log } from "./app.ts";
-import type { Database, Live, Run, RunState } from "./db.ts";
+import type { Database, Live, Run, RunState, Waiting } from "./db.ts";
 
 /** What the hub does with workflows, once it has opened its database. */
 export interface Workflows {
@@ -228,6 +228,7 @@ function isJson(text: string): boolean {
  */
 export function runWorkflows(db: Database, key: KeyObject, now: () => number, allow: readonly string[], wake: () => void, log: Log): Workflows {
   let files = new Map<string, Workflow>(); // Each live workflow's file as it reads, by the id of its definition, which never changes what it holds. `schedule` keeps it to those live.
+  let hooks = new Map<string, Live>(); // The live webhook workflows by hook, the first 32 hex of their definition's id, so a call to one looks no further. `schedule` keeps it.
   const closing = new AbortController(); // Hangs up every webhook being called once the hub stops.
   let crons: Cron[] = [];
 
@@ -307,8 +308,8 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, al
 
   /** Why a run can no longer go on: its workflow replaced or removed since it began; "" while the file it started under is live. */
   function changed(ref: Ref): string {
-    const live = db.liveWorkflows(ref.channel).find((each) => each.name === ref.name);
-    return live?.event === ref.definition ? "" : `${ref.name} was ${live === undefined ? "removed" : "replaced"}`;
+    const live = db.liveDefinition(ref.channel, ref.name);
+    return live === ref.definition ? "" : `${ref.name} was ${live === null ? "removed" : "replaced"}`;
   }
 
   /**
@@ -361,7 +362,7 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, al
   }
 
   /** A run kept in workflow_runs, to go on with: null when the definition it runs is no longer live. */
-  function resumed(run: Run): Going | null {
+  function resumed(run: Waiting): Going | null {
     const live = db.liveWorkflows(run.channel).find((each) => each.event === run.definition);
     return live === undefined ? null : { run: run.run, channel: run.channel, name: run.name, definition: run.definition, file: fileOf(live), values: run.input };
   }
@@ -371,9 +372,9 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, al
     if (said.kind !== "reaction" || !said.content.on || !THUMBS_UP.test(said.content.emoji)) {
       return;
     }
-    const run = db.runsIn("waiting").find((each) => each.approval === event.refs[0] && each.channel === event.to);
-    const going = run === undefined ? null : resumed(run);
-    if (run === undefined || going === null) {
+    const run = db.waitingOn(event.refs[0] ?? "", event.to);
+    const going = run === null ? null : resumed(run);
+    if (run === null || going === null) {
       return; // Not a message a run waits on; or one whose workflow has gone, which `sweep` ends.
     }
     const step = going.file.steps[run.step];
@@ -488,6 +489,7 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, al
     }
     const lives = db.liveWorkflows();
     files = new Map(lives.map((live) => [live.event, fileOf(live)])); // Read from those kept before, so a file is parsed once while it is live.
+    hooks = new Map(lives.filter((live) => fileOf(live).on.kind === "webhook").map((live) => [live.event.slice(0, 32), live]));
     crons = lives.flatMap((live) => {
       const { on } = fileOf(live);
       return on.kind === "schedule"
@@ -517,7 +519,7 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, al
   return {
     seen,
     hook: (id) => {
-      const live = db.liveWorkflows().find((each) => each.event.startsWith(id));
+      const live = hooks.get(id);
       const on = live === undefined ? null : fileOf(live).on;
       if (live === undefined || on?.kind !== "webhook") {
         return null;
