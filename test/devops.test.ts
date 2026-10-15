@@ -14,6 +14,7 @@ import type { TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
 import type { Client } from "../src/desk/client.ts";
+import * as repos from "../src/desk/repos.ts";
 import { Session } from "../src/desk/session.ts";
 import type { Options } from "../src/desk/session.ts";
 import { Database } from "../src/hub/db.ts";
@@ -316,7 +317,7 @@ await test("a pull request is opened only from the branch the user's checkout is
     db.setPin(room, UPLOADER, branch);
   }
   db.close();
-  uploader(join(hub.dir, "dev-jacob"));
+  const { mine } = uploader(join(hub.dir, "dev-jacob"));
   const { session, questions } = await deskOf(t, jacob, join(hub.dir, "dev-jacob"), "#other");
   await until("the pins read", () => session.view().current?.pinned?.branch === "other");
   writeFileSync(CALLS, "");
@@ -329,6 +330,9 @@ await test("a pull request is opened only from the branch the user's checkout is
           : `${room} is not a room about a branch`;
     await assert.rejects(session.pullForm({ room }), { message: why });
     await assert.rejects(session.handle({ do: "openPull", from: { room }, title: "x", description: "", draft: false }), { message: why });
+    if (branch !== "other") {
+      await assert.rejects(repos.push(mine, branch), { message: `refusing to push ${JSON.stringify(branch)}: git would read it as more than a branch` }); // And so does pushing, on its own.
+    }
   }
   assert.deepEqual(
     readFileSync(CALLS, "utf8")
