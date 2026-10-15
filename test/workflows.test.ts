@@ -48,14 +48,14 @@ async function channel(client: Client, chat = "#ops"): Promise<string[]> {
   );
 }
 
-/** Each run the hub keeps, as `name run step state`. */
-function runs(hub: Hub): string[] {
+/** Each run the hub keeps, as `name run step state`, or as the columns asked for. */
+function runs(hub: Hub, columns = "name, run, step, state"): string[] {
   const db = new DatabaseSync(join(hub.dir, "hub.db"), { readOnly: true });
   try {
     return z
-      .array(z.object({ name: z.string(), run: z.int(), step: z.int(), state: z.string() }))
-      .parse(db.prepare("SELECT name, run, step, state FROM workflow_runs ORDER BY run").all())
-      .map((row) => `${row.name} ${String(row.run)} ${String(row.step)} ${row.state}`);
+      .array(z.record(z.string(), z.union([z.string(), z.int()])))
+      .parse(db.prepare(`SELECT ${columns} FROM workflow_runs ORDER BY run`).all())
+      .map((row) => Object.values(row).map(String).join(" "));
   } finally {
     db.close();
   }
@@ -592,6 +592,23 @@ await test("a webhook step is refused with the allow list unset, to a host not o
   assert.equal(await outcome("listed", `${called.url}/1mb`), "done and went on");
   assert.equal(await outcome("listed", "http://127.0.0.1:1/"), "failed: could not call 127.0.0.1:1: ECONNREFUSED"); // Nothing listens there.
   assert.deepEqual(redirected.calls, []);
+});
+
+await test("a step the hub cannot take ends its run as failed, a detail is cut to fit an event however long a host filled in, and a run that has ended keeps none of its values", async (t) => {
+  const hub = await startHub(t, () => NOW, "", TEAM_REPOS, ["example.test"]);
+  const [alice] = await team(hub, "alice");
+  assert.ok(alice !== undefined);
+  const { event: odd } = await alice.publish("#ops", "workflow.define", { name: "odd", yaml: hooked("odd", 'webhook: { url: "https://example.test/{{body.x}}" }', 'post: "called"') });
+  const { event: long } = await alice.publish("#ops", "workflow.define", { name: "long", yaml: hooked("long", 'webhook: { url: "https://{{body.host}}/x" }') });
+
+  const answer = await fetch(`${hub.url}/hooks/${odd.id.slice(0, 32)}`, { method: "POST", body: '{"x": "\\ud800"}' }); // Half a character, which JSON may hold and no address can.
+  assert.equal(answer.status, 202);
+  await setOff(hub, long.id, { host: "a".repeat(70_000) });
+
+  const reason = " is not on PLAYER_TWO_WEBHOOK_ALLOW";
+  const cut = `${"a".repeat(250)}…${"a".repeat(249 - reason.length)}${reason}`; // 500 characters, cut in the middle so the reason still ends as written.
+  assert.deepEqual((await until(alice, /long run 2 step 0/)).slice(-2), ["hub: odd run 1 step 0 failed: the hub could not take this step", `hub: long run 2 step 0 refused: ${cut}`]);
+  assert.deepEqual(runs(hub, "name, step, state, input"), ["odd 0 ended {}", "long 0 ended {}"]);
 });
 
 /**

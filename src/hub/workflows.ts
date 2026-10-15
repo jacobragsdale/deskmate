@@ -59,6 +59,7 @@ const MAX_ANSWER = 1024 * 1024; // Most bytes of a webhook's answer the hub read
 const ALLOW = "PLAYER_TWO_WEBHOOK_ALLOW";
 const HOURLY = 30; // Most runs one workflow may start in an hour.
 const WAITING = 50; // Most runs of one workflow that may wait for a 👍 at once.
+const MAX_DETAIL = 500; // Most characters of a step's detail, which can name a host filled in from a hook's body: far below what an event holds.
 
 // Where the hub's own machine, and a cloud's metadata service, answer: loopback, link-local and "this network". A name may lead there only when the allow list names the address itself.
 const NEARBY = new BlockList();
@@ -197,6 +198,12 @@ function call(url: URL, body: string, type: string, allow: readonly string[], si
   });
 }
 
+/** `detail` at most MAX_DETAIL characters, cut in its middle, so that a reason naming a long host still ends as it was written. */
+function short(detail: string): string {
+  const chars = Array.from(detail);
+  return chars.length <= MAX_DETAIL ? detail : `${chars.slice(0, MAX_DETAIL / 2).join("")}…${chars.slice(1 - MAX_DETAIL / 2).join("")}`;
+}
+
 /** Whether text is JSON as it is. */
 function isJson(text: string): boolean {
   try {
@@ -240,7 +247,7 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, al
     const ts = Math.floor(now());
     const posted = text === null ? null : signed(ref.channel, "message", { text, via: "workflow", workflow: ref.name }, [], ts);
     const second = posted?.id ?? about;
-    const report = signed(ref.channel, "workflow.run", { workflow: ref.name, run: ref.run, step, status, detail }, second === "" ? [ref.definition] : [ref.definition, second], ts);
+    const report = signed(ref.channel, "workflow.run", { workflow: ref.name, run: ref.run, step, status, detail: short(detail) }, second === "" ? [ref.definition] : [ref.definition, second], ts);
     const stored = [posted, report].filter((event) => event !== null);
     db.transaction(() => {
       for (const event of stored) {
@@ -312,15 +319,25 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, al
     return goes;
   }
 
-  /** Take a run's steps one at a time from `from`, each recorded as it ends. Steps that take no time are taken before this returns its promise. */
+  /**
+   * Take a run's steps one at a time from `from`, each recorded as it ends. Steps that take no time are taken before this returns its promise. A step that throws, such as one filling a
+   * value no address can hold into a webhook's, ends its run as failed, said in the channel, rather than leaving it running with nothing said; why is the hub's log's.
+   */
   async function go(going: Going, from: number): Promise<void> {
     for (let at = from; at < going.file.steps.length; at += 1) {
       const step = going.file.steps[at];
       if (step === undefined) {
         return;
       }
-      const calls = step.kind === "webhook" && (step.if === undefined || holds(step.if, going.values));
-      if (!(calls ? await called(going, at, step.webhook) : took(going, at, step))) {
+      let goes = false;
+      try {
+        const calls = step.kind === "webhook" && (step.if === undefined || holds(step.if, going.values));
+        goes = calls ? await called(going, at, step.webhook) : took(going, at, step);
+      } catch (error) {
+        failed(error);
+        record(going, at, "failed", "the hub could not take this step", { step: at, state: "ended" });
+      }
+      if (!goes) {
         return;
       }
     }
