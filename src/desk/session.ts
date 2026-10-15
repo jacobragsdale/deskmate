@@ -1287,9 +1287,10 @@ export class Session {
       const said = readContent(event);
       const asked: (readonly [string, string])[] =
         entry.trusted && said.kind === "job.request" && ownerOf(said.content.target) === this.me ? [[this.me, said.content.target.slice(this.me.length + 1)]] : [];
-      const tagged = entry.trusted && event.kind === "message" ? mentions(text).filter(([owner]) => owner === this.me) : asked;
+      const asker = askerOf(event, said); // Null for a message whose tags count for nothing, as one of the hub's not for a workflow.
+      const tagged = entry.trusted && asker !== null ? mentions(text).filter(([owner]) => owner === this.me) : asked;
       const where = isChannel(event.to) ? ` in ${event.to}` : "";
-      const who = asked.length > 0 ? agentWords(event.author, this.me) : event.author;
+      const who = asked.length > 0 ? agentWords(event.author, this.me) : (asker ?? event.author);
       const title = tagged[0] === undefined ? `${fromWords(event, this.me)}${where}` : `${who} ${asked.length > 0 ? "asked" : "tagged"} your ${tagged[0][1]} agent${where}`;
       this.hooks.arrived({
         chat: chatOf(event, this.me),

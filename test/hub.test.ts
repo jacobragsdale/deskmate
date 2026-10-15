@@ -2,6 +2,7 @@
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import type { KeyObject } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,6 +27,7 @@ import type { Client, Runner, Transport } from "../src/desk/client.ts";
 import { Session } from "../src/desk/session.ts";
 import type { Options } from "../src/desk/session.ts";
 import { createHub } from "../src/hub/app.ts";
+import { Database } from "../src/hub/db.ts";
 import { createServer } from "../src/mcp/server.ts";
 import { commandSchema, runOf } from "../src/shared/ipc.ts";
 import type { Arrival, ChatView, MessageView, Notice } from "../src/shared/ipc.ts";
@@ -130,12 +132,14 @@ function run(session: Session, id: string, post: boolean, mode: PermissionMode =
 interface Desk {
   readonly session: Session;
   readonly notices: Notice[];
+  readonly arrivals: Arrival[];
   readonly ran: string[][]; // Each agent it started, as the command it ran.
 }
 
 /** A desk of its own for one test, stopped when the test ends, checking every second. Its agent answers "done" unless `options` gives it a runner of its own. */
 function deskOf(t: TestContext, client: Client, dev: string, options: Options = {}): Desk {
   const notices: Notice[] = [];
+  const arrivals: Arrival[] = [];
   const ran: string[][] = [];
   const runner = options.runner ?? ((): Promise<string> => Promise.resolve("done"));
   const hooks = {
@@ -143,7 +147,9 @@ function deskOf(t: TestContext, client: Client, dev: string, options: Options = 
     notice: (notice: Notice) => {
       notices.push(notice);
     },
-    arrived: () => undefined,
+    arrived: (arrival: Arrival) => {
+      arrivals.push(arrival);
+    },
     confirmClone: () => Promise.resolve(false)
   };
   const session = new Session(client, dev, hooks, {
@@ -156,7 +162,7 @@ function deskOf(t: TestContext, client: Client, dev: string, options: Options = 
   });
   session.start();
   t.after(() => session.stop());
-  return { session, notices, ran };
+  return { session, notices, arrivals, ran };
 }
 
 /** What one session shows of a message. */
@@ -1534,6 +1540,81 @@ await test(
     await until(bob.session, "his own requests waiting for him", (view) => view.waiting === 3);
     await pause(300);
     assert.deepEqual([bob.ran.length, own.map((id) => shownTo(bob.session, id)?.requests[0]?.status.kind)], [3, ["ready", "ready"]]);
+  }
+);
+
+await test(
+  "the hub's message for a workflow tags an agent, which waits for its owner and runs under a grant naming the workflow and no other; the same words from the hub not said to be a workflow's tag nobody, and one claiming to be the hub's under another key is trusted nowhere",
+  { timeout: 60_000 },
+  async (t) => {
+    const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+    const alice = await hub.join("alice");
+    const owner = await hub.join("bob");
+    for (const each of [alice, owner]) {
+      await each.publish("#ops", "channel.join", {});
+    }
+    const dev = join(hub.dir, "dev-bob");
+    checkout(dev, "uploader");
+    const bob = deskOf(t, owner, dev, { describe: () => Promise.resolve({ branch: "main", commit: COMMIT, dirty: false }) });
+    await until(bob.session, "the checkout shared", (view) => view.loaded && view.myRepos.includes("uploader"));
+    await bob.session.handle({ do: "open", chat: "#ops" });
+    const db = new Database(join(hub.dir, "hub.db"));
+    const hubKey = db.hubKey();
+    db.close();
+    const forger = loadKey("77".repeat(32));
+    const workflow = { text: "the build failed: @bob/uploader what broke?", via: "workflow", workflow: "ci-failure" } as const;
+    /** Messages stored as the hub stores what it signs, then a reaction of alice's that wakes the stream, which hands them over together: their ids. */
+    const hubSays = async (...said: readonly (readonly [KeyObject, object])[]): Promise<string[]> => {
+      const ids = said.map(([key, content]) => storedUnchecked(hub, key, { author: "hub", to: "#ops", kind: "message", content, ts: Math.floor(Date.now() / 1000), refs: [] }).event.id);
+      await alice.publish("#ops", "reaction", { emoji: "👀", on: true }, [ids[0] ?? ""]);
+      return ids;
+    };
+    const grant = async (askers: readonly string[]): Promise<void> => {
+      await owner.publish("*", "grant", { agent: "bob/uploader", askers, mode: "full", delivery: "post", expires: Math.floor(Date.now() / 1000) + 3600, runsPerDay: 10 });
+    };
+    const read = async (id: string): Promise<unknown> => {
+      const out: string[] = [];
+      const options = { home: join(hub.dir, "bob"), transport: http, now: () => Date.now() / 1000, env: {}, out: (line: string) => out.push(line), err: () => undefined };
+      assert.equal(await main(["read", id, "--json"], options), 0);
+      const { trusted, text, jobs } = z
+        .object({ trusted: z.boolean(), text: z.string().nullable(), jobs: z.array(z.object({ agent: z.string(), state: z.string() })) })
+        .parse(JSON.parse(out.join("")));
+      return { trusted, text, jobs: jobs.map((job) => `${job.agent} ${job.state}`) };
+    };
+
+    // Under grants to anyone, and to someone called ci-failure, the workflow's request waits for bob; the hub's own words tag nobody, and a forgery is a warning.
+    await grant(["*", "ci-failure"]);
+    const [waits = "", plain = "", forged = ""] = await hubSays([hubKey, workflow], [hubKey, { ...workflow, via: "cli" }], [forger, workflow]);
+    await until(bob.session, "the three in #ops", () => shownTo(bob.session, forged) !== undefined && shownTo(bob.session, waits)?.reactions.length === 1);
+    await pause(300);
+    assert.deepEqual(
+      [waits, plain, forged].map((id) => [shownTo(bob.session, id)?.trusted, shownTo(bob.session, id)?.requests.map((request) => request.status.kind)]),
+      [
+        [true, ["ready"]],
+        [true, []],
+        [false, []]
+      ]
+    );
+    assert.deepEqual([bob.ran, bob.session.view().waiting], [[], 1]);
+    assert.deepEqual(
+      bob.arrivals.map((arrival) => [arrival.title, arrival.body, arrival.forMe]),
+      [
+        ["workflow:ci-failure tagged your uploader agent in #ops", "the build failed: @bob/uploader what broke?", true],
+        ["hub in #ops", "the build failed: @bob/uploader what broke?", false],
+        ["hub in #ops", "a message failed its signature check", false]
+      ]
+    );
+    assert.deepEqual(await read(waits), { trusted: true, text: workflow.text, jobs: ["bob/uploader waiting"] });
+    assert.deepEqual(await read(plain), { trusted: true, text: workflow.text, jobs: [] });
+    assert.deepEqual(await read(forged), { trusted: false, text: null, jobs: [] });
+
+    // Under a grant naming the workflow, its next request runs at once; a forgery's does not.
+    await grant(["workflow:ci-failure"]);
+    await until(bob.session, "the grant kept", (view) => view.grants.length === 2);
+    const [runs = "", forgedAgain = ""] = await hubSays([hubKey, workflow], [forger, workflow]);
+    await until(bob.session, "the workflow's request run", () => shownTo(bob.session, runs)?.requests[0]?.status.kind === "running" || bob.ran.length > 0);
+    await pause(300);
+    assert.deepEqual([bob.ran.length, shownTo(bob.session, forgedAgain)?.trusted, shownTo(bob.session, waits)?.requests[0]?.status.kind], [1, false, "ready"]);
   }
 );
 
