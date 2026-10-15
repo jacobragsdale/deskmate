@@ -68,6 +68,12 @@ function Review({ current, submit, tell, act }: Omit<Props, "view">): JSX.Elemen
           setText(event.target.value);
         }}
       />
+      {draft.patch !== null && (
+        <details className="mt-1.5 text-xs">
+          <summary className="cursor-pointer text-warn">The change it made, sent before the answer: {draft.patch.title}</summary>
+          <pre className="max-h-64 overflow-auto">{draft.patch.diff}</pre>
+        </details>
+      )}
       <div className="mt-1.5 flex gap-1.5">
         <Button type="button" size="sm" disabled={sending || text.trim() === ""} onClick={send}>
           Send answer

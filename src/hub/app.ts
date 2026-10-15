@@ -10,7 +10,7 @@ import { pipeline } from "node:stream";
 import { z } from "zod";
 
 import { digestIn, hubInstallScript } from "../core/install.ts";
-import { AGENT_KINDS, PUBLIC_KINDS, readContent } from "../core/kinds.ts";
+import { AGENT_KINDS, PUBLIC_KINDS, readContent, repoOf } from "../core/kinds.ts";
 import { isUnder, prefixKey } from "../core/remotes.ts";
 import { authClaim, authIsValid, eventId, eventIsAuthentic, isFresh } from "../core/sign.ts";
 import { VERSION } from "../core/version.ts";
@@ -270,7 +270,8 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     if (said.kind === "unknown") {
       throw new Refusal(422, `invalid content: not what ${event.kind} holds`); // Nobody could read whose report it is.
     }
-    if ("repo" in said.content && said.content.repo !== own) {
+    const repo = repoOf(said);
+    if (repo !== null && repo !== own) {
       throw new Refusal(403, `${event.author} reports only on its own repo, ${own}`); // Every reader would count it for nothing (mayCome in src/core/chat.ts).
     }
     if (said.kind === "job.request" && said.content.chain.at(-1) !== event.author) {

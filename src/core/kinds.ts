@@ -11,6 +11,7 @@ const nothing = z.object({}).readonly();
 const text = z.string().min(1);
 const repo = repoNameSchema; // The repo of the agent a job is for. The agent's owner is the event's author.
 const agent = z.string().regex(new RegExp(`^${NAME}/${REPO_NAME}$`)); // "owner/repo": one person's checkout's agent.
+const commit = z.string().regex(/^[0-9a-f]{40}([0-9a-f]{24})?$/); // SHA-1, or SHA-256 for a repository that uses it.
 
 /** What an agent at work is doing, in the only words job.progress may carry: never a path, a command or anything the agent wrote. */
 export const SUMMARIES = ["thinking", "reading", "editing files", "running a command", "waiting for approval"] as const;
@@ -33,7 +34,7 @@ export const contentSchema = z
         .object({
           repo,
           branch: branchSchema,
-          commit: z.string().regex(/^[0-9a-f]{40}([0-9a-f]{24})?$/), // SHA-1, or SHA-256 for a repository that uses it.
+          commit,
           dirty: z.boolean(), // Whether the checkout had changes nobody had committed.
           delivery: z.enum(["review", "post"]),
           mode: permissionModeSchema, // What the owner let the agent do without asking: a run never goes beyond it.
@@ -69,21 +70,32 @@ export const contentSchema = z
         ts: z.int()
       })
       .refine(({ content, ts }) => content.expires <= ts + MAX_GRANT, { message: "a grant lasts at most 30 days", path: ["content", "expires"] }),
-    z.object({ kind: z.literal("grant.revoke"), content: nothing }) // refs[0] is the grant. Counts only from the grant's author.
+    z.object({ kind: z.literal("grant.revoke"), content: nothing }), // refs[0] is the grant. Counts only from the grant's author.
+    // From phase 6, what a run on a clean copy changed, as a diff from `base` that git apply takes, made on `branch` of `repo`: refs[0] is the request, and it is signed as its answer is,
+    // by the agent when nobody reviewed it and by its owner when they did. Every word of it is someone else's, to be drawn as text and applied only once its paths have been checked.
+    z.object({ kind: z.literal("patch"), content: z.object({ repo: repoRefSchema, base: commit, branch: branchSchema, title: z.string().min(1).max(200), diff: text }).readonly() })
   ])
   .readonly();
 
 /**
- * The kinds an agent may author: its run's own reports, and from phase 5 a request of another agent and taking one back. Everything else, a message and a grant among them, only a person may.
+ * The kinds an agent may author: its run's own reports, from phase 5 a request of another agent and taking one back, and from phase 6 the patch its run hands over. Everything else, a message and a grant among them, only a person may.
  * A withdrawal counts only from whoever asked, so an agent's takes back only what it asked.
  */
-export const AGENT_KINDS: ReadonlySet<string> = new Set(["job.progress", "job.result", "job.error", "job.cancelled", "job.request", "job.withdrawn"]);
+export const AGENT_KINDS: ReadonlySet<string> = new Set(["job.progress", "job.result", "job.error", "job.cancelled", "job.request", "job.withdrawn", "patch"]);
 
 /** The kinds that may be sent to everyone, "*". */
 export const PUBLIC_KINDS: ReadonlySet<string> = new Set(["agent.register", "grant", "grant.revoke"]);
 
 export type Content = z.infer<typeof contentSchema>;
 export type Summary = (typeof SUMMARIES)[number];
+
+/** The repo a job's event or a patch is about, by name: an agent sends either only about its own. Null for any other kind. */
+export function repoOf(said: Content): string | null {
+  if (said.kind === "patch") {
+    return said.content.repo.name;
+  }
+  return "repo" in said.content && typeof said.content.repo === "string" ? said.content.repo : null;
+}
 
 /** What an event of kind K holds, as its author writes it: a field with a default, such as job.accepted's `delegate`, may be left out. */
 export type ContentOf<K extends Content["kind"]> = Extract<z.input<typeof contentSchema>, { readonly kind: K }>["content"];

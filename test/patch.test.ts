@@ -16,6 +16,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { readContent } from "../src/core/kinds.ts";
 import { byCodeUnit } from "../src/core/text.ts";
 import type { Agent, PermissionMode } from "../src/core/wire.ts";
+import { agentKey } from "../src/desk/agentKeys.ts";
 import type { Client } from "../src/desk/client.ts";
 import { Session } from "../src/desk/session.ts";
 import { runOf } from "../src/shared/ipc.ts";
@@ -108,8 +109,16 @@ async function two(t: TestContext): Promise<Two> {
     await session.handle({ do: "open", chat: "#team" });
   }
   const asks = async (text: string, mode: PermissionMode, post: boolean): Promise<string> => {
+    const sent = asker.view().current?.messages.length ?? 0;
     await asker.handle({ do: "send", chat: "#team", text });
-    const id = await until("bob's request", () => asker.view().current?.messages.find((message) => message.body === text)?.id);
+    const id = await until(
+      "bob's request",
+      () =>
+        asker
+          .view()
+          .current?.messages.slice(sent)
+          .find((message) => message.body === text)?.id
+    );
     await until("jacob can run it", () => owner.view().current?.messages.find((message) => message.id === id)?.requests[0]?.status.kind === "ready");
     await owner.handle({ do: "run", id, repo: "uploader", post, mode, text });
     return id;
@@ -117,9 +126,12 @@ async function two(t: TestContext): Promise<Two> {
   return { bob, jacob, asker, owner, mine, notices, asks };
 }
 
-/** What the hub holds of `kind` about the request `id`, as bob reads #team: each event's content. */
-async function said(bob: Client, id: string, kind: string): Promise<unknown[]> {
-  return (await bob.events({ chat: "#team", limit: 200 })).filter(({ event }) => event.kind === kind && event.refs[0] === id).map(({ event }) => readContent(event));
+/** What the hub holds of `kind` about the request `id`, as bob reads #team, oldest first: what each event says. */
+async function said(bob: Client, id: string, kind: string): Promise<ReturnType<typeof readContent>[]> {
+  return (await bob.events({ chat: "#team", limit: 200 }))
+    .filter(({ event }) => event.kind === kind && event.refs[0] === id)
+    .map(({ event }) => readContent(event))
+    .reverse();
 }
 
 await test(
@@ -156,5 +168,67 @@ await test(
     // Jacob's own request from his window runs at once, at auto-edits, in his checkout.
     await owner.handle({ do: "send", chat: "#team", text: "@jacob/uploader edit the notes" });
     await until("his own edit, in his checkout", () => existsSync(join(mine, "edited.txt")));
+  }
+);
+
+await test(
+  "a run on a clean copy that changed something hands it over as a patch, refers to the request, before the answer: posted signed by the agent, or kept beside the draft until its owner sends both; a run that changed nothing hands over none",
+  { timeout: 60_000 },
+  async (t) => {
+    const { bob, jacob, asker, owner, mine, asks } = await two(t);
+    const head = git(mine, "rev-parse", "HEAD").trim();
+    const kinds = async (id: string): Promise<string[]> =>
+      (await bob.events({ chat: "#team", limit: 200 }))
+        .filter(({ event }) => event.refs[0] === id && event.kind !== "job.progress")
+        .map(({ event }) => `${event.kind} by ${event.author}`)
+        .reverse();
+
+    // A run that changed nothing sends no patch. First, as the agent acts on every word of its prompt, earlier messages among them.
+    const nothing = await asks("@jacob/uploader read", "auto-edits", true);
+    await until("the answer", async () => (await said(bob, nothing, "job.result")).length > 0);
+    assert.deepEqual(await kinds(nothing), ["job.accepted by jacob", "job.result by jacob/uploader"]);
+
+    // Posted directly: the patch, then the answer, each signed by jacob's agent. It names the repo, the commit and branch the copy was made on, the answer's first line, and the change.
+    const posted = await asks("@jacob/uploader edit the README", "auto-edits", true);
+    await until("the answer", async () => (await said(bob, posted, "job.result")).length > 0);
+    assert.deepEqual(await kinds(posted), ["job.accepted by jacob", "patch by jacob/uploader", "job.result by jacob/uploader"]);
+    const [patch] = await said(bob, posted, "patch");
+    assert.ok(patch?.kind === "patch");
+    assert.deepEqual(
+      { ...patch.content, diff: "" },
+      {
+        repo: { name: "uploader", key: "dev.azure.com/acme/platform/uploader", url: "https://dev.azure.com/acme/Platform/_git/uploader" },
+        base: head,
+        branch: "main",
+        title: "turn 1: read; edit allowed",
+        diff: ""
+      }
+    );
+    assert.match(patch.content.diff, /^diff --git a\/edited\.txt b\/edited\.txt\nnew file mode 100644\n.*\n--- \/dev\/null\n\+\+\+ b\/edited\.txt\n@@ -0,0 \+1 @@\n\+edited\n$/);
+    // Bob sees it where an answer would be: from jacob's agent, not reviewed, the title its text.
+    const shown = await until("bob sees the patch", () => asker.view().current?.messages.find((message) => message.patch !== null));
+    assert.deepEqual([shown.sender, shown.signer, shown.agent, shown.body, shown.quote], ["jacob", "jacob/uploader", "uploader", "turn 1: read; edit allowed", "bob: @jacob/uploader edit the README"]);
+    assert.deepEqual(shown.patch, { repo: "uploader", base: head, branch: "main", title: "turn 1: read; edit allowed", diff: patch.content.diff });
+
+    // Kept for review: nothing is sent while the draft waits, and the patch is beside it; sending sends the patch and then the answer, both signed by jacob.
+    const reviewed = await asks("@jacob/uploader edit the README", "auto-edits", false);
+    const draft = await until("jacob's draft", () => owner.view().current?.drafts.find((each) => each.id === reviewed));
+    assert.match(draft.patch?.diff ?? "", /^\+edited$/m);
+    assert.deepEqual(await kinds(reviewed), ["job.accepted by jacob"]);
+    await owner.handle({ do: "sendDraft", chat: "#team", id: reviewed, repo: "uploader", text: "Done, see the patch." });
+    await until("the answer", async () => (await said(bob, reviewed, "job.result")).length > 0);
+    assert.deepEqual(await kinds(reviewed), ["job.accepted by jacob", "patch by jacob", "job.result by jacob"]);
+
+    // Thrown away, neither goes.
+    const discarded = await asks("@jacob/uploader edit the README", "auto-edits", false);
+    await until("jacob's draft", () => owner.view().current?.drafts.find((each) => each.id === discarded));
+    await owner.handle({ do: "discardDraft", chat: "#team", id: discarded, repo: "uploader" });
+    await until("the decline", async () => (await said(bob, discarded, "job.declined")).length > 0);
+    assert.deepEqual(await kinds(discarded), ["job.accepted by jacob", "job.declined by jacob"]);
+
+    // An agent sends a patch only about its own repo, as any report of its run.
+    const agent = jacob.as("jacob/uploader", agentKey(jacob.home, "uploader"));
+    const content = { ...patch.content, repo: { ...patch.content.repo, name: "billing" } };
+    await assert.rejects(agent.publish("#team", "patch", content, [posted]), /jacob\/uploader reports only on its own repo, uploader/);
   }
 );

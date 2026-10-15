@@ -861,7 +861,7 @@ await test(
     await owner.stop(); // And the sessions the answered runs kept for a follow-up with it.
     assert.deepEqual(await left(checkout), []);
 
-    // Nothing the agent did reached the hub beyond those few words: no item, path or command is in any event it stores.
+    // Nothing the agent did reached the hub beyond those few words, and the change its supervised run made, as the one patch: no item, path or command is in any other event it stores.
     const stored = new DatabaseSync(join(hub.dir, "hub.db"), { readOnly: true });
     const rows = z.array(z.object({ kind: z.string(), content: z.string(), refs: z.string() })).parse(stored.prepare("SELECT kind, content, refs FROM events ORDER BY seq").all());
     stored.close();
@@ -872,10 +872,15 @@ await test(
       progress.every((each, index) => index === 0 || progress[index - 1]?.request !== each.request || progress[index - 1]?.summary !== each.summary),
       said.join(", ")
     ); // Only when it changed.
+    const patches = rows.filter((row) => row.kind === "patch");
+    assert.deepEqual(
+      patches.map((row) => z.object({ diff: z.string() }).parse(JSON.parse(row.content)).diff.split("\n")[0]),
+      ["diff --git a/edited.txt b/edited.txt"]
+    );
     for (const leak of ["README.md", "edited.txt", "npm test", "Started Fake", copy]) {
       assert.ok(fed.includes(leak), leak);
       assert.deepEqual(
-        rows.filter((row) => JSON.stringify(row).includes(leak)),
+        rows.filter((row) => row.kind !== "patch" && JSON.stringify(row).includes(leak)),
         [],
         leak
       );

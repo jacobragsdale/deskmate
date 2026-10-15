@@ -64,6 +64,9 @@ const noteSchema = z.discriminatedUnion("state", [
   z.strictObject({ state: z.literal("hidden"), id: z.string() }).readonly() // Not one the reader can see, or one whose signature failed.
 ]);
 
+/** A patch, as its author signed it: the repo by name, the commit and branch it was made on, its title and its diff. Every word of it is someone else's, and is drawn as text. */
+const patchSchema = z.strictObject({ repo: z.string(), base: z.string(), branch: z.string(), title: z.string(), diff: z.string() }).readonly();
+
 /** What a message and a reply both show. */
 const said = {
   id: z.string(), // The event's id: what a command about it names.
@@ -107,7 +110,8 @@ const said = {
         })
         .readonly()
     )
-    .readonly()
+    .readonly(),
+  patch: patchSchema.nullable() // For a patch, what it holds; null for anything else. Its body is its title.
 };
 
 /** A message in a thread, under its root. */
@@ -169,7 +173,8 @@ const currentSchema = z
     newAfter: z.int().nullable(), // Messages after this seq arrived while the user was elsewhere.
     messages: z.array(messageSchema).readonly(),
     lines: z.array(lineSchema).readonly(),
-    drafts: z.array(z.strictObject({ id: z.string(), repo: z.string(), asker: z.string(), text: z.string() }).readonly()).readonly(), // Answers waiting for review, oldest first, each with its request's id.
+    // Answers waiting for review, oldest first, each with its request's id and the patch that goes with it, null when the run changed nothing: neither is sent until the user sends them.
+    drafts: z.array(z.strictObject({ id: z.string(), repo: z.string(), asker: z.string(), text: z.string(), patch: patchSchema.nullable() }).readonly()).readonly(),
     running: z.boolean(), // Whether one of the user's agents is at work here.
     asks: z.array(askSchema).readonly(), // What the user's agents at work on requests here are waiting for them to allow or refuse, oldest first.
     activity: z.array(activityItemSchema).readonly(), // What the user's agents did on requests here, run by run, oldest first: at most 500 items a run, of the runs this desk still holds.
@@ -360,6 +365,7 @@ export type RequestView = z.infer<typeof requestSchema>;
 export type NoteView = z.infer<typeof noteSchema>;
 export type MessageView = z.infer<typeof messageSchema>;
 export type ReplyView = z.infer<typeof replySchema>;
+export type PatchView = z.infer<typeof patchSchema>;
 export type LineView = z.infer<typeof lineSchema>;
 export type RowView = z.infer<typeof rowSchema>;
 export type CurrentView = z.infer<typeof currentSchema>;

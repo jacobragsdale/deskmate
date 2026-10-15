@@ -9,9 +9,27 @@ import { join as joinPath } from "node:path";
 import { z } from "zod";
 
 import { runOf } from "../shared/ipc.ts";
-import type { ActivityItem, Arrival, AskView, ChatView, Check, Command, CurrentView, GrantView, Hit, LineView, MessageView, NoteView, Notice, ReplyView, RequestView, RowView } from "../shared/ipc.ts";
+import type {
+  ActivityItem,
+  Arrival,
+  AskView,
+  ChatView,
+  Check,
+  Command,
+  CurrentView,
+  GrantView,
+  Hit,
+  LineView,
+  MessageView,
+  NoteView,
+  Notice,
+  PatchView,
+  ReplyView,
+  RequestView,
+  RowView
+} from "../shared/ipc.ts";
 import { agentPrompt, ChatLog, chatOf, continues, mayCome, mentions, ONLINE, refOf, rings } from "../core/chat.ts";
-import type { Accepted, Delegation, Entry, Message, Request } from "../core/chat.ts";
+import type { Accepted, Delegation, Entry, Message, PatchContent, Request } from "../core/chat.ts";
 import { checkRequest, jobIn, peopleInvolved, ROOT_TIME } from "../core/delegation.ts";
 import type { Node } from "../core/delegation.ts";
 import { DAY, liveGrant, revoked, standing } from "../core/grants.ts";
@@ -88,6 +106,7 @@ interface Draft {
   readonly entry: Entry; // The request it answers.
   readonly repo: string; // The repo the agent worked in.
   readonly branch: string; // The branch it worked on.
+  readonly patch: ContentOf<"patch"> | null; // What its run on a clean copy changed, sent with it, before it; null when it changed nothing, or ran in the checkout.
 }
 
 /** An agent's ask waiting for its owner's answer. */
@@ -199,6 +218,11 @@ function chainWords({ first, chain, target }: Delegation, me: string): string {
   const [head = "", ...rest] = chain;
   const asker = first === "" ? "someone" : first === me ? "you" : first;
   return [`${asker} asked ${agentWords(head, me)}`, ...rest.map((agent) => `which asked ${agentWords(agent, me)}`), `which is asking ${agentWords(target, me)}`].join(", ");
+}
+
+/** A patch as the window draws it: the repo by name, and everything else as its author wrote it. */
+function patchView({ repo, base, branch, title, diff }: PatchContent): PatchView {
+  return { repo: repo.name, base, branch, title, diff };
 }
 
 /** The lesser of two modes. */
@@ -503,7 +527,13 @@ export class Session {
       newAfter: this.newAfter,
       messages: this.messages(chat, now),
       lines: this.lines(chat),
-      drafts: (this.drafts.get(chat) ?? []).map((draft) => ({ id: draft.entry.event.id, repo: draft.repo, asker: draft.entry.event.author, text: draft.text })),
+      drafts: (this.drafts.get(chat) ?? []).map((draft) => ({
+        id: draft.entry.event.id,
+        repo: draft.repo,
+        asker: draft.entry.event.author,
+        text: draft.text,
+        patch: draft.patch === null ? null : patchView(draft.patch)
+      })),
       running: [...this.runs.values()].some((run) => chatOf(run.entry.event, this.me) === chat),
       activity: [...this.feeds.values()].flatMap((feed) => (feed.chat === chat ? feed.items : [])),
       asks: [...this.waiting].flatMap(([id, waiting]): AskView[] =>
@@ -569,7 +599,8 @@ export class Session {
       requests: (message.deleted ? this.stillMine(message, now) : this.chats.requests(message, now)).flatMap((request) => this.requestView(request)),
       delegation:
         message.delegation === null ? null : { first: message.delegation.first, chain: message.delegation.chain, target: message.delegation.target, words: chainWords(message.delegation, this.me) },
-      tree: this.treeView(message, now)
+      tree: this.treeView(message, now),
+      patch: message.patch === null ? null : patchView(message.patch.content)
     };
   }
 
@@ -600,6 +631,7 @@ export class Session {
       requests: [],
       delegation: null,
       tree: [],
+      patch: null,
       replyCount: 0,
       replies: []
     };
@@ -1196,13 +1228,19 @@ export class Session {
     return draft;
   }
 
+  /** Send a draft as the user edited it, and before it the patch that goes with it, unchanged: both signed by the user, who reviewed them. */
   private async sendDraft(chat: string, request: string, repo: string, text: string): Promise<void> {
     const draft = this.takeDraft(chat, request, repo);
     const edited = fitText(text.trim());
+    let patch = draft.patch;
     try {
+      if (patch !== null) {
+        await this.client.publish(chat, "patch", patch, [request]);
+        patch = null; // Sent: should the answer not be, what is put back is the answer alone.
+      }
       await this.client.publish(chat, "job.result", { repo, branch: draft.branch, text: edited, reviewed: true }, [request]);
     } catch (error) {
-      this.drafts.set(chat, [{ ...draft, text: edited }, ...(this.drafts.get(chat) ?? [])]); // Put it back as edited, so nothing the user or their agent wrote is lost.
+      this.drafts.set(chat, [{ ...draft, text: edited, patch }, ...(this.drafts.get(chat) ?? [])]); // Put it back as edited, so nothing the user or their agent wrote is lost.
       this.hooks.changed();
       throw error;
     }
@@ -1807,10 +1845,9 @@ export class Session {
       if (text === "") {
         ending = "the agent returned nothing";
         ended = endedItem("failed", ending);
-      } else if (run.post) {
-        await this.postAnswer(chat, { text, entry, repo, branch: head.branch });
       } else {
-        await this.keepDraft(chat, { text, entry, repo, branch: head.branch });
+        const draft = { text, entry, repo, branch: head.branch, patch: await this.patchOf(copy, checkout, head.branch, text) };
+        await (run.post ? this.postAnswer(chat, draft) : this.keepDraft(chat, draft));
       }
     } catch (error) {
       ending = error instanceof AgentCancelledError ? "stopped" : problemOf(error);
@@ -1863,6 +1900,13 @@ export class Session {
       throw error;
     }
     return { head, copy };
+  }
+
+  /** What a run on a clean copy changed, as the patch that goes with its answer, titled with the answer's first line: null when it changed nothing, or ran in the checkout. */
+  private async patchOf(copy: Worktree | null, checkout: Checkout, branch: string, text: string): Promise<ContentOf<"patch"> | null> {
+    const diff = copy === null ? "" : await worktree.collect(copy);
+    const title = oneLine(text.trim().split("\n")[0] ?? "", 80);
+    return copy === null || diff === "" ? null : { repo: refOf(checkout.remote), base: copy.base, branch, title: title === "" ? "A change" : title, diff };
   }
 
   /** Remove a run's clean copy once it is done with. Best effort: one left behind is removed when the desk next starts (see `sweep` in worktree.ts). */
@@ -2018,23 +2062,30 @@ export class Session {
   }
 
   /**
-   * Post an answer nobody reviewed, signed by the agent that wrote it; or when it cannot be, or it holds one of the user's private keys, keep it as a draft for its owner to review and send under
-   * their own name. A key in an answer would let whoever reads it sign as them or their agent, a grant in their name among what it could sign.
+   * Post an answer nobody reviewed, and before it the patch that goes with it, each signed by the agent that wrote it; or when they cannot be, or either holds one of the user's private keys,
+   * keep what was not posted as a draft for its owner to review and send under their own name. A key in an answer would let whoever reads it sign as them or their agent, a grant in their
+   * name among what it could sign.
    */
   private async postAnswer(chat: string, draft: Draft): Promise<void> {
-    const leaked = keyIn(this.client.home, draft.text);
+    const inText = keyIn(this.client.home, draft.text);
+    const leaked = inText ?? (draft.patch === null ? null : keyIn(this.client.home, `${draft.patch.title}\n${draft.patch.diff}`));
     if (leaked !== null) {
-      const body = `It holds the private key in ${leaked}, which would let whoever reads it sign as its owner. Read it before you send it: the agent read that file, and may have put the key elsewhere too.`;
+      const body = `${inText === null ? "The change that goes with it" : "It"} holds the private key in ${leaked}, which would let whoever reads it sign as its owner. Read it before you send it: the agent read that file, and may have put the key elsewhere too.`;
       this.hooks.notice({ title: `your ${draft.repo} agent's answer was not posted; it is kept as a draft`, body, severity: "error" });
       await this.keepDraft(chat, draft);
       return;
     }
+    let patch = draft.patch;
     try {
+      if (patch !== null) {
+        await this.agentOf(draft.repo).publish(chat, "patch", patch, [draft.entry.event.id]);
+        patch = null; // Posted: should the answer not be, the draft kept is the answer alone.
+      }
       await this.agentOf(draft.repo).publish(chat, "job.result", { repo: draft.repo, branch: draft.branch, text: draft.text, reviewed: false }, [draft.entry.event.id]);
     } catch (error) {
       // An answer that could not be posted is kept as a draft, so the agent's work is not lost.
       this.hooks.notice({ title: `your ${draft.repo} agent's answer was not posted; it is kept as a draft`, body: problemOf(error), severity: "error" });
-      await this.keepDraft(chat, draft);
+      await this.keepDraft(chat, { ...draft, patch });
     }
   }
 

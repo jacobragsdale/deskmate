@@ -95,7 +95,8 @@ function shown(seq: number, author: string, to: string, text: string, agent: str
     deleted: false,
     reactions: new Map(),
     replies: [],
-    delegation: null
+    delegation: null,
+    patch: null
   };
 }
 
