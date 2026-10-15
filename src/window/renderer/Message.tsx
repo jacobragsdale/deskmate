@@ -237,12 +237,16 @@ function Commit({ commit }: { readonly commit: string }): JSX.Element {
   return <code title={commit}>{commit.slice(0, 7)}</code>;
 }
 
-/** Where its owner let a run go ahead: " on" the branch, ± when the checkout had changes nobody had committed, and " at" the commit. Nothing when they never did. */
+/**
+ * Where and how its owner let a run go ahead: " on" the branch, ± when the checkout had changes nobody had committed, " at" the commit, and the permission mode it may act at,
+ * which everyone in the chat sees. Nothing when they never did.
+ */
 function Ran({ accepted }: { readonly accepted: RequestView["accepted"] }): JSX.Element | null {
   return accepted === null ? null : (
     <>
       {` on ${accepted.branch}${accepted.dirty ? " ±" : ""} at `}
       <Commit commit={accepted.commit} />
+      {` · ${accepted.mode}`}
     </>
   );
 }

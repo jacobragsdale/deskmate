@@ -410,7 +410,8 @@ await test(
     );
     assert.ok(!order.includes(-1), history);
 
-    // Alice asks bob's agent twice from the window. The first she takes back while it waits. The second bob runs: under it she sees the branch and short commit it ran at, and what it is doing, and its answer says where it ran too.
+    // Alice asks bob's agent twice from the window. The first she takes back while it waits. The second bob runs: under it she sees the branch and short commit it ran at, the mode he let it
+    // act at, and what it is doing, and its answer says where it ran too.
     await page.click("nav button", "bob");
     await page.until("the chat with bob", `document.querySelector("main h1")?.textContent === "bob"`);
     await page.type('textarea[aria-label="Message bob"]', "@bob/uploader never mind");
@@ -425,10 +426,10 @@ await test(
     assert.ok(asked !== undefined);
     const commit = "c0ffee".padEnd(40, "0");
     await bob.publish("alice", "job.accepted", { repo: "uploader", branch: "main", commit, dirty: true, delivery: "post", mode: "full", by: "owner" }, [asked.event.id]);
-    await page.until("where it runs", `document.querySelector("main").innerText.includes("bob's uploader agent is working on main ± at c0ffee0")`);
+    await page.until("where it runs", `document.querySelector("main").innerText.includes("bob's uploader agent is working on main ± at c0ffee0 · full")`);
     // What bob's desk says his agent is doing takes the place of "working": the few coarse words, and nothing more.
     await bob.publish("alice", "job.progress", { repo: "uploader", summary: "editing files" }, [asked.event.id]);
-    await page.until("what it is doing", `document.querySelector("main").innerText.includes("bob's uploader agent is editing files on main ± at c0ffee0")`);
+    await page.until("what it is doing", `document.querySelector("main").innerText.includes("bob's uploader agent is editing files on main ± at c0ffee0 · full")`);
     await bob.publish("alice", "job.result", { repo: "uploader", branch: "main", text: "in queue.py", reviewed: false }, [asked.event.id]);
     await page.until("the answer, with where it ran", `document.querySelector("main").innerText.includes("/uploader agent on main ± at c0ffee0")`);
 
@@ -584,6 +585,7 @@ await test(
     await page.shot("menu");
     await page.click('[role="menuitem"][data-mode="supervised"]');
     await page.until("the card under carol's request", `${card("main")}?.innerText.includes("Edit edited.txt") === true`);
+    assert.match(String(await page.eval(`${newest}.innerText`)), /your billing agent is working on main at [0-9a-f]{7} · supervised · /);
     await page.eval(`[...${newest}.querySelectorAll("button")].find((each) => each.textContent.includes("Show activity")).click()`);
     await page.until("the card in the panel", `${card("aside")}?.innerText.includes("Edit edited.txt") === true`);
     await page.eval(`[...${card("main")}.querySelectorAll("button")].find((each) => each.textContent === "Allow once").click()`);
