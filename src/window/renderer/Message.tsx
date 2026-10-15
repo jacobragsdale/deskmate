@@ -184,7 +184,8 @@ function askingWhy(runs: Runs, delegation: ReplyView["delegation"]): string {
 /**
  * One of the user's own agents, ready to run:a button that runs it as the user last ran that asker's requests of that repo, read-only with a review before they ever have,
  * unless the agent that answers cannot be held to that mode; the menu of other ways to run it; a button that declines it; and under them the switch that lets the agent ask others,
- * on at first only for a request of the user's own, as a run of their own tag from the window is let. A run carries `text`, the request as the user sees it here, so the desk can refuse one edited since.
+ * on at first only for a request of the user's own, as a run of their own tag from the window is let. Another agent's request says before the buttons how it came, in words.
+ * A run carries `text`, the request as the user sees it here, so the desk can refuse one edited since.
  */
 function ReadyLine({
   request,
@@ -195,6 +196,7 @@ function ReadyLine({
   untested,
   own,
   asking,
+  delegation,
   act,
   children
 }: {
@@ -206,6 +208,7 @@ function ReadyLine({
   readonly untested: boolean;
   readonly own: boolean; // Whether everyone the request runs on the say of is the user.
   readonly asking: string; // Why the agent cannot ask others in this run, "" when it can.
+  readonly delegation: ReplyView["delegation"];
   readonly act: Act;
   readonly children: ReactNode; // What else the line offers: the activity of the run before, when there is one.
 }): JSX.Element {
@@ -220,7 +223,7 @@ function ReadyLine({
     <div className={MINE}>
       <p>
         ◆ {BEFORE[status.before]}
-        {who} ·{" "}
+        {delegation === null ? who : delegation.words} ·{" "}
         {first && (
           <>
             <Button
@@ -466,7 +469,18 @@ function RequestLine({
       );
     case "ready":
       return (
-        <ReadyLine request={request} text={text} who={who} status={status} cannot={runs.cannot} untested={runs.untested} own={own} asking={askingWhy(runs, delegation)} act={act}>
+        <ReadyLine
+          request={request}
+          text={text}
+          who={who}
+          status={status}
+          cannot={runs.cannot}
+          untested={runs.untested}
+          own={own}
+          asking={askingWhy(runs, delegation)}
+          delegation={delegation}
+          act={act}
+        >
           {activity}
         </ReadyLine>
       );

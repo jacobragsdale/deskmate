@@ -239,10 +239,10 @@ async function addAgent(page: Page, program: string, args: readonly string[]): P
  * his agent's request of alice's, signed by it with `bobsAgent`, and the end of its run; alice's desk, her agent and the MCP server it asks through are real.
  */
 async function askingAgents(page: Page, bob: Client, carol: Client, bobsAgent: KeyObject, commit: string): Promise<void> {
-  // Agents asking agents, in a channel of its own with bob and carol, so that no earlier message reaches a prompt. Alice asks bob's agent there, and bob lets it run read-only and ask
-  // others, as his desk would; it asks hers, signed by it. Under her request is the tree of the jobs under it, one line each, indented by depth. That request, a reply in her request's
-  // thread, reads as bob's agent asking hers, and offers the switch that lets her agent ask others too, off as for anyone else's request, beside what that means: she turns it on and runs
-  // it, her acceptance says so, and her agent asks carol's through the MCP server it is given for that, in the same thread, and in the tree.
+  // Alice asks bob's agent, and bob lets it run read-only and ask others, as his desk would; it asks hers, signed by it. Under her request is the tree of the jobs under it, one line each,
+  // indented by depth. That request, a reply in her request's thread, reads as bob's agent asking hers, says how it came in words before its buttons, and offers the switch that lets
+  // her agent ask others too, off as for anyone else's request, beside what that means: she turns it on and runs it, her acceptance says so, and her agent asks carol's through the MCP
+  // server it is given for that, in the same thread, and in the tree.
   await bob.publish("#relay", "channel.join", {});
   await carol.publish("#relay", "channel.join", {});
   await page.press("n", CTRL);
@@ -268,6 +268,11 @@ async function askingAgents(page: Page, bob: Client, carol: Client, bobsAgent: K
   const ofMine = replyOf("bob's uploader agent asked @alice/billing: ask:carol/api");
   const toggle = `${ofMine}?.querySelector('button[role="switch"]')`;
   await page.until("the switch under bob's agent's request of hers", `${toggle}?.getAttribute("aria-checked") === "false"`);
+  // How it came, in words, before the buttons.
+  assert.match(
+    String(await page.eval(`[...${ofMine}.querySelectorAll("p")].find((each) => each.querySelector("button") !== null).innerText`)),
+    /^◆ you asked bob's uploader agent, which is asking your billing agent · ▶ Run read-only/
+  );
   assert.equal(await page.eval(`${toggle}.labels[0].textContent`), "Let this agent ask other agents");
   assert.match(String(await page.eval(`document.getElementById(${toggle}.getAttribute("aria-describedby")).textContent`)), /posted in the chat as it asks, even when you review its answer/);
   await page.eval(`${toggle}.click()`);
