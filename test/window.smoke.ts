@@ -212,7 +212,7 @@ async function addAgent(page: Page, program: string, args: readonly string[]): P
 }
 
 await test(
-  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, and offers only the modes the agent that answers can keep",
+  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, keeps a card in reach in a closed thread and brings one far above the end into view, refuses and allows for the run from a card, and offers only the modes the agent that answers can keep, full alone beside its reason when that is all, and a full chosen once not again in one click when less is there",
   { skip: NO_DISPLAY ? "no display: run it under xvfb-run" : false, timeout: 120_000 },
   async (t) => {
     assert.ok(existsSync(join(ROOT, "dist", "main.js")), "dist/ is not built: run `npm run build` first");
@@ -546,6 +546,7 @@ await test(
       "plain turn 1: read; edit refused",
       "plain Answered"
     ]);
+    assert.ok(!existsSync(join(home, "dev", "billing", "edited.txt")), "the agent run read-only wrote a file");
     await page.eval(`${panel}.querySelector('li[data-tone="failed"] summary').click()`);
     await page.until("the edit's detail", `${panel}.querySelector("details[open] pre")?.textContent === ${JSON.stringify(JSON.stringify({ title: "Edit edited.txt" }, null, 1))}`);
     await page.shot("activity");
