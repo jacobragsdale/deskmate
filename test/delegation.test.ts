@@ -13,7 +13,7 @@ import { checkRequest, MAX_CHILDREN, MAX_TREE, peopleInvolved, ROOT_TIME, tree }
 import type { Node } from "../src/core/delegation.ts";
 import { readContent } from "../src/core/kinds.ts";
 import { loadKey, publicHex, signEvent } from "../src/core/sign.ts";
-import { ownerOf } from "../src/core/wire.ts";
+import { MAX_SKEW, ownerOf } from "../src/core/wire.ts";
 import type { Delivered, PermissionMode } from "../src/core/wire.ts";
 import { agentEnv, agentKey } from "../src/desk/agentKeys.ts";
 import { askUnder } from "../src/desk/notes.ts";
@@ -22,7 +22,7 @@ import type { Client } from "../src/desk/client.ts";
 import { Session } from "../src/desk/session.ts";
 import { createServer } from "../src/mcp/server.ts";
 import type { Notice, ReplyView } from "../src/shared/ipc.ts";
-import { startHub, TEAM_REPOS } from "./startHub.ts";
+import { startHub, storedUnchecked, TEAM_REPOS } from "./startHub.ts";
 import type { Hub } from "./startHub.ts";
 
 // An agent's MCP server is started as `player-two`, found on the PATH: here, the command from this checkout, in the home of the identity whose agent's key file it is given.
@@ -376,6 +376,10 @@ await test(
     await run(asked, "auto-edits");
     assert.match(readContent((await sent(bob, asked, "carol/billing", "job.result")).event).kind, /job.result/);
 
+    // As carol last ran jacob's agent's requests is what she is offered first, but never above what the chain lets.
+    const capped = await offered(await ask(await root(true, "read-only")));
+    assert.deepEqual(capped.requests[0]?.status, { kind: "ready", before: "", canDecline: true, offer: { mode: "read-only", post: true }, ceiling: "read-only" });
+
     // Once jacob's agent has answered, what it asked before may not go: a click on it is refused, saying why.
     const late = await ask(first, "carol/api");
     await offered(late);
@@ -411,6 +415,57 @@ await test(
     assert.ok(!(await bob.events({ chat: "#team" })).some(({ event }) => event.refs[0] === mine && event.kind === "job.accepted"));
   }
 );
+
+await test(
+  "an agent's request the stream hands over late, signed longer ago than two clock skews, waits for its owner though a grant covers everyone it runs on the say of; one signed lately runs under it",
+  { timeout: 60_000 },
+  async (t) => {
+    let clock = Math.floor(Date.now() / 1000); // Everyone's, and the hub's.
+    const hub = await startHub(t, () => clock);
+    const carol = await deskOf(t, hub, "carol", ["billing"]);
+    const [bob, jacob] = [await hub.join("bob"), await hub.join("jacob")];
+    for (const who of [bob, jacob]) {
+      await who.publish("#team", "channel.join", {});
+    }
+    const key = agentKey(join(hub.dir, "jacob"), "uploader");
+    await jacob.publish("*", "agent.register", { repo: "uploader", pubkey: publicHex(key) });
+    await carol.session.handle({ do: "grant", repo: "billing", askers: ["bob", "jacob"], mode: "full", delivery: "post", lasts: 3600, runsPerDay: 20 });
+    const { id: root } = (await bob.publish("#team", "message", { text: "@jacob/uploader does removing `retries` break anything?", via: "cli" })).event;
+    await jacob.publish("#team", "job.accepted", { repo: "uploader", branch: "main", commit: COMMIT, dirty: false, delivery: "post", mode: "full", delegate: true, by: "owner" }, [root]);
+    const request = { target: "carol/billing", text: "mcp", chain: ["jacob/uploader"] };
+
+    // Stored as the stream passes it by, and handed over with the next request, 601 seconds on.
+    const late = storedUnchecked(hub, key, { author: "jacob/uploader", to: "#team", kind: "job.request", content: request, ts: clock, refs: [root, root] }).event.id;
+    clock += 2 * MAX_SKEW + 1;
+    const lately = (await jacob.as("jacob/uploader", key).publish("#team", "job.request", request, [root, root])).event.id;
+    await sent(bob, lately, "carol", "job.accepted");
+    await eventually("carol is offered the late one", () => carol.shown(late)?.requests[0]?.status.kind === "ready");
+    await delay(500);
+    assert.ok(!(await bob.events({ chat: "#team" })).some(({ event }) => event.refs[0] === late && event.kind === "job.accepted"));
+  }
+);
+
+await test("an agent's request whose root is older than what its target's desk has loaded of the chat is judged with the page around its root loaded, and offered", { timeout: 60_000 }, async (t) => {
+  const hub = await startHub(t, () => Date.now() / 1000);
+  const [bob, jacob] = [await hub.join("bob"), await hub.join("jacob")];
+  for (const who of [bob, jacob]) {
+    await who.publish("#team", "channel.join", {});
+  }
+  const key = agentKey(join(hub.dir, "jacob"), "uploader");
+  await jacob.publish("*", "agent.register", { repo: "uploader", pubkey: publicHex(key) });
+  const { id: root } = (await bob.publish("#team", "message", { text: "@jacob/uploader does removing `retries` break anything?", via: "cli" })).event;
+  await jacob.publish("#team", "job.accepted", { repo: "uploader", branch: "main", commit: COMMIT, dirty: false, delivery: "post", mode: "full", delegate: true, by: "owner" }, [root]);
+  for (let index = 0; index < 60; index += 1) {
+    await bob.publish("#team", "message", { text: `meanwhile ${String(index)}`, via: "cli" }); // More than the page a desk loads of a chat as it starts.
+  }
+  const carol = await deskOf(t, hub, "carol", ["billing"]);
+  assert.equal(carol.shown(root), undefined);
+
+  const asked = (await jacob.as("jacob/uploader", key).publish("#team", "job.request", { target: "carol/billing", text: "mcp", chain: ["jacob/uploader"] }, [root, root])).event.id;
+  await eventually("carol is offered it", () => carol.shown(asked)?.requests[0]?.status.kind === "ready");
+  await delay(500);
+  assert.ok(!(await bob.events({ chat: "#team" })).some(({ event }) => event.refs[0] === asked && event.kind === "job.declined"));
+});
 
 await test(
   "an agent's answer to another reaches the agent that asked only once it is posted in the chat: kept for its owner to review, it waits until they send it, as they edited it",

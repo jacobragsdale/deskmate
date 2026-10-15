@@ -518,6 +518,28 @@ await test(
 );
 
 await test(
+  "a run let ask other agents neither leaves a session to follow up in nor goes on in one: the user's own reply in its thread, which runs let ask others as their own does, starts afresh",
+  { timeout: 60_000 },
+  async (t) => {
+    const { session, answer } = await bobsDesk(t);
+    /** Bob asks his own agent from his window, in the thread of `root` when given: it runs at once, let ask others. Resolves with the request's id. */
+    const own = async (text: string, root?: string): Promise<string> => {
+      await session.handle(root === undefined ? { do: "send", chat: "#team", text } : { do: "reply", root, text });
+      const sent = await until("bob's own request", () =>
+        session
+          .view()
+          .current?.messages.flatMap((message) => [message, ...message.replies])
+          .find((message) => message.body === text)
+      );
+      return sent.id;
+    };
+    const first = await own("@bob/uploader read");
+    assert.match(await answer(first, true), /^turn 1: /);
+    assert.match(await answer(await own("@bob/uploader read again", first), true), /^turn 1: /); // In a session the first left open it would be its second turn.
+  }
+);
+
+await test(
   "a run left waiting on its owner's answer for longer than STALE is still believed working by teammates: the owner's desk tells the chat again, unchanged, what it is doing, and a withdrawal is judged by that",
   { timeout: 30_000 },
   async (t) => {
@@ -1094,9 +1116,12 @@ await test(
     assert.equal(await answered(first), `turn 1: servers ${JSON.stringify([server])}; as bob/uploader`);
 
     // Once its permissions are tested, her reply in that thread runs under the grant, at the same mode and delivery: afresh, not in the session bob's run left open, with no server,
-    // told it is bob/uploader, so the command signs as the agent, and that it reads her chat with bob alone.
+    // told it is bob/uploader, so the command signs as the agent, and that it reads her chat with bob alone; never let ask other agents, so told no request to ask them under.
     assert.equal((await session.testPermissions("fake")).status, "ok");
-    assert.equal(await answered(await ask("mcp whoami", first)), "turn 1: servers []; as bob/uploader, reading alice only");
+    const reply = await ask("mcp whoami", first);
+    assert.equal(await answered(reply), "turn 1: servers []; as bob/uploader, reading alice only");
+    const accepted = (await bob.events({ chat: "alice" })).map(({ event }) => (event.refs[0] === reply ? readContent(event) : null)).find((said) => said?.kind === "job.accepted");
+    assert.ok(accepted?.kind === "job.accepted" && accepted.content.by !== "owner" && !accepted.content.delegate, JSON.stringify(accepted));
   }
 );
 
