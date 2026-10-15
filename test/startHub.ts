@@ -72,6 +72,9 @@ export async function startHub(t: TestContext, now: () => number = () => NOW, do
     },
     restart: async () => {
       await stop();
+      await new Promise((resolve) => {
+        setTimeout(resolve, 50); // For each client to see its kept-alive connection closed, rather than send its next request down it.
+      });
       server = await listening(address.port);
     }
   };

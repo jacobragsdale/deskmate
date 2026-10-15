@@ -25,7 +25,7 @@ export interface Workflows {
   readonly seen: (event: Event) => void;
   /** The live workflow a webhook's id, the first 32 hex of its definition's id, names: the secret it asks for, and setting a run off with a request's body. Null for none. */
   readonly hook: (id: string) => { readonly secret: string | null; readonly start: (body: unknown) => void } | null;
-  /** Stop for good, as the hub closes: no schedule fires after. */
+  /** Stop for good, as the hub closes: no schedule fires after, and no wait is checked. */
   readonly stop: () => void;
 }
 
@@ -38,11 +38,15 @@ interface Going extends Ref {
   readonly values: Values;
 }
 
-/** Where a run is once a step has been recorded: the step it is at, and its state. */
+/** Where a run is once a step has been recorded: the step it is at, its state, and for one now waiting on an approval, for how many seconds. */
 interface Place {
   readonly step: number;
   readonly state: RunState;
+  readonly within?: number;
 }
+
+const SWEEP = 60; // Seconds between looks for approvals whose time has passed. ponytail: one may end up to a minute late; a timer per wait if that ever matters.
+const THUMBS_UP = /^👍[\u{1F3FB}-\u{1F3FF}]?$/u; // In any skin tone.
 
 /** What an event stored in a channel would set off: which triggers it fires, and the values a run it sets off fills its templates with. */
 interface Firing {
@@ -78,20 +82,21 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, wa
   }
 
   /**
-   * Record what step `step` of a run did: the message it posts, when it posts one, and the workflow.run saying how it came out, which refers to the run's definition and to that message;
-   * stored with the run's new place in one transaction, so that a hub stopped at any moment holds a step whole or not at all. The events then pass the triggers, as everyone's do.
+   * Record what step `step` of a run did: the message it posts, when it posts one, and the workflow.run saying how it came out, which refers to the run's definition and to that message,
+   * or to `about`, the message an approval waited on; stored with the run's new place in one transaction, so that a hub stopped at any moment holds a step whole or not at all, and a run
+   * set waiting waits on the message posted with it. The events then pass the triggers, as everyone's do.
    */
-  function record(ref: Ref, step: number, status: RunStatus, detail: string, place: Place, text: string | null = null): void {
+  function record(ref: Ref, step: number, status: RunStatus, detail: string, place: Place, text: string | null = null, about = ""): void {
     const ts = Math.floor(now());
     const posted = text === null ? null : signed(ref.channel, "message", { text, via: "workflow", workflow: ref.name }, [], ts);
-    const refs = [ref.definition, ...(posted === null ? [] : [posted.id])];
-    const report = signed(ref.channel, "workflow.run", { workflow: ref.name, run: ref.run, step, status, detail }, refs, ts);
+    const second = posted?.id ?? about;
+    const report = signed(ref.channel, "workflow.run", { workflow: ref.name, run: ref.run, step, status, detail }, second === "" ? [ref.definition] : [ref.definition, second], ts);
     const stored = [posted, report].filter((event) => event !== null);
     db.transaction(() => {
       for (const event of stored) {
         db.addEvent(event);
       }
-      db.saveRun(ref.run, place.step, place.state);
+      db.saveRun(ref.run, place.step, place.state, place.state === "waiting" ? second : "", place.state === "waiting" ? ts + (place.within ?? 0) : 0);
     });
     wake();
     log("workflow step", { channel: ref.channel, workflow: ref.name, run: ref.run, step, status });
@@ -120,9 +125,57 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, wa
       } else if (step.kind === "post" || step.kind === "tag") {
         // A tag is a message like a person's, and the step ends once it is stored: the job it makes waits for the agent's owner, or a grant naming the workflow, on their own desk.
         record(going, at, "done", "", onward(going, at), told(step.kind === "post" ? step.post : `${step.tag} ${step.text}`, going.values));
+      } else if (step.kind === "approve") {
+        const from = step.approve.from === "anyone" ? `anyone in ${going.channel}` : step.approve.from;
+        record(going, at, "waiting", `for a 👍 from ${from}`, { step: at, state: "waiting", within: step.approve.within }, told(step.approve.text, going.values));
+        return; // Until `approve` hears the 👍, or `sweep` finds the time has passed.
       } else {
         record(going, at, "failed", `this hub does not yet take ${step.kind} steps`, { step: at, state: "ended" });
         return;
+      }
+    }
+  }
+
+  /** A run kept in workflow_runs, to go on with: null when the definition it runs is no longer live. */
+  function resumed(run: Run): Going | null {
+    const live = db.liveWorkflows(run.channel).find((each) => each.event === run.definition);
+    return live === undefined ? null : { run: run.run, channel: run.channel, name: run.name, definition: run.definition, file: fileOf(live), values: run.input };
+  }
+
+  /** A 👍 added to the message a run waits on, by the person its step names, or by anyone when it names `anyone`, moves the run on; past the step's time, it ends as expired. */
+  function approve(event: Event, said: Content | { readonly kind: "unknown" }): void {
+    if (said.kind !== "reaction" || !said.content.on || !THUMBS_UP.test(said.content.emoji)) {
+      return;
+    }
+    const run = db.runsIn("waiting").find((each) => each.approval === event.refs[0] && each.channel === event.to);
+    const going = run === undefined ? null : resumed(run);
+    if (run === undefined || going === null) {
+      return; // Not a message a run waits on; or one whose workflow has gone, which `sweep` ends.
+    }
+    const step = going.file.steps[run.step];
+    if (step?.kind !== "approve" || (step.approve.from !== "anyone" && step.approve.from !== event.author)) {
+      return; // Anyone else's is a reaction like any other.
+    }
+    if (now() > run.until) {
+      record(going, run.step, "expired", "no 👍 came in time", { step: run.step, state: "ended" }, null, run.approval);
+      return;
+    }
+    record(going, run.step, "approved", `by ${event.author}`, onward(going, run.step), null, run.approval);
+    go(going, run.step + 1);
+  }
+
+  /**
+   * End each waiting run that can no longer go on: one whose workflow has been replaced or removed since it began is cancelled, as a run goes on only as the file it started under says;
+   * one whose time has passed, expired. The hub looks when it starts, every minute after, and when a workflow changes, so a wait outlasts the hub stopping and starting.
+   */
+  function sweep(): void {
+    for (const run of db.runsIn("waiting")) {
+      const live = db.liveWorkflows(run.channel).find((each) => each.name === run.name);
+      const end = { step: run.step, state: "ended" } as const;
+      if (live?.event !== run.definition) {
+        record(run, run.step, "cancelled", `${run.name} was ${live === undefined ? "removed" : "replaced"}`, end, null, run.approval);
+      } else if (now() > run.until) {
+        record(run, run.step, "expired", "no 👍 came in time", end, null, run.approval);
       }
     }
   }
@@ -159,8 +212,10 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, wa
     const said = readContent(event);
     if (said.kind === "workflow.define" || said.kind === "workflow.remove") {
       schedule();
+      sweep();
       return;
     }
+    approve(event, said);
     const fired = firing(event, said);
     for (const live of fired === null ? [] : db.liveWorkflows(event.to)) {
       if (fired?.fires(fileOf(live).on) === true) {
@@ -198,6 +253,14 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, wa
   }
 
   schedule();
+  sweep();
+  const sweeping = setInterval(() => {
+    try {
+      sweep();
+    } catch (error) {
+      log("workflow failed", { error: problemOf(error) });
+    }
+  }, SWEEP * 1000).unref();
 
   return {
     seen,
@@ -215,6 +278,7 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, wa
       };
     },
     stop: () => {
+      clearInterval(sweeping);
       for (const cron of crons) {
         cron.stop();
       }

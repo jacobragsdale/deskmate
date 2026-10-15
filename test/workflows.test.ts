@@ -14,7 +14,7 @@ import { mentions } from "../src/core/chat.ts";
 import { readContent } from "../src/core/kinds.ts";
 import { fitText } from "../src/core/wire.ts";
 import type { Client } from "../src/desk/client.ts";
-import { startHub } from "./startHub.ts";
+import { NOW, startHub } from "./startHub.ts";
 import type { Hub } from "./startHub.ts";
 
 /** A channel as one member reads it, oldest first: each message as its author and text, each step of a run as the hub reported it, anything else as its kind; `!` before an author whose signature fails. */
@@ -274,4 +274,114 @@ await test("post and tag publish the hub's messages, a tag's step ending once it
     ["hub: ci-failure run 1 step 0 done", "hub: ci-failure run 1 step 1 done", "hub: ci-failure run 1 step 2 done"]
   );
   assert.deepEqual(runs(hub), ["ci-failure 1 3 ended"]);
+});
+
+/** The id of the newest message the hub posted in #ops, as `client` reads it. */
+async function newestFromHub(client: Client): Promise<string> {
+  const found = (await client.events({ chat: "#ops" })).find(({ event }) => event.author === "hub" && event.kind === "message");
+  assert.ok(found !== undefined);
+  return found.event.id;
+}
+
+const DEPLOY = `name: deploy
+on:
+  message: { contains: "ship it" }
+steps:
+  - approve: { from: jacob, text: "{{trigger.author}} asks: {{trigger.text}}. A 👍 from jacob lets it go.", within: "2h" }
+  - post: "shipping"
+`;
+
+await test("an approval posts its text and waits, through the hub stopping and starting, for a 👍 on that message from the person it names, ignoring anyone else's, then moves on", async (t) => {
+  const hub = await startHub(t);
+  const [alice, bob, jacob] = await team(hub, "alice", "bob", "jacob");
+  assert.ok(alice !== undefined && bob !== undefined && jacob !== undefined);
+  const { event: definition } = await alice.publish("#ops", "workflow.define", { name: "deploy", yaml: DEPLOY });
+  const { event: asked } = await bob.publish("#ops", "message", { text: "ship it v2", via: "cli" });
+  const approval = await newestFromHub(alice);
+  const before = (await channel(alice)).length;
+
+  await hub.restart();
+  await bob.publish("#ops", "reaction", { emoji: "👍", on: true }, [approval]); // Not the one it waits for.
+  await jacob.publish("#ops", "reaction", { emoji: "👀", on: true }, [approval]); // Not a 👍.
+  await jacob.publish("#ops", "reaction", { emoji: "👍", on: false }, [approval]); // Not one added.
+  await jacob.publish("#ops", "reaction", { emoji: "👍", on: true }, [asked.id]); // Not on the message it waits on.
+  assert.deepEqual(runs(hub), ["deploy 1 0 waiting"]);
+  await jacob.publish("#ops", "reaction", { emoji: "👍", on: true }, [approval]);
+  await jacob.publish("#ops", "reaction", { emoji: "👍", on: true }, [approval]); // Once it has moved on, another changes nothing.
+
+  assert.deepEqual((await channel(alice)).slice(before - 3), [
+    "bob: ship it v2",
+    "hub: bob asks: ship it v2. A 👍 from jacob lets it go.",
+    "hub: deploy run 1 step 0 waiting: for a 👍 from jacob",
+    "bob: reaction",
+    "jacob: reaction",
+    "jacob: reaction",
+    "jacob: reaction",
+    "jacob: reaction",
+    "hub: deploy run 1 step 0 approved: by jacob",
+    "hub: shipping",
+    "hub: deploy run 1 step 1 done",
+    "jacob: reaction"
+  ]);
+  assert.deepEqual(runs(hub), ["deploy 1 2 ended"]);
+  const steps = (await alice.events({ chat: "#ops" })).filter(({ event }) => event.kind === "workflow.run").map(({ event }) => event.refs);
+  assert.deepEqual(steps.slice(1).reverse(), [
+    [definition.id, approval],
+    [definition.id, approval]
+  ]); // The wait and its approval both name the message waited on.
+});
+
+const ANYONE = DEPLOY.replace("from: jacob", "from: anyone").replace('within: "2h"', 'within: "90m"');
+
+await test("an approval from anyone takes any member's 👍; past its time, a 👍 or the hub starting ends it as expired; replacing or removing its workflow cancels it", async (t) => {
+  let clock = NOW;
+  const hub = await startHub(t, () => clock);
+  const [alice, bob] = await team(hub, "alice", "bob");
+  assert.ok(alice !== undefined && bob !== undefined);
+  await alice.publish("#ops", "workflow.define", { name: "deploy", yaml: ANYONE });
+  const waiting = async (text: string): Promise<string> => {
+    await bob.publish("#ops", "message", { text, via: "cli" });
+    return newestFromHub(alice);
+  };
+  const thumbsUp = async (on: string, emoji = "👍"): Promise<void> => {
+    await bob.publish("#ops", "reaction", { emoji, on: true }, [on]);
+  };
+
+  await thumbsUp(await waiting("ship it 1"), "👍🏽"); // Anyone, in any skin tone.
+  const late = await waiting("ship it 2");
+  clock += 90 * 60;
+  await thumbsUp(late); // In time, to the second.
+  const later = await waiting("ship it 3");
+  clock += 90 * 60 + 1;
+  await thumbsUp(later);
+  await waiting("ship it 4");
+  clock += 90 * 60 + 1;
+  await hub.restart();
+  await waiting("ship it 5");
+  await alice.publish("#ops", "workflow.define", { name: "deploy", yaml: ANYONE.replace("shipping", "shipping now") });
+  await waiting("ship it 6");
+  await alice.publish("#ops", "workflow.remove", { name: "deploy" });
+
+  assert.deepEqual(
+    (await channel(alice)).filter((line) => line.startsWith("hub: deploy") || line === "hub: shipping"),
+    [
+      "hub: deploy run 1 step 0 waiting: for a 👍 from anyone in #ops",
+      "hub: deploy run 1 step 0 approved: by bob",
+      "hub: shipping",
+      "hub: deploy run 1 step 1 done",
+      "hub: deploy run 2 step 0 waiting: for a 👍 from anyone in #ops",
+      "hub: deploy run 2 step 0 approved: by bob",
+      "hub: shipping",
+      "hub: deploy run 2 step 1 done",
+      "hub: deploy run 3 step 0 waiting: for a 👍 from anyone in #ops",
+      "hub: deploy run 3 step 0 expired: no 👍 came in time",
+      "hub: deploy run 4 step 0 waiting: for a 👍 from anyone in #ops",
+      "hub: deploy run 4 step 0 expired: no 👍 came in time",
+      "hub: deploy run 5 step 0 waiting: for a 👍 from anyone in #ops",
+      "hub: deploy run 5 step 0 cancelled: deploy was replaced",
+      "hub: deploy run 6 step 0 waiting: for a 👍 from anyone in #ops",
+      "hub: deploy run 6 step 0 cancelled: deploy was removed"
+    ]
+  );
+  assert.deepEqual(runs(hub), ["deploy 1 2 ended", "deploy 2 2 ended", "deploy 3 0 ended", "deploy 4 0 ended", "deploy 5 0 ended", "deploy 6 0 ended"]);
 });
