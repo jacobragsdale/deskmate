@@ -15,6 +15,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import type * as acp from "@agentclientprotocol/sdk";
 import { z } from "zod";
 
+import { ChatLog, STALE } from "../src/core/chat.ts";
 import { readContent, SUMMARIES } from "../src/core/kinds.ts";
 import type { Summary } from "../src/core/kinds.ts";
 import type { Agent, PermissionMode } from "../src/core/wire.ts";
@@ -28,7 +29,7 @@ import { Session } from "../src/desk/session.ts";
 import type { Options } from "../src/desk/session.ts";
 import { runOf } from "../src/shared/ipc.ts";
 import type { ActivityItem, Arrival, RequestView } from "../src/shared/ipc.ts";
-import { startHub, TEAM_REPOS } from "./startHub.ts";
+import { NOW, startHub, TEAM_REPOS } from "./startHub.ts";
 
 const FAKE = join(import.meta.dirname, "fixtures", "fake-acp-agent.ts");
 const never = new AbortController().signal;
@@ -436,6 +437,35 @@ await test(
     assert.equal(await answer(again, false), "turn 2: read"); // The same mode and delivery go on.
     await session.stop();
     assert.deepEqual(await left(checkout), []);
+  }
+);
+
+await test(
+  "a run left waiting on its owner's answer for longer than STALE is still believed working by teammates: the owner's desk tells the chat again, unchanged, what it is doing, and a withdrawal is judged by that",
+  { timeout: 30_000 },
+  async (t) => {
+    let clock = NOW; // Everyone's, and the hub's: it moves only when the test says.
+    const { alice, session, ask, answer } = await bobsDesk(t, [], { heartbeat: 0.3 }, () => clock);
+    const id = await ask("@bob/uploader edit", "supervised", true);
+    const card = await until("bob is asked", () => session.view().current?.asks[0]);
+    /** Where alice's window has bob's job, by what the hub holds now. */
+    const folded = async (): Promise<[string, string][]> => {
+      const log = new ChatLog("alice");
+      log.add((await alice.events({ chat: "#team" })).map((delivered) => ({ ...delivered, trusted: true })));
+      const message = log.message(id);
+      return message === null ? [] : log.requests(message, clock).map((request) => [request.state, request.summary]);
+    };
+    const later = NOW + STALE - 60; // Bob has left the card for fifteen minutes.
+    clock = later;
+    for (let tries = 0; tries < 200 && !(await alice.events({ chat: "#team" })).some((each) => each.event.kind === "job.progress" && each.event.ts >= later); tries += 1) {
+      await delay(50);
+    }
+    clock = NOW + STALE + 60;
+    assert.deepEqual(await folded(), [["working", "waiting for approval"]]);
+    await alice.publish("#team", "job.withdrawn", { agent: "bob/uploader" }, [id]); // Counts for nothing: bob's desk said it is still going.
+    assert.deepEqual(await folded(), [["working", "waiting for approval"]]);
+    await session.handle({ do: "permit", ask: card.id, answer: "refuse" });
+    assert.match(await answer(id, true), /edit refused$/);
   }
 );
 

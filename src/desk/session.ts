@@ -36,6 +36,7 @@ const UPDATE_DELAY = 60; // Seconds to wait before asking a hub on another proto
 const STOP_WAIT = 3; // Seconds to give stopped agents to go before the session is done.
 const PAGE = 50; // Events of one chat loaded at a time: its newest when it is first listed, and as many again each time the user scrolls back.
 const PROGRESS = 10; // Least seconds between two job.progress events of one run.
+const HEARTBEAT = 300; // Seconds after which the chat is told again what a run is doing, unchanged, so that teammates go on believing it works: well within STALE, which a run waiting on its owner may outlast.
 const ITEMS = 500; // Items of one run's activity kept, the newest.
 const FEEDS = 20; // Runs that have ended whose activity is kept, the newest.
 
@@ -65,6 +66,7 @@ export interface Options {
   readonly describe?: (checkout: Checkout) => Promise<Head>;
   readonly presence?: number; // Seconds between presence checks; a test shortens it.
   readonly progress?: number; // Least seconds between two job.progress events of one run; a test shortens it.
+  readonly heartbeat?: number; // Seconds after which an unchanged job.progress is sent again; a test shortens it.
 }
 
 /** An agent's answer waiting for its owner to review, edit and send. */
@@ -97,7 +99,8 @@ interface AgentRun {
   doing: Summary | ""; // What the agent is doing now, in job.progress's words; "" until it has said.
   told: Summary | ""; // What the chat was last told it is doing.
   toldAt: number; // When, Unix milliseconds; 0 before it ever was.
-  telling: NodeJS.Timeout | undefined; // Set while the chat is to be told, once PROGRESS seconds have passed since it last was.
+  telling: NodeJS.Timeout | undefined; // Set while the chat is to be told: once PROGRESS seconds have passed since it last was, or HEARTBEAT.
+  tellAt: number; // When it is to be told, Unix milliseconds.
 }
 
 type ChatCommand = Exclude<Command, { do: "join" | "doctor" | "search" | "testPermissions" }>;
@@ -164,6 +167,7 @@ export class Session {
   private readonly describe: (checkout: Checkout) => Promise<Head>;
   private readonly presence: number;
   private readonly progressEvery: number;
+  private readonly heartbeat: number;
   private readonly me: string;
   private readonly chats: ChatLog;
   private readonly stopping = new AbortController();
@@ -206,6 +210,7 @@ export class Session {
     this.describe = options.describe ?? repos.describe;
     this.presence = options.presence ?? PRESENCE;
     this.progressEvery = options.progress ?? PROGRESS;
+    this.heartbeat = options.heartbeat ?? HEARTBEAT;
     this.me = client.config.name;
     this.chats = new ChatLog(this.me);
     const saved = this.loadSaved();
@@ -1160,7 +1165,8 @@ export class Session {
       doing: "",
       told: "",
       toldAt: 0,
-      telling: undefined
+      telling: undefined,
+      tellAt: 0
     };
     this.runs.set(key, run);
     this.keepFeed(key, chatOf(message.entry.event, this.me)); // Now, so that the line saying it runs never shows an earlier run's steps under it while git is asked where it stands.
@@ -1186,28 +1192,37 @@ export class Session {
   }
 
   /**
-   * Tell the chat what the agent is doing, in job.progress's few coarse words and never more: at most once every PROGRESS seconds, and only when it has changed since the chat was last told.
+   * Tell the chat what the agent is doing, in job.progress's few coarse words and never more: at most once every PROGRESS seconds, and only when it has changed since the chat was last told;
+   * and, unchanged, HEARTBEAT seconds after it was last told, for as long as the run goes on, so that teammates go on believing a run that waits on its owner for longer than STALE.
    * Best effort: a teammate misses one line.
    */
   private progress(key: string, doing: Summary): void {
     const run = this.runs.get(key);
-    if (run === undefined) {
+    if (run !== undefined) {
+      run.doing = doing;
+      this.tellAt(key, run.toldAt + this.progressEvery * 1000);
+    }
+  }
+
+  /** Tell the chat what a run is doing at `at`, Unix milliseconds, unless it is to be told sooner already; then again HEARTBEAT seconds after it was last told. The run's end takes the timer down: see `work`. */
+  private tellAt(key: string, at: number): void {
+    const run = this.runs.get(key);
+    if (run === undefined || (run.telling !== undefined && run.tellAt <= at)) {
       return;
     }
-    run.doing = doing;
-    if (run.telling !== undefined) {
-      return; // It is told what it is doing by then.
-    }
+    clearTimeout(run.telling);
+    run.tellAt = at;
     run.telling = setTimeout(
       () => {
         run.telling = undefined;
-        if (this.runs.get(key) === run && run.doing !== "" && run.doing !== run.told) {
+        if (run.doing !== "" && (run.doing !== run.told || Date.now() - run.toldAt >= this.heartbeat * 1000)) {
           run.told = run.doing;
           run.toldAt = Date.now();
           this.client.publish(chatOf(run.entry.event, this.me), "job.progress", { repo: run.repo, summary: run.doing }, [run.entry.event.id]).catch(() => undefined);
         }
+        this.tellAt(key, run.toldAt + this.heartbeat * 1000);
       },
-      Math.max(0, run.toldAt + this.progressEvery * 1000 - Date.now())
+      Math.max(0, at - Date.now())
     );
   }
 

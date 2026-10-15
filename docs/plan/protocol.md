@@ -103,7 +103,7 @@ The hub gives each stored event a sequence number, `seq`, and a chain value: `ch
 | `channel.pin` | 1 | | `{ repo, branch }` | Structural. `repo: null` unpins. `branch` from phase 6, `null` before. |
 | `job.accepted` | 1 | the request | `{ repo, branch, commit, dirty, delivery, mode, by, delegate }` | The owner let it run. `delivery`: `review` or `post`. `mode`: a permission mode. `by`: `"owner"` or `{ grant: id }`. `delegate`, from phase 5: whether the agent may ask others. |
 | `job.declined` | 1 | the request | `{ repo, reason }` | `reason` may be `""`. |
-| `job.progress` | 3 | the request | `{ repo, summary }` | Coarse: no paths, no output. |
+| `job.progress` | 3 | the request | `{ repo, summary }` | Coarse: no paths, no output. From the owner while the job is working, it is also word that the run goes on (see Jobs). The owner's desk sends it when the summary changes, at most every ten seconds, and again unchanged every five minutes while the run goes on. |
 | `job.result` | 1 | the request | `{ repo, branch, text, reviewed }` | The answer. |
 | `job.error` | 1 | the request | `{ repo }` | Only the fact. Why stays with the owner. |
 | `job.cancelled` | 1 | the request | `{ repo }` | The owner stopped it. |
@@ -132,9 +132,9 @@ waiting ──accepted──► working ──result──► answered
    └──withdrawn──► withdrawn
 ```
 
-Moves the diagram leaves out, which the window offered before events: the owner may accept a request again after declining it, after a run that failed or was stopped, or while it is still `working`, as when a run never ended because its desk went (the later acceptance replaces the earlier one, branch, commit and all); and may decline one that is working, as when a draft is thrown away. Whoever asked may withdraw one that has been `working` for more than 960 seconds by the withdrawal's own `ts`, since it is shown as `waiting` by then. `answered` and `withdrawn` are final.
+Moves the diagram leaves out, which the window offered before events: the owner may accept a request again after declining it, after a run that failed or was stopped, or while it is still `working`, as when a run never ended because its desk went (the later acceptance replaces the earlier one, branch, commit and all); and may decline one that is working, as when a draft is thrown away. Whoever asked may withdraw one that has been `working` with no word from its owner, neither the acceptance nor a `job.progress`, for more than 960 seconds by the withdrawal's own `ts`, since it is shown as `waiting` by then. `answered` and `withdrawn` are final.
 
-`working` with no result for 960 seconds is shown as `waiting` again, as today. A tag counts only in a `message` a person authored, or from phase 7 one the hub authored for a workflow; a `job.result` that contains a tag starts nothing.
+`working` with no result, and no `job.progress` from its owner, for 960 seconds is shown as `waiting` again, as today. A run waiting on its owner's answer to a permission card can go on for longer than that, since the wait does not count towards its 900 seconds, which is why its desk says what it is doing again every five minutes. A tag counts only in a `message` a person authored, or from phase 7 one the hub authored for a workflow; a `job.result` that contains a tag starts nothing.
 
 ## The hub's API
 

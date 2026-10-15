@@ -183,6 +183,18 @@ await test("a job's event counts only from the agent's owner, and a withdrawal o
   assert.deepEqual(states(logOf("jacob", [ask, acceptedLongAgo, withdrawnAt("bob", Math.floor(since + STALE + 0.5))]), ask, since + STALE + 1), ["jacob/uploader waiting", "carol/uploader waiting"]);
   assert.deepEqual(states(logOf("jacob", [ask, acceptedLongAgo]), ask, since + STALE + 1), ["jacob/uploader waiting", "carol/uploader waiting"]);
   assert.deepEqual(states(logOf("jacob", [ask, acceptedLongAgo, withdrawnAt("bob", since + STALE + 1)]), ask, since + STALE + 1), ["jacob/uploader withdrawn", "carol/uploader waiting"]);
+
+  // Word from its owner of what it is doing, as while it waits on the owner's answer for longer than STALE, says it goes on: it is believed for STALE seconds from that word, and a withdrawal judged by it.
+  const doing = (author: string, ts: number): Entry => entry(author, "#backend", "job.progress", { repo: "uploader", summary: "waiting for approval" }, { ...about, ts });
+  assert.deepEqual(states(logOf("jacob", [ask, acceptedLongAgo, doing("jacob", NOW - 10)]), ask), ["jacob/uploader working", "carol/uploader waiting"]);
+  assert.deepEqual(states(logOf("jacob", [ask, acceptedLongAgo, doing("jacob", NOW - 10), withdrawnAt("bob", NOW)]), ask), ["jacob/uploader working", "carol/uploader waiting"]);
+  assert.deepEqual(states(logOf("jacob", [ask, acceptedLongAgo, doing("jacob", NOW - 10)]), ask, NOW - 10 + STALE + 1), ["jacob/uploader waiting", "carol/uploader waiting"]);
+  assert.deepEqual(states(logOf("jacob", [ask, acceptedLongAgo, doing("jacob", NOW - 10), withdrawnAt("bob", NOW - 10 + STALE + 1)]), ask, NOW - 10 + STALE + 1), [
+    "jacob/uploader withdrawn",
+    "carol/uploader waiting"
+  ]);
+  assert.deepEqual(states(logOf("jacob", [ask, acceptedLongAgo, doing("carol", NOW - 10)]), ask), ["jacob/uploader waiting", "carol/uploader waiting"]); // Only its owner speaks for it.
+  assert.deepEqual(states(logOf("jacob", [ask, acceptedLongAgo, doing("jacob", long - 10)]), ask, long + STALE), ["jacob/uploader working", "carol/uploader waiting"]); // Never back in time.
 });
 
 await test("an event whose signature fails changes nothing and is shown as a warning, without what it says", () => {
