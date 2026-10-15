@@ -56,8 +56,14 @@ export const personSchema = z.object({ name: nameSchema, pubkey: pubKeySchema, s
 /** What the hub says about itself. `repos` is the key every shareable repo starts with, such as "dev.azure.com/acme"; `now` is the hub's clock in Unix seconds. */
 export const hubInfoSchema = z.object({ version: z.string(), protocol: z.int(), repos: z.string(), now: z.int() }).readonly();
 
-/** A repo as everyone can refer to it. */
-export const repoRefSchema = z.strictObject({ name: repoNameSchema, key: repoKeySchema, url: repoUrlSchema }).readonly();
+/**
+ * A repo as everyone can refer to it. Its name is the last part of its key, as every client makes both from a remote (src/core/remotes.ts), so that one cannot be named while the other
+ * is meant: a desk finds a checkout by its key, and an agent is held to its own repo by name.
+ */
+export const repoRefSchema = z
+  .strictObject({ name: repoNameSchema, key: repoKeySchema, url: repoUrlSchema })
+  .refine((ref) => ref.key.split("/").at(-1) === ref.name, { message: "a repo's name is the last part of its key" })
+  .readonly();
 
 /** A repo someone has checked out, and the branch their copy is on. */
 export const repoSchema = z.strictObject({ name: repoNameSchema, key: repoKeySchema, url: repoUrlSchema, branch: branchSchema }).readonly();

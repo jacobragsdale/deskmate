@@ -274,6 +274,10 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     if (repo !== null && repo !== own) {
       throw new Refusal(403, `${event.author} reports only on its own repo, ${own}`); // Every reader would count it for nothing (mayCome in src/core/chat.ts).
     }
+    // A patch names its repo's key too, which is what a desk applies it by: it must be the one its owner shares under that name, as its agent's own checkout is.
+    if (said.kind === "patch" && !db.repos().some(({ user, name, key }) => user === ownerOf(event.author) && name === own && key === said.content.repo.key)) {
+      throw new Refusal(403, `${event.author} patches only its own repo, ${own}, as ${ownerOf(event.author)} shares it`);
+    }
     if (said.kind === "job.request" && said.content.chain.at(-1) !== event.author) {
       throw new Refusal(403, `a job.request's chain ends with the agent that sends it, ${event.author}`); // As every reader would count it for nothing.
     }

@@ -1446,9 +1446,9 @@ export class Session {
     this.hooks.notice({ title: "", body: `Cloned ${repo} into ${destination}. Your ${repo} agent can be tagged now.`, severity: "info" });
   }
 
-  /** The user's checkout of a repo, found by its key, which says which repo it is wherever it was cloned from; undefined when they have none. */
+  /** The user's checkout of a repo, found by its key, which says which repo it is wherever it was cloned from, and its name; undefined when they have none of that name and key. */
   private checkoutOf(repo: RepoRef): Checkout | undefined {
-    return [...this.checkouts.values()].find((checkout) => checkout.remote.key === repo.key);
+    return [...this.checkouts.values()].find((checkout) => checkout.remote.key === repo.key && checkout.remote.name === repo.name);
   }
 
   /**

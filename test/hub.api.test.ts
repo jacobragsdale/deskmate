@@ -792,6 +792,21 @@ await test("an agent's event is stored when its registered key signs it, it is a
   assert.deepEqual(await said(hub, "alice", "chat=bob&limit=10"), kinds.toReversed());
   assert.deepEqual(await said(hub, "carol"), ["agent.register"]);
   assert.deepEqual(await said(hub, "alice", "chat=%23backend"), ["job.withdrawn", "job.request", "job.progress", "channel.join"]);
+
+  // From phase 6 a patch, which names its repo's key as well as its name: the key must be the one its owner shares under that name, and the name the key's last part.
+  const uploader = { name: "uploader", key: "dev.azure.com/acme/platform/uploader", url: "https://dev.azure.com/acme/Platform/_git/uploader" };
+  const patch = (repo: unknown): Event => signed(hub, "alice/uploader", "bob", "patch", { repo, base: "a".repeat(40), branch: "main", title: "Shout", diff: "diff --git a/x b/x\n" }, about);
+  const notHers = [403, "alice/uploader patches only its own repo, uploader, as alice shares it"];
+  assert.deepEqual(await post(hub, "alice", patch(uploader)), notHers); // She shares nothing yet.
+  const shared = await fetch(`${hub.url}/repos`, {
+    method: "PUT",
+    headers: { ...signedBy(hub, "alice", "PUT", "/repos"), "Content-Type": "application/json" },
+    body: JSON.stringify([{ ...uploader, branch: "main" }])
+  });
+  assert.equal(shared.status, 200);
+  assert.equal((await post(hub, "alice", patch(uploader)))[0], 201);
+  assert.deepEqual(await post(hub, "alice", patch({ ...uploader, key: "dev.azure.com/acme/other/uploader", url: "https://dev.azure.com/acme/Other/_git/uploader" })), notHers);
+  assert.deepEqual(await post(hub, "alice", patch({ ...uploader, key: "dev.azure.com/acme/platform/billing" })), [422, "invalid content: not what patch holds"]);
 });
 
 await test("a request an agent signs reads what its owner sees, may post its events, and changes nothing else of its owner's, not even when they were last here", async (t) => {

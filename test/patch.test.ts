@@ -14,6 +14,7 @@ import type { TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { readContent } from "../src/core/kinds.ts";
+import { loadKey, signEvent } from "../src/core/sign.ts";
 import { byCodeUnit } from "../src/core/text.ts";
 import type { Agent, PermissionMode } from "../src/core/wire.ts";
 import { agentKey } from "../src/desk/agentKeys.ts";
@@ -297,8 +298,33 @@ await test(
 
     // An agent sends a patch only about its own repo, as any report of its run.
     const agent = jacob.as("jacob/uploader", agentKey(jacob.home, "uploader"));
-    const content = { ...patch.content, repo: { ...patch.content.repo, name: "billing" } };
+    const content = { ...patch.content, repo: { name: "billing", key: "dev.azure.com/acme/platform/billing", url: "https://dev.azure.com/acme/Platform/_git/billing" } };
     await assert.rejects(agent.publish("#team", "patch", content, [posted]), /jacob\/uploader reports only on its own repo, uploader/);
+  }
+);
+
+await test(
+  "a patch is about the repo its name and its key both say: the hub refuses an agent's that gives its own repo's name with another repo's key, a reader takes none whose name is not its key's last part, and Apply goes only to a checkout of that very name and key",
+  { timeout: 60_000 },
+  async (t) => {
+    const { jacob, asker, mine, theirs, questions } = await two(t);
+    const diff = "diff --git a/notes.txt b/notes.txt\n--- a/notes.txt\n+++ b/notes.txt\n@@ -1,3 +1,3 @@\n one\n-two\n+TWO\n three\n";
+    const patch = { base: git(mine, "rev-parse", "HEAD").trim(), branch: "main", title: "Shout", diff };
+    const other = { name: "uploader", key: "dev.azure.com/acme/other/uploader", url: "https://dev.azure.com/acme/Other/_git/uploader" }; // Another project's uploader.
+    const billing = { name: "billing", key: UPLOADER.key, url: UPLOADER.url }; // billing's name on uploader's key, which a desk finding checkouts by key once applied to uploader.
+    const agent = jacob.as("jacob/uploader", agentKey(jacob.home, "uploader"));
+    await assert.rejects(agent.publish("#team", "patch", { ...patch, repo: other }), /jacob\/uploader patches only its own repo, uploader, as jacob shares it/);
+
+    // A person's patch the hub keeps as it keeps anything of theirs: one whose name is not its key's last part is no patch to any reader, and one of another repo's key finds no checkout.
+    const forged = { author: "jacob", to: "#team", kind: "patch", content: JSON.stringify({ ...patch, repo: billing }), ts: Math.floor(Date.now() / 1000), refs: [] }; // Past his own client, which signs no such patch.
+    const { id: mixed } = (await jacob.post(signEvent(loadKey(readFileSync(join(jacob.home, "key"), "utf8").trim()), forged))).event;
+    const { id: elsewhere } = (await jacob.publish("#team", "patch", { ...patch, repo: other })).event;
+    const shown = await until("bob sees the second", () => asker.view().current?.messages.find((message) => message.id === elsewhere));
+    assert.deepEqual([shown.patch?.repo, shown.patch?.checkout], ["uploader", false]);
+    await assert.rejects(asker.handle({ do: "applyPatch", id: mixed }), { message: "that message is not loaded here" });
+    await assert.rejects(asker.handle({ do: "applyPatch", id: elsewhere }), { message: `you have no checkout of uploader under ${join(theirs, "..")} to apply it to` });
+    assert.deepEqual(questions, []);
+    assert.equal(readFileSync(join(theirs, "notes.txt"), "utf8"), "one\ntwo\nthree\n");
   }
 );
 
