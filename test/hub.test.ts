@@ -263,7 +263,7 @@ await test("two people, their agents and a channel, through the real hub", { tim
   assert.deepEqual(waiting.requests[0]?.status, { kind: "waiting", away: false });
   const asked = await until(jacob.session, "jacob can run it", (view) => messages(view).find((message) => message.requests[0]?.status.kind === "ready"));
   assert.deepEqual(asked.requests, [
-    { id: asked.id, owner: "jacob", repo: "uploader", mine: true, accepted: null, status: { kind: "ready", before: "", canDecline: true, offer: { mode: "read-only", post: false } } }
+    { id: asked.id, owner: "jacob", repo: "uploader", mine: true, accepted: null, status: { kind: "ready", before: "", canDecline: true, offer: { mode: "read-only", post: false }, ceiling: "full" } }
   ]);
   assert.equal(jacob.prompts.length, 0);
   await until(jacob.session, "the message counts as unread and waiting while jacob looks away", (view) => view.unread === 1 && view.waiting === 1);
@@ -306,6 +306,7 @@ await test("two people, their agents and a channel, through the real hub", { tim
       quote: "bob: @jacob/uploader does your retry change handle 429s?",
       header: true,
       requests: [],
+      delegation: null,
       replyCount: 0,
       replies: []
     }
@@ -327,7 +328,7 @@ await test("two people, their agents and a channel, through the real hub", { tim
 
   // His own tag sent any other way waits for his click, wherever it came from: here, from the command line, and in what his desk loads when it starts again.
   await jacob.client.publish("bob", "message", { text: "@jacob/uploader from the command line", via: "cli" });
-  const ready = { kind: "ready", before: "", canDecline: false, offer: { mode: "read-only", post: false } };
+  const ready = { kind: "ready", before: "", canDecline: false, offer: { mode: "read-only", post: false }, ceiling: "full" };
   const fromCommand = (view: ChatView): MessageView | undefined => messages(view).find((message) => message.body === "@jacob/uploader from the command line");
   await until(jacob.session, "the command line's tag waiting for jacob", (view) => fromCommand(view)?.requests[0]?.status.kind === "ready");
   const restarted = await person(hub, "jacob");

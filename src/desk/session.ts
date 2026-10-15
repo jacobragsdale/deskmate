@@ -10,8 +10,8 @@ import { z } from "zod";
 import { runOf } from "../shared/ipc.ts";
 import type { ActivityItem, Arrival, AskView, ChatView, Check, Command, CurrentView, GrantView, Hit, LineView, MessageView, NoteView, Notice, ReplyView, RequestView, RowView } from "../shared/ipc.ts";
 import { agentPrompt, ChatLog, chatOf, continues, mayCome, mentions, ONLINE, refOf, rings } from "../core/chat.ts";
-import type { Accepted, Entry, Message, Request } from "../core/chat.ts";
-import { jobIn, ROOT_TIME } from "../core/delegation.ts";
+import type { Accepted, Delegation, Entry, Message, Request } from "../core/chat.ts";
+import { checkRequest, jobIn, peopleInvolved, ROOT_TIME } from "../core/delegation.ts";
 import { DAY, liveGrant, revoked, standing } from "../core/grants.ts";
 import type { Standing } from "../core/grants.ts";
 import { readContent } from "../core/kinds.ts";
@@ -34,7 +34,7 @@ import type { Checkout, Head } from "./repos.ts";
 import { cloneFolder } from "../core/remotes.ts";
 import { oneLine, problemOf } from "../core/text.ts";
 import { commandLineOf, defaultAgentOf, fitText, isAgent, isChannel, MAX_SKEW, MODES, nameSchema, ownerOf, permissionModeSchema, PROTOCOL } from "../core/wire.ts";
-import type { Agent, ChannelInfo, Delivered, PermissionMode, Person, RepoRef, TeamRepo } from "../core/wire.ts";
+import type { Agent, ChannelInfo, Delivered, Event, PermissionMode, Person, RepoRef, TeamRepo } from "../core/wire.ts";
 
 const PRESENCE = 25; // Seconds between asking the hub who is here, which channels there are and who has which repo. Each is a signed request, which is what says the user is here; the repo scan runs on the same beat.
 const RETRY_DELAY = 5; // Seconds to wait before asking a hub that did not answer again.
@@ -166,11 +166,43 @@ function endedBy(error: unknown): ActivityItem {
   return endedItem(error instanceof AgentTimedOutError ? "timed out" : "failed", problemOf(error));
 }
 
-/** What a message or an answer says; "" for anything else. */
+/** What a message, an answer or an agent's request of another says; "" for anything else. */
 function textOf(entry: Entry): string {
   const said = readContent(entry.event);
-  return said.kind === "message" || said.kind === "job.result" ? said.content.text : "";
+  return said.kind === "message" || said.kind === "job.result" || said.kind === "job.request" ? said.content.text : "";
 }
+
+/** An agent, "owner/repo", as the user reads of it: "your billing agent", or "jacob's uploader agent". */
+function agentWords(agent: string, me: string): string {
+  const owner = ownerOf(agent);
+  return `${owner === me ? "your" : `${owner}'s`} ${agent.slice(owner.length + 1)} agent`;
+}
+
+/**
+ * Who an arrival is from, as its title says: a person; for an answer nobody reviewed, its owner, saying so, as its header does, since it is the one its agent signed, `owner/repo`;
+ * and for an agent's request of another, the agent.
+ */
+function fromWords(event: Event, me: string): string {
+  if (event.kind === "job.request") {
+    return agentWords(event.author, me);
+  }
+  return `${ownerOf(event.author)}${event.kind === "job.result" && isAgent(event.author) ? ` (${event.author.slice(ownerOf(event.author).length + 1)} agent, not reviewed)` : ""}`;
+}
+
+/** Where an agent's request of another came from, in words for the user: "bob asked jacob's uploader agent, which is asking your billing agent". */
+function chainWords({ first, chain, target }: Delegation, me: string): string {
+  const [head = "", ...rest] = chain;
+  const asker = first === "" ? "someone" : first === me ? "you" : first;
+  return [`${asker} asked ${agentWords(head, me)}`, ...rest.map((agent) => `which asked ${agentWords(agent, me)}`), `which is asking ${agentWords(target, me)}`].join(", ");
+}
+
+/** The lesser of two modes. */
+function least(a: PermissionMode, b: PermissionMode): PermissionMode {
+  return atMost(a, b) ? a : b;
+}
+
+/** What the log says of an agent's request of another: the most its run may be let do and everyone it runs on the say of, or why it may not go. */
+type Judged = { readonly ok: true; readonly mode: PermissionMode; readonly people: readonly string[] } | { readonly ok: false; readonly reason: string };
 
 export class Session {
   private readonly client: Client;
@@ -528,7 +560,9 @@ export class Session {
       notes: this.notesOf(message.text),
       quote: answered === null ? "" : `${answered.entry.event.author}: ${oneLine(answered.text)}`,
       header: !continues(previous, message),
-      requests: (message.deleted ? this.stillMine(message, now) : this.chats.requests(message, now)).flatMap((request) => this.requestView(request))
+      requests: (message.deleted ? this.stillMine(message, now) : this.chats.requests(message, now)).flatMap((request) => this.requestView(request)),
+      delegation:
+        message.delegation === null ? null : { first: message.delegation.first, chain: message.delegation.chain, target: message.delegation.target, words: chainWords(message.delegation, this.me) }
     };
   }
 
@@ -545,7 +579,22 @@ export class Session {
 
   /** An event whose signature failed: who it claims to be from and when, and never what it says. */
   private warningView({ seq, event }: Entry): MessageView {
-    const nothing = { agent: null, branch: "", commit: "", grant: null, body: "", edited: false, deleted: false, reactions: [], notes: [], quote: "", requests: [], replyCount: 0, replies: [] };
+    const nothing = {
+      agent: null,
+      branch: "",
+      commit: "",
+      grant: null,
+      body: "",
+      edited: false,
+      deleted: false,
+      reactions: [],
+      notes: [],
+      quote: "",
+      requests: [],
+      delegation: null,
+      replyCount: 0,
+      replies: []
+    };
     return { id: event.id, seq, sender: event.author, signer: event.author, ts: event.ts, trusted: false, header: true, ...nothing };
   }
 
@@ -653,7 +702,21 @@ export class Session {
       return { kind: "held" };
     }
     const before = state === "working" ? "interrupted" : state === "waiting" || state === "answered" ? "" : state;
-    return { kind: "ready", before, canDecline: event.author !== this.me && state !== "declined", offer: this.offerFor(event.author, repo) };
+    const judged = request.message.delegation === null ? null : this.judge(request.message);
+    const ceiling = judged === null ? "full" : judged.ok ? judged.mode : "read-only"; // One the log no longer lets go is refused when run, saying why.
+    const offer = this.offerFor(event.author, repo);
+    return { kind: "ready", before, canDecline: event.author !== this.me && state !== "declined", offer: { ...offer, mode: least(offer.mode, ceiling) }, ceiling };
+  }
+
+  /** What the log of its chat says of a request of the user's agent that another agent sent (see src/core/delegation.ts). */
+  private judge(message: Message): Judged {
+    const log = this.chats.log(message.entry.event.id);
+    const verdict = checkRequest(log, message.entry);
+    const people = peopleInvolved(log, message.entry);
+    if (!verdict.ok) {
+      return verdict;
+    }
+    return people === null ? { ok: false, reason: "nobody here can say who asked first" } : { ...verdict, people };
   }
 
   /**
@@ -851,8 +914,9 @@ export class Session {
   /** What the stream has just delivered. Should this fail, the stream delivers it again. Someone joining, leaving or pinning changes what the window says about the channel, so its members and pin are asked for again. */
   private async arrive(batch: readonly Delivered[]): Promise<void> {
     const entries = await this.trust(batch);
-    this.take(entries, true);
+    const fresh = this.take(entries, true);
     this.underGrants(entries);
+    await this.delegated(fresh);
     if (batch.some((delivered) => delivered.event.kind.startsWith("channel."))) {
       await this.refreshChannels().catch(() => undefined); // Best effort: the next presence check asks again.
     }
@@ -866,7 +930,8 @@ export class Session {
     return entries;
   }
 
-  private take(entries: readonly Entry[], announce: boolean): void {
+  /** Fold what the hub delivered, and return what was new. */
+  private take(entries: readonly Entry[], announce: boolean): Entry[] {
     const fresh = this.chats.add(entries);
     this.keep(entries);
     for (const key of this.runs.keys()) {
@@ -874,10 +939,11 @@ export class Session {
     }
     this.openFirst();
     if (announce) {
-      this.announce(fresh.filter((entry) => (entry.event.kind === "message" || entry.event.kind === "job.result") && ownerOf(entry.event.author) !== this.me && mayCome(entry.event)));
+      this.announce(fresh.filter((entry) => ["message", "job.result", "job.request"].includes(entry.event.kind) && ownerOf(entry.event.author) !== this.me && mayCome(entry.event)));
     }
     this.markRead();
     this.hooks.changed();
+    return fresh;
   }
 
   /** Once what was there has been loaded, open a chat when none is open: where something is waiting, failing that where the user left off, failing that the first. */
@@ -895,17 +961,19 @@ export class Session {
     for (const entry of incoming.slice(-3)) {
       const { event } = entry;
       const text = textOf(entry);
-      const tagged = entry.trusted && event.kind === "message" ? mentions(text).filter(([owner]) => owner === this.me) : [];
+      const said = readContent(event);
+      const asked: (readonly [string, string])[] =
+        entry.trusted && said.kind === "job.request" && ownerOf(said.content.target) === this.me ? [[this.me, said.content.target.slice(this.me.length + 1)]] : [];
+      const tagged = entry.trusted && event.kind === "message" ? mentions(text).filter(([owner]) => owner === this.me) : asked;
       const where = isChannel(event.to) ? ` in ${event.to}` : "";
-      // An answer nobody reviewed says so, as its header does: it is the one its agent signed, `owner/repo`.
-      const unreviewed = isAgent(event.author) ? ` (${event.author.slice(ownerOf(event.author).length + 1)} agent, not reviewed)` : "";
-      const title = tagged[0] === undefined ? `${ownerOf(event.author)}${unreviewed}${where}` : `${event.author} tagged your ${tagged[0][1]} agent${where}`;
+      const who = asked.length > 0 ? agentWords(event.author, this.me) : event.author;
+      const title = tagged[0] === undefined ? `${fromWords(event, this.me)}${where}` : `${who} ${asked.length > 0 ? "asked" : "tagged"} your ${tagged[0][1]} agent${where}`;
       this.hooks.arrived({
         chat: chatOf(event, this.me),
         title,
         body: entry.trusted ? oneLine(text, 120) : "a message failed its signature check",
         forMe: tagged.length > 0,
-        rings: rings(entry, this.me)
+        rings: rings(entry, this.me) || asked.length > 0
       });
     }
   }
@@ -1282,6 +1350,62 @@ export class Session {
     }
   }
 
+  /**
+   * Judge each request of the user's agents that another agent sent, as it arrives, from the log of the chat it was sent to, its root's loaded first when it is not: one that may not go
+   * is declined, saying why; one a grant of the user's covers, naming everyone it runs on the say of but them, runs under it, at no more than the agents it came through were let do,
+   * and never asking others in turn, when it arrives fresh as a teammate's request must; any other waits for the user, as a tag does. A chain everyone in which is the user consults no grant,
+   * as their own request never does.
+   */
+  private async delegated(arrived: readonly Entry[]): Promise<void> {
+    for (const entry of arrived) {
+      const said = readContent(entry.event);
+      if (entry.trusted && said.kind === "job.request" && ownerOf(said.content.target) === this.me) {
+        await this.loadRoot(entry);
+        this.decide(entry, said.content.target.slice(this.me.length + 1));
+      }
+    }
+  }
+
+  /** Load the page of the chat a request is in around its root, when the root is not loaded here, so that its chain can be judged. Best effort: one not loaded is judged without it. */
+  private async loadRoot({ event }: Entry): Promise<void> {
+    const root = event.refs[0] ?? "";
+    if (this.chats.message(root) !== null) {
+      return;
+    }
+    const found = await this.client.event(root).catch(() => null);
+    if (found !== null && chatOf(found.event, this.me) === chatOf(event, this.me)) {
+      await this.pageAround(chatOf(event, this.me), found.seq).catch(() => undefined);
+    }
+  }
+
+  /** Decline the request of the user's agent in `repo` that another agent sent, saying why, when the log does not let it go; or run it under a grant of the user's that covers it. */
+  private decide({ event }: Entry, repo: string): void {
+    const now = this.client.now();
+    const message = this.chats.message(event.id);
+    if (message === null || this.chats.requests(message, now)[0]?.state !== "waiting") {
+      return;
+    }
+    const judged = this.judge(message);
+    if (!judged.ok) {
+      this.publish(chatOf(event, this.me), "job.declined", { repo, reason: judged.reason }, [event.id]).catch(() => undefined); // Best effort, as any decline.
+      return;
+    }
+    const fresh = now - event.ts <= 2 * MAX_SKEW; // As a teammate's tag must be to run under a grant: see `underGrants`.
+    const mine = judged.people.every((person) => person === this.me);
+    const grant =
+      fresh && !mine && this.answers(repo)
+        ? liveGrant([...this.grants.values()], [...this.revocations.values()], [...this.acceptances.values()], { agent: `${this.me}/${repo}`, people: judged.people, now, unlogged: this.unlogged() })
+        : null;
+    if (grant === null) {
+      return;
+    }
+    try {
+      this.startRun(message, repo, grant.delivery === "post", least(grant.mode, judged.mode), grant.id, false);
+    } catch (error) {
+      this.hooks.notice({ title: `your ${repo} agent did not run ${agentWords(event.author, this.me)}'s request under your grant`, body: problemOf(error), severity: "error" });
+    }
+  }
+
   /** The grant of the user's that lets `asker`'s request of their agent in `repo` run at `now`; null when none does. */
   private grantFor(repo: string, asker: string, now: number): Standing | null {
     return liveGrant([...this.grants.values()], [...this.revocations.values()], [...this.acceptances.values()], { agent: `${this.me}/${repo}`, people: [asker], now, unlogged: this.unlogged() });
@@ -1395,6 +1519,17 @@ export class Session {
     return checkout;
   }
 
+  /** Refuse a run at `mode` of a request another agent sent, when the log no longer lets it go, or the agents it came through were let do less: whoever lets it run, it never runs above them. */
+  private mayGo(message: Message, mode: PermissionMode): void {
+    const judged = message.delegation === null ? null : this.judge(message);
+    if (judged?.ok === false) {
+      throw new PlayerTwoError(`${agentWords(message.entry.event.author, this.me)}'s request may not go: ${judged.reason}`);
+    }
+    if (judged !== null && !atMost(mode, judged.mode)) {
+      throw new PlayerTwoError(`${agentWords(message.entry.event.author, this.me)}'s request may run at most ${judged.mode}, as no agent it came through was let do more`);
+    }
+  }
+
   /**
    * Start a run at `mode`, by the user's own say or under the grant `grant` names, unless it cannot run (see `runnable`): then refuse it, before anything is told to the chat.
    * With `delegate` the agent may ask other agents in it, when its owner let it go and it is spoken to over ACP, whose MCP server is the way it asks.
@@ -1405,6 +1540,7 @@ export class Session {
       return;
     }
     const checkout = this.runnable(repo, mode, grant);
+    this.mayGo(message, mode);
     const agent = defaultAgentOf(this.client.config);
     const tools = grant !== null ? "none" : agent.protocol === "acp" ? "mcp" : "command"; // Under a grant nobody reviews what the agent hands its asker from the owner's chats: see `work`.
     const prompt = agentPrompt(message, this.me, repo, this.chats.earlier(message), !post, tools);

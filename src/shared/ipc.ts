@@ -32,11 +32,13 @@ const requestSchema = z
       z.strictObject({ kind: z.literal("noCheckout") }), // Mine: I have no copy of the repo.
       z.strictObject({ kind: z.literal("held") }), // Mine: I hold the repo back, so its agent answers nobody until I let it.
       // Mine: I can run it. `offer` is how I last ran its asker's requests of that repo, which the window offers first; read-only with a review before I ever have.
+      // `ceiling` is the most it may run at, which no mode above may be offered: full for a person's request, and for another agent's the least any agent it came through was let do.
       z.strictObject({
         kind: z.literal("ready"),
         before: z.enum(["", "declined", "failed", "stopped", "interrupted"]),
         canDecline: z.boolean(),
-        offer: z.strictObject({ mode: permissionModeSchema, post: z.boolean() })
+        offer: z.strictObject({ mode: permissionModeSchema, post: z.boolean() }),
+        ceiling: permissionModeSchema
       }),
       z.strictObject({ kind: z.literal("working"), branch: z.string(), summary: z.string() }), // A teammate's at work, and what their desk last said it is doing: one of job.progress's few words, "" before it has said.
       z.strictObject({ kind: z.literal("waiting"), away: z.boolean() }),
@@ -79,7 +81,13 @@ const said = {
   notes: z.array(noteSchema).readonly(), // The notes its text links to that the desk has looked up; a link not here is still being looked up.
   quote: z.string(), // The request an answer is to, on one line; "" when it answers nothing.
   header: z.boolean(), // Whether to say who wrote it, or let it sit under the previous message's header.
-  requests: z.array(requestSchema).readonly()
+  requests: z.array(requestSchema).readonly(),
+  // For an agent's request of another, sent by `sender`'s agent `agent`: who asked first ("" when the desk cannot see), the agents it came through as owner/repo, the root's first,
+  // the agent it asks, and all of that in words for the reader, such as "bob asked jacob's uploader agent, which is asking your billing agent". Null for anything else.
+  delegation: z
+    .strictObject({ first: z.string(), chain: z.array(z.string()).readonly(), target: z.string(), words: z.string() })
+    .readonly()
+    .nullable()
 };
 
 /** A message in a thread, under its root. */

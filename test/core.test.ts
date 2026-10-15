@@ -258,7 +258,7 @@ await test("an agent's request of another sits in its root's thread with where i
   const shape = (nodes: readonly Node[]): string => nodes.map((node) => (node.children.length === 0 ? node.agent : `${node.agent} [${shape(node.children)}]`)).join(", ");
 
   assert.deepEqual(shown(log, "#team"), ["bob: @jacob/uploader does removing `retries` break anything?", "  jacob/uploader/uploader: does it break your caller?"]);
-  assert.deepEqual(log.message(asked.event.id)?.delegation, { root: root.event.id, parent: root.event.id, chain: ["jacob/uploader"], first: "bob" });
+  assert.deepEqual(log.message(asked.event.id)?.delegation, { root: root.event.id, parent: root.event.id, chain: ["jacob/uploader"], first: "bob", target: "carol/billing" });
   assert.equal(log.message(root.event.id)?.delegation, null);
   assert.deepEqual([states(log, root), states(log, asked)], [["jacob/uploader working"], ["carol/billing waiting"]]);
   assert.equal(log.waitingForMe("#team", NOW).length, 1);

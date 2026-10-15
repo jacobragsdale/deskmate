@@ -37,13 +37,14 @@ export type Accepted = Extract<Content, { readonly kind: "job.accepted" }>["cont
 
 /**
  * Where an agent's request of another came from: the root request, a person's message, the request its asker was working on, the agents it came through from the root's down to its asker,
- * and who asked first, the root's author, or "" while the root is not loaded.
+ * who asked first, the root's author, or "" while the root is not loaded, and the agent it asks.
  */
 export interface Delegation {
   readonly root: string;
   readonly parent: string;
   readonly chain: readonly string[];
   readonly first: string;
+  readonly target: string;
 }
 
 /** A message someone typed, an agent's answer, or an agent's request of another, as it stands after everything said about it since. */
@@ -330,7 +331,7 @@ function applyRequest(folded: Folded, entry: Entry, said: Extract<Content, { rea
   const [root = "", parent = root] = event.refs;
   const rooted = folded.messages.get(root);
   const first = rooted?.entry.event.kind === "message" ? rooted.entry.event.author : ""; // A tag counts only in a message a person wrote, so only one can be a root.
-  const delegation = { root, parent, chain: said.content.chain, first };
+  const delegation = { root, parent, chain: said.content.chain, first, target: said.content.target };
   const message = newMessage(entry, said.content.text, rooted, { agent: event.author.slice(ownerOf(event.author).length + 1), answers: null, branch: "", delegation });
   place(folded, message);
   const [owner = "", repo = ""] = said.content.target.split("/");
@@ -501,6 +502,11 @@ export class ChatLog {
       accepted: job.accepted,
       summary: job.summary
     }));
+  }
+
+  /** The events of the chat an event is in, in the order the hub stored them: what src/core/delegation.ts judges an agent's request of another by. */
+  public log(id: string): readonly Entry[] {
+    return this.chats.get(this.where.get(id) ?? "") ?? [];
   }
 
   /** The jobs under a root request, a person's message, as src/core/delegation.ts's `tree` reads them from the chat it is in: none when it is not loaded here. */

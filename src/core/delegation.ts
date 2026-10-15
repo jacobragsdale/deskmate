@@ -6,7 +6,7 @@
 import { mayCome, mentions } from "./chat.ts";
 import type { Accepted, Entry } from "./chat.ts";
 import { readContent } from "./kinds.ts";
-import { MODES, nameSchema } from "./wire.ts";
+import { isChannel, MODES, nameSchema, ownerOf } from "./wire.ts";
 import type { Event, PermissionMode } from "./wire.ts";
 
 export const MAX_DEPTH = 2; // Most agents a request may come through: the root's agent, and one it asked.
@@ -110,6 +110,12 @@ function working(log: readonly Entry[], job: Node): Run | null {
   return live;
 }
 
+/** Whether a request was sent to the chat its root is in: the same channel, or between the same two people, which is where everyone the root's chat holds can read it. */
+function sameChat(root: Event, request: Event): boolean {
+  const [a, b, c, d] = [ownerOf(root.author), root.to, ownerOf(request.author), request.to];
+  return isChannel(b) ? d === b : !isChannel(d) && ((a === c && b === d) || (a === d && b === c));
+}
+
 /** The runs of the jobs a request came through, from the root's down, or why its chain does not hold: each of its agents must have been asked in turn, and be working, let ask other agents. */
 function runsOf(log: readonly Entry[], hops: readonly Node[] | null, asker: string, chain: readonly string[]): Run[] | string {
   if (hops === null) {
@@ -148,7 +154,7 @@ function crowded(forest: readonly Node[], asker: Node | undefined, request: Entr
 
 /**
  * Whether a job.request may go to its target, from what the log shows: it trusts nothing the request says that the log does not.
- * The request must come through at most MAX_DEPTH agents and not ask one of them again. Each agent in its chain must have been asked, in turn, under a person's message tagging the first,
+ * The request must come through at most MAX_DEPTH agents, not ask one of them again, and be sent to the chat its root is in. Each agent in its chain must have been asked, in turn, under a person's message tagging the first,
  * and each must be working on that, its owner having let it ask other agents. Its root must have been running for less than ROOT_TIME, and its asker and its root may not have asked
  * MAX_CHILDREN and MAX_TREE jobs before it. Whether a job is working is read from the whole log, so a request whose parent has since ended no longer may.
  */
@@ -165,6 +171,10 @@ export function checkRequest(log: readonly Entry[], request: Entry): Verdict {
   }
   if (chain.includes(target)) {
     return { ok: false, reason: `${target} is already in its chain` };
+  }
+  const rooted = rootOf(log, root);
+  if (rooted !== null && !sameChat(rooted.entry.event, request.event)) {
+    return { ok: false, reason: "it was not sent to the chat its root request is in" };
   }
   const forest = tree(log, root);
   const hops = path(forest, parent, asker);

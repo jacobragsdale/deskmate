@@ -1,13 +1,24 @@
 /** Delegation: what an agent's request of another agent says, whether an acceptance lets its agent ask others, and whether the log lets a request go to its target. */
 
 import assert from "node:assert/strict";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
+import type { TestContext } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 
 import type { Entry } from "../src/core/chat.ts";
 import { checkRequest, MAX_CHILDREN, MAX_TREE, peopleInvolved, ROOT_TIME, tree } from "../src/core/delegation.ts";
 import type { Node } from "../src/core/delegation.ts";
 import { readContent } from "../src/core/kinds.ts";
-import { loadKey, signEvent } from "../src/core/sign.ts";
+import { loadKey, publicHex, signEvent } from "../src/core/sign.ts";
+import type { Delivered, PermissionMode } from "../src/core/wire.ts";
+import { agentKey } from "../src/desk/agentKeys.ts";
+import type { Client } from "../src/desk/client.ts";
+import { Session } from "../src/desk/session.ts";
+import type { Notice, ReplyView } from "../src/shared/ipc.ts";
+import { startHub, TEAM_REPOS } from "./startHub.ts";
+import type { Hub } from "./startHub.ts";
 
 const NOW = 1_800_000_000;
 const key = loadKey("11".repeat(32));
@@ -230,3 +241,155 @@ await test("a chain is false when its root is made up, or it names agents other 
   assert.equal(verdict(log, ask("carol/client", root, first, "dave/billing", ["bob/uploader", "carol/client"])), "its chain is not the agents that asked");
   assert.equal(verdict(log, ask("carol/client", root, first, "dave/billing", ["carol/client"])), "its chain is not the agents that asked");
 });
+
+await test("a request is refused when it is not sent to the chat its root is in, where everyone the root's chat holds can read it", () => {
+  const { second, log } = scenario();
+  const to = (where: string, entry: Entry): Entry => ({ ...entry, event: { ...entry.event, to: where } }); // What is tested reads the trust verdict, not the signature.
+  const [root = assert.fail(), ...rest] = log;
+
+  assert.equal(verdict([root, ...rest.slice(0, -1), to("#ops", second)], to("#ops", second)), "it was not sent to the chat its root request is in");
+  assert.equal(verdict([to("jacob", root), ...rest], to("dave", second)), "it was not sent to the chat its root request is in"); // A direct chat between bob and jacob, sent between carol and dave.
+  assert.equal(verdict([to("jacob", root), ...rest], to("jacob", second)), "it was not sent to the chat its root request is in"); // Between carol and jacob.
+  assert.equal(verdict([to("carol", root), ...rest], to("bob", second)), "ok full"); // Between bob and carol either way round.
+});
+
+// ── on the desks ─────────────────────────────────────────────────────────────
+
+const FAKE = join(import.meta.dirname, "fixtures", "fake-acp-agent.ts");
+const COMMIT = "c0ffee".padEnd(40, "0");
+
+/** Try `find` every 50 ms, for fifteen seconds, until it finds something. */
+async function eventually<T>(what: string, find: () => T | undefined | false | Promise<T | undefined | false>): Promise<T> {
+  for (let tries = 0; tries < 300; tries += 1) {
+    const found = await find();
+    if (found !== undefined && found !== false) {
+      return found;
+    }
+    await delay(50);
+  }
+  throw new Error(`never happened: ${what}`);
+}
+
+/** One person's running desk, with their client, the notices it gave, and every message and reply its view of #team shows, by id. */
+interface Desk {
+  readonly client: Client;
+  readonly session: Session;
+  readonly notices: Notice[];
+  readonly shown: (id: string) => ReplyView | undefined;
+}
+
+/** `name` on the hub, in #team, and their desk, with a checkout of each of `repos`, answering with the scripted ACP agent started with `args`. */
+async function deskOf(t: TestContext, hub: Hub, name: string, repos: readonly string[], args: readonly string[] = ["--no-pids"]): Promise<Desk> {
+  const client = await hub.join(name);
+  client.saveAgents([{ id: "fake", label: "Fake", protocol: "acp", command: process.execPath, args: [FAKE, ...args] }], "fake");
+  await client.publish("#team", "channel.join", {});
+  const dev = join(hub.dir, `dev-${name}`);
+  for (const repo of repos) {
+    mkdirSync(join(dev, repo, ".git"), { recursive: true });
+    writeFileSync(join(dev, repo, ".git", "config"), `[remote "origin"]\n\turl = ${TEAM_REPOS}Platform/_git/${repo}\n`);
+    writeFileSync(join(dev, repo, ".git", "HEAD"), "ref: refs/heads/main\n");
+  }
+  const notices: Notice[] = [];
+  const hooks = {
+    changed: () => undefined,
+    notice: (notice: Notice) => {
+      notices.push(notice);
+    },
+    arrived: () => undefined,
+    confirmClone: () => Promise.resolve(false)
+  };
+  const session = new Session(client, dev, hooks, { presence: 1, describe: () => Promise.resolve({ branch: "main", commit: COMMIT, dirty: false }) });
+  session.start();
+  t.after(() => session.stop());
+  await eventually(`${name}'s desk`, () => session.view().loaded && repos.every((repo) => session.view().myRepos.includes(repo)) && session.view().rows.some((row) => row.chat === "#team"));
+  await session.handle({ do: "open", chat: "#team" });
+  const shown = (id: string): ReplyView | undefined =>
+    session
+      .view()
+      .current?.messages.flatMap((message) => [message, ...message.replies])
+      .find((message) => message.id === id);
+  return { client, session, notices, shown };
+}
+
+/** The event of `kind` about the request `id` that `author` sent, once `reader` can see it in #team. */
+function sent(reader: Client, id: string, author: string, kind: string): Promise<Delivered> {
+  return eventually(`${author}'s ${kind}`, async () => (await reader.events({ chat: "#team" })).find(({ event }) => event.refs[0] === id && event.author === author && event.kind === kind));
+}
+
+await test(
+  "an agent's request of another is declined by its target's desk, saying why, when the log does not let it go; else it is offered with its chain, at no more than the chain was let do, or runs under a grant naming everyone it runs on the say of",
+  { timeout: 120_000 },
+  async (t) => {
+    const hub = await startHub(t, () => Date.now() / 1000);
+    const carol = await deskOf(t, hub, "carol", ["billing", "api"]);
+    const [bob, jacob] = [await hub.join("bob"), await hub.join("jacob")];
+    for (const who of [bob, jacob]) {
+      await who.publish("#team", "channel.join", {});
+    }
+    const key = agentKey(join(hub.dir, "jacob"), "uploader");
+    await jacob.publish("*", "agent.register", { repo: "uploader", pubkey: publicHex(key) });
+    const uploader = jacob.as("jacob/uploader", key);
+    /** Bob asks jacob's uploader agent, and jacob lets it go at `mode`, asking others when `delegate`, as his desk would. */
+    const root = async (delegate = true, mode: PermissionMode = "auto-edits"): Promise<string> => {
+      const { id } = (await bob.publish("#team", "message", { text: "@jacob/uploader does removing `retries` break anything?", via: "cli" })).event;
+      await jacob.publish("#team", "job.accepted", { repo: "uploader", branch: "main", commit: COMMIT, dirty: false, delivery: "post", mode, delegate, by: "owner" }, [id]);
+      return id;
+    };
+    /** Jacob's agent asks one of carol's under `under`, as its MCP server would. */
+    const ask = async (under: string, target = "carol/billing"): Promise<string> =>
+      (await uploader.publish("#team", "job.request", { target, text: "mcp", chain: ["jacob/uploader"] }, [under, under])).event.id;
+    const reason = async (id: string): Promise<string> => {
+      const said = readContent((await sent(bob, id, "carol", "job.declined")).event);
+      return said.kind === "job.declined" ? said.content.reason : "";
+    };
+    const offered = (id: string): Promise<ReplyView> => eventually("carol is offered it", () => (carol.shown(id)?.requests[0]?.status.kind === "ready" ? carol.shown(id) : undefined));
+
+    // Under a run not let ask others: declined, saying why.
+    assert.equal(await reason(await ask(await root(false))), "jacob/uploader was not let ask other agents");
+
+    // Let: offered to carol with its chain in words, at no more than jacob let his run do.
+    const first = await root();
+    const asked = await ask(first);
+    const view = await offered(asked);
+    assert.deepEqual(view.delegation, { first: "bob", chain: ["jacob/uploader"], target: "carol/billing", words: "bob asked jacob's uploader agent, which is asking your billing agent" });
+    assert.deepEqual(view.requests[0]?.status, { kind: "ready", before: "", canDecline: true, offer: { mode: "read-only", post: false }, ceiling: "auto-edits" });
+    const run = (id: string, mode: PermissionMode, repo = "billing"): Promise<void> => carol.session.handle({ do: "run", id, repo, post: true, mode, text: "mcp" });
+    await assert.rejects(run(asked, "full"), /^Error: jacob's uploader agent's request may run at most auto-edits, as no agent it came through was let do more$/);
+    await run(asked, "auto-edits");
+    assert.match(readContent((await sent(bob, asked, "carol/billing", "job.result")).event).kind, /job.result/);
+
+    // Once jacob's agent has answered, what it asked before may not go: a click on it is refused, saying why.
+    const late = await ask(first, "carol/api");
+    await offered(late);
+    await uploader.publish("#team", "job.result", { repo: "uploader", branch: "main", text: "no", reviewed: false }, [first]);
+    await eventually("carol sees it answered", () => carol.shown(first)?.requests.length === 0);
+    await assert.rejects(run(late, "read-only", "api"), /may not go: jacob\/uploader is not working on what it was asked/);
+
+    // A grant for bob alone does not cover a request that came through jacob's agent; one for bob and jacob does, at no more than the chain lets, asking nobody, with no MCP server.
+    assert.equal((await carol.session.testPermissions("fake")).status, "ok");
+    const grant = (askers: readonly string[]): Promise<void> => carol.session.handle({ do: "grant", repo: "billing", askers, mode: "full", delivery: "post", lasts: 3600, runsPerDay: 20 });
+    for (const askers of [["bob"], ["jacob"]]) {
+      await grant(askers); // Neither alone names everyone the next request runs on the say of.
+      const waits = await ask(await root());
+      await offered(waits);
+      await delay(500);
+      assert.ok(!(await bob.events({ chat: "#team" })).some(({ event }) => event.refs[0] === waits && event.kind === "job.accepted"), askers.join());
+    }
+    await grant(["bob", "jacob"]);
+    const granted = await ask(await root());
+    const accepted = readContent((await sent(bob, granted, "carol", "job.accepted")).event);
+    assert.ok(accepted.kind === "job.accepted" && accepted.content.by !== "owner");
+    assert.deepEqual([accepted.content.mode, accepted.content.delegate], ["auto-edits", false]);
+    const answer = readContent((await sent(bob, granted, "carol/billing", "job.result")).event);
+    assert.match(answer.kind === "job.result" ? answer.content.text : "", /; servers \[\]$/); // Its prompt says where every member can read it, which the scripted agent takes for "read".
+
+    // A chain everyone in which is carol consults no grant, though one names everyone else in it: her own agent asking her other waits for her.
+    const own = (await carol.client.publish("#team", "message", { text: "@carol/api and you?", via: "cli" })).event.id;
+    await carol.client.publish("#team", "job.accepted", { repo: "api", branch: "main", commit: COMMIT, dirty: false, delivery: "post", mode: "full", delegate: true, by: "owner" }, [own]);
+    const api = carol.client.as("carol/api", agentKey(join(hub.dir, "carol"), "api"));
+    const mine = (await api.publish("#team", "job.request", { target: "carol/billing", text: "mcp", chain: ["carol/api"] }, [own, own])).event.id;
+    assert.deepEqual((await offered(mine)).delegation?.words, "you asked your api agent, which is asking your billing agent");
+    await delay(500);
+    assert.ok(!(await bob.events({ chat: "#team" })).some(({ event }) => event.refs[0] === mine && event.kind === "job.accepted"));
+  }
+);

@@ -273,7 +273,7 @@ await test("without --allow-send nothing can be sent, and ask_agent returns the 
     view.current?.messages.find((message) => message.body.endsWith("from my editor?") && message.requests[0]?.status.kind === "ready")
   );
   await delay(300);
-  assert.deepEqual([own.requests[0]?.status, prompts.length], [{ kind: "ready", before: "", canDecline: false, offer: { mode: "read-only", post: false } }, 1]);
+  assert.deepEqual([own.requests[0]?.status, prompts.length], [{ kind: "ready", before: "", canDecline: false, offer: { mode: "read-only", post: false }, ceiling: "full" }, 1]);
 });
 
 await test("started in an agent's run, as its MCP server is, it signs as the agent: it reads what its owner sees, and even with --allow-send sends nothing only a person can", async (t) => {
