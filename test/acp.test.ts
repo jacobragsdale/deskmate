@@ -954,8 +954,9 @@ await test(
     const reviewed = await until("bob sees the answer", () => asker.view().current?.messages.find((message) => message.agent === "uploader"));
     assert.deepEqual(reviewed.grant, { id: review, mode: "read-only", expires: NOW + 3600 }); // Bob sees whose grant it ran under, and until when.
 
-    // Revoked from his window, it lets nothing more go.
+    // Revoked from his window, it lets nothing more go, and bob no longer sees it last until then.
     await owner.handle({ do: "revoke", id: review });
+    await until("bob sees it revoked", () => asker.view().current?.messages.find((message) => message.id === reviewed.id)?.grant?.expires === null);
     await waits("#revoked", 1);
 
     // Read-only, posted directly: bob's request runs, refused its edit and its command, and the answer goes out at once, signed by jacob's agent and not by jacob.

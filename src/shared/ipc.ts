@@ -15,7 +15,7 @@ const requestSchema = z
     repo: z.string(),
     mine: z.boolean(),
     // What its owner last let it run on, and at which permission mode; null when they never have. `grant` is the grant of the owner's it ran under, by its id, and when that grant ends,
-    // `expires` null when this desk holds no such grant of theirs; null when the owner let it run themselves.
+    // `expires` null when this desk holds no such grant of theirs, or it has been revoked; null when the owner let it run themselves.
     accepted: z
       .strictObject({
         branch: z.string(),
@@ -68,7 +68,7 @@ const said = {
   branch: z.string(), // The branch that agent was on; "" when unknown.
   commit: z.string(), // The commit it was on, as its owner accepted the run; "" when unknown.
   // For an agent's answer whose run its owner let go under a grant of theirs: the grant, by its id, the mode the run had, and when the grant ends, null when this desk holds no such grant
-  // of theirs. Null for anything else, and when where the run went ahead is unknown, as `commit` is.
+  // of theirs, or it has been revoked. Null for anything else, and when where the run went ahead is unknown, as `commit` is.
   grant: z.strictObject({ id: z.string(), mode: permissionModeSchema, expires: z.int().nullable() }).readonly().nullable(),
   ts: z.int(),
   trusted: z.boolean(),

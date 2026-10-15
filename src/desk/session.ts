@@ -597,13 +597,16 @@ export class Session {
     return request.state === "answered" ? [] : [{ id: request.message.entry.event.id, owner, repo, mine, accepted, status: mine ? this.myStatus(request) : this.theirStatus(request) }];
   }
 
-  /** The grant of `owner`'s a run went ahead under, by the id its acceptance names, and when it ends: null when the owner let it run themselves, and `expires` null when no such grant of theirs is held here. */
+  /**
+   * The grant of `owner`'s a run went ahead under, by the id its acceptance names, and when it ends: null when the owner let it run themselves, and `expires` null when no such grant of theirs
+   * is held here, or it has been revoked, as it no longer lasts until then.
+   */
   private ranUnder(owner: string, { by }: Accepted): NonNullable<RequestView["accepted"]>["grant"] {
     if (by === "owner") {
       return null;
     }
     const grant = this.grants.get(by.grant);
-    const said = grant === undefined ? null : readContent(grant.event);
+    const said = grant === undefined || revoked(grant, [...this.revocations.values()]) ? null : readContent(grant.event);
     return { id: by.grant, expires: grant?.trusted === true && grant.event.author === owner && said?.kind === "grant" ? said.content.expires : null };
   }
 
