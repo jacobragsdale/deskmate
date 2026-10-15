@@ -421,7 +421,7 @@ await test("two people, their agents and a channel, through the real hub", { tim
   await until(bob.session, "bob can join it", (view) => view.otherChannels.some((channel) => channel.name === "#backend"));
   await bob.session.handle({ do: "joinChannel", name: "#backend" });
   const channel = await until(bob.session, "bob is in the channel with its earlier message", (view) => (view.current?.chat === "#backend" && messages(view).length === 1 ? view.current : undefined));
-  assert.deepEqual([channel.members, channel.joined, channel.pinned], [["bob", "jacob"], true, { name: "uploader", have: 2, mine: true }]);
+  assert.deepEqual([channel.members, channel.joined, channel.pinned], [["bob", "jacob"], true, { name: "uploader", have: 2, mine: true, branch: null, on: [], elsewhere: [] }]);
   assert.deepEqual(
     channel.lines.map((line) => [line.who, line.did, line.repo]),
     [

@@ -58,7 +58,7 @@ import { plain } from "./patches.ts";
 import * as worktree from "./worktree.ts";
 import type { Worktree } from "./worktree.ts";
 import { cloneFolder } from "../core/remotes.ts";
-import { oneLine, problemOf } from "../core/text.ts";
+import { byCodeUnit, oneLine, problemOf } from "../core/text.ts";
 import { commandLineOf, defaultAgentOf, fitText, isAgent, isChannel, MAX_PATCH, MAX_SKEW, MODES, nameSchema, ownerOf, permissionModeSchema, PROTOCOL } from "../core/wire.ts";
 import type { Agent, ChannelInfo, Delivered, Event, PermissionMode, Person, RepoRef, TeamRepo } from "../core/wire.ts";
 
@@ -531,6 +531,9 @@ export class Session {
     const info = this.channels.find((channel) => channel.name === chat);
     const members = info?.members ?? [];
     const pinned = info?.repo ?? null;
+    const branch = info?.branch ?? null;
+    const copies = pinned === null ? [] : this.team.filter((repo) => repo.key === pinned.key); // Everyone's checkout of the pinned repo, as each advertises it.
+    const elsewhere = copies.filter((copy) => copy.branch !== branch && members.includes(copy.user));
     return {
       chat,
       members: isChannel(chat) ? members : null,
@@ -539,7 +542,14 @@ export class Session {
       pinned:
         pinned === null
           ? null
-          : { name: pinned.name, have: members.filter((member) => this.team.some((repo) => repo.user === member && repo.key === pinned.key)).length, mine: this.checkouts.has(pinned.name) },
+          : {
+              name: pinned.name,
+              have: members.filter((member) => copies.some((copy) => copy.user === member)).length,
+              mine: this.checkouts.has(pinned.name),
+              branch,
+              on: branch === null ? [] : copies.filter((copy) => copy.branch === branch).map((copy) => copy.user),
+              elsewhere: branch === null ? [] : elsewhere.map((copy) => ({ who: copy.user, branch: copy.branch }))
+            },
       newAfter: this.newAfter,
       messages: this.messages(chat, now),
       lines: this.lines(chat),
@@ -917,6 +927,9 @@ export class Session {
     if (JSON.stringify(adverts) !== this.advertised) {
       await this.client.advertise(adverts);
       this.advertised = JSON.stringify(adverts);
+      // The user's own part of the team is what the hub was just told, in the hub's order, rather than what it said on the last beat: a branch room shows them on their new branch at once.
+      const mine = adverts.map((advert) => ({ ...advert, user: this.me }));
+      this.team = [...this.team.filter((repo) => repo.user !== this.me), ...mine].sort((a, b) => byCodeUnit(`${a.name} ${a.user}`, `${b.name} ${b.user}`));
     }
     await this.register(shared);
     this.checkouts = new Map(found.map((checkout) => [checkout.remote.name, checkout]));

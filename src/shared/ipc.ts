@@ -184,7 +184,18 @@ const currentSchema = z
     members: z.array(z.string()).readonly().nullable(), // Null for a direct chat.
     joined: z.boolean(),
     hasOlder: z.boolean(), // Whether there may be events before the oldest shown: the "older" command loads them.
-    pinned: z.strictObject({ name: z.string(), have: z.int(), mine: z.boolean() }).nullable(), // The repo the channel is about, how many members have it, and whether I do.
+    // The repo the channel is about, how many members have it, and whether I do. In a branch room, `branch` is the branch it is about, null for the whole repo; `on` is everyone whose checkout
+    // of the repo is on it, as each advertises, members or not; and `elsewhere` the members whose checkout is on another, with that branch. Both empty in a room about the whole repo.
+    pinned: z
+      .strictObject({
+        name: z.string(),
+        have: z.int(),
+        mine: z.boolean(),
+        branch: z.string().nullable(),
+        on: z.array(z.string()).readonly(),
+        elsewhere: z.array(z.strictObject({ who: z.string(), branch: z.string() }).readonly()).readonly()
+      })
+      .nullable(),
     newAfter: z.int().nullable(), // Messages after this seq arrived while the user was elsewhere.
     messages: z.array(messageSchema).readonly(),
     lines: z.array(lineSchema).readonly(),

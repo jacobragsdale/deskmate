@@ -36,6 +36,26 @@ function Line({ line, me }: { readonly line: LineView; readonly me: string }): J
   );
 }
 
+/** What the channel is about, the repo or a branch of one and how many members have it, then who is in it: the line beside its name. */
+function aboutLine({ pinned, members }: CurrentView): string {
+  const about = pinned === null ? "" : `${pinned.name}${pinned.branch === null ? "" : ` on ${pinned.branch}`} (${String(pinned.have)} of ${String(members?.length ?? 0)} have it) · `;
+  return about + (members?.join(", ") ?? "");
+}
+
+/** In a branch room, who is on its branch, from what everyone advertises, and the members whose checkout is on another; nothing in a room about the whole repo. */
+function OnBranch({ pinned }: { readonly pinned: NonNullable<CurrentView["pinned"]> }): JSX.Element | null {
+  if (pinned.branch === null) {
+    return null;
+  }
+  const elsewhere = pinned.elsewhere.map(({ who, branch }) => `${who} on ${branch}`).join(", ");
+  return (
+    <p className="border-b px-4 py-1.5 text-muted-foreground" data-branch-room>
+      on this branch: {pinned.on.length === 0 ? "nobody" : pinned.on.join(", ")}
+      {elsewhere !== "" && ` · elsewhere: ${elsewhere}`}
+    </p>
+  );
+}
+
 /** Why the agent that answers cannot ask other agents in a run, "" when it can: only an agent over ACP is given the MCP server it asks through. */
 function asking(view: ChatView): string {
   const agent = view.agents.find((each) => each.id === view.defaultAgent);
@@ -130,7 +150,7 @@ export function Thread({
     }
   }, [current]);
 
-  const { pinned, members } = current;
+  const { pinned } = current;
   const runs: Runs = {
     kept: new Set(current.activity.map((item) => item.run)),
     asks: current.asks,
@@ -145,10 +165,7 @@ export function Thread({
     <>
       <header className="flex items-baseline gap-3 border-b px-4 py-2.5">
         <h1 className="text-base font-bold">{current.chat}</h1>
-        <span className="flex-1 truncate text-muted-foreground">
-          {pinned !== null && `${pinned.name} (${String(pinned.have)} of ${String(members?.length ?? 0)} have it) · `}
-          {members?.join(", ")}
-        </span>
+        <span className="flex-1 truncate text-muted-foreground">{aboutLine(current)}</span>
         {current.joined && (
           <span className="flex flex-none gap-1.5">
             {pinned === null ? (
@@ -182,6 +199,7 @@ export function Thread({
           </span>
         )}
       </header>
+      {pinned !== null && <OnBranch pinned={pinned} />}
       {pinned !== null && !pinned.mine && view.loaded && (
         <p className="border-b px-4 py-1.5 text-warn">
           ◆ This channel is about {pinned.name}, which you have no checkout of ·{" "}
