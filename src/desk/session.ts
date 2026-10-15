@@ -38,6 +38,8 @@ import { DAY, liveGrant, revoked, standing } from "../core/grants.ts";
 import type { Standing } from "../core/grants.ts";
 import { readContent } from "../core/kinds.ts";
 import { notesIn } from "../core/links.ts";
+import { roomName, suggestions } from "../core/rooms.ts";
+import type { Room } from "../core/rooms.ts";
 import type { Content, ContentOf, Summary } from "../core/kinds.ts";
 import { publicHex } from "../core/sign.ts";
 import { acpRunner, greet } from "./agents/acp.ts";
@@ -79,8 +81,19 @@ const EVERYONE = 200; // Events to everyone read at a time when the desk starts:
  */
 const choiceSchema = z.strictObject({ mode: permissionModeSchema, post: z.boolean(), agent: z.strictObject({ id: z.string(), line: z.string() }).optional() });
 
-/** What the session remembers between runs, in app-state.json: read marks, the chat open last, and how each asker's requests of each repo were last run, by the asker and the repo. */
-const savedSchema = z.strictObject({ read: z.record(z.string(), z.int()), chat: z.string().nullable(), choices: z.record(z.string(), choiceSchema).default({}) });
+/**
+ * What the session remembers between runs, in app-state.json: read marks, the chat open last, how each asker's requests of each repo were last run, by the asker and the repo,
+ * and the branch rooms the user said not to suggest (phase 6).
+ */
+const savedSchema = z.strictObject({
+  read: z.record(z.string(), z.int()),
+  chat: z.string().nullable(),
+  choices: z.record(z.string(), choiceSchema).default({}),
+  dismissed: z
+    .array(z.strictObject({ repo: z.string(), branch: z.string() }).readonly())
+    .readonly()
+    .default([])
+});
 
 type Offer = Extract<RequestView["status"], { kind: "ready" }>["offer"];
 
@@ -152,6 +165,8 @@ type JobDo = "sendDraft" | "discardDraft" | "run" | "stop" | "stopAll" | "permit
 
 const MESSAGE_DOS: ReadonlySet<string> = new Set<MessageDo>(["send", "reply", "react", "edit", "delete", "applyPatch", "review"]);
 const JOB_DOS: ReadonlySet<string> = new Set<JobDo>(["sendDraft", "discardDraft", "run", "stop", "stopAll", "permit", "decline", "withdraw", "grant", "revoke"]);
+type RoomDo = "pin" | "unpin" | "startRoom" | "dismissRoom";
+const ROOM_DOS: ReadonlySet<string> = new Set<RoomDo>(["pin", "unpin", "startRoom", "dismissRoom"]);
 
 function isAboutMessages(command: ChatCommand): command is Extract<ChatCommand, { readonly do: MessageDo }> {
   return MESSAGE_DOS.has(command.do);
@@ -159,6 +174,10 @@ function isAboutMessages(command: ChatCommand): command is Extract<ChatCommand, 
 
 function isAboutJobs(command: ChatCommand): command is Extract<ChatCommand, { readonly do: JobDo }> {
   return JOB_DOS.has(command.do);
+}
+
+function isAboutRooms(command: ChatCommand): command is Extract<ChatCommand, { readonly do: RoomDo }> {
+  return ROOM_DOS.has(command.do);
 }
 
 /** The hub speaks another protocol: asked again only after UPDATE_DELAY. */
@@ -260,6 +279,7 @@ export class Session {
   private asked = 0; // Asks made so far, for each one's id.
   private readonly read: Record<string, number>; // Per chat, the seq of the newest event the user has seen.
   private readonly choices: Record<string, z.infer<typeof choiceSchema>>; // How each asker's requests of each repo were last run, by `${asker} ${repo}`.
+  private dismissed: readonly Room[]; // Branch rooms the user said not to suggest.
   private readonly paged = new Map<string, boolean>(); // Chats whose newest page has been loaded, and whether there may be events before what is loaded.
   private readonly linked = new Map<string, NoteView | null>(); // Notes linked to that are not loaded here, as the hub answered for each; null while it is being asked.
   private lastChat: string | null; // The chat that was open when the session last ran.
@@ -306,6 +326,7 @@ export class Session {
     const saved = this.loadSaved();
     this.read = { ...saved.read };
     this.choices = { ...saved.choices };
+    this.dismissed = saved.dismissed;
     this.lastChat = saved.chat;
     this.tested = permissionTests(client.home);
   }
@@ -350,6 +371,8 @@ export class Session {
       await this.handleMessage(command);
     } else if (isAboutJobs(command)) {
       await this.handleJob(command);
+    } else if (isAboutRooms(command)) {
+      await this.handleRoom(command);
     } else {
       switch (command.do) {
         case "open":
@@ -367,13 +390,6 @@ export class Session {
         case "leaveChannel":
           await this.leaveChannel(command.chat);
           break;
-        case "pin":
-          await this.pin(command.chat, command.repo, command.branch);
-          break;
-        case "unpin":
-          await this.publish(command.chat, "channel.pin", { repo: null, branch: null });
-          await this.refreshChannels();
-          break;
         case "clone":
           await this.clone(command.repo);
           break;
@@ -388,6 +404,27 @@ export class Session {
           this.hooks.changed();
           break;
       }
+    }
+  }
+
+  /** What a channel is about: pinning a repo, or a branch of one, unpinning, and the branch rooms the chat list suggests. */
+  private async handleRoom(command: Extract<ChatCommand, { readonly do: RoomDo }>): Promise<void> {
+    switch (command.do) {
+      case "pin":
+        await this.pin(command.chat, command.repo, command.branch);
+        break;
+      case "unpin":
+        await this.publish(command.chat, "channel.pin", { repo: null, branch: null });
+        await this.refreshChannels();
+        break;
+      case "startRoom":
+        await this.startRoom(command.repo, command.branch);
+        break;
+      case "dismissRoom":
+        this.dismissed = [...this.dismissed, { repo: command.repo, branch: command.branch }];
+        this.save();
+        this.hooks.changed();
+        break;
     }
   }
 
@@ -521,6 +558,7 @@ export class Session {
       checkouts: [...this.checkouts.values()].map(({ remote, branch }) => ({ repo: remote.name, branch, held: this.isHeld(remote.name), commit: this.commits.get(remote.name) ?? "" })),
       grants: this.myGrants(now),
       otherChannels: this.channels.filter((channel) => !channel.members.includes(this.me)).map((channel) => ({ name: channel.name, members: channel.members })),
+      rooms: suggestions(this.team, this.me, this.channels, new Map([...this.checkouts.values()].map((checkout) => [checkout.remote.name, checkout.defaultBranch])), this.dismissed),
       busy: { working: this.runs.size, unsent: [...this.drafts.values()].reduce((sum, drafts) => sum + drafts.length, 0) },
       current: this.current === "" ? null : this.currentView(now)
     };
@@ -1105,7 +1143,7 @@ export class Session {
   }
 
   private save(): void {
-    writeFileSync(this.savedPath(), JSON.stringify(savedSchema.parse({ read: this.read, chat: this.lastChat, choices: this.choices }), null, 1));
+    writeFileSync(this.savedPath(), JSON.stringify(savedSchema.parse({ read: this.read, chat: this.lastChat, choices: this.choices, dismissed: this.dismissed }), null, 1));
   }
 
   private savedPath(): string {
@@ -1120,7 +1158,7 @@ export class Session {
     } catch {
       // A file from another version only costs read marks, the last open chat and how requests were last run.
     }
-    return { read: {}, chat: null, choices: {} };
+    return { read: {}, chat: null, choices: {}, dismissed: [] };
   }
 
   // ── what the user does ────────────────────────────────────────────────────
@@ -1363,6 +1401,18 @@ export class Session {
     }
     await this.publish(chat, "channel.pin", { repo: refOf(checkout.remote), branch });
     await this.refreshChannels();
+  }
+
+  /** Start a room about a branch of one of the user's repos: a channel named from both, which they join and pin to it. The channels are asked for first, for a name nobody has taken since. */
+  private async startRoom(repo: string, branch: string): Promise<void> {
+    if (!this.checkouts.has(repo)) {
+      throw new PlayerTwoError(`you have no checkout of ${repo} to start a room about`);
+    }
+    await this.refreshChannels();
+    const taken = this.channels.map((channel) => channel.name);
+    const name = roomName(repo, branch, taken);
+    await this.joinChannel(name);
+    await this.pin(name, repo, branch);
   }
 
   /** Ask again who is in each channel and what it is pinned to, after the user or someone else changed either. */

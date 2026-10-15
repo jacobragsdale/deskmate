@@ -786,7 +786,7 @@ await test("a checkout's head is its branch, the commit it is at and whether any
   t.after(() => {
     rmSync(path, { recursive: true, force: true });
   });
-  const checkout = { remote: { name: "uploader", key: "dev.azure.com/acme/platform/uploader", url: "https://dev.azure.com/acme/Platform/_git/uploader" }, path, branch: "main" };
+  const checkout = { remote: { name: "uploader", key: "dev.azure.com/acme/platform/uploader", url: "https://dev.azure.com/acme/Platform/_git/uploader" }, path, branch: "main", defaultBranch: null };
   const git = (...args: string[]): Promise<unknown> => repos.git(["-C", path, "-c", "user.name=t", "-c", "user.email=t@example.com", ...args], 20);
   await git("init", "-q", "-b", "main");
   await assert.rejects(repos.describe(checkout), /git cannot say which commit/);

@@ -113,7 +113,7 @@ export function PickRepo({ title, choices, onDone }: { readonly title: string; r
               }}
             >
               {pick.repo}
-              {pick.branch !== null && <span className="truncate text-muted-foreground">on {pick.branch}</span>}
+              {pick.branch !== null && <span className="truncate text-muted-foreground"> on {pick.branch}</span>}
             </Button>
           </li>
         ))}

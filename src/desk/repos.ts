@@ -15,6 +15,7 @@ export interface Checkout {
   readonly remote: Remote;
   readonly path: string;
   readonly branch: string;
+  readonly defaultBranch: string | null; // The branch its origin calls the default, as git clone notes it; null when nothing does, as after git init.
 }
 
 /** Where a checkout stands: its branch, the commit it is at, and whether it has changes nobody has committed. */
@@ -56,6 +57,11 @@ function branchOf(path: string): string {
   return head.startsWith("ref: ") ? head.replace(/^ref: refs\/heads\//, "") : `detached at ${head.slice(0, 7)}`;
 }
 
+function defaultBranchOf(path: string): string | null {
+  const head = readOrNull(join(path, ".git", "refs", "remotes", "origin", "HEAD"))?.trim() ?? "";
+  return head.startsWith("ref: refs/remotes/origin/") ? head.slice("ref: refs/remotes/origin/".length) : null;
+}
+
 function isDirectory(path: string): boolean {
   try {
     return statSync(path).isDirectory();
@@ -72,7 +78,7 @@ export function scan(dev: string, prefix: string): Checkout[] {
     const path = join(dev, folder);
     const remote = isDirectory(join(path, ".git")) ? parseRemote(origin(path) ?? "") : null;
     if (remote !== null && isUnder(remote.key, prefix) && (!found.has(remote.name) || folder.toLowerCase() === remote.name)) {
-      found.set(remote.name, { remote, path, branch: branchOf(path) });
+      found.set(remote.name, { remote, path, branch: branchOf(path), defaultBranch: defaultBranchOf(path) });
     }
   }
   return [...found.values()].sort((a, b) => byCodeUnit(a.remote.name, b.remote.name));

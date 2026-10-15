@@ -257,6 +257,9 @@ export const viewSchema = z.discriminatedUnion("kind", [
       checkouts: z.array(z.strictObject({ repo: z.string(), branch: z.string(), held: z.boolean(), commit: z.string() }).readonly()).readonly(),
       grants: z.array(grantSchema).readonly(), // The user's grants that stand, first made first.
       otherChannels: z.array(z.strictObject({ name: z.string(), members: z.array(z.string()).readonly() }).readonly()).readonly(), // Channels the user could join.
+      // Branch rooms worth starting, for the chat list to suggest: a branch, not the default, of a repo the user shares, that `others` are on too, which no channel is pinned to and the
+      // user has not dismissed.
+      rooms: z.array(z.strictObject({ repo: z.string(), branch: z.string(), others: z.array(z.string()).readonly() }).readonly()).readonly(),
       busy: z.strictObject({ working: z.int(), unsent: z.int() }).readonly(), // What quitting now would lose: agents at work and drafts not sent. Here so the window can warn without asking first.
       current: currentSchema.nullable()
     })
@@ -309,6 +312,8 @@ export const commandSchema = z.discriminatedUnion("do", [
   z.strictObject({ do: z.literal("leaveChannel"), chat }),
   z.strictObject({ do: z.literal("pin"), chat, repo, branch: branchSchema.nullable() }), // With a branch, the channel is a room about that branch of the repo; null is about the whole repo.
   z.strictObject({ do: z.literal("unpin"), chat }),
+  z.strictObject({ do: z.literal("startRoom"), repo, branch: branchSchema }), // Start a branch room: a channel named from the repo and branch, joined, pinned to them and opened.
+  z.strictObject({ do: z.literal("dismissRoom"), repo, branch: branchSchema }), // Suggest no room for this branch of this repo again. Kept in app-state.json.
   z.strictObject({ do: z.literal("clone"), repo }),
   // Apply the patch with this id to the user's checkout of its repo, once its paths are checked, git says it applies, and the user has said yes to a dialog of the system's own:
   // on the branch the checkout is on, or with `newBranch` on a branch of its own, made from the commit the patch was made on, leaving the checkout as it is.

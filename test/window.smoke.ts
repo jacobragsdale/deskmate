@@ -438,8 +438,57 @@ async function patches(page: Page, erin: Client, home: string): Promise<void> {
   await page.shot("applied");
 }
 
+/**
+ * Branch rooms. Bob has been on widgets' feature-retry and worker's fix-retry, and carol on widgets' main, since early on; alice checks both out on bob's branches, which her desk sees as
+ * soon as it looks under ~/dev again. The chat list suggests a room for each. She dismisses worker's, which app-state.json keeps, and starts widgets': it opens pinned to the branch, says
+ * who is on it, and once carol joins, that she is on main. Unpinned, the suggestion is back; pinned again from the dialog, which offers widgets whole and on the branch, it is the same room.
+ */
+async function branchRooms(page: Page, carol: Client, home: string): Promise<void> {
+  for (const { repo, branch } of [
+    { repo: "widgets", branch: "feature-retry" },
+    { repo: "worker", branch: "fix-retry" }
+  ]) {
+    const dir = join(home, "dev", repo);
+    repository(dir, `https://dev.azure.com/acme/Platform/_git/${repo}`);
+    execFileSync("git", ["-C", dir, "checkout", "-q", "-b", branch]);
+  }
+  await page.eval(`window.playerTwo.command({ do: "hold", repo: "billing", held: false })`); // Which looks under ~/dev again at once.
+  const suggested = (room: string): string => `document.querySelector('nav [data-room="${room}"]')`;
+  await page.until(
+    "a room suggested for each branch",
+    `${suggested("widgets/feature-retry")}?.innerText.startsWith("bob is also on widgets/feature-retry · Start a room") === true && ${suggested("worker/fix-retry")} !== null`
+  );
+  await page.shot("rooms-suggested");
+  await page.eval(`${suggested("worker/fix-retry")}.querySelector('button[aria-label="Do not suggest a room for worker/fix-retry"]').click()`);
+  await page.until("worker's suggestion gone", `${suggested("worker/fix-retry")} === null`);
+  const saved = z.object({ dismissed: z.array(z.object({ repo: z.string(), branch: z.string() })) });
+  assert.deepEqual(saved.parse(JSON.parse(readFileSync(join(home, ".config", "player-two", "app-state.json"), "utf8"))).dismissed, [{ repo: "worker", branch: "fix-retry" }]);
+
+  await page.doubleClick(`[...${suggested("widgets/feature-retry")}.querySelectorAll("button")].find((each) => each.textContent === "Start a room")`); // Which starts one room.
+  const onBranch = `document.querySelector("main [data-branch-room]")?.innerText`;
+  await page.until("the room, open and pinned to the branch", `document.querySelector("main h1")?.textContent === "#widgets-feature-retry" && ${onBranch} === "on this branch: alice, bob"`);
+  assert.match(String(await page.eval(`document.querySelector("main header").innerText`)), /widgets on feature-retry \(1 of 1 have it\) · alice/);
+  await page.until("the line saying she pinned it", `document.querySelector("main").innerText.includes("◆ you pinned widgets on feature-retry")`);
+  assert.equal(await page.eval(`${suggested("widgets/feature-retry")} === null`), true);
+  await carol.publish("#widgets-feature-retry", "channel.join", {});
+  await page.until("carol, on another branch", `${onBranch} === "on this branch: alice, bob · elsewhere: carol on main"`);
+  await page.shot("branch-room");
+
+  await page.click("main header button", "Unpin widgets");
+  await page.until("the room unpinned, and suggested again", `document.querySelector("main [data-branch-room]") === null && ${suggested("widgets/feature-retry")} !== null`);
+  await page.click("main header button", "Pin a repo");
+  const choice = `[...document.querySelectorAll('[role="dialog"] button')].find((each) => each.textContent === "widgets on feature-retry")`;
+  await page.until("the dialog offering the branch", `${choice} !== undefined && [...document.querySelectorAll('[role="dialog"] button')].some((each) => each.textContent === "widgets")`);
+  await page.eval(`${choice}.click()`);
+  await page.until("the room pinned to the branch again", `${onBranch} === "on this branch: alice, bob · elsewhere: carol on main" && ${suggested("widgets/feature-retry")} === null`);
+  assert.deepEqual(
+    (await carol.channels()).map((channel) => channel.name).filter((name) => name.startsWith("#widgets")),
+    ["#widgets-feature-retry"]
+  ); // The double click above started no second room.
+}
+
 await test(
-  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, keeps a card in reach in a closed thread and brings one far above the end into view, refuses and allows for the run from a card, and offers only the modes the agent that answers can keep, full alone beside its reason when that is all, and a full chosen once not again in one click when less is there, and for a grant full alone while it is untested; and on My agents makes grants from its dialog, which warns of full access for anyone however its answers go and asks a second yes when they are posted directly, one grant for each double click, revokes one with a double click and not the next, counts the run a grant lets go, and holds a repo back with a double click, unshared and answering nobody under that grant, and lets it answer again; and says under whose grant a run went ahead, to its owner while it runs and in its answer, and to whoever asked, and that an answer its agent signed was not reviewed, where it is shown and where it is found; and while a grant is live stays open on close, saying why, where it cannot say it went to the tray, and once told hides on close, answering on, until started again; lists a grant apart once its repo is not checked out here, and revokes it there; lets the user's agent, asked by another, ask others from a switch beside what that means, says before its buttons how that request came, draws under the message that started it the tree of jobs under it, folded once all are done, and ends it all with that message's one Withdraw, after which what was asked under it is not offered again, saying why; draws a patch as a card beside the draft it goes with and in the chat, each file folded with what it adds and removes, and every word of a hostile one as text, and applies one, to her branch or a new one, only once a dialog of the system's own, naming the repo, the branch, the files and what to beware of, has had a yes, and shows who approved one or asked for changes, saying what; and quits on close once none is",
+  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, keeps a card in reach in a closed thread and brings one far above the end into view, refuses and allows for the run from a card, and offers only the modes the agent that answers can keep, full alone beside its reason when that is all, and a full chosen once not again in one click when less is there, and for a grant full alone while it is untested; and on My agents makes grants from its dialog, which warns of full access for anyone however its answers go and asks a second yes when they are posted directly, one grant for each double click, revokes one with a double click and not the next, counts the run a grant lets go, and holds a repo back with a double click, unshared and answering nobody under that grant, and lets it answer again; and says under whose grant a run went ahead, to its owner while it runs and in its answer, and to whoever asked, and that an answer its agent signed was not reviewed, where it is shown and where it is found; and while a grant is live stays open on close, saying why, where it cannot say it went to the tray, and once told hides on close, answering on, until started again; lists a grant apart once its repo is not checked out here, and revokes it there; lets the user's agent, asked by another, ask others from a switch beside what that means, says before its buttons how that request came, draws under the message that started it the tree of jobs under it, folded once all are done, and ends it all with that message's one Withdraw, after which what was asked under it is not offered again, saying why; draws a patch as a card beside the draft it goes with and in the chat, each file folded with what it adds and removes, and every word of a hostile one as text, and applies one, to her branch or a new one, only once a dialog of the system's own, naming the repo, the branch, the files and what to beware of, has had a yes, and shows who approved one or asked for changes, saying what; suggests a room for a branch she and a teammate are on, not the default, and none she dismissed, which is remembered; starts one, pinned to the branch and saying who is on it and which members are elsewhere, and pins one to a branch from the dialog; and quits on close once none is",
   { skip: NO_DISPLAY ? "no display: run it under xvfb-run" : false, timeout: 120_000 },
   async (t) => {
     assert.ok(existsSync(join(ROOT, "dist", "main.js")), "dist/ is not built: run `npm run build` first");
@@ -480,7 +529,12 @@ await test(
 
     const hub = await startHub(t, () => Date.now() / 1000); // The real clock, which the window's desk reads.
     const bob = await hub.join("bob");
-    await bob.advertise([{ name: "uploader", key: "dev.azure.com/acme/platform/uploader", url: "https://dev.azure.com/acme/Platform/_git/uploader", branch: "main" }]);
+    await bob.advertise([
+      { name: "uploader", key: "dev.azure.com/acme/platform/uploader", url: "https://dev.azure.com/acme/Platform/_git/uploader", branch: "main" },
+      // Two branches alice checks out too at the end, for branch rooms. Named after uploader, so that his agents are listed after that one.
+      { name: "widgets", key: "dev.azure.com/acme/platform/widgets", url: "https://dev.azure.com/acme/Platform/_git/widgets", branch: "feature-retry" },
+      { name: "worker", key: "dev.azure.com/acme/platform/worker", url: "https://dev.azure.com/acme/Platform/_git/worker", branch: "fix-retry" }
+    ]);
 
     const said: string[] = [];
     const port = await new Promise<string>((resolve, reject) => {
@@ -622,7 +676,10 @@ await test(
 
     // Carol starts a channel, pins a repo to it and writes more than a page, and alice joins it from the dialog. Scrolling to the top loads the page before, and the message that was first stays where it was.
     const carol = await hub.join("carol");
-    await carol.advertise([{ name: "api", key: "dev.azure.com/acme/platform/api", url: "https://dev.azure.com/acme/Platform/_git/api", branch: "main" }]); // For alice's agent to ask, far below.
+    await carol.advertise([
+      { name: "api", key: "dev.azure.com/acme/platform/api", url: "https://dev.azure.com/acme/Platform/_git/api", branch: "main" }, // For alice's agent to ask, far below.
+      { name: "widgets", key: "dev.azure.com/acme/platform/widgets", url: "https://dev.azure.com/acme/Platform/_git/widgets", branch: "main" } // For a branch room at the end, which she is not on.
+    ]);
     await carol.publish("#history", "channel.join", {});
     const theFirst = await carol.publish("#history", "message", { text: "the first", via: "cli" });
     await carol.publish("#history", "channel.pin", { repo: { name: "uploader", key: "dev.azure.com/acme/platform/uploader", url: "https://dev.azure.com/acme/Platform/_git/uploader" }, branch: null });
@@ -1247,6 +1304,7 @@ await test(
 
     await askingAgents(page, bob, carol, bobsAgent, commit);
     await patches(page, await hub.join("erin"), home);
+    await branchRooms(page, carol, home);
 
     assert.deepEqual(page.problems, []);
 

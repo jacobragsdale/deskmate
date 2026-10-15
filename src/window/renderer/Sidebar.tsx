@@ -1,7 +1,8 @@
-/** The chat list: joined channels, then people, with what is waiting in each. */
+/** The chat list: joined channels, then people, with what is waiting in each, and the branch rooms worth starting. */
 
 import { cn } from "cn";
 import { Loader2Icon } from "lucide-react";
+import { useState } from "react";
 import type { JSX, ReactElement } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -56,6 +57,55 @@ function Row({ row, open, act }: { readonly row: RowView; readonly open: boolean
   );
 }
 
+const PEOPLE = new Intl.ListFormat("en-GB"); // "bob, carol and dave".
+
+/**
+ * A branch room worth starting, "bob is also on uploader/feature-retry", with a button that starts it and one that stops suggesting it. The second click of a double click does nothing:
+ * on Start it would start a second room, and on × it would land on the suggestion that the first moved under the pointer.
+ */
+function Suggested({ room, act }: { readonly room: ChatView["rooms"][number]; readonly act: Act }): JSX.Element {
+  const { repo, branch, others } = room;
+  const [starting, setStarting] = useState(false); // While the desk starts the room, Start does nothing more.
+  return (
+    <li className="mx-2 my-1 text-xs text-muted-foreground" data-room={`${repo}/${branch}`}>
+      {PEOPLE.format(others)} {others.length === 1 ? "is" : "are"} also on {repo}/{branch} ·{" "}
+      <Button
+        type="button"
+        variant="link"
+        size="xs"
+        className="h-auto p-0"
+        disabled={starting}
+        onClick={(event) => {
+          if (event.detail > 1) {
+            return;
+          }
+          setStarting(true);
+          act({ do: "startRoom", repo, branch }, () => {
+            setStarting(false);
+          });
+        }}
+      >
+        Start a room
+      </Button>{" "}
+      <Button
+        type="button"
+        variant="ghost"
+        size="xs"
+        className="h-auto px-1 py-0"
+        aria-label={`Do not suggest a room for ${repo}/${branch}`}
+        title="Do not suggest it again"
+        onClick={(event) => {
+          if (event.detail <= 1) {
+            act({ do: "dismissRoom", repo, branch });
+          }
+        }}
+      >
+        ×
+      </Button>
+    </li>
+  );
+}
+
 export function Sidebar({ view, act, onJoin }: { readonly view: ChatView; readonly act: Act; readonly onJoin: () => void }): JSX.Element {
   const channels = view.rows.filter((row) => row.here === null);
   const people = view.rows.filter((row) => row.here !== null);
@@ -67,6 +117,9 @@ export function Sidebar({ view, act, onJoin }: { readonly view: ChatView; readon
         <ul>
           {channels.map((row) => (
             <Row key={row.chat} row={row} open={row.chat === open} act={act} />
+          ))}
+          {view.rooms.map((room) => (
+            <Suggested key={`${room.repo}/${room.branch}`} room={room} act={act} />
           ))}
           <li>
             <Button type="button" variant="ghost" className={cn(ROW, "text-muted-foreground")} onClick={onJoin}>
