@@ -5,8 +5,8 @@
 
 import type { KeyObject } from "node:crypto";
 import { lookup } from "node:dns";
-import { request as httpRequest } from "node:http";
-import { request as httpsRequest } from "node:https";
+import { Agent as HttpAgent, request as httpRequest } from "node:http";
+import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import { BlockList } from "node:net";
 import type { LookupFunction } from "node:net";
 
@@ -175,11 +175,15 @@ function failure(host: string, error: unknown, signal: AbortSignal): string {
   return `could not call ${host}: ${error instanceof Error && "code" in error && typeof error.code === "string" ? error.code : "the connection failed"}`;
 }
 
-/** POST `body` to `url`, following no redirect, reading at most MAX_ANSWER of the answer and keeping none of it, until `signal` ends it: done for a 2xx, failed for anything else. */
+/**
+ * POST `body` to `url`, following no redirect, reading at most MAX_ANSWER of the answer and keeping none of it, until `signal` ends it: done for a 2xx, failed for anything else. Never
+ * through a proxy: the call has an agent of its own, where Node's own would send it through one the hub's environment names (NODE_USE_ENV_PROXY with HTTP_PROXY or HTTPS_PROXY), which
+ * looks the name up itself, past `lookupWithin`.
+ */
 function call(url: URL, body: string, type: string, allow: readonly string[], signal: AbortSignal): Promise<Outcome> {
   return new Promise((resolve) => {
-    const send = url.protocol === "https:" ? httpsRequest : httpRequest;
-    const asked = send(url, { method: "POST", headers: { "Content-Type": type, "User-Agent": "player-two-hub" }, lookup: lookupWithin(allow), signal }, (answer) => {
+    const [send, agent] = url.protocol === "https:" ? [httpsRequest, new HttpsAgent()] : [httpRequest, new HttpAgent()];
+    const asked = send(url, { method: "POST", headers: { "Content-Type": type, "User-Agent": "player-two-hub" }, agent, lookup: lookupWithin(allow), signal }, (answer) => {
       let read = 0;
       answer.on("data", (chunk: Buffer) => {
         read += chunk.length;

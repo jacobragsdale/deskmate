@@ -4,13 +4,14 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import dns from "node:dns";
 import { mkdtempSync, rmSync } from "node:fs";
-import { createServer } from "node:http";
-import type { ServerResponse } from "node:http";
+import { createServer, setGlobalProxyFromEnv } from "node:http";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { syncBuiltinESMExports } from "node:module";
 import { isIP } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import type { Duplex } from "node:stream";
 import { test } from "node:test";
 import type { TestContext } from "node:test";
 
@@ -688,6 +689,40 @@ await test("a name that leads to the hub's own machine, a link-local address, \"
   }
   assert.equal(await look("168.63.129.16", ["example.test", "168.63.129.16"]), JSON.stringify([{ address: "168.63.129.16", family: 4 }]));
   assert.equal(await look("fd00:ec2::254", ["example.test", "[fd00:ec2::254]"]), JSON.stringify([{ address: "fd00:ec2::254", family: 6 }]));
+});
+
+await test("a webhook step goes straight to the address the hub looked up, never through a proxy the hub's environment names", async (t) => {
+  const proxied: string[] = [];
+  const proxy = createServer((request, response) => {
+    proxied.push(`${request.method ?? ""} ${request.url ?? ""}`);
+    response.end();
+  }).on("connect", (request: IncomingMessage, socket: Duplex) => {
+    proxied.push(`CONNECT ${request.url ?? ""}`);
+    socket.destroy();
+  });
+  await new Promise<void>((resolve) => {
+    proxy.listen(0, "127.0.0.1", resolve);
+  });
+  t.after(() => proxy.close());
+  const address = proxy.address();
+  assert.ok(address !== null && typeof address === "object");
+  // As NODE_USE_ENV_PROXY with these in the hub's environment would, for Node's own agents; the test's own calls, to 127.0.0.1, go straight.
+  t.after(setGlobalProxyFromEnv({ HTTP_PROXY: `http://127.0.0.1:${String(address.port)}`, HTTPS_PROXY: `http://127.0.0.1:${String(address.port)}`, NO_PROXY: "127.0.0.1" }));
+  resolver(t, () => [{ address: "127.0.0.1", family: 4 }]);
+  const called = await target(t);
+  const at = `ci.example.test:${new URL(called.url).port}`;
+  const hub = await startHub(t, () => NOW, "", TEAM_REPOS, ["ci.example.test", "127.0.0.1"]); // The address too, as the name leads to this machine.
+  const [alice] = await team(hub, "alice");
+  assert.ok(alice !== undefined);
+  const { event } = await alice.publish("#ops", "workflow.define", { name: "retry", yaml: hooked("retry", `webhook: { url: "http://${at}/plain" }`, `webhook: { url: "https://${at}/tls" }`) });
+
+  await setOff(hub, event.id);
+
+  const lines = await until(alice, /retry run 1 step 1/);
+  assert.deepEqual(lines.slice(-2, -1), ["hub: retry run 1 step 0 done"]);
+  assert.match(lines.at(-1) ?? "", new RegExp(`^hub: retry run 1 step 1 failed: could not call ${at}: E[A-Z_]+$`)); // Its server speaks no TLS.
+  assert.deepEqual(called.calls, ["/plain text/plain; charset=utf-8 "]);
+  assert.deepEqual(proxied, []);
 });
 
 await test("a webhook step to a name that cannot be looked up fails, saying the system's code alone, and the hub goes on", async (t) => {
