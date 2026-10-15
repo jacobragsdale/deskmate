@@ -68,6 +68,9 @@ export const contentSchema = z
   ])
   .readonly();
 
+/** The kinds an agent may author: its run's own reports. Everything else, a message and a grant among them, only a person may. Phase 5 adds job.request. */
+export const AGENT_KINDS: ReadonlySet<string> = new Set(["job.progress", "job.result", "job.error", "job.cancelled"]);
+
 /** The kinds that may be sent to everyone, "*". */
 export const PUBLIC_KINDS: ReadonlySet<string> = new Set(["agent.register", "grant", "grant.revoke"]);
 

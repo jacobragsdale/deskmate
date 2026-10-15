@@ -13,9 +13,9 @@ import { test } from "node:test";
 import { z } from "zod";
 
 import { readContent } from "../src/core/kinds.ts";
-import { authHeader, loadKey, signEvent } from "../src/core/sign.ts";
+import { authHeader, loadKey, publicHex, signEvent } from "../src/core/sign.ts";
 import { VERSION } from "../src/core/version.ts";
-import { deliveredSchema, MAX_SKEW, receiptSchema } from "../src/core/wire.ts";
+import { deliveredSchema, MAX_SKEW, PROTOCOL, receiptSchema } from "../src/core/wire.ts";
 import type { Delivered, Event, Repo } from "../src/core/wire.ts";
 import { oneshotAgent } from "../src/desk/agents/presets.ts";
 import { http, join as joinHub } from "../src/desk/client.ts";
@@ -601,7 +601,7 @@ await test("the audit head is the newest seq and chain value, and hub verify pas
 await test("the hub says which repos it shares, which version and protocol it is, and what time it has", async (t) => {
   const hub = await startHub(t);
 
-  assert.deepEqual(await (await hub.join("alice")).info(), { version: VERSION, protocol: 2, repos: "dev.azure.com/acme", now: NOW });
+  assert.deepEqual(await (await hub.join("alice")).info(), { version: VERSION, protocol: PROTOCOL, repos: "dev.azure.com/acme", now: NOW });
   assert.deepEqual(await (await fetch(`${hub.url}/healthz`)).json(), { ok: true, now: NOW }); // Unsigned too, for a machine whose clock is too far off for /info to answer it.
   assert.match(VERSION, /^\d+\.\d+\.\d+$/);
 });
@@ -702,6 +702,83 @@ await test("an agent's key is the one in its owner's newest agent.register, sent
     { owner: "bob", repo: "uploader", pubkey: "bb".repeat(32), seq: 2 }
   ]);
   assert.deepEqual(await said(hub, "bob"), ["agent.register", "agent.register", "agent.register"]); // Nothing refused was stored.
+});
+
+await test("an agent's event is stored when its registered key signs it, it is a run's own report, and its owner may write where it goes; it reaches whoever its owner's would", async (t) => {
+  const hub = await startHub(t);
+  for (const name of ["alice", "bob", "carol"]) {
+    await hub.join(name);
+  }
+  const agent = loadKey("33".repeat(32));
+  assert.equal((await post(hub, "alice", signed(hub, "alice", "*", "agent.register", { repo: "uploader", pubkey: publicHex(agent) })))[0], 201);
+  await post(hub, "alice", signed(hub, "alice", "#backend", "channel.join"));
+  await say(hub, "bob", "alice", "@alice/uploader where do we retry?");
+  const [request] = await read(hub, "bob", "chat=alice");
+  const about = { key: agent, refs: [request?.event.id ?? ""] };
+  const reports = [
+    ["job.progress", { repo: "uploader", summary: "reading" }],
+    ["job.result", { repo: "uploader", branch: "main", text: "in queue.py", reviewed: false }],
+    ["job.error", { repo: "uploader" }],
+    ["job.cancelled", { repo: "uploader" }]
+  ] as const;
+
+  for (const [kind, content] of reports) {
+    assert.equal((await post(hub, "alice", signed(hub, "alice/uploader", "bob", kind, content, about)))[0], 201, kind);
+  }
+  assert.equal((await post(hub, "alice", signed(hub, "alice/uploader", "#backend", "job.progress", { repo: "uploader", summary: "reading" }, about)))[0], 201); // Where alice is.
+
+  const cannot = (kind: string): readonly [number, string] => [403, `agents cannot send ${kind}: only a person can`];
+  assert.deepEqual(await post(hub, "alice", signed(hub, "alice/uploader", "bob", "message", { text: "hello from the agent", via: "cli" }, about)), cannot("message"));
+  assert.deepEqual(await post(hub, "alice", signed(hub, "alice/uploader", "bob", "job.accepted", {}, about)), cannot("job.accepted"));
+  assert.deepEqual(await post(hub, "alice", signed(hub, "alice/uploader", "*", "grant", {}, about)), cannot("grant"));
+  assert.deepEqual(await post(hub, "alice", signed(hub, "alice/uploader", "*", "agent.register", { repo: "uploader", pubkey: "ab".repeat(32) }, about)), cannot("agent.register"));
+  assert.deepEqual(await post(hub, "alice", signed(hub, "alice/uploader", "#ops", "channel.join", {}, about)), cannot("channel.join"));
+  assert.deepEqual(await post(hub, "alice", signed(hub, "alice/uploader", "#ops", "job.error", { repo: "uploader" }, about)), [403, "join #ops before posting to it"]); // Where alice is not.
+  assert.deepEqual(await post(hub, "alice", signed(hub, "alice/uploader", "ghost", "job.error", { repo: "uploader" }, about)), [404, "nobody named 'ghost' has joined"]);
+  assert.deepEqual(await post(hub, "alice", signed(hub, "alice/uploader", "bob", "job.error", { repo: "uploader" }, { ...about, key: keyOf(hub, "alice") })), [
+    401,
+    "event is not signed by its author"
+  ]); // Not even by its owner's key.
+  assert.deepEqual(await post(hub, "alice", signed(hub, "alice/billing", "bob", "job.error", { repo: "billing" }, about)), [401, "event is not signed by its author"]); // An agent nobody registered.
+
+  const kinds = ["@alice/uploader where do we retry?", "job.progress", "job.result", "job.error", "job.cancelled"];
+  assert.deepEqual(await said(hub, "bob", "chat=alice&limit=10"), kinds.toReversed()); // The agent's events are in the chat between its owner and bob, for both of them.
+  assert.deepEqual(await said(hub, "alice", "chat=bob&limit=10"), kinds.toReversed());
+  assert.deepEqual(await said(hub, "carol"), ["agent.register"]);
+  assert.deepEqual(await said(hub, "alice", "chat=%23backend"), ["job.progress", "channel.join"]);
+});
+
+await test("hub verify checks an agent's events against the key its owner had registered for it then, and names one signed with any other", async (t) => {
+  const hub = await startHub(t);
+  await hub.join("alice");
+  await hub.join("bob");
+  const [first, second] = [loadKey("33".repeat(32)), loadKey("44".repeat(32))];
+  const verify = (): readonly [number | null, string] => {
+    const ran = spawnSync(process.execPath, [COMMAND, "hub", "verify"], { env: { PLAYER_TWO_DB: join(hub.dir, "hub.db") }, encoding: "utf8" });
+    return [ran.status, ran.stdout + ran.stderr];
+  };
+  const progress = (key: KeyObject): Event => signed(hub, "alice/uploader", "bob", "job.progress", { repo: "uploader", summary: "reading" }, { key, refs: [] });
+  for (const event of [
+    signed(hub, "alice", "*", "agent.register", { repo: "uploader", pubkey: publicHex(first) }),
+    progress(first),
+    signed(hub, "alice", "*", "agent.register", { repo: "uploader", pubkey: publicHex(second) }), // A new key, from here on.
+    progress(second)
+  ]) {
+    assert.equal((await post(hub, "alice", event))[0], 201);
+  }
+  const late = progress(first); // The old key, after the new one was registered.
+  assert.deepEqual(await post(hub, "alice", late), [401, "event is not signed by its author"]);
+  assert.match(verify()[1], /^the chain holds: 4 events/);
+
+  // Put it in the log by hand in place of the fourth, which says the same with the new key, its chain value worked out again: only its signature can tell.
+  const kept = new DatabaseSync(join(hub.dir, "hub.db"));
+  const { chain } = z.object({ chain: z.string() }).parse(kept.prepare("SELECT chain FROM events WHERE seq = 3").get());
+  const after = createHash("sha256")
+    .update(chain + late.id)
+    .digest("hex");
+  kept.prepare("UPDATE events SET id = ?, nonce = ?, sig = ?, chain = ? WHERE seq = 4").run(late.id, late.nonce, late.sig, after);
+  kept.close();
+  assert.deepEqual(verify(), [1, "player-two: the chain breaks at seq 4: its signature does not hold under the key alice last registered for it before then\n"]);
 });
 
 await test("a database phase 2 made, schema 6, is brought forward with what it holds, gaining the agents table", async (t) => {

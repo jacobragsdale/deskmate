@@ -8,7 +8,7 @@ import { z } from "zod";
 import { readContent } from "../core/kinds.ts";
 import { eventId, eventIsAuthentic } from "../core/sign.ts";
 import { problemOf } from "../core/text.ts";
-import { deliveredSchema, HIT_CLOSE, HIT_OPEN, isChannel, personSchema, teamRepoSchema } from "../core/wire.ts";
+import { deliveredSchema, HIT_CLOSE, HIT_OPEN, isAgent, isChannel, ownerOf, personSchema, teamRepoSchema } from "../core/wire.ts";
 import type { Delivered, Event, Person, Repo, RepoRef, TeamRepo } from "../core/wire.ts";
 
 const SCHEMA_VERSION = 7; // 3 was the notes alone, from the Python hub to 0.4.
@@ -19,8 +19,13 @@ const INDEXED_FROM = 6; // The first version with the search index.
 const BUSY_WAIT = 5; // Seconds to wait for another program that holds the file, such as a backup, before giving up.
 const FIRST_CHAIN = "0".repeat(64); // The chain value before the first event.
 
-// What a caller, :me, can see: events to them, by them, to everyone, and to the channels they are in now. Every read of events goes through this one rule.
-const VISIBLE = "(recipient = :me OR author = :me OR recipient = '*' OR recipient IN (SELECT channel FROM members WHERE user = :me))";
+/** Whether the author is `person` or one of their agents, "person/repo". A name holds none of the characters GLOB reads as a pattern. */
+function byPerson(person: string): string {
+  return `(author = ${person} OR author GLOB ${person} || '/*')`;
+}
+
+// What a caller, :me, can see: events to them, by them or their agents, to everyone, and to the channels they are in now. Every read of events goes through this one rule.
+const VISIBLE = `(recipient = :me OR ${byPerson(":me")} OR recipient = '*' OR recipient IN (SELECT channel FROM members WHERE user = :me))`;
 const EVENT_COLUMNS = 'seq, id, author, recipient AS "to", kind, content, ts, refs, nonce, sig';
 
 const SCHEMA = `
@@ -82,9 +87,9 @@ function parseJson(text: string): unknown {
 const hitRowSchema = z.object({ snippet: z.string() }); // Read beside the event's own columns, which eventRowSchema reads strictly.
 const headSchema = z.strictObject({ seq: z.int(), chain: z.string() }).optional();
 
-/** Which events are in one chat: a channel's, those to everyone when it is "*", or those between `:me` and one other person, either way. */
+/** Which events are in one chat: a channel's, those to everyone when it is "*", or those between `:me` and one other person, either way, each of them or their agents. */
 function inChat(chat: string): string {
-  return isChannel(chat) || chat === "*" ? "recipient = :chat" : "((author = :me AND recipient = :chat) OR (author = :chat AND recipient = :me))";
+  return isChannel(chat) || chat === "*" ? "recipient = :chat" : `((${byPerson(":me")} AND recipient = :chat) OR (${byPerson(":chat")} AND recipient = :me))`;
 }
 
 /** The text of a message or an answer as the index keeps it: without the characters that mark what a search found, so that every one in a snippet is a mark. */
@@ -99,8 +104,8 @@ function chainAfter(previous: string, id: string): string {
     .digest("hex");
 }
 
-/** What is wrong with one row of the log, given the chain value before it and the keys the hub holds; null when nothing is. */
-function wrongWith(row: Record<string, unknown>, chain: string, previous: string, before: number, keys: ReadonlyMap<string, string>): string | null {
+/** One row of the log as the event it holds, given the chain value before it and the key each author signs with by then; or what is wrong with it. */
+function eventIn(row: Record<string, unknown>, chain: string, previous: string, before: number, keys: ReadonlyMap<string, string>): Event | string {
   const stored = eventRowSchema.safeParse(Object.fromEntries(Object.entries(row).filter(([column]) => column !== "chain")));
   if (!stored.success) {
     return `that row cannot be read as an event (${problemOf(stored.error)})`;
@@ -112,14 +117,18 @@ function wrongWith(row: Record<string, unknown>, chain: string, previous: string
   }
   const pubkey = keys.get(event.author);
   if (pubkey === undefined) {
-    return `its author, ${event.author}, has no key on this hub to check its signature against`; // The hub stores nobody's event before they have joined, and never forgets a key.
+    return `its author, ${event.author}, has no key on this hub to check its signature against`; // The hub stores nobody's event before they have joined, or their agent's before they registered it, and never forgets a key.
   }
-  return eventIsAuthentic(event, pubkey) ? null : `its signature does not hold under the key ${event.author} joined with`;
+  if (!eventIsAuthentic(event, pubkey)) {
+    return `its signature does not hold under the key ${isAgent(event.author) ? `${ownerOf(event.author)} last registered for it before then` : `${event.author} joined with`}`;
+  }
+  return event;
 }
 
 /**
  * Walk the event log in the database at `path`, without changing it, and say how far it holds: how many events there are and the newest chain value,
  * or the first seq that breaks it, and how. Each event's id is worked out again from its fields, its chain value from the one before, and its signature checked against the key its author joined with,
+ * or for an agent, the key its owner's newest registration of it before then holds, read from the log as the hub read it then;
  * so a row changed by hand, its signature included, breaks the log at that row; a row taken out breaks it at the one after; and a row that cannot be read is named, not passed over.
  */
 export function verifyChain(path: string): { readonly events: number; readonly head: string; readonly broken: { readonly seq: number; readonly why: string } | null } {
@@ -130,9 +139,13 @@ export function verifyChain(path: string): { readonly events: number; readonly h
     let events = 0;
     for (const row of db.prepare(`SELECT ${EVENT_COLUMNS}, chain FROM events ORDER BY seq`).iterate()) {
       const { seq, chain } = linkSchema.parse(row);
-      const why = wrongWith(row, chain, previous, events, keys);
-      if (why !== null) {
-        return { events, head: previous, broken: { seq, why } };
+      const event = eventIn(row, chain, previous, events, keys);
+      if (typeof event === "string") {
+        return { events, head: previous, broken: { seq, why: event } };
+      }
+      const said = readContent(event);
+      if (said.kind === "agent.register" && event.to === "*" && !isAgent(event.author)) {
+        keys.set(`${event.author}/${said.content.repo}`, said.content.pubkey); // As the hub learned it when it stored this.
       }
       previous = chain;
       events += 1;

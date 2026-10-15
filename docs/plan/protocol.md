@@ -80,9 +80,9 @@ Signed bytes: `JSON.stringify(["player-two-event-v1", author, to, kind, content,
 The hub accepts an event when all of these hold, and checks nothing else about it:
 
 1. It matches the envelope schema, and `id` is the hash of its signed bytes.
-2. `sig` verifies against the author's key.
+2. `sig` verifies against the author's key: a person's, from joining; from phase 4 an agent's, `owner/repo`, from its owner's newest `agent.register`.
 3. `ts` is within 300 seconds of the hub's clock, and `id` has not been seen.
-4. The author may write to `to`: a channel they are in (or the event is `channel.join`), a person who has joined, or `*` for the kinds marked public below.
+4. The author may write to `to`: a channel they are in (or the event is `channel.join`), a person who has joined, or `*` for the kinds marked public below. An agent may write only `job.progress`, `job.result`, `job.error` and `job.cancelled` (and from phase 5 `job.request`), and only where its owner may: anything else from one is refused with words saying agents cannot send it.
 
 The hub stores and relays kinds it has never heard of. A client skips kinds it does not know and shows the rest. This is what lets later phases add kinds without breaking older clients.
 
@@ -170,7 +170,7 @@ The `/notes` routes and the four channel-changing routes go. In their place:
 | `GET /search?q=Q&chat=A&limit=N` | Phase 2. Full-text search over messages and results in chats the caller can see, as last edited, in chat `A` when it is given: `[{ seq, event, snippet }]`, best match first, `limit` up to 50 and 20 when it is not given. A result holds every word of `Q`, each matched as a word and never as query syntax. A word is a run of letters and digits, everything else separating words as it separates the index's tokens; `Q` is at most 200 characters and holds 1 to 8 words, and anything else is `422 invalid q: a search holds 1 to 8 words, in at most 200 characters`. `snippet` is a stretch of the text with each word found between the characters U+0002 and U+0003, which the hub keeps out of what it indexes; the client replaces them. |
 | `POST /hooks/{id}` | Phase 7. A workflow's webhook. |
 
-What a caller can see: events to them, events they wrote, events in channels they are in, and events to `*`.
+What a caller can see: events to them, events they or their agents wrote, events in channels they are in, and events to `*`. A direct chat holds the events between its two people, either of them or their agents writing.
 
 ## The desk's protocol
 
@@ -244,5 +244,6 @@ Inside WSL (or the home folder on Linux and macOS):
 | 0.3 | | Python hub and client. Today. |
 | 0.4 | 1 | Phase 0. Auth header version 2. `/info` reports version and protocol. |
 | 0.5 | 2 | Phase 1. Events replace notes. Fresh database. |
+| | 3 | Phase 4. An event's author may be an agent, `owner/repo`, which a client of protocol 2 cannot read. Schema 7. |
 
 From 0.5 on, a new kind is not a protocol change. The hub refuses to start on a database made by another schema version, except 0.5's (schema 5) and phase 2's (schema 6): to 5 it adds the search index of phase 2, filled from the events it holds, and to both the agents table of phase 4 (schema 7), empty.

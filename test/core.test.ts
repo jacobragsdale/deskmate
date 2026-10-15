@@ -595,6 +595,10 @@ await test("an event's envelope holds exactly the signed fields, a kind of dotte
 
   assert.ok(fits({}));
   assert.ok(fits({ to: "*", kind: "job.accepted" }));
+  assert.ok(fits({ author: "bob/acme.billing.api" })); // From phase 4, one of bob's agents.
+  assert.ok(!fits({ author: "bob/uploader/more" }));
+  assert.ok(!fits({ author: "Bob/uploader" }));
+  assert.ok(!fits({ author: "bob/" }));
   assert.ok(fits({ kind: "a1.b2.c", refs: Array.from({ length: 8 }, () => event.refs[0]) }));
   assert.ok(fits({ content: "🎉".repeat(MAX_CONTENT) })); // Counted by character, not by UTF-16 unit.
   assert.ok(fits({ kind: "patch", content: "x".repeat(MAX_PATCH) }));

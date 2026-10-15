@@ -10,11 +10,11 @@ import { pipeline } from "node:stream";
 import { z } from "zod";
 
 import { digestIn, hubInstallScript } from "../core/install.ts";
-import { PUBLIC_KINDS, readContent } from "../core/kinds.ts";
+import { AGENT_KINDS, PUBLIC_KINDS, readContent } from "../core/kinds.ts";
 import { isUnder, prefixKey } from "../core/remotes.ts";
 import { authClaim, authIsValid, eventId, eventIsAuthentic, isFresh } from "../core/sign.ts";
 import { VERSION } from "../core/version.ts";
-import { addressSchema, eventSchema, isChannel, joinSchema, PROTOCOL, repoSchema } from "../core/wire.ts";
+import { addressSchema, eventSchema, isAgent, isChannel, joinSchema, ownerOf, PROTOCOL, repoSchema } from "../core/wire.ts";
 import type { ChannelInfo, Event, RepoRef } from "../core/wire.ts";
 import { Database } from "./db.ts";
 
@@ -248,14 +248,27 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     return [200, mine];
   }
 
-  /** The fourth of the checks an event passes: whether its author may write to whom it is for. Anyone may write to everyone, "*", but only the public kinds. */
+  /** The key `author` signs with: a person's, from joining; an agent's, "owner/repo", from its owner's newest registration of it. Null when there is none. */
+  function keyOf(author: string): string | null {
+    const owner = ownerOf(author);
+    return isAgent(author) ? db.agentKeyOf(owner, author.slice(owner.length + 1)) : db.pubkeyOf(author);
+  }
+
+  /**
+   * The fourth of the checks an event passes: whether its author may write to whom it is for. Anyone may write to everyone, "*", but only the public kinds.
+   * An agent writes only its run's own reports, and only where its owner may write.
+   */
   function mayWrite(event: Event): void {
+    const writer = ownerOf(event.author);
+    if (isAgent(event.author) && !AGENT_KINDS.has(event.kind)) {
+      throw new Refusal(403, `agents cannot send ${event.kind}: only a person can`);
+    }
     if (event.to === "*") {
       if (!PUBLIC_KINDS.has(event.kind)) {
         throw new Refusal(403, `${event.kind} cannot be sent to everyone`);
       }
     } else if (isChannel(event.to)) {
-      if (event.kind !== "channel.join" && !db.members(event.to).includes(event.author)) {
+      if (event.kind !== "channel.join" && !db.members(event.to).includes(writer)) {
         throw new Refusal(403, `join ${event.to} before posting to it`);
       }
     } else if (db.pubkeyOf(event.to) === null) {
@@ -318,7 +331,7 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     if (event.id !== eventId(event)) {
       throw new Refusal(422, "invalid id: not the hash of the event's signed bytes");
     }
-    const pubkey = db.pubkeyOf(event.author);
+    const pubkey = keyOf(event.author);
     if (pubkey === null || !eventIsAuthentic(event, pubkey)) {
       throw new Refusal(401, "event is not signed by its author");
     }

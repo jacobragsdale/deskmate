@@ -2,7 +2,7 @@
 
 import { z } from "zod";
 
-export const PROTOCOL = 2; // Goes up when the hub and its clients must be updated together: 2 is events (0.5).
+export const PROTOCOL = 3; // Goes up when the hub and its clients must be updated together: 2 is events (0.5); 3 lets an agent author an event (phase 4), which a client before it cannot read.
 export const MAX_CONTENT = 64_000; // Most characters an event's content may hold, counted by code point.
 export const MAX_PATCH = 512_000; // The same for a patch, which carries a diff.
 const MAX_TEXT = MAX_CONTENT - 1_000; // Most of an event's content one text may take once written as JSON, leaving room for the rest of the content.
@@ -12,6 +12,7 @@ export const HIT_OPEN = "\u0002";
 export const HIT_CLOSE = "\u0003";
 export const REPO_NAME = "[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?";
 export const NAME = "[a-z0-9][a-z0-9_-]{0,31}";
+export const AUTHOR = `${NAME}(?:/${REPO_NAME})?`; // Who signs: a person, or one of their agents, "owner/repo".
 
 /** A string of `min` to `max` characters, counted the way the hub counts them: by code point, not UTF-16 unit. */
 function sized(min: number, max: number): z.ZodString {
@@ -72,7 +73,7 @@ export const channelInfoSchema = z.object({ name: channelSchema, members: z.arra
 export const eventSchema = z
   .strictObject({
     id: hashSchema, // The sha256 of the signed bytes, so the author knows it before sending.
-    author: nameSchema,
+    author: z.string().regex(new RegExp(`^${AUTHOR}$`)), // A person, or one of their agents, which signs with a key of its own.
     to: z.string().regex(new RegExp(`^(#?${NAME}|\\*)$`)), // A person, a channel, or "*" for everyone.
     kind: z
       .string()
@@ -123,6 +124,17 @@ export type PermissionMode = z.infer<typeof permissionModeSchema>;
 
 export function isChannel(address: string): boolean {
   return address.startsWith("#");
+}
+
+/** Whether an author is an agent, "owner/repo", rather than a person. */
+export function isAgent(author: string): boolean {
+  return author.includes("/");
+}
+
+/** The person an author is, or the owner of the agent it is. */
+export function ownerOf(author: string): string {
+  const slash = author.indexOf("/");
+  return slash === -1 ? author : author.slice(0, slash);
 }
 
 /** An agent's program and arguments as one line to read, each word that a shell would split or change in single quotes. Nothing runs it: an agent is started from the words themselves. */
