@@ -55,7 +55,7 @@ import * as worktree from "./worktree.ts";
 import type { Worktree } from "./worktree.ts";
 import { cloneFolder } from "../core/remotes.ts";
 import { oneLine, problemOf } from "../core/text.ts";
-import { commandLineOf, defaultAgentOf, fitText, isAgent, isChannel, MAX_SKEW, MODES, nameSchema, ownerOf, permissionModeSchema, PROTOCOL } from "../core/wire.ts";
+import { commandLineOf, defaultAgentOf, fitText, isAgent, isChannel, MAX_PATCH, MAX_SKEW, MODES, nameSchema, ownerOf, permissionModeSchema, PROTOCOL } from "../core/wire.ts";
 import type { Agent, ChannelInfo, Delivered, Event, PermissionMode, Person, RepoRef, TeamRepo } from "../core/wire.ts";
 
 const PRESENCE = 25; // Seconds between asking the hub who is here, which channels there are and who has which repo. Each is a signed request, which is what says the user is here; the repo scan runs on the same beat.
@@ -1846,7 +1846,9 @@ export class Session {
         ending = "the agent returned nothing";
         ended = endedItem("failed", ending);
       } else {
-        const draft = { text, entry, repo, branch: head.branch, patch: await this.patchOf(copy, checkout, head.branch, text) };
+        const handed = await this.handOver(copy, checkout, head.branch, text);
+        copy = handed.copy; // None when it is kept.
+        const draft = { text: handed.text, entry, repo, branch: head.branch, patch: handed.patch };
         await (run.post ? this.postAnswer(chat, draft) : this.keepDraft(chat, draft));
       }
     } catch (error) {
@@ -1855,17 +1857,7 @@ export class Session {
     }
     await this.throwAway(copy);
     this.noted(key, ended);
-    if (ending === "stopped") {
-      await this.agentOf(repo)
-        .publish(chat, "job.cancelled", { repo }, request)
-        .catch(() => undefined);
-      this.hooks.notice({ title: "", body: `Stopped your ${repo} agent.`, severity: "info" });
-    } else if (ending !== "") {
-      await this.agentOf(repo)
-        .publish(chat, "job.error", { repo }, request)
-        .catch(() => undefined); // Only the fact: what the agent printed on the way down may not be fit to share.
-      this.hooks.notice({ title: `your ${repo} agent`, body: ending, severity: "error" });
-    }
+    await this.tellEnding(chat, repo, request, ending);
     clearTimeout(run.telling);
     clearTimeout(hour);
     await this.withdrawChildren(run, chat);
@@ -1902,11 +1894,57 @@ export class Session {
     return { head, copy };
   }
 
-  /** What a run on a clean copy changed, as the patch that goes with its answer, titled with the answer's first line: null when it changed nothing, or ran in the checkout. */
-  private async patchOf(copy: Worktree | null, checkout: Checkout, branch: string, text: string): Promise<ContentOf<"patch"> | null> {
-    const diff = copy === null ? "" : await worktree.collect(copy);
-    const title = oneLine(text.trim().split("\n")[0] ?? "", 80);
-    return copy === null || diff === "" ? null : { repo: refOf(checkout.remote), base: copy.base, branch, title: title === "" ? "A change" : title, diff };
+  /**
+   * What a run's answer goes with: the patch of what its clean copy changed, titled with the answer's first line, and the copy, to be thrown away; no patch when it changed nothing, or ran
+   * in the checkout. A change too large for a patch event, or one git cannot write as a diff a patch carries, is not sent: the answer says so, the copy is kept, locked, and not handed
+   * back to be thrown away, and the owner is told where it is.
+   */
+  private async handOver(
+    copy: Worktree | null,
+    checkout: Checkout,
+    branch: string,
+    text: string
+  ): Promise<{ readonly text: string; readonly patch: ContentOf<"patch"> | null; readonly copy: Worktree | null }> {
+    if (copy === null) {
+      return { text, patch: null, copy };
+    }
+    let said = "The change was too large to send as a patch."; // In the answer, for whoever asked.
+    let why: string; // For the owner.
+    try {
+      const diff = await worktree.collect(copy);
+      const first = oneLine(text.trim().split("\n")[0] ?? "", 80);
+      const patch = { repo: refOf(checkout.remote), base: copy.base, branch, title: first === "" ? "A change" : first, diff };
+      // Counted as the hub counts an event's content: the diff written as JSON, with the rest of the patch, by code point.
+      if (diff === "" || Array.from(JSON.stringify(patch)).length <= MAX_PATCH) {
+        return { text, patch: diff === "" ? null : patch, copy };
+      }
+      why = `Its diff is ${String(diff.length)} characters, more than the ${String(MAX_PATCH)} a patch carries`;
+    } catch (error) {
+      said = "The change could not be sent as a patch.";
+      why = problemOf(error);
+    }
+    await worktree.lock(copy).catch(() => undefined); // Unlocked, it is there all the same until the desk next starts.
+    this.hooks.notice({
+      title: `your ${checkout.remote.name} agent's change was not sent as a patch`,
+      body: `${why}. It is kept in ${copy.path}, made from ${copy.base.slice(0, 7)}: what is in it is the agent's, so read it before you run anything there. Once you are done with it: git -C ${checkout.path} worktree remove -f -f ${copy.path}`,
+      severity: "error"
+    });
+    return { text: fitText(`${text}\n\n(${said})`), patch: null, copy: null };
+  }
+
+  /** Tell the chat, and the user, how a run on `request` that did not answer ended, `ending`: "stopped", or why it failed. Nothing for "", a run that answered. Best effort: the chat misses one line. */
+  private async tellEnding(chat: string, repo: string, request: readonly string[], ending: string): Promise<void> {
+    if (ending === "stopped") {
+      await this.agentOf(repo)
+        .publish(chat, "job.cancelled", { repo }, request)
+        .catch(() => undefined);
+      this.hooks.notice({ title: "", body: `Stopped your ${repo} agent.`, severity: "info" });
+    } else if (ending !== "") {
+      await this.agentOf(repo)
+        .publish(chat, "job.error", { repo }, request)
+        .catch(() => undefined); // Only the fact: what the agent printed on the way down may not be fit to share.
+      this.hooks.notice({ title: `your ${repo} agent`, body: ending, severity: "error" });
+    }
   }
 
   /** Remove a run's clean copy once it is done with. Best effort: one left behind is removed when the desk next starts (see `sweep` in worktree.ts). */

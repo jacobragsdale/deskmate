@@ -65,14 +65,27 @@ export async function collect(worktree: Worktree): Promise<string> {
   return diff;
 }
 
-/** Remove the worktree, its files and git's record of it. */
-export async function close(worktree: Worktree): Promise<void> {
+/** Put back the .git file git wrote, in place of whatever the run left there. Removing the run's does not follow a link. */
+function restore(worktree: Worktree): void {
   if (existsSync(worktree.path)) {
-    // git removes no worktree whose .git file is not the one it wrote, and the run may have replaced it. Removing the run's does not follow a link.
     rmSync(join(worktree.path, ".git"), { recursive: true, force: true });
     writeFileSync(join(worktree.path, ".git"), `gitdir: ${worktree.gitDir}\n`);
   }
+}
+
+/** Remove the worktree, its files and git's record of it. */
+export async function close(worktree: Worktree): Promise<void> {
+  restore(worktree); // git removes no worktree whose .git file is not the one it wrote, and the run may have replaced it.
   await run([`--git-dir=${worktree.gitDir}`, "worktree", "remove", "--force", worktree.path], `git worktree remove ${worktree.path}`);
+}
+
+/**
+ * Keep the worktree for its owner to look at, as when what the run changed could not be sent: locked, so that neither `sweep` nor `close` removes it, with its .git file git's own again,
+ * so that git run in it by hand works on the checkout's repository and not on one the run wrote.
+ */
+export async function lock(worktree: Worktree): Promise<void> {
+  restore(worktree);
+  await run([`--git-dir=${worktree.gitDir}`, "worktree", "lock", "--reason", "kept by Player Two for its owner to look at", worktree.path], `git worktree lock ${worktree.path}`);
 }
 
 /**

@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import { byCodeUnit } from "../src/core/text.ts";
-import { close, collect, open, sweep } from "../src/desk/worktree.ts";
+import { close, collect, lock, open, sweep } from "../src/desk/worktree.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "player-two-worktree-"));
 const plain = join(dir, "gitconfig");
@@ -157,13 +157,16 @@ await test("git reads the worktree's folder in the checkout's .git and never a .
   assert.deepEqual(worktrees(repo), [repo]);
 });
 
-await test("on start, the worktrees left in ~/.player-two/worktrees are removed and git forgets one whose folder is gone; a locked one and the checkout's own stay", async () => {
+await test("on start, the worktrees left in ~/.player-two/worktrees are removed and git forgets one whose folder is gone; one kept, locked with its .git git's own again, and the checkout's own stay", async () => {
   const { dev, repo } = checkout();
   const left = await open(repo, jobId());
   const deleted = await open(repo, jobId());
   const kept = await open(repo, jobId());
   rmSync(deleted.path, { recursive: true });
-  git(repo, ["worktree", "lock", "--reason", "too large to send", kept.path]);
+  rmSync(join(kept.path, ".git"));
+  mkdirSync(join(kept.path, ".git")); // As a run may leave one, which git run there by hand would follow.
+  await lock(kept);
+  assert.equal(readFileSync(join(kept.path, ".git"), "utf8"), `gitdir: ${kept.gitDir}\n`);
   const own = join(dir, "own-worktree");
   git(repo, ["worktree", "add", "-q", "--detach", own]);
   mkdirSync(join(dir, "not-a-checkout"), { recursive: true });

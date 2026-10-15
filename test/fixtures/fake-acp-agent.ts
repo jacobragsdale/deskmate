@@ -1,7 +1,8 @@
 /**
  * A scripted ACP agent for the tests, built on the SDK's agent side and run with `node`. What it does depends on words in the prompt:
  * `twice` says something in a message of its own first, with a step after it; `read` reports reading README.md in its folder, by its path; `many` reports 600 reads;
- * `switch` asks to switch its session to a mode in which it edits without asking, as ACP lets an agent's modes differ in what they ask; each `edit` asks to edit and writes edited.txt only if allowed;
+ * `switch` asks to switch its session to a mode in which it edits without asking, as ACP lets an agent's modes differ in what they ask; each `edit` asks to edit and writes edited.txt only if allowed,
+ * and `big` big.txt, 600,000 characters, more than a patch carries;
  * `run` asks to run `npm test` in its folder; `takeback` asks to edit and takes the request back 300 ms later; `leave` asks to edit and ends its turn without waiting for the answer;
  * `stray` asks under another session's id; `long` asks to edit under a title of two lines and over 300 characters; `mcp` says which MCP servers its session has; `whoami` says the agent its environment names in PLAYER_TWO_AGENT, the one chat PLAYER_TWO_ONLY_CHAT names, and the request PLAYER_TWO_JOB names, if they do;
  * `slow` waits until cancelled, with a child process of its own; `deaf` does the same but takes no notice of a cancel. Each `ask:OWNER/REPO` asks that agent "read" with the `ask_agent` tool of the
@@ -86,6 +87,16 @@ async function edit(client: acp.AgentContext, sessionId: string, session: Sessio
   return allowed ? "edit allowed" : "edit refused";
 }
 
+/** Ask to edit as `edit` does, and write big.txt in the session's folder: 6,000 lines of 100 characters. */
+async function big(client: acp.AgentContext, sessionId: string): Promise<string> {
+  const allowed = noAsking || unasking.has(sessionId) || (await permitted(client, sessionId, "big", "edit", "Edit big.txt"));
+  const cwd = sessions.get(sessionId)?.cwd;
+  if (allowed && cwd !== undefined) {
+    writeFileSync(join(cwd, "big.txt"), `${"x".repeat(99)}\n`.repeat(6000));
+  }
+  return allowed ? "big allowed" : "big refused";
+}
+
 /** Ask to edit, and take the request back 300 ms later, as an agent that thinks better of it may. */
 async function takeBack(client: acp.AgentContext, sessionId: string): Promise<string> {
   const toolCall = { toolCallId: "takeback", title: "Edit taken-back.txt", kind: "edit" } as const;
@@ -152,6 +163,7 @@ async function act(client: acp.AgentContext, sessionId: string, session: Session
     did.push((await permitted(client, sessionId, `run-${String(session.turns)}`, "execute", "Run npm test", command)) ? "run allowed" : "run refused");
   }
   for (const [word, step] of [
+    ["big", big],
     ["takeback", takeBack],
     ["leave", leave],
     ["stray", stray],

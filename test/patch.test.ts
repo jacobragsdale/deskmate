@@ -19,6 +19,7 @@ import type { Agent, PermissionMode } from "../src/core/wire.ts";
 import { agentKey } from "../src/desk/agentKeys.ts";
 import type { Client } from "../src/desk/client.ts";
 import { Session } from "../src/desk/session.ts";
+import { sweep } from "../src/desk/worktree.ts";
 import { runOf } from "../src/shared/ipc.ts";
 import type { Notice } from "../src/shared/ipc.ts";
 import { checkout, ownHome, startHub } from "./startHub.ts";
@@ -230,5 +231,33 @@ await test(
     const agent = jacob.as("jacob/uploader", agentKey(jacob.home, "uploader"));
     const content = { ...patch.content, repo: { ...patch.content.repo, name: "billing" } };
     await assert.rejects(agent.publish("#team", "patch", content, [posted]), /jacob\/uploader reports only on its own repo, uploader/);
+  }
+);
+
+await test(
+  "a change too large for a patch event is not sent: the answer says so, and the clean copy is kept, locked, where its owner is told it is, and is still there after a sweep",
+  { timeout: 60_000 },
+  async (t) => {
+    const { bob, mine, notices, asks } = await two(t);
+    const id = await asks("@jacob/uploader big", "auto-edits", true);
+    const [answer] = await until("the answer", async () => {
+      const found = await said(bob, id, "job.result");
+      return found.length > 0 && found;
+    });
+    assert.ok(answer?.kind === "job.result");
+    assert.match(answer.content.text, /^turn 1: .*big allowed\n\n\(The change was too large to send as a patch\.\)$/);
+    assert.deepEqual(await said(bob, id, "patch"), []);
+    const copy = copyOf(id, "uploader");
+    assert.deepEqual(notices, [
+      {
+        title: "your uploader agent's change was not sent as a patch",
+        body: `Its diff is 606122 characters, more than the 512000 a patch carries. It is kept in ${copy}, made from ${git(mine, "rev-parse", "--short=7", "HEAD").trim()}: what is in it is the agent's, so read it before you run anything there. Once you are done with it: git -C ${mine} worktree remove -f -f ${copy}`,
+        severity: "error"
+      }
+    ]);
+    assert.equal(readFileSync(join(copy, "big.txt"), "utf8").length, 600_000);
+    assert.match(git(mine, "worktree", "list", "--porcelain"), new RegExp(`worktree ${copy}\\nHEAD [0-9a-f]+\\ndetached\\nlocked kept by Player Two for its owner to look at\\n`));
+    await sweep(join(mine, ".."));
+    assert.ok(existsSync(join(copy, "big.txt")));
   }
 );
