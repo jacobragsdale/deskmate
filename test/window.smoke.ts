@@ -242,7 +242,7 @@ async function askingAgents(page: Page, bob: Client, carol: Client, bobsAgent: K
   // Alice asks bob's agent, and bob lets it run read-only and ask others, as his desk would; it asks hers, signed by it. Under her request is the tree of the jobs under it, one line each,
   // indented by depth. That request, a reply in her request's thread, reads as bob's agent asking hers, says how it came in words before its buttons, and offers the switch that lets
   // her agent ask others too, off as for anyone else's request, beside what that means: she turns it on and runs it, her acceptance says so, and her agent asks carol's through the MCP
-  // server it is given for that, in the same thread, and in the tree.
+  // server it is given for that, in the same thread, and in the tree. Bob's desk is played by hand.
   await bob.publish("#relay", "channel.join", {});
   await carol.publish("#relay", "channel.join", {});
   await page.press("n", CTRL);
@@ -288,19 +288,28 @@ async function askingAgents(page: Page, bob: Client, carol: Client, bobsAgent: K
     .find((each) => each.author === "alice" && each.said.kind === "job.accepted");
   assert.ok(accepted?.said.kind === "job.accepted" && accepted.said.content.delegate && accepted.said.content.mode === "read-only", JSON.stringify(accepted));
 
-  // Bob's agent's run ends, as his desk would say: hers, asked under it, is stopped by her desk, and what it asked is taken back. Every job done, the tree folds to how many agents were
-  // involved, and opens again.
-  await bob.publish("#relay", "job.cancelled", { repo: "uploader" }, [relayRoot]);
+  // Alice has one Withdraw, on her request: what her agent asked is its agent's to take back. It says it ends everything under it, and does: her desk stops her agent's run, asked under
+  // hers, and the end of that run takes back what it asked, before bob's desk has done anything; then his stops his agent's, as his desk would on her withdrawal. Every job done, the tree
+  // folds to how many agents were involved, and opens again.
+  const withdraws = `[...${relay}.querySelectorAll("button")].filter((each) => each.textContent === "↩ Withdraw")`;
+  assert.equal(await page.eval(`${withdraws}.length`), 1);
+  assert.equal(await page.eval(`${withdraws}[0].closest("article") === ${relay}.querySelector("article")`), true);
+  assert.equal(await page.eval(`${withdraws}[0].title`), "Take it back: bob's uploader agent stops, and so does every agent asked under it");
+  await page.eval(`${withdraws}[0].click()`);
+  await page.until("her request taken back, until bob's desk stops it", `${relay}.querySelector("article").innerText.includes("↩ taken back, until bob's desk stops it")`);
   await page.until("what her agent asked taken back", `${replyOf("↩ the request was taken back")} !== undefined`);
+  await page.shot("withdrawn");
+  await bob.publish("#relay", "job.cancelled", { repo: "uploader" }, [relayRoot]);
   const folded = `${relay}.querySelector("article details")`;
   await page.until("the tree folded", `${folded}?.querySelector("summary").textContent === "3 agents involved" && !${folded}.open`);
+  await page.shot("folded");
   await page.eval(`${folded}.querySelector("summary").click()`);
   await page.until("the tree open again", `${folded}.open`);
   assert.deepEqual(await page.eval(tree), ["0 ■ bob's uploader agent · stopped · read-only", "1 ■ your billing agent · stopped · read-only", "2 ↩ carol's api agent · taken back"]);
 }
 
 await test(
-  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, keeps a card in reach in a closed thread and brings one far above the end into view, refuses and allows for the run from a card, and offers only the modes the agent that answers can keep, full alone beside its reason when that is all, and a full chosen once not again in one click when less is there, and for a grant full alone while it is untested; and on My agents makes grants from its dialog, which warns of full access for anyone however its answers go and asks a second yes when they are posted directly, one grant for each double click, revokes one with a double click and not the next, counts the run a grant lets go, and holds a repo back with a double click, unshared and answering nobody under that grant, and lets it answer again; and says under whose grant a run went ahead, to its owner while it runs and in its answer, and to whoever asked, and that an answer its agent signed was not reviewed, where it is shown and where it is found; and while a grant is live stays open on close, saying why, where it cannot say it went to the tray, and once told hides on close, answering on, until started again; lists a grant apart once its repo is not checked out here, and revokes it there; and quits on close once none is",
+  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, keeps a card in reach in a closed thread and brings one far above the end into view, refuses and allows for the run from a card, and offers only the modes the agent that answers can keep, full alone beside its reason when that is all, and a full chosen once not again in one click when less is there, and for a grant full alone while it is untested; and on My agents makes grants from its dialog, which warns of full access for anyone however its answers go and asks a second yes when they are posted directly, one grant for each double click, revokes one with a double click and not the next, counts the run a grant lets go, and holds a repo back with a double click, unshared and answering nobody under that grant, and lets it answer again; and says under whose grant a run went ahead, to its owner while it runs and in its answer, and to whoever asked, and that an answer its agent signed was not reviewed, where it is shown and where it is found; and while a grant is live stays open on close, saying why, where it cannot say it went to the tray, and once told hides on close, answering on, until started again; lists a grant apart once its repo is not checked out here, and revokes it there; lets the user's agent, asked by another, ask others from a switch beside what that means, says before its buttons how that request came, draws under the message that started it the tree of jobs under it, folded once all are done, and ends it all with that message's one Withdraw; and quits on close once none is",
   { skip: NO_DISPLAY ? "no display: run it under xvfb-run" : false, timeout: 120_000 },
   async (t) => {
     assert.ok(existsSync(join(ROOT, "dist", "main.js")), "dist/ is not built: run `npm run build` first");

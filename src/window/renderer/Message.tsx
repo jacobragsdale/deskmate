@@ -346,29 +346,66 @@ function Ran({ accepted, whose }: { readonly accepted: RequestView["accepted"]; 
   );
 }
 
-/** A teammate's agent whose owner has not acted yet. Whoever asked can take the request back until they do. */
-function WaitingLine({ request, away, asker, act }: { readonly request: RequestView; readonly away: boolean; readonly asker: boolean; readonly act: Act }): JSX.Element {
+/** Takes a request of the user's back, with `title` saying what that does beyond it. */
+function Withdraw({ request, title, act, done }: { readonly request: RequestView; readonly title?: string; readonly act: Act; readonly done?: (ok: boolean) => void }): JSX.Element {
   const { id, owner, repo } = request;
   return (
+    <>
+      {" "}
+      ·{" "}
+      <Button
+        size="xs"
+        variant="outline"
+        className="text-foreground"
+        type="button"
+        title={title}
+        onClick={() => {
+          act({ do: "withdraw", id, owner, repo }, done);
+        }}
+      >
+        ↩ Withdraw
+      </Button>
+    </>
+  );
+}
+
+/** A teammate's agent whose owner has not acted yet. Whoever asked can take the request back until they do. */
+function WaitingLine({ request, away, asker, act }: { readonly request: RequestView; readonly away: boolean; readonly asker: boolean; readonly act: Act }): JSX.Element {
+  return (
     <p className={LINE}>
-      ◌ waiting for {owner} to approve{away ? " · they are away" : ""}
-      {asker && (
-        <>
-          {" "}
-          ·{" "}
-          <Button
-            size="xs"
-            variant="outline"
-            className="text-foreground"
-            type="button"
-            onClick={() => {
-              act({ do: "withdraw", id, owner, repo });
-            }}
-          >
-            ↩ Withdraw
-          </Button>
-        </>
-      )}
+      ◌ waiting for {request.owner} to approve{away ? " · they are away" : ""}
+      {asker && <Withdraw request={request} act={act} />}
+    </p>
+  );
+}
+
+/**
+ * A teammate's agent at work, and what their desk last said it is doing: one of job.progress's few words, once it has said. While its owner let it ask other agents, whoever asked has
+ * one Withdraw that ends it and everything under it: the owner's desk stops it, and the end of its run takes back what it asked, each of whose desks stops in turn. Once taken back, the
+ * line says so until that desk has stopped it, as the request is working until then.
+ */
+function WorkingLine({
+  request,
+  who,
+  whose,
+  summary,
+  asker,
+  act
+}: {
+  readonly request: RequestView;
+  readonly who: string;
+  readonly whose: string;
+  readonly summary: string;
+  readonly asker: boolean;
+  readonly act: Act;
+}): JSX.Element {
+  const [taken, setTaken] = useState(false);
+  return (
+    <p className={LINE}>
+      <Spinner /> {who} is {summary === "" ? "working" : summary}
+      <Ran accepted={request.accepted} whose={whose} />
+      {taken && ` · ↩ taken back, until ${request.owner}'s desk stops it`}
+      {asker && !taken && request.accepted?.delegate === true && <Withdraw request={request} title={`Take it back: ${who} stops, and so does every agent asked under it`} act={act} done={setTaken} />}
     </p>
   );
 }
@@ -388,8 +425,9 @@ function wordsOnly(status: RequestView["status"]): status is Extract<RequestView
 }
 
 /**
- * Where one agent a message tags, or another agent asks, stands, and what the reader can do about it. `text` is the message as shown; `asker` is whether the reader wrote it,
- * `own` whether everyone it runs on the say of is the reader, and `delegation` where an agent's request came from.
+ * Where one agent a message tags, or another agent asks, stands, and what the reader can do about it. `text` is the message as shown; `asker` is whether the reader wrote it, and
+ * so may take it back (an agent's request is its agent's to take back, never its owner's), `own` whether everyone it runs on the say of is the reader, and `delegation` where an
+ * agent's request came from.
  */
 function RequestLine({
   request,
@@ -485,13 +523,7 @@ function RequestLine({
         </ReadyLine>
       );
     case "working":
-      // What its owner's desk last said it is doing, in job.progress's few words, once it has said.
-      return (
-        <p className={LINE}>
-          <Spinner /> {who} is {status.summary === "" ? "working" : status.summary}
-          <Ran accepted={request.accepted} whose={whose} />
-        </p>
-      );
+      return <WorkingLine request={request} who={who} whose={whose} summary={status.summary} asker={asker} act={act} />;
     case "waiting":
       return <WaitingLine request={request} away={status.away} asker={asker} act={act} />;
     case "failed":
@@ -995,7 +1027,16 @@ function Said({
       )}
       <Reactions message={message} me={me} react={react} />
       {message.requests.map((request) => (
-        <RequestLine key={`${request.owner}/${request.repo}`} request={request} text={message.body} asker={message.sender === me} own={myOwn} delegation={message.delegation} runs={runs} act={act} />
+        <RequestLine
+          key={`${request.owner}/${request.repo}`}
+          request={request}
+          text={message.body}
+          asker={message.sender === me && message.delegation === null}
+          own={myOwn}
+          delegation={message.delegation}
+          runs={runs}
+          act={act}
+        />
       ))}
       <Tree message={message} me={me} />
       {!message.deleted && !editing && <Actions id={message.id} react={react} onReply={onReply} own={own} />}
