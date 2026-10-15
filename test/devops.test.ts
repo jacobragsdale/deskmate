@@ -361,14 +361,15 @@ await test("a pull request from a branch room's branch is filled from its commit
         "Branch: feature/retry",
         `Remote: origin, file://${origin}`,
         "",
-        "This runs git push -u origin feature/retry, with your own git credentials."
+        "This runs git push -u origin refs/heads/feature/retry:refs/heads/feature/retry, with your own git credentials."
       ].join("\n"),
       confirm: "Push"
     }
   ]);
   assert.deepEqual([git(origin, "branch", "--list", "feature/retry"), project.made], ["", []]);
 
-  // Yes: pushed, tracked, opened as asked, and said in the room, where its pull request is shown.
+  // Yes: pushed, tracked, opened as asked, and said in the room, where its pull request is shown. A tag of the branch's name leaves the branch's name in full unambiguous.
+  git(mine, "tag", "feature/retry");
   reply.yes = true;
   await session.handle(opened);
   assert.equal(git(origin, "rev-parse", "feature/retry"), git(mine, "rev-parse", "HEAD"));

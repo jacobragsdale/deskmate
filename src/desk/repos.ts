@@ -239,6 +239,11 @@ export async function clone(url: string, destination: string): Promise<void> {
   }
 }
 
+/** What pushes `branch` to origin's branch of the same name, each named in full. */
+export function refspec(branch: string): string {
+  return `refs/heads/${branch}:refs/heads/${branch}`;
+}
+
 /**
  * Whether git may be given `branch` to push: a name git would read as an option, or that a refspec would read as more than a branch, "+x" as forcing x and "a:b" as pushing a to b,
  * ":main" as deleting main, never is. A branch the desk is told of is a teammate's text.
@@ -329,12 +334,15 @@ export function withoutCredentials(address: string): string {
   return address.replace(/^[^@]*:[^@]*@/, "");
 }
 
-/** Push `branch` to origin and have it track origin's, with the user's own git credentials: `git push -u origin -- <branch>`. A branch that is not `pushable` is refused. */
+/**
+ * Push `branch` to origin and have it track origin's, with the user's own git credentials: `git push -u origin refs/heads/<branch>:refs/heads/<branch>`, named in full, as a tag or
+ * another ref of the same short name would make git refuse the short one as ambiguous. A branch that is not `pushable` is refused all the same.
+ */
 export async function push(path: string, branch: string): Promise<void> {
   if (!pushable(branch)) {
     throw new Error(`refusing to push ${JSON.stringify(branch)}: git would read it as more than a branch`);
   }
-  const done = await git(["-C", path, "push", "-u", "origin", "--", branch], PUSH_TIMEOUT);
+  const done = await git(["-C", path, "push", "-u", "origin", "--", refspec(branch)], PUSH_TIMEOUT);
   if (!done.ok) {
     throw new Error(`git push failed: ${done.timedOut ? `no answer within ${String(PUSH_TIMEOUT)} seconds` : (done.stderr.trim().split("\n").at(-1) ?? "")}`);
   }

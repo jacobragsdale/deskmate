@@ -2123,7 +2123,7 @@ export class Session {
           `Branch: ${plain(branch)}`,
           `Remote: origin, ${plain(await repos.pushUrl(checkout.path))}`,
           "",
-          `This runs git push -u origin ${plain(branch)}, with your own git credentials.`
+          `This runs git push -u origin ${plain(repos.refspec(branch))}, with your own git credentials.`
         ].join("\n"),
         confirm: "Push"
       };
