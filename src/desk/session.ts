@@ -696,7 +696,9 @@ export class Session {
         walk(children, depth + 1);
       }
     };
-    const roots = message.delegation === null && message.agent === null ? this.chats.tree(message.entry.event.id) : [];
+    // Only a message a person wrote that tags an agent is a root: the rest are not looked for in the chat.
+    const tags = message.delegation === null && message.agent === null && this.chats.requests(message, now, true).length > 0;
+    const roots = tags ? this.chats.tree(message.entry.event.id) : [];
     walk(roots.some((node) => node.children.length > 0) ? roots : [], 0);
     return lines;
   }
