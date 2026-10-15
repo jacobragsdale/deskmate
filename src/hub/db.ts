@@ -347,6 +347,14 @@ export class Database {
     this.db.prepare("DELETE FROM workflows WHERE channel = ? AND name = ?").run(channel, name);
   }
 
+  /** The workflow.define that made each of a channel's live workflows live, oldest first, of those `me` can see: all of them, or none when they are not in it. */
+  public workflows(me: string, channel: string): readonly Delivered[] {
+    const rows = this.db
+      .prepare(`SELECT ${EVENT_COLUMNS} FROM workflows JOIN events ON events.id = workflows.event WHERE workflows.channel = :chat AND ${VISIBLE} ORDER BY seq`)
+      .all({ me, chat: channel });
+    return eventRowsSchema.parse(rows);
+  }
+
   /** Whether an event with this id is already kept. */
   public hasEvent(id: string): boolean {
     return foundSchema.parse(this.db.prepare("SELECT 1 AS found FROM events WHERE id = ?").get(id)) !== undefined;

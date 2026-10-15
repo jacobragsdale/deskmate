@@ -302,6 +302,14 @@ export class Client {
     return foundListSchema.parse(parseJson(await this.call("GET", `/search?${params.toString()}`)));
   }
 
+  /** A channel's live workflows, each as the workflow.define that made it live, oldest first. Untrusted until `isTrusted` says otherwise; none of a chat it does not read. */
+  public async workflows(channel: string): Promise<Delivered[]> {
+    if (!this.reads(channel)) {
+      return [];
+    }
+    return eventListSchema.parse(parseJson(await this.call("GET", `/workflows?${new URLSearchParams({ chat: channel }).toString()}`)));
+  }
+
   /** The newest seq in the hub's log, and its chain value. */
   public async head(): Promise<z.infer<typeof auditHeadSchema>> {
     return auditHeadSchema.parse(parseJson(await this.call("GET", "/audit/head")));

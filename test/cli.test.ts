@@ -398,6 +398,83 @@ await test("an answer from one agent as though it were another of its owner's, o
   assert.deepEqual(await playerTwo(hub, "bob", ["read", forged.event.id]), { status: 1, out: "", err: "player-two: there is no note with that id that you can see" });
 });
 
+await test("workflow publish reads a file and publishes it to a channel, list shows each live one with what sets it off, who published it, when, and a webhook's address, and remove takes one away; each with --json", async (t) => {
+  const hub = await startHub(t);
+  const [alice, bob] = [await hub.join("alice"), await hub.join("bob"), await hub.join("carol")];
+  for (const who of [alice, bob]) {
+    await who.publish("#ops", "channel.join", {});
+  }
+  const write = (name: string, text: string): string => {
+    const path = join(hub.dir, name);
+    writeFileSync(path, text);
+    return path;
+  };
+  const ci = write("ci.yaml", 'name: ci-failure\non:\n  webhook: { secret: "s3cret" }\nsteps:\n  - post: "The build failed: {{body.url}}"\n');
+  const p1 = write("p1.yaml", 'name: p1\non:\n  message: { contains: "P1" }\nsteps:\n  - tag: "@alice/uploader"\n    text: "{{trigger.text}}"\n');
+  const broken = write("broken.yaml", 'name: broken\non:\n  reaction: { emoji: "🚀" }\nsteps:\n  - tag: "@alice/uploader"\n');
+  const definitionSchema = z.strictObject({
+    seq: z.int(),
+    event: z.looseObject({ id: z.string(), author: z.string() }),
+    trusted: z.boolean(),
+    name: z.string().nullable(),
+    on: z.unknown(),
+    hook: z.string().nullable()
+  });
+
+  const published = await playerTwo(hub, "alice", ["workflow", "publish", ci, "--in", "ops"]);
+  assert.equal(published.status, 0, published.err);
+  const [defined] = await bob.workflows("#ops");
+  const hook = `${hub.url}/hooks/${defined?.event.id.slice(0, 32) ?? ""}`;
+  assert.equal(published.out, `published ci-failure to #ops; set it off with POST ${hook}`);
+  const second = definitionSchema.parse(printed(await playerTwo(hub, "bob", ["workflow", "publish", p1, "--in", "#ops", "--json"])));
+  assert.deepEqual([second.event.author, second.trusted, second.name, second.on, second.hook], ["bob", true, "p1", { kind: "message", message: { contains: "P1" } }, null]);
+
+  const listed = await playerTwo(hub, "bob", ["workflow", "list", "--in", "#ops"]);
+  assert.equal(listed.status, 0, listed.err);
+  assert.match(listed.out, new RegExp(`^ci-failure · on a webhook · published by alice · ${WHEN}\n  POST ${hook}\np1 · on a message containing "P1" · published by bob · ${WHEN}$`));
+  const asJson = definitionSchema.array().parse(printed(await playerTwo(hub, "alice", ["workflow", "list", "--in", "ops", "--json"])));
+  assert.deepEqual(
+    asJson.map((each) => [each.name, each.hook]),
+    [
+      ["ci-failure", hook],
+      ["p1", null]
+    ]
+  );
+  assert.equal((await playerTwo(hub, "carol", ["workflow", "list", "--in", "ops"])).out, "no workflows in #ops"); // Not in the channel, so not hers to see.
+
+  // A file that does not read says where, and sends nothing; the hub's refusals are said as it says them.
+  const head = await alice.head();
+  assert.deepEqual(await playerTwo(hub, "alice", ["workflow", "publish", broken, "--in", "ops"]), { status: 1, out: "", err: `player-two: ${broken}: line 5: steps.0.text: required` });
+  assert.deepEqual(await playerTwo(hub, "carol", ["workflow", "publish", ci, "--in", "ops"]), { status: 1, out: "", err: "player-two: join #ops before posting to it" });
+  assert.deepEqual(await alice.head(), head);
+
+  assert.deepEqual(await playerTwo(hub, "alice", ["workflow", "remove", "p1", "--in", "#ops"]), { status: 0, out: "removed p1 from #ops", err: "" });
+  assert.deepEqual(await playerTwo(hub, "alice", ["workflow", "remove", "p1", "--in", "#ops"]), { status: 1, out: "", err: "player-two: #ops has no workflow named p1" });
+  assert.deepEqual(
+    (await bob.workflows("#ops")).map((each) => each.event.id),
+    [defined?.event.id]
+  );
+  for (const argv of [
+    ["workflow"],
+    ["workflow", "run"],
+    ["workflow", "list"],
+    ["workflow", "list", "x", "--in", "ops"],
+    ["workflow", "publish", "--in", "ops"],
+    ["workflow", "remove", "P1", "--in", "ops"]
+  ]) {
+    assert.equal((await playerTwo(hub, "alice", argv)).status, 2, argv.join(" "));
+  }
+
+  // One whose signature fails is listed without what it says.
+  writeFileSync(join(hub.dir, "bob", "known.json"), JSON.stringify({ alice: "0".repeat(64) })); // Bob first saw alice under another key.
+  assert.equal(
+    (await playerTwo(hub, "bob", ["workflow", "list", "--in", "ops"])).out,
+    `!! ${String(defined?.seq)} claims to be a workflow alice published, but its signature does not match the key first seen for them.`
+  );
+  const [withheld] = definitionSchema.array().parse(printed(await playerTwo(hub, "bob", ["workflow", "list", "--in", "ops", "--json"])));
+  assert.deepEqual([withheld?.event["content"], withheld?.trusted, withheld?.name, withheld?.on, withheld?.hook], [null, false, null, null, null]);
+});
+
 /** Bob's agent, as bob's desk would report it: let go ahead on main, then its answer. */
 async function answer(bob: Client, chat: string, request: string, text: string): Promise<Delivered> {
   await bob.publish(chat, "job.accepted", { repo: "uploader", branch: "main", commit: "c0ffee".padEnd(40, "0"), dirty: false, delivery: "post", mode: "full", by: "owner" }, [request]);

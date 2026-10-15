@@ -1,5 +1,6 @@
 /** The player-two command: one-shot commands for scripts and agents, and the hub. One program, so one file to ship. */
 
+import { readFileSync } from "node:fs";
 import { text } from "node:stream/consumers";
 import { parseArgs } from "node:util";
 
@@ -11,7 +12,9 @@ import type { Entry, Message } from "../core/chat.ts";
 import { readContent } from "../core/kinds.ts";
 import { noteLink, noteOf } from "../core/links.ts";
 import { problemOf } from "../core/text.ts";
-import { channelSchema, commandLineOf, defaultAgentOf, fitText, isAgent, isChannel, ownerOf } from "../core/wire.ts";
+import { parseWorkflow } from "../core/workflow.ts";
+import type { Trigger, Workflow } from "../core/workflow.ts";
+import { channelSchema, commandLineOf, defaultAgentOf, fitText, isAgent, isChannel, nameSchema, ownerOf } from "../core/wire.ts";
 import type { ChannelInfo, Delivered, Event } from "../core/wire.ts";
 import { DEFAULT_PRESET, oneshotAgent, PRESETS } from "../desk/agents/presets.ts";
 import { defaultDev, defaultHome, http, join, loadClient, PlayerTwoError } from "../desk/client.ts";
@@ -38,6 +41,9 @@ const USAGE = `usage: player-two COMMAND
   ask @PERSON/REPO TEXT... [--in CHANNEL] [--wait SECONDS]
                                         ask an agent, in the direct chat with its owner or in a channel, and print its answer once its owner has let it run; --wait defaults to 900
   status                                print the hub, your name, the repos you share and the requests waiting for your agents
+  workflow publish FILE --in CHANNEL    publish a workflow's file to a channel, where the hub runs it, in place of any of the same name
+  workflow list --in CHANNEL            list a channel's workflows: what sets each off, who published it and when, and a webhook's address
+  workflow remove NAME --in CHANNEL     take a channel's workflow away
   channel [join NAME | leave NAME]      list the channels, or join or leave one
   hub [--host HOST] [--port PORT]       run the hub; it reads PLAYER_TWO_JOIN_TOKEN, PLAYER_TWO_DB, PLAYER_TWO_REPOS and, if set, PLAYER_TWO_DOWNLOADS
   hub verify                            check that no event in the log in PLAYER_TWO_DB was changed or taken out since it was stored
@@ -46,7 +52,7 @@ const USAGE = `usage: player-two COMMAND
                                         (the desk starts it with --job ID in a run let ask other agents, whose PLAYER_TWO_JOB names the same ID)
   doctor                                check what Player Two needs on this machine, and say how to fix what is missing
 
-send, inbox, who, repos, channel, search, read, ask, status and doctor take --json, and then print one JSON value and nothing else.
+send, inbox, who, repos, channel, search, read, ask, status, workflow and doctor take --json, and then print one JSON value and nothing else.
 A command exits with 0 on success, 1 after printing a failure, and 2 when it was not given what it takes.
 ask also exits with 3 when the owner declined, 4 when the run failed, was stopped or was withdrawn, and 5 when nothing final came in time.
 --wait takes at most 86400 seconds, a day.`;
@@ -134,6 +140,11 @@ function saying(event: Event): { readonly text: string; readonly whose: string }
   return said.kind === "job.result" ? { text: said.content.text, whose: ` (${said.content.repo} agent${isAgent(event.author) ? ", not reviewed" : ""})` } : null;
 }
 
+/** When something was signed, as the terminal shows it: "Fri 14:05", in this machine's own time. */
+function timeOf(ts: number): string {
+  return new Date(ts * 1000).toLocaleString("en-GB", { weekday: "short", hour: "2-digit", minute: "2-digit" });
+}
+
 /**
  * One message or answer as the terminal shows it, numbered by its seq, which `inbox --after` takes. One that failed its signature check is never shown with its text.
  * Cited, as `search` and `read` show a note, it shows `cite.text` in place of what the event says, says whom the reader's own message in a direct chat went to, and ends with the note's link.
@@ -144,7 +155,7 @@ export function render(delivered: Delivered, trusted: boolean, cite: { readonly 
     return `!! ${String(seq)} claims to be from ${event.author}, but its signature does not match the key first seen for them. Ignored.`;
   }
   const said = saying(event);
-  const when = new Date(event.ts * 1000).toLocaleString("en-GB", { weekday: "short", hour: "2-digit", minute: "2-digit" }); // "Fri 14:05", in this machine's own time.
+  const when = timeOf(event.ts);
   const lines = (cite?.text ?? said?.text ?? `(${event.kind})`).split(/\r\n|\r|\n/).map((line) => `│ ${line}`);
   const writer = ownerOf(event.author); // An agent's answer under its owner's name, as the window shows it.
   let where = isChannel(event.to) ? ` in ${event.to}` : "";
@@ -404,6 +415,95 @@ async function channel(joined: () => Client, args: string[], out: (line: string)
   show(out, values.json, info, `${action === "join" ? "joined" : "left"} ${info.name}; members: ${info.members.length === 0 ? "none" : info.members.join(", ")}`);
 }
 
+/** A workflow's file as it reads; null when it does not. */
+function readable(yaml: string): Workflow | null {
+  try {
+    return parseWorkflow(yaml);
+  } catch {
+    return null;
+  }
+}
+
+/** What sets a workflow off, in words. */
+function setOff(on: Trigger): string {
+  switch (on.kind) {
+    case "webhook":
+      return "a webhook";
+    case "message":
+      return `a message containing ${JSON.stringify(on.message.contains)}`;
+    case "reaction":
+      return `a ${on.reaction.emoji} reaction`;
+    case "schedule":
+      return `${on.schedule.cron} in ${on.schedule.zone}`;
+  }
+}
+
+/**
+ * A live workflow as --json prints it: its definition as --json prints any entry, and, when it is trusted, its name, what sets it off as its file has it, and for a webhook the address to POST to,
+ * whose id is the first 32 hex of the definition's. Null for each when it is not trusted.
+ */
+function definition(client: Client, entry: Entry): ReturnType<typeof vouched> & { readonly name: string | null; readonly on: Trigger | null; readonly hook: string | null } {
+  const said = readContent(entry.event);
+  const file = entry.trusted && said.kind === "workflow.define" ? readable(said.content.yaml) : null;
+  return { ...vouched(entry), name: file?.name ?? null, on: file?.on ?? null, hook: file?.on.kind === "webhook" ? `${client.config.hub}/hooks/${entry.event.id.slice(0, 32)}` : null };
+}
+
+/** A live workflow in words: its name, what sets it off, who published it and when, and under it a webhook's address. One whose signature fails is never shown with what it says. */
+function described(shown: ReturnType<typeof definition>): string {
+  const { seq, event } = shown;
+  if (shown.name === null || shown.on === null) {
+    return `!! ${String(seq)} claims to be a workflow ${event.author} published, but its signature does not match the key first seen for them.`;
+  }
+  return [`${shown.name} · on ${setOff(shown.on)} · published by ${event.author} · ${timeOf(event.ts)}`, ...(shown.hook === null ? [] : [`  POST ${shown.hook}`])].join("\n");
+}
+
+/** What `workflow` was asked: one of its three actions, the file or the name it acts on ("" for list), the channel, and whether to print JSON. */
+function workflowAsked(args: string[]): { readonly action: "publish" | "list" | "remove"; readonly given: string; readonly channel: string; readonly json: boolean } {
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { in: { type: "string" }, json: { type: "boolean", default: false } } });
+  const [action = "", given = ""] = positionals;
+  const channel = channelNamed(values.in ?? "");
+  if (action !== "publish" && action !== "list" && action !== "remove") {
+    throw new UsageError(`workflow takes publish, list or remove, not ${action === "" ? "nothing" : action}`);
+  }
+  if (channel === null) {
+    throw new UsageError(`workflow ${action} takes --in and a channel, such as '#ops'`);
+  }
+  if (positionals.length !== (action === "list" ? 1 : 2)) {
+    throw new UsageError(action === "list" ? "workflow list takes no more than --in" : `workflow ${action} takes one ${action === "publish" ? "file" : "workflow's name"}`);
+  }
+  if (action === "remove" && !nameSchema.safeParse(given).success) {
+    throw new UsageError(`a workflow's name is lowercase letters, digits, - and _, at most 32 characters, not ${given}`);
+  }
+  return { action, given, channel, json: values.json };
+}
+
+/** The workflow in a file, with the file's text; or a failure naming the file, the line that is wrong and why. */
+function workflowIn(path: string): { readonly yaml: string; readonly file: Workflow } {
+  const yaml = readFileSync(path, "utf8");
+  try {
+    return { yaml, file: parseWorkflow(yaml) };
+  } catch (error) {
+    throw new PlayerTwoError(`${path}: ${problemOf(error)}`, { cause: error });
+  }
+}
+
+/** Publish the workflow in a file to a channel, read first so that one that does not read says where before anything is sent; or list a channel's workflows; or take one away. */
+async function workflow(joined: () => Client, args: string[], out: (line: string) => void): Promise<void> {
+  const { action, given, channel, json } = workflowAsked(args);
+  const client = joined();
+  if (action === "list") {
+    const shown = (await trust(client, await client.workflows(channel))).map((entry) => definition(client, entry));
+    show(out, json, shown, shown.length === 0 ? `no workflows in ${channel}` : shown.map(described).join("\n"));
+  } else if (action === "publish") {
+    const { yaml, file } = workflowIn(given);
+    const shown = definition(client, { ...(await client.publish(channel, "workflow.define", { name: file.name, yaml })), trusted: true });
+    show(out, json, shown, `published ${file.name} to ${channel}${shown.hook === null ? "" : `; set it off with POST ${shown.hook}`}`);
+  } else {
+    const sent = await client.publish(channel, "workflow.remove", { name: given });
+    show(out, json, sent, `removed ${given} from ${channel}`);
+  }
+}
+
 async function register(home: string, transport: Transport, args: string[], out: (line: string) => void): Promise<void> {
   const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { agent: { type: "string", default: DEFAULT_PRESET.id } } });
   const [hub, name, token] = positionals;
@@ -473,6 +573,7 @@ const AS_USER = new Map<string, (joined: () => Client, args: string[], out: (lin
   ["read", read],
   ["ask", askAgent],
   ["status", status],
+  ["workflow", workflow],
   ["mcp", mcp]
 ]);
 

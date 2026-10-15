@@ -17,7 +17,7 @@ import { problemOf } from "../core/text.ts";
 import { VERSION } from "../core/version.ts";
 import { parseWorkflow } from "../core/workflow.ts";
 import type { Workflow } from "../core/workflow.ts";
-import { addressSchema, eventSchema, HUB, isAgent, isChannel, joinSchema, ownerOf, PROTOCOL, repoSchema } from "../core/wire.ts";
+import { addressSchema, channelSchema, eventSchema, HUB, isAgent, isChannel, joinSchema, ownerOf, PROTOCOL, repoSchema } from "../core/wire.ts";
 import type { ChannelInfo, Event, RepoRef } from "../core/wire.ts";
 import { Database } from "./db.ts";
 
@@ -62,6 +62,7 @@ const eventsQuerySchema = z.object({
   limit: numeric.pipe(z.int().min(1).max(MAX_PAGE)).default(PAGE)
 });
 const streamQuerySchema = z.object({ after: numeric.pipe(z.int()).default(0) });
+const workflowsQuerySchema = z.object({ chat: channelSchema });
 const searchQuerySchema = z.object({
   // A word is a run of letters and digits, which is what FTS5's tokenizer makes one token of, so the limit counts what a search costs: "the.the.the" is three words, not one.
   q: z
@@ -471,6 +472,12 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     return [200, db.search(ask.me, q, chat ?? null, limit)];
   }
 
+  /** A channel's live workflows, each as the workflow.define that made it live, oldest first, so that whoever reads them can check who signed each. None for a caller not in the channel. */
+  function getWorkflows(ask: Ask): Answer {
+    const { chat } = parsed(workflowsQuerySchema, Object.fromEntries(ask.query), "query");
+    return [200, db.workflows(ask.me, chat)];
+  }
+
   /**
    * Hold the response open and send the caller every event they can see after `after`, then each new one as it is stored, and a comment line every PING seconds.
    * Each batch is read through the same rule as every other read, at the moment it is sent, so a channel left since the stream opened sends nothing more.
@@ -520,6 +527,7 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     { method: "GET", path: "/events", answer: getEvents },
     { method: "GET", path: "/events/{id}", answer: getEvent },
     { method: "GET", path: "/search", answer: search },
+    { method: "GET", path: "/workflows", answer: getWorkflows },
     { method: "GET", path: "/stream", answer: stream },
     { method: "GET", path: "/audit/head", answer: () => [200, db.head()] }, // For comparing with what someone saw before: a log changed since cannot end in the same chain value.
     { method: "GET", path: "/channels", answer: () => [200, db.channels().map(channelInfo)] }
