@@ -62,6 +62,11 @@ export async function collect(worktree: Worktree): Promise<string> {
   const at = ["-C", worktree.path, `--git-dir=${worktree.gitDir}`, `--work-tree=${worktree.path}`, ...UNHOOKED, "-c", "core.quotePath=true", "-c", "diff.suppressBlankEmpty=false"];
   await run([...at, "add", "-A"], `git add in ${worktree.path}`);
   const diff = await run([...at, ...DIFF, worktree.base, "--"], `git diff in ${worktree.path}`);
+  // A folder the run made a repository of, or gave a .git file naming one, git adds as that repository's commit (mode 160000), and an existing submodule's as a new commit: another
+  // repository's on this machine, which is not the run's to hand over. A header line, as git writes one: no line of a hunk starts so.
+  if (/^(?:new file mode|new mode|index [0-9a-f]+\.\.[0-9a-f]+) 160000$/m.test(diff)) {
+    throw new Error(`the change in ${worktree.path} records another repository's commit, as a submodule does, which is not sent as a patch`);
+  }
   if (diff.includes("�")) {
     // ponytail: what git printed is read as UTF-8, and a byte that is not becomes U+FFFD; a file that holds U+FFFD itself is refused too. Read git's output as bytes if that bites.
     throw new Error(`the change in ${worktree.path} has text that is not UTF-8, which a patch cannot carry as it is`);

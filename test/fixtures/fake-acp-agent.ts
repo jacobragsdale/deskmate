@@ -3,7 +3,8 @@
  * `twice` says something in a message of its own first, with a step after it; `read` reports reading README.md in its folder, by its path; `many` reports 600 reads;
  * `switch` asks to switch its session to a mode in which it edits without asking, as ACP lets an agent's modes differ in what they ask; each `edit` asks to edit and writes edited.txt only if allowed,
  * and `big` big.txt, 600,000 characters, more than a patch carries; each `aim:PATH` asks to edit PATH, from its folder unless it starts with "/", and writes it, and the folders to it, if allowed,
- * and `blind` does the same for unnamed.txt without saying which file. Every other request to edit names the file it writes in its folder;
+ * and `blind` does the same for unnamed.txt without saying which file; `nest` asks to edit nested/README.md and, if allowed, makes nested a repository with that file committed,
+ * as an agent that runs git without asking might. Every other request to edit names the file it writes in its folder;
  * `run` asks to run `npm test` in its folder; `takeback` asks to edit and takes the request back 300 ms later; `leave` asks to edit and ends its turn without waiting for the answer;
  * `stray` asks under another session's id; `long` asks to edit under a title of two lines and over 300 characters; `mcp` says which MCP servers its session has; `whoami` says the agent its environment names in PLAYER_TWO_AGENT, the one chat PLAYER_TWO_ONLY_CHAT names, and the request PLAYER_TWO_JOB names, if they do;
  * `slow` waits until cancelled, with a child process of its own; `deaf` does the same but takes no notice of a cancel. Each `ask:OWNER/REPO` asks that agent "read" with the `ask_agent` tool of the
@@ -13,7 +14,7 @@
  * It adds its pid, and its child's, to `pids` in its folder, or to the file --pids=FILE names, unless started with --no-pids, for a test of what it writes there.
  */
 
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Writable } from "node:stream";
@@ -159,6 +160,20 @@ async function stray(client: acp.AgentContext, sessionId: string): Promise<strin
   return `stray ${answer.outcome.outcome}`;
 }
 
+/** Ask to edit nested/README.md, naming it, and if allowed write it and make `nested` a repository of its own with it committed. */
+async function nest(client: acp.AgentContext, sessionId: string): Promise<string> {
+  const folder = join(sessions.get(sessionId)?.cwd ?? "", "nested");
+  if (!(await permitted(client, sessionId, "nest", "edit", "Edit nested/README.md", undefined, [{ path: join(folder, "README.md") }]))) {
+    return "nest refused";
+  }
+  mkdirSync(folder);
+  writeFileSync(join(folder, "README.md"), "nested\n");
+  for (const args of [["init", "-q"], ["add", "README.md"], ["commit", "-qm", "nested"]]) {
+    execFileSync("git", ["-C", folder, ...args], { stdio: "ignore" });
+  }
+  return "nest allowed";
+}
+
 /** Ask to edit under a title too long for one line, and on two. */
 async function long(client: acp.AgentContext, sessionId: string): Promise<string> {
   const title = `Edit ${"x".repeat(300)}\nand more`;
@@ -209,7 +224,8 @@ async function act(client: acp.AgentContext, sessionId: string, session: Session
     ["takeback", takeBack],
     ["leave", leave],
     ["stray", stray],
-    ["long", long]
+    ["long", long],
+    ["nest", nest]
   ] as const) {
     if (has(word)) {
       did.push(await step(client, sessionId));

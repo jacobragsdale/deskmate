@@ -357,6 +357,29 @@ await test(
 );
 
 await test(
+  "a change that records another repository's commit, as a folder the run made a repository of does, is not sent: the answer says it could not be, and the clean copy is kept, locked, where its owner is told it is",
+  { timeout: 60_000 },
+  async (t) => {
+    const { bob, notices, asks } = await two(t);
+    const id = await asks("@jacob/uploader nest", "auto-edits", true);
+    const [answer] = await until("the answer", async () => {
+      const found = await said(bob, id, "job.result");
+      return found.length > 0 && found;
+    });
+    assert.ok(answer?.kind === "job.result");
+    assert.match(answer.content.text, /nest allowed\n\n\(The change could not be sent as a patch\.\)$/);
+    assert.deepEqual(await said(bob, id, "patch"), []);
+    const copy = copyOf(id, "uploader");
+    assert.deepEqual(
+      notices.map((notice) => notice.title),
+      ["your uploader agent's change was not sent as a patch"]
+    );
+    assert.equal(notices[0]?.body.startsWith(`the change in ${copy} records another repository's commit, as a submodule does, which is not sent as a patch. It is kept in ${copy}`), true);
+    assert.equal(readFileSync(join(copy, "nested", "README.md"), "utf8"), "nested\n");
+  }
+);
+
+await test(
   "Apply refuses a patch that names a path outside the repo before git is called, and one git says does not apply before asking; then asks in a dialog naming the repo, the branch, the files and what to beware of, applies only on yes, whatever git variables the desk inherited, and tells the chat",
   { timeout: 60_000 },
   async (t) => {

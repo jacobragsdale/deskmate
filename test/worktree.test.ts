@@ -179,6 +179,41 @@ await test("git run on a clean copy after its run starts no fsmonitor and no hoo
   assert.equal(existsSync(ran), true);
 });
 
+await test("a change that records another repository's commit, a new submodule or a new commit of one, is refused: a folder the run made a repository, or gave a .git file naming one", async () => {
+  const { repo: secret } = checkout(); // Another repository on the same machine, at a commit of its own.
+  git(secret, ["commit", "-q", "--allow-empty", "-m", "secret"]);
+  const { repo } = checkout();
+  git(repo, ["update-index", "--add", "--cacheinfo", `160000,${git(repo, ["rev-parse", "HEAD"]).trim()},lib`]); // A submodule, at a commit of its own.
+  git(repo, ["commit", "-qm", "a submodule"]);
+  const gitlink = /another repository's commit, as a submodule does, which is not sent as a patch/;
+  for (const plant of [
+    (path: string): void => {
+      mkdirSync(join(path, "vendor"));
+      writeFileSync(join(path, "vendor", ".git"), `gitdir: ${join(secret, ".git")}\n`);
+    },
+    (path: string): void => {
+      git(path, ["init", "-q", "nested"]);
+      writeFileSync(join(path, "nested", "x"), "x\n");
+      git(join(path, "nested"), ["add", "x"]);
+      git(join(path, "nested"), ["commit", "-qm", "x"]);
+    },
+    (path: string): void => {
+      writeFileSync(join(path, "lib", ".git"), `gitdir: ${join(secret, ".git")}\n`); // The submodule, as git left it unfilled, now at the other repository's commit.
+    }
+  ]) {
+    const worktree = await open(repo, jobId());
+    writeFileSync(join(worktree.path, "notes.txt"), "changed\n");
+    plant(worktree.path);
+    await assert.rejects(collect(worktree), gitlink);
+    await close(worktree);
+  }
+  // Taking the submodule away records no commit.
+  const worktree = await open(repo, jobId());
+  rmSync(join(worktree.path, "lib"), { recursive: true });
+  assert.match(await collect(worktree), /^deleted file mode 160000$/m);
+  await close(worktree);
+});
+
 await test("on start, the worktrees left in ~/.player-two/worktrees are removed and git forgets one whose folder is gone; one kept, locked with its .git git's own again, and the checkout's own stay", async () => {
   const { dev, repo } = checkout();
   const left = await open(repo, jobId());
