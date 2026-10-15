@@ -352,7 +352,7 @@ await test("in a run let ask other agents, started with --job, it asks another a
   assert.deepEqual(third, { outcome: "timed out", request: noteLink((await nth(3)).event.id) });
 
   // Refused, with why, before anything is sent: itself, an agent whose owner cannot see #team, and once jacob's latest acceptance does not let it ask.
-  const refused = async (target: string): Promise<unknown> => call(mcp, "ask_agent", { agent: target, text: "and you?" });
+  const refused = async (target: string): Promise<unknown> => call(mcp, "ask_agent", { agent: target, text: "and you?", wait_seconds: 1 }); // Should one go, it fails rather than waits.
   assert.deepEqual(await refused("jacob/uploader"), { outcome: "declined", request: null, reason: "jacob/uploader is already in its chain" });
   assert.deepEqual(await refused("dave/api"), { outcome: "declined", request: null, reason: "dave is not in #team, so their agents cannot be asked there" });
   await accept(false);
