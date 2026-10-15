@@ -29,6 +29,8 @@ function within(text: string, max: number): boolean {
 }
 
 export const nameSchema = z.string().regex(new RegExp(`^${NAME}$`));
+// Whom a grant may name as asking: a person, "*" for anyone on the hub, or from phase 7 a workflow, "workflow:" and its name, which no person's name can be.
+export const askerSchema = z.string().regex(new RegExp(`^(${NAME}|\\*|workflow:${NAME})$`));
 export const authorSchema = z.string().regex(new RegExp(`^${AUTHOR}$`)); // A person, or one of their agents.
 export const channelSchema = z.string().regex(new RegExp(`^#${NAME}$`));
 export const addressSchema = z.string().regex(new RegExp(`^#?${NAME}$`)); // A person, or a channel when it starts with "#".

@@ -5,12 +5,13 @@ import type { KeyObject } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { z } from "zod";
 
-import { candidates, ChatLog, chatOf, continues, rings, STALE } from "../src/core/chat.ts";
+import { askerOf, candidates, ChatLog, chatOf, continues, rings, STALE } from "../src/core/chat.ts";
 import type { Entry, Message } from "../src/core/chat.ts";
 import type { Node } from "../src/core/delegation.ts";
 import { oneshotRunner, runAgent, splitCommand } from "../src/desk/agents/oneshot.ts";
@@ -30,7 +31,8 @@ import { branchNameSchema, channelSchema, commandLineOf, eventSchema, fitText, M
 import { atMost, decide } from "../src/desk/permissions.ts";
 import type { Action, Decision } from "../src/desk/permissions.ts";
 import type { ChannelInfo, Delivered, TeamRepo } from "../src/core/wire.ts";
-import { startHub } from "./startHub.ts";
+import { startHub, storedUnchecked } from "./startHub.ts";
+import { Database } from "../src/hub/db.ts";
 
 const NOW = 1_800_000_000;
 const key = loadKey("11".repeat(32));
@@ -360,6 +362,33 @@ await test("a tag counts only in a message, as it was sent: not in an agent's an
   assert.deepEqual(
     log.waitingForMe("bob", NOW).map((request) => request.repo),
     ["uploader", "theme"]
+  );
+});
+
+await test("a tag counts in the hub's message only when it says it is a workflow's and names it, which its request then asks as; from the hub nothing but a message counts at all", () => {
+  const workflow = entry("hub", "#ops", "message", { text: "the build failed: @jacob/uploader what broke?", via: "workflow", workflow: "ci-failure" });
+  const unnamed = entry("hub", "#ops", "message", { text: "@jacob/uploader what broke?", via: "workflow" });
+  const plain = entry("hub", "#ops", "message", { text: "@jacob/uploader what broke?", via: "cli", workflow: "ci-failure" }); // Named, but not said to be a workflow's.
+  const person = entry("bob", "#ops", "message", { text: "@jacob/uploader too", via: "workflow", workflow: "ci-failure" }); // Bob's, whatever it says it is for.
+  const log = logOf("jacob", [
+    workflow,
+    unnamed,
+    plain,
+    person,
+    entry("hub", "#ops", "job.accepted", { repo: "uploader", ...ACCEPTED }, { refs: [workflow.event.id] }), // Nobody is called hub, so it runs no agent,
+    entry("hub", "#ops", "reaction", { emoji: "👍", on: true }, { refs: [workflow.event.id] }), // nor does what a person may.
+    entry("hub", "#ops", "channel.join", {})
+  ]);
+
+  assert.deepEqual([states(log, workflow), states(log, unnamed), states(log, plain), states(log, person)], [["jacob/uploader waiting"], [], [], ["jacob/uploader waiting"]]);
+  assert.deepEqual(
+    [workflow, unnamed, plain, person].map((each) => askerOf(each.event)),
+    ["workflow:ci-failure", null, null, "bob"]
+  );
+  assert.deepEqual(shown(log, "#ops"), ["hub: the build failed: @jacob/uploader what broke?", "hub: @jacob/uploader what broke?", "hub: @jacob/uploader what broke?", "bob: @jacob/uploader too"]);
+  assert.deepEqual(
+    [workflow, unnamed, plain].map((each) => rings(each, "jacob")),
+    [true, false, false]
   );
 });
 
@@ -761,6 +790,35 @@ await test("an event is trusted when it holds under the key first seen for its a
   assert.ok(!(await bob.isTrusted({ ...hello, event: { ...hello.event, content: JSON.stringify({ text: "hullo", via: "cli" }) } })));
   writeFileSync(join(hub.dir, "bob", "known.json"), JSON.stringify({ alice: publicHex(key) })); // Bob first saw alice under another key: what the hub says now does not count.
   assert.ok(!(await bob.isTrusted(hello)));
+});
+
+await test("the hub's own events are trusted under the key /info gave when one was first checked, pinned in known.json under hub, and under no other, whoever the hub lists by that name", async (t) => {
+  const hub = await startHub(t);
+  const [alice, bob] = [await hub.join("alice"), await hub.join("bob")];
+  const db = new Database(join(hub.dir, "hub.db"));
+  const hubKey = db.hubKey();
+  db.close();
+  const listed = new DatabaseSync(join(hub.dir, "hub.db")); // A hub that lists someone called hub, as no hub lets anyone join.
+  listed.prepare("INSERT INTO users (name, pubkey) VALUES ('hub', ?)").run(publicHex(key));
+  listed.close();
+  const workflow = (signer: KeyObject): Delivered => ({
+    seq: 9,
+    event: signEvent(signer, { author: "hub", to: "#ops", kind: "message", content: JSON.stringify({ text: "@bob/uploader what broke?", via: "workflow", workflow: "ci" }), ts: NOW, refs: [] })
+  });
+  const pins = (): Readonly<Record<string, string>> => z.record(z.string(), z.string()).parse(JSON.parse(readFileSync(join(hub.dir, "bob", "known.json"), "utf8")));
+
+  assert.ok(await bob.isTrusted(await alice.publish("bob", "message", { text: "hello", via: "cli" }))); // Pins everyone the hub lists, but its hub.
+  assert.equal(pins()["hub"], undefined);
+  assert.ok(!(await bob.isTrusted(workflow(key))));
+  assert.ok(await bob.isTrusted(workflow(hubKey)));
+  assert.equal(pins()["hub"], publicHex(hubKey));
+  const agent = loadKey("66".repeat(32)); // Nor does the hub's key vouch for an agent: nobody is called hub, so it has none.
+  storedUnchecked(hub, hubKey, { author: "hub", to: "*", kind: "agent.register", content: { repo: "relay", pubkey: publicHex(agent) }, ts: NOW, refs: [] });
+  const report = signEvent(agent, { author: "hub/relay", to: "bob", kind: "job.progress", content: JSON.stringify({ repo: "relay", summary: "reading" }), ts: NOW, refs: [] });
+  assert.ok(!(await bob.isTrusted({ seq: 99, event: report })));
+
+  writeFileSync(join(hub.dir, "bob", "known.json"), JSON.stringify({ ...pins(), hub: publicHex(key) })); // Bob first saw the hub under another key: what /info says now does not count.
+  assert.ok(!(await bob.isTrusted(workflow(hubKey))));
 });
 
 await test("an agent's event is trusted under the key its owner's newest registration before it holds, a registration its owner's pinned key vouches for, and under no other", async (t) => {

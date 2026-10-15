@@ -3,10 +3,10 @@
  * Every function takes entries that already carry their trust verdict, as src/core/grants.ts does: one whose signature does not hold counts for nothing. No IO and no clock.
  */
 
-import { mayCome, mentions } from "./chat.ts";
+import { askerOf, mayCome, mentions } from "./chat.ts";
 import type { Accepted, Entry } from "./chat.ts";
 import { readContent } from "./kinds.ts";
-import { isChannel, MODES, nameSchema, ownerOf } from "./wire.ts";
+import { isChannel, MODES, ownerOf } from "./wire.ts";
 import type { Event, PermissionMode } from "./wire.ts";
 
 export const MAX_DEPTH = 2; // Most agents a request may come through: the root's agent, and one it asked.
@@ -27,12 +27,16 @@ export interface Node {
  */
 export type Verdict = { readonly ok: true; readonly mode: PermissionMode; readonly since: number } | { readonly ok: false; readonly reason: string };
 
-/** The root request by its id with its text: a message a person wrote, whose signature holds. Null when the log holds no such event, as for a root made up. */
-function rootOf(log: readonly Entry[], id: string): { readonly entry: Entry; readonly text: string } | null {
+/**
+ * The root request by its id with its text and whom it asks for: a message a person wrote, or from phase 7 the hub for a workflow, whose signature holds. Null when the log holds no such event,
+ * as for a root made up.
+ */
+function rootOf(log: readonly Entry[], id: string): { readonly entry: Entry; readonly text: string; readonly asker: string } | null {
   const entry = log.find((each) => each.event.id === id);
   const said = entry === undefined ? null : readContent(entry.event);
-  // A tag counts only in a message a person wrote, so an agent's message, should one ever be in the log, starts nothing.
-  return entry?.trusted === true && said?.kind === "message" && nameSchema.safeParse(entry.event.author).success ? { entry, text: said.content.text } : null;
+  // A tag counts only where `askerOf` says, so an agent's message, should one ever be in the log, starts nothing.
+  const asker = entry === undefined || said === null ? null : askerOf(entry.event, said);
+  return entry?.trusted === true && said?.kind === "message" && asker !== null ? { entry, text: said.content.text, asker } : null;
 }
 
 /** The jobs under a root request: one for each agent its message tags, each with the jobs it asked below it. None when the root is not a person's message in the log. */
@@ -197,9 +201,12 @@ export function checkRequest(log: readonly Entry[], request: Entry): Verdict {
   return { ok: true, mode: runs.reduce<PermissionMode>((low, { accepted }) => (MODES.indexOf(accepted.mode) < MODES.indexOf(low) ? accepted.mode : low), "full"), since };
 }
 
-/** Everyone a request runs on the say of: whoever made the root request, and the owner of each agent it came through, each once. Null when it is not a job.request whose signature holds, or its root is not a person's message in the log. */
+/**
+ * Everyone a request runs on the say of: whoever made the root request, `workflow:<name>` for a workflow's, and the owner of each agent it came through, each once.
+ * Null when it is not a job.request whose signature holds, or its root is not a request in the log.
+ */
 export function peopleInvolved(log: readonly Entry[], request: Entry): string[] | null {
   const said = readContent(request.event);
   const root = rootOf(log, request.event.refs[0] ?? "");
-  return request.trusted && said.kind === "job.request" && root !== null ? [...new Set([root.entry.event.author, ...said.content.chain.map((agent) => agent.slice(0, agent.indexOf("/")))])] : null;
+  return request.trusted && said.kind === "job.request" && root !== null ? [...new Set([root.asker, ...said.content.chain.map((agent) => agent.slice(0, agent.indexOf("/")))])] : null;
 }

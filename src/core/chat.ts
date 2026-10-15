@@ -5,7 +5,7 @@ import type { Node } from "./delegation.ts";
 import { AGENT_KINDS, readContent, repoOf } from "./kinds.ts";
 import type { Content, Summary } from "./kinds.ts";
 import { byCodeUnit, head } from "./text.ts";
-import { isAgent, isChannel, NAME, ownerOf, REPO_NAME } from "./wire.ts";
+import { HUB, isAgent, isChannel, NAME, ownerOf, REPO_NAME } from "./wire.ts";
 import type { ChannelInfo, Event, RepoRef, TeamRepo } from "./wire.ts";
 
 export const GROUP_WINDOW = 300; // Seconds within which one person's consecutive messages share a single header.
@@ -181,7 +181,21 @@ export function rings(entry: Entry, me: string): boolean {
     return true;
   }
   const said = readContent(event);
-  return entry.trusted && said.kind === "message" && mentions(said.content.text).some(([owner]) => owner === me);
+  return entry.trusted && said.kind === "message" && askerOf(event, said) !== null && mentions(said.content.text).some(([owner]) => owner === me);
+}
+
+/**
+ * Whom the tags in a message ask for, as grants and delegation name them: the person who wrote it, or for one the hub posted for a workflow, saying so with `via: "workflow"` and naming it,
+ * `workflow:<name>`. Null for anything else, an agent's or another of the hub's among them, whose tags count for nothing.
+ */
+export function askerOf(event: Event, said: ReturnType<typeof readContent> = readContent(event)): string | null {
+  if (said.kind !== "message" || isAgent(event.author)) {
+    return null;
+  }
+  if (event.author !== HUB) {
+    return event.author;
+  }
+  return said.content.via === "workflow" && said.content.workflow !== undefined ? `workflow:${said.content.workflow}` : null;
 }
 
 /**
@@ -300,6 +314,11 @@ function place(folded: Folded, message: Folding): void {
   }
 }
 
+/** The agents a message tags, when its tags count (see `askerOf`); none when they do not. */
+function tagged(event: Event, said: Extract<Content, { readonly kind: "message" }>): (readonly [string, string])[] {
+  return askerOf(event, said) === null ? [] : mentions(said.content.text);
+}
+
 /** A message, or an edit, delete or reaction to one. Only the author of a message can edit or delete it. */
 function applyToMessage(folded: Folded, entry: Entry, said: Extract<Content, { readonly kind: MessageKind }>): void {
   const { event } = entry;
@@ -307,7 +326,7 @@ function applyToMessage(folded: Folded, entry: Entry, said: Extract<Content, { r
   if (said.kind === "message") {
     const message = newMessage(entry, said.content.text, target);
     place(folded, message);
-    for (const [owner, repo] of mentions(said.content.text)) {
+    for (const [owner, repo] of tagged(event, said)) {
       const job: Job = { request: message, owner, repo, state: "waiting", since: event.ts, accepted: null, summary: "" }; // A tag counts only here, in a message as it was sent: not in an answer, and not in an edit.
       message.jobs.push(job);
       folded.jobs.set(jobKey(event.id, `${owner}/${repo}`), job);
@@ -357,7 +376,7 @@ function applyRequest(folded: Folded, entry: Entry, said: Extract<Content, { rea
   const { event } = entry;
   const [root = "", parent = root] = event.refs;
   const rooted = folded.messages.get(root);
-  const first = rooted?.entry.event.kind === "message" ? rooted.entry.event.author : ""; // A tag counts only in a message a person wrote, so only one can be a root.
+  const first = rooted === undefined ? "" : (askerOf(rooted.entry.event) ?? ""); // A tag counts only in a message a person wrote, or the hub for a workflow, so only one can be a root.
   const delegation = { root, parent, chain: said.content.chain, first, target: said.content.target };
   const message = newMessage(entry, said.content.text, rooted, { ...TYPED, agent: event.author.slice(ownerOf(event.author).length + 1), delegation });
   place(folded, message);
@@ -401,8 +420,12 @@ function aboutJob(said: ReturnType<typeof readContent>): said is Extract<Content
  * which then counts exactly as its owner's would, a request of another agent as the last agent its chain names, and taking back a request, which counts only from whoever made it. Anything else from one counts for nothing, as the hub refuses it:
  * a message, whose tags would start jobs, among them, and an answer said to be reviewed, which only its owner can send. What shows an event outside the fold (search, notifications,
  * the command, the MCP server) asks this too, so that one a hub let through is shown nowhere, rather than hidden in the chat and credited to another agent everywhere else.
+ * From the hub itself, from phase 7, only what a workflow posts counts: a message, whose tags count only as `askerOf` says.
  */
 export function mayCome(event: Event, said: ReturnType<typeof readContent> = readContent(event)): boolean {
+  if (event.author === HUB) {
+    return said.kind === "message";
+  }
   if (!isAgent(event.author)) {
     return said.kind !== "job.request"; // Only an agent asks another this way: a person tags it.
   }

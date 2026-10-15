@@ -8,7 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import { z } from "zod";
 
-import { chatOf } from "../core/chat.ts";
+import { chatOf, mayCome } from "../core/chat.ts";
 import type { Entry } from "../core/chat.ts";
 import { contentSchema, readContent } from "../core/kinds.ts";
 import type { Content, ContentOf } from "../core/kinds.ts";
@@ -21,6 +21,7 @@ import {
   eventSchema,
   HIT_CLOSE,
   HIT_OPEN,
+  HUB,
   hubInfoSchema,
   isAgent,
   MAX_SKEW,
@@ -416,7 +417,8 @@ export class Client {
     let newest: { readonly seq: number; readonly pubkey: string } | null = null;
     for (const { seq: at, event, trusted } of this.registrations.values()) {
       const said = readContent(event);
-      if (trusted && at < seq && at > (newest?.seq ?? 0) && event.to === "*" && said.kind === "agent.register" && `${event.author}/${said.content.repo}` === agent) {
+      // One the hub signed counts for nothing (mayCome): nobody is called hub, so it has no agents.
+      if (trusted && at < seq && at > (newest?.seq ?? 0) && event.to === "*" && said.kind === "agent.register" && mayCome(event, said) && `${event.author}/${said.content.repo}` === agent) {
         newest = { seq: at, pubkey: said.content.pubkey };
       }
     }
@@ -448,6 +450,7 @@ export class Client {
   /**
    * Whether an event holds under the key first seen for its author, a person: the one the hub said when this client first asked, or the one in known.json when it did before.
    * The user's own is the key in the file this machine holds, never one the hub says: a hub could otherwise sign a grant in their name, and their desk would run what it lets go.
+   * The hub's own, `hub`, from phase 7, is pinned the same way under that name, from its `hubKey` in /info rather than from those who joined, among whom nobody may be called that.
    */
   private async pinned(event: Event): Promise<boolean> {
     const { author } = event;
@@ -457,7 +460,7 @@ export class Client {
     const pinFile = joinPath(this.home, "known.json");
     let pins = existsSync(pinFile) ? pinsSchema.parse(parseJson(readFileSync(pinFile, "utf8"))) : {};
     if (pins[author] === undefined) {
-      const fromHub = Object.fromEntries((await this.users()).map((user) => [user.name, user.pubkey]));
+      const fromHub = author === HUB ? await this.hubKey() : Object.fromEntries((await this.users()).filter((user) => user.name !== HUB).map((user) => [user.name, user.pubkey]));
       pins = { ...fromHub, ...pins, [this.config.name]: this.ownKey }; // Keys already pinned win over what the hub says now, and the user's own over both.
       writeFileSync(pinFile, JSON.stringify(pins, null, 1));
     }
@@ -466,6 +469,12 @@ export class Client {
       return false;
     }
     return eventIsAuthentic(event, pubkey);
+  }
+
+  /** The hub's own key as it says it now, to pin under its name; nothing from a hub that has none. */
+  private async hubKey(): Promise<Record<string, string>> {
+    const { hubKey } = await this.info();
+    return hubKey === undefined ? {} : { [HUB]: hubKey };
   }
 
   private headers(method: string, path: string, body: string | null): Readonly<Record<string, string>> {

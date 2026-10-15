@@ -27,12 +27,12 @@ import type {
   Notice,
   PatchView,
   PullRequest,
-  ReplyView,
   Question,
+  ReplyView,
   RequestView,
   RowView
 } from "../shared/ipc.ts";
-import { agentPrompt, ChatLog, chatOf, continues, mayCome, mentions, ONLINE, refOf, rings } from "../core/chat.ts";
+import { agentPrompt, askerOf, ChatLog, chatOf, continues, mayCome, mentions, ONLINE, refOf, rings } from "../core/chat.ts";
 import type { Accepted, Delegation, Entry, Message, PatchContent, Request } from "../core/chat.ts";
 import { checkRequest, jobIn, peopleInvolved, ROOT_TIME } from "../core/delegation.ts";
 import { makesExecutable, modeOf, parseDiff, touchesInstructions, unsafePaths } from "../core/diff.ts";
@@ -1917,19 +1917,20 @@ export class Session {
     const now = this.client.now();
     for (const { trusted, event } of arrived) {
       const fresh = now - event.ts <= 2 * MAX_SKEW;
-      const message = trusted && fresh && event.kind === "message" && event.author !== this.me ? this.chats.message(event.id) : null;
-      if (message === null) {
+      const asker = askerOf(event); // A workflow's request asks as `workflow:<name>`, which a grant must name.
+      const message = trusted && fresh && asker !== null && event.author !== this.me ? this.chats.message(event.id) : null;
+      if (message === null || asker === null) {
         continue;
       }
       for (const { owner, repo, state } of this.chats.requests(message, now)) {
-        const grant = owner === this.me && state === "waiting" && this.answers(repo) ? this.grantFor(repo, event.author, now) : null;
+        const grant = owner === this.me && state === "waiting" && this.answers(repo) ? this.grantFor(repo, asker, now) : null;
         if (grant === null) {
           continue;
         }
         try {
           this.startRun(message, repo, grant.delivery === "post", grant.mode, grant.id, false); // Nobody watches a run under a grant ask other agents in the owner's name.
         } catch (error) {
-          this.hooks.notice({ title: `your ${repo} agent did not run ${event.author}'s request under your grant`, body: problemOf(error), severity: "error" });
+          this.hooks.notice({ title: `your ${repo} agent did not run ${asker}'s request under your grant`, body: problemOf(error), severity: "error" });
         }
       }
     }

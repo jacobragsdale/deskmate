@@ -3,7 +3,7 @@
 import { z } from "zod";
 
 import { MAX_GRANT } from "../core/kinds.ts";
-import { agentSchema, branchNameSchema, nameSchema, permissionModeSchema, teamRepoSchema } from "../core/wire.ts";
+import { agentSchema, askerSchema, branchNameSchema, permissionModeSchema, teamRepoSchema } from "../core/wire.ts";
 
 const deliverySchema = z.enum(["review", "post"]); // Whether an answer waits for its owner to review it, or is posted as soon as it is ready.
 const beforeSchema = z.enum(["", "declined", "failed", "stopped", "interrupted"]); // What happened to a request of the user's agent that it could be run again after.
@@ -325,16 +325,12 @@ export const commandSchema = z.discriminatedUnion("do", [
   z.strictObject({ do: z.literal("permit"), ask: z.string().max(40), answer: z.enum(["allow-once", "allow-run", "refuse"]) }), // The user's answer to an ask in the view.
   z.strictObject({ do: z.literal("stopAll"), chat }), // Stop every agent of the user's at work on a request in this chat, in a thread or not.
   z.strictObject({ do: z.literal("decline"), id, repo }),
-  // Let `askers`, names or "*" for anyone on the hub, ask the user's agent in `repo` with nobody at the desk, from now for `lasts` seconds, at most 30 days: at `mode`, its answer posted or kept
+  // Let `askers`, names, "*" for anyone on the hub, or "workflow:<name>" for a workflow, ask the user's agent in `repo` with nobody at the desk, from now for `lasts` seconds, at most 30 days: at `mode`, its answer posted or kept
   // for review as `delivery` says, and at most `runsPerDay` times in any 24 hours. Sent to everyone as a grant.
   z.strictObject({
     do: z.literal("grant"),
     repo,
-    askers: z
-      .array(z.union([nameSchema, z.literal("*")]))
-      .min(1)
-      .max(100)
-      .readonly(),
+    askers: z.array(askerSchema).min(1).max(100).readonly(),
     mode: permissionModeSchema,
     delivery: deliverySchema,
     lasts: z.int().min(1).max(MAX_GRANT),

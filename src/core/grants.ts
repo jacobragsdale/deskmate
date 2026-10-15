@@ -23,9 +23,12 @@ export function revoked(grant: Entry, revocations: readonly Entry[]): boolean {
   return revocations.some((entry) => entry.trusted && entry.event.author === author && entry.event.refs[0] === id && readContent(entry.event).kind === "grant.revoke");
 }
 
-/** Whether a grant's askers include `person`. */
-function covers(askers: readonly string[], person: string): boolean {
-  return askers.includes("*") || askers.includes(person);
+/**
+ * Whether a grant's askers include `asker`: by name, or for a person "*", anyone on the hub. A workflow, `workflow:<name>`, only by name: whoever can reach its trigger, a webhook's caller
+ * from outside the hub among them, can set it off, which "*" never said.
+ */
+function covers(askers: readonly string[], asker: string): boolean {
+  return askers.includes(asker) || (askers.includes("*") && !asker.startsWith("workflow:"));
 }
 
 /** How much a grant allows, to compare two: its mode's place in MODES, the order src/desk/permissions.ts's atMost uses, which the core cannot import from the desk; and at one mode, posting directly above review. */
@@ -58,7 +61,8 @@ export function standing(grants: readonly Entry[], revocations: readonly Entry[]
 
 /**
  * A request of an agent ("owner/repo"), on whose say it runs, and when, in Unix seconds; and, as `standing` takes them, the runs let go under a grant that the log does not hold yet.
- * `people` is the asker alone for a request in a message, and for an agent's request of another what src/core/delegation.ts's `peopleInvolved` gives: whoever asked first and the owner of each agent it came through.
+ * `people` is the asker alone for a request in a message, as src/core/chat.ts's `askerOf` gives it, and for an agent's request of another what src/core/delegation.ts's `peopleInvolved` gives:
+ * whoever asked first and the owner of each agent it came through. A workflow's request asks as `workflow:<name>`.
  */
 interface Asked {
   readonly agent: string;

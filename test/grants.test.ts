@@ -120,6 +120,30 @@ await test("a grant covers an agent's request of another only when it names ever
   assert.ok(covering(["carol"], ["jacob"])); // A request on its author's say alone: the session never asks a grant for one (see P4-B4's note).
 });
 
+await test("a workflow's request asks as workflow:<name>, which a grant covers only when it names that workflow, never as anyone, and an agent it asks runs on that say too", () => {
+  const covering = (askers: readonly string[], people: readonly string[]): boolean =>
+    liveGrant([entry("jacob", "grant", { ...GRANT, askers })], [], [], { agent: "jacob/uploader", people, now: NOW }) !== null;
+  const read = (askers: readonly string[]): string => readContent(signEvent(key, { author: "jacob", to: "*", kind: "grant", content: JSON.stringify({ ...GRANT, askers }), ts: NOW, refs: [] })).kind;
+
+  assert.equal(read(["workflow:ci-failure", "bob", "*"]), "grant");
+  assert.equal(read(["workflow:CI"]), "unknown");
+  assert.equal(read(["workflow:"]), "unknown");
+  assert.ok(covering(["workflow:ci-failure"], ["workflow:ci-failure"]));
+  assert.ok(!covering(["*"], ["workflow:ci-failure"])); // Anyone on the hub is not whoever can call a workflow's webhook.
+  assert.ok(!covering(["ci-failure"], ["workflow:ci-failure"])); // A person of that name is someone else.
+  assert.ok(!covering(["workflow:ci-failure"], ["ci-failure"]));
+  assert.ok(!covering(["workflow:nightly"], ["workflow:ci-failure"]));
+
+  // A workflow's message tagging carol's agent, which asks jacob's: the request runs on the workflow's say and carol's.
+  const root = entry("hub", "message", { text: "@carol/api the build failed", via: "workflow", workflow: "ci-failure" });
+  const people = peopleInvolved([root], entry("carol/api", "job.request", { target: "jacob/uploader", text: "why?", chain: ["carol/api"] }, { refs: [root.event.id, root.event.id] }));
+  assert.deepEqual(people, ["workflow:ci-failure", "carol"]);
+  assert.ok(covering(["workflow:ci-failure", "carol"], people));
+  assert.ok(!covering(["*"], people));
+  const plain = entry("hub", "message", { text: "@carol/api the build failed", via: "cli" }); // The hub's, but not for a workflow: no root at all.
+  assert.equal(peopleInvolved([plain], entry("carol/api", "job.request", { target: "jacob/uploader", text: "why?", chain: ["carol/api"] }, { refs: [plain.event.id, plain.event.id] })), null);
+});
+
 await test("when several grants apply, the one that allows least wins: the lowest mode, then review before posting, then the first in the log", () => {
   const full = entry("jacob", "grant", { ...GRANT, mode: "full" });
   const posts = entry("jacob", "grant", { ...GRANT, delivery: "post" });

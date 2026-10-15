@@ -2,7 +2,7 @@
 
 import { z } from "zod";
 
-import { branchNameSchema, branchSchema, hashSchema, NAME, nameSchema, permissionModeSchema, pubKeySchema, REPO_NAME, repoNameSchema, repoRefSchema } from "./wire.ts";
+import { askerSchema, branchNameSchema, branchSchema, hashSchema, NAME, nameSchema, permissionModeSchema, pubKeySchema, REPO_NAME, repoNameSchema, repoRefSchema } from "./wire.ts";
 import type { Event } from "./wire.ts";
 
 // Content travels as a string and the signature covers the string, so reading it with z.object, which passes over a field it does not know, changes nothing that was signed.
@@ -21,7 +21,8 @@ export const MAX_GRANT = 30 * 86_400; // Most seconds a grant may last after its
 /** The content of each kind this version knows, tagged with the kind. */
 export const contentSchema = z
   .discriminatedUnion("kind", [
-    z.object({ kind: z.literal("message"), content: z.object({ text, via: z.enum(["window", "cli", "mcp", "workflow"]) }).readonly() }), // A reply has its thread's root as refs[0].
+    // A reply has its thread's root as refs[0]. `workflow`, from phase 7, names the workflow a message of the hub's was posted for, which its tags then ask as.
+    z.object({ kind: z.literal("message"), content: z.object({ text, via: z.enum(["window", "cli", "mcp", "workflow"]), workflow: nameSchema.optional() }).readonly() }),
     z.object({ kind: z.literal("message.edit"), content: z.object({ text }).readonly() }),
     z.object({ kind: z.literal("message.delete"), content: nothing }),
     z.object({ kind: z.literal("reaction"), content: z.object({ emoji: z.string().min(1).max(32), on: z.boolean() }).readonly() }), // `on: false` takes it back.
@@ -68,7 +69,7 @@ export const contentSchema = z
         content: z
           .object({
             agent: z.string().regex(new RegExp(`^${NAME}/${REPO_NAME}$`)), // One of its author's agents, or it grants nothing.
-            askers: z.array(z.union([nameSchema, z.literal("*")])).readonly(), // Names, or "*" for anyone on the hub.
+            askers: z.array(askerSchema).readonly(), // Names, "*" for anyone on the hub, or from phase 7 "workflow:<name>", which "*" does not cover.
             mode: permissionModeSchema,
             delivery: z.enum(["review", "post"]),
             expires: z.int(), // Unix seconds.
