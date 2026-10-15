@@ -349,6 +349,9 @@ const id = z.string().regex(/^[0-9a-f]{64}$/); // An event's id: for a job, its 
 const pullFrom = z.union([z.strictObject({ room: chat }), z.strictObject({ patch: id })]);
 
 /** Everything the window may ask the desk to do. Parsed on both sides of the line before anything acts on it. */
+export const PULL_TITLE = 400; // The most characters, as zod counts them, of a pull request's title the window may send the desk.
+export const PULL_DESCRIPTION = 4000; // And of its description.
+
 export const commandSchema = z.discriminatedUnion("do", [
   z.strictObject({ do: z.literal("join"), hub: z.string().max(500), name: z.string().max(40), token: z.string().max(500), agent: agentSchema }),
   z.strictObject({ do: z.literal("agents"), agents: z.array(agentSchema).min(1).max(20).readonly(), defaultAgent: z.string() }), // Replace the user's agents and say which of them answers.
@@ -396,7 +399,7 @@ export const commandSchema = z.discriminatedUnion("do", [
   z.strictObject({ do: z.literal("pullForm"), from: pullFrom }), // What a pull request from there would be, for the dialog that opens one. The reply's `form` says.
   // Open a pull request from there into the repo's default branch, pushing the branch first, once the user has said yes in a dialog of the system's own, when origin lacks it or
   // lacks commits of it; then say so, with its address, where it was asked from.
-  z.strictObject({ do: z.literal("openPull"), from: pullFrom, title: z.string().min(1).max(400), description: z.string().max(4000), draft: z.boolean() }),
+  z.strictObject({ do: z.literal("openPull"), from: pullFrom, title: z.string().min(1).max(PULL_TITLE), description: z.string().max(PULL_DESCRIPTION), draft: z.boolean() }),
   z.strictObject({ do: z.literal("removeWorkflow"), chat, name: nameSchema }), // Take a channel's workflow of that name away, as any member may.
   // The workflow files in .player-two/workflows/ of the user's checkout of the repo the channel is about, each as it reads. The reply's `workflowFiles` is the list.
   z.strictObject({ do: z.literal("workflowFiles"), chat }),

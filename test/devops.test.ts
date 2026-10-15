@@ -18,6 +18,7 @@ import * as repos from "../src/desk/repos.ts";
 import { Session } from "../src/desk/session.ts";
 import type { Options } from "../src/desk/session.ts";
 import { Database } from "../src/hub/db.ts";
+import { commandSchema } from "../src/shared/ipc.ts";
 import type { MessageView, Notice, Question } from "../src/shared/ipc.ts";
 import { fakeAzure, platform } from "./fakeAzure.ts";
 import type { Call, Project, Reply } from "./fakeAzure.ts";
@@ -365,6 +366,29 @@ await test("a pull request from a branch room's branch is filled from its commit
   assert.equal(questions.length, 3);
   assert.match(questions[2]?.detail ?? "", /^Origin's branch lacks commits of your feature\/retry, /);
   assert.equal(project.made.length, 2);
+});
+
+await test("a long subject, or a branch of many commits, fills the dialog with no more than it may send back: the title cut, and the subjects that fit with how many more", async (t) => {
+  await azure(t);
+  const hub = await startHub(t, () => Date.now() / 1000);
+  const [bob, jacob] = [await hub.join("bob"), await hub.join("jacob")];
+  for (const person of [bob, jacob]) {
+    await person.publish("#room", "channel.join", {});
+  }
+  await bob.publish("#room", "channel.pin", { repo: UPLOADER, branch: "feature/retry" });
+  const { mine } = uploader(join(hub.dir, "dev-jacob"));
+  const long = "long".repeat(150);
+  git(mine, "reset", "-q", "--hard", "main");
+  execFileSync("sh", ["-c", 'git commit -q --allow-empty -m "$1" && for i in $(seq 200); do git commit -q --allow-empty -m "Step $i of a long branch"; done', "sh", long], { cwd: mine });
+  const { session } = await deskOf(t, jacob, join(hub.dir, "dev-jacob"), "#room");
+
+  const form = await session.pullForm({ room: "#room" });
+  assert.equal(form.title, `${long.slice(0, 399)}…`);
+  const lines = form.description.split("\n");
+  assert.ok(form.description.length <= 4000 && form.description.length > 3950, String(form.description.length));
+  assert.deepEqual(lines.slice(0, -1), [`- ${long}`, ...Array.from({ length: lines.length - 2 }, (_, at) => `- Step ${String(at + 1)} of a long branch`)]);
+  assert.equal(lines.at(-1), `… and ${String(201 - (lines.length - 1))} more`);
+  commandSchema.parse({ do: "openPull", from: { room: "#room" }, title: form.title, description: form.description, draft: false }); // As the window sends it back, untouched.
 });
 
 await test("a pull request is opened only from the branch the user's checkout is on, and never from a pinned branch git would read as more than a branch, refused in words before git runs", async (t) => {

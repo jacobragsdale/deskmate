@@ -8,7 +8,7 @@ import { join as joinPath } from "node:path";
 
 import { z } from "zod";
 
-import { runOf } from "../shared/ipc.ts";
+import { PULL_DESCRIPTION, PULL_TITLE, runOf } from "../shared/ipc.ts";
 import type {
   ActivityItem,
   Arrival,
@@ -301,6 +301,34 @@ function patchView({ repo, base, branch, title, diff }: PatchContent, { applied,
 function shortened(path: string): string {
   const home = homedir();
   return path.startsWith(home) ? `~${path.slice(home.length)}` : path;
+}
+
+/** A pull request's title as the window may send it back: at most PULL_TITLE characters as zod counts them, cut with an ellipsis, never between the halves of one character. */
+function titled(text: string): string {
+  return text.length <= PULL_TITLE ? text : `${text.slice(0, PULL_TITLE - 1).replace(/[\uD800-\uDBFF]$/, "")}…`;
+}
+
+/**
+ * The description a pull request's dialog is filled with, as the window may send it back: a line for each commit's subject, oldest first, while they fit in PULL_DESCRIPTION characters,
+ * then how many more there are. The desk never fetches, so a branch whose origin's default is stale lists everything since.
+ */
+function described(subjects: readonly string[]): string {
+  const lines = subjects.map((subject) => `- ${subject}`);
+  const all = lines.join("\n");
+  if (all.length <= PULL_DESCRIPTION) {
+    return all;
+  }
+  const room = PULL_DESCRIPTION - `\n… and ${String(lines.length)} more`.length;
+  let kept = 0;
+  let length = -1; // No line break before the first.
+  for (const line of lines) {
+    if (length + 1 + line.length > room) {
+      break;
+    }
+    length += 1 + line.length;
+    kept += 1;
+  }
+  return [...lines.slice(0, kept), `… and ${String(lines.length - kept)} more`].join("\n");
 }
 
 /** The lesser of two modes. */
@@ -2066,7 +2094,7 @@ export class Session {
     const { checkout, branch, rev, title } = await this.pullSource(from);
     const target = await this.targetOf(checkout);
     const said = await repos.subjects(checkout.path, rev, target);
-    return { repo: checkout.remote.name, branch, target, title: title ?? said[0] ?? branch, description: said.length > 1 ? said.map((subject) => `- ${subject}`).join("\n") : "" };
+    return { repo: checkout.remote.name, branch, target, title: titled(title ?? said[0] ?? branch), description: said.length > 1 ? described(said) : "" };
   }
 
   /**

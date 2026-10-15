@@ -14,7 +14,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 
 import { azureWeb, buildWords, votes } from "../../core/pulls.ts";
-import { outcomeSchema } from "../../shared/ipc.ts";
+import { outcomeSchema, PULL_DESCRIPTION, PULL_TITLE } from "../../shared/ipc.ts";
 import type { Command, CurrentView, Form, PullRequest } from "../../shared/ipc.ts";
 import { FIELD } from "./Agents.tsx";
 import type { Act } from "./App.tsx";
@@ -101,11 +101,11 @@ function OpenPull({ from, act, onDone }: { readonly from: From; readonly act: Ac
           </p>
           <Label className={FIELD}>
             Title
-            <Input className="font-normal" name="title" defaultValue={form.title} maxLength={400} required autoFocus />
+            <Input className="font-normal" name="title" defaultValue={form.title} maxLength={PULL_TITLE} required autoFocus />
           </Label>
           <Label className={FIELD}>
             Description
-            <Textarea className="font-normal" name="description" defaultValue={form.description} maxLength={4000} rows={4} />
+            <Textarea className="font-normal" name="description" defaultValue={form.description} maxLength={PULL_DESCRIPTION} rows={4} />
           </Label>
           <p className="flex items-center gap-2">
             <Switch id={`${id}draft`} checked={draft} onCheckedChange={setDraft} />
