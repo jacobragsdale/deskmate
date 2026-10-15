@@ -973,7 +973,8 @@ await test(
 
     const quick = await asked("@bob/uploader a quick one");
     await run(bob.session, quick, false);
-    await until(bob.session, "its draft", (view) => view.busy.unsent === 1);
+    // The draft is shown a moment before the run counts as ended, which is what leaving asks first.
+    await until(bob.session, "its draft, its run ended", (view) => view.busy.unsent === 1 && view.busy.working === 0);
     await assert.rejects(leave(), /^Error: your uploader agent's draft is waiting in #side: send or discard it before you leave$/);
     await bob.session.handle({ do: "discardDraft", chat: "#side", id: quick, repo: "uploader" });
 
