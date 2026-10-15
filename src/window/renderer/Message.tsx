@@ -247,9 +247,10 @@ function RequestLine({ request, text, asker, runs, act }: { readonly request: Re
         </ReadyLine>
       );
     case "working":
+      // What its owner's desk last said it is doing, in job.progress's few words, once it has said.
       return (
         <p className={LINE}>
-          <Spinner /> {who} is working
+          <Spinner /> {who} is {status.summary === "" ? "working" : status.summary}
           <Ran accepted={request.accepted} />
         </p>
       );

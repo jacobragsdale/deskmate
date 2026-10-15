@@ -402,7 +402,7 @@ await test(
     );
     assert.ok(!order.includes(-1), history);
 
-    // Alice asks bob's agent twice from the window. The first she takes back while it waits. The second bob runs: under it she sees the branch and short commit it ran at, and its answer says them too.
+    // Alice asks bob's agent twice from the window. The first she takes back while it waits. The second bob runs: under it she sees the branch and short commit it ran at, and what it is doing, and its answer says where it ran too.
     await page.click("nav button", "bob");
     await page.until("the chat with bob", `document.querySelector("main h1")?.textContent === "bob"`);
     await page.type('textarea[aria-label="Message bob"]', "@bob/uploader never mind");
@@ -418,6 +418,9 @@ await test(
     const commit = "c0ffee".padEnd(40, "0");
     await bob.publish("alice", "job.accepted", { repo: "uploader", branch: "main", commit, dirty: true, delivery: "post", mode: "full", by: "owner" }, [asked.event.id]);
     await page.until("where it runs", `document.querySelector("main").innerText.includes("bob's uploader agent is working on main ± at c0ffee0")`);
+    // What bob's desk says his agent is doing takes the place of "working": the few coarse words, and nothing more.
+    await bob.publish("alice", "job.progress", { repo: "uploader", summary: "editing files" }, [asked.event.id]);
+    await page.until("what it is doing", `document.querySelector("main").innerText.includes("bob's uploader agent is editing files on main ± at c0ffee0")`);
     await bob.publish("alice", "job.result", { repo: "uploader", branch: "main", text: "in queue.py", reviewed: false }, [asked.event.id]);
     await page.until("the answer, with where it ran", `document.querySelector("main").innerText.includes("/uploader agent on main ± at c0ffee0")`);
 
