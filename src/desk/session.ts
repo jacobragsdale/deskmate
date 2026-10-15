@@ -1816,6 +1816,9 @@ export class Session {
 
   /** Publish a workflow file from the user's checkout of the repo a channel is about, under the name it gives, once it reads, and still says `seen`, what the user was shown of it. */
   private async publishWorkflow(chat: string, file: string, seen: string): Promise<void> {
+    if (!repos.isWorkflowName(file)) {
+      throw new PlayerTwoError(`${file} is not a workflow's file, which is named .yml or .yaml`); // As the list offers none other, whatever the window sends.
+    }
     const yaml = repos.workflowFile(this.pinnedCheckout(chat).path, file);
     if (yaml !== seen) {
       throw new PlayerTwoError(`${file} has changed since you read it: look at it again before you publish it`);

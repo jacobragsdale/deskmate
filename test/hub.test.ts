@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import type { KeyObject } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -1652,6 +1652,32 @@ await test("a link to a workflow's message that is not loaded names the workflow
     return shown[0]?.state === "elsewhere" && shown;
   });
   assert.deepEqual(notes, [{ state: "elsewhere", id: posted.event.id, author: "workflow: ci-failure", chat: "#ops" }]);
+});
+
+await test("a workflow is published only from a file named .yml or .yaml in the pinned repo's workflow folder, whatever name the window sends", { timeout: 30_000 }, async (t) => {
+  const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+  const alice = await hub.join("alice");
+  await alice.publish("#ops", "channel.join", {});
+  await alice.publish("#ops", "channel.pin", { repo: { name: "billing", key: "dev.azure.com/acme/platform/billing", url: "https://dev.azure.com/acme/Platform/_git/billing" }, branch: null });
+  const dev = join(hub.dir, "dev-alice");
+  const folder = join(checkout(dev, "billing"), ".player-two", "workflows");
+  mkdirSync(folder, { recursive: true });
+  const file = (name: string): string => `name: ${name}\non:\n  webhook: {}\nsteps:\n  - post: "from ${name}"\n`;
+  writeFileSync(join(folder, "notes.txt"), file("notes"));
+  writeFileSync(join(folder, "ci.YAML"), file("ci"));
+  const { session } = deskOf(t, alice, dev);
+  await until(session, "her checkout of the pinned repo", (view) => view.loaded && view.myRepos.includes("billing") && view.rows.some((row) => row.chat === "#ops"));
+
+  assert.deepEqual(
+    session.workflowFiles("#ops").files.map((each) => each.name),
+    ["ci.YAML"]
+  );
+  await assert.rejects(session.handle({ do: "publishWorkflow", chat: "#ops", file: "notes.txt", yaml: file("notes") }), /^Error: notes\.txt is not a workflow's file, which is named \.yml or \.yaml$/);
+  await session.handle({ do: "publishWorkflow", chat: "#ops", file: "ci.YAML", yaml: file("ci") });
+  assert.deepEqual(
+    (await alice.workflows("#ops")).map(({ event }) => readContent(event)).map((said) => (said.kind === "workflow.define" ? said.content.name : said.kind)),
+    ["ci"]
+  );
 });
 
 await test(

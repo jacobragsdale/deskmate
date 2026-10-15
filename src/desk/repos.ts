@@ -16,6 +16,11 @@ const WORKFLOWS = [".player-two", "workflows"]; // Where a repo keeps the workfl
 export const MOST_WORKFLOW = 64_000; // Bytes of a workflow's file read: more than one event can carry.
 const MOST_WORKFLOWS = 100; // Workflow files listed from one folder.
 
+/** Whether a file in the workflow folder is named as a workflow's is, .yml or .yaml: the only ones listed, read or published. */
+export function isWorkflowName(name: string): boolean {
+  return /\.ya?ml$/i.test(name);
+}
+
 export interface Checkout {
   readonly remote: Remote;
   readonly path: string;
@@ -108,12 +113,12 @@ export function workflowFolder(checkout: string): string | null {
 }
 
 /**
- * The text of the file `name` in a checkout's workflow folder, when it is a file itself, not a link, of at most MOST_WORKFLOW bytes; null otherwise. The name comes from a repo, so one that
- * is not a plain file name, as "../x" is not, reads nothing.
+ * The text of the file `name` in a checkout's workflow folder, when it is a file itself, not a link, named as a workflow's is, of at most MOST_WORKFLOW bytes; null otherwise. The name
+ * comes from a repo, or from the window, so one that is not a plain file name, as "../x" is not, reads nothing.
  */
 export function workflowFile(checkout: string, name: string): string | null {
   const folder = workflowFolder(checkout);
-  if (folder === null || name === "." || name === ".." || /[/\\\0]/.test(name)) {
+  if (folder === null || !isWorkflowName(name) || /[/\\\0]/.test(name)) {
     return null;
   }
   let fd: number;
@@ -135,7 +140,7 @@ export function workflowFiles(checkout: string): { readonly name: string; readon
   const folder = workflowFolder(checkout);
   let names: string[] = [];
   try {
-    names = folder === null ? [] : readdirSync(folder, { withFileTypes: true }).flatMap((entry) => (entry.isFile() && /\.ya?ml$/i.test(entry.name) ? [entry.name] : []));
+    names = folder === null ? [] : readdirSync(folder, { withFileTypes: true }).flatMap((entry) => (entry.isFile() && isWorkflowName(entry.name) ? [entry.name] : []));
   } catch {
     // A folder that cannot be read lists nothing.
   }
