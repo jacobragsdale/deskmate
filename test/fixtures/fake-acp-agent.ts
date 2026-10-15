@@ -4,7 +4,8 @@
  * `switch` asks to switch its session to a mode in which it edits without asking, as ACP lets an agent's modes differ in what they ask; each `edit` asks to edit and writes edited.txt only if allowed;
  * `run` asks to run `npm test` in its folder; `takeback` asks to edit and takes the request back 300 ms later; `leave` asks to edit and ends its turn without waiting for the answer;
  * `stray` asks under another session's id; `long` asks to edit under a title of two lines and over 300 characters; `mcp` says which MCP servers its session has; `whoami` says the agent its environment names in PLAYER_TWO_AGENT, and the one chat PLAYER_TWO_ONLY_CHAT names, if it does;
- * `slow` waits until cancelled, with a child process of its own; `deaf` does the same but takes no notice of a cancel.
+ * `slow` waits until cancelled, with a child process of its own; `deaf` does the same but takes no notice of a cancel. Each `ask:OWNER/REPO` asks that agent "read" with the `ask_agent` tool of the
+ * MCP server its session was given started with --job, all at once, and `ask:OWNER/REPO:TEXT` asks it TEXT, which may itself be an `ask:`; it says what each answered, or how each ended, and that it could not ask without such a server.
  * Whatever it did, it says so in a short message streamed in two chunks, after the number of the turn in its session. Told while it asks that its turn is cancelled, it ends the turn as cancelled, as ACP asks. Started with --signed-out it says it needs signing in, and signing in fails; with --always-only it offers no way to be allowed just once;
  * with --no-asking it edits without asking first, as an agent that cannot be limited would; with --deaf every prompt is also `deaf`. It says it is version 1.2.3, or with --version-file=FILE what FILE holds, as an agent updated in place would.
  * It adds its pid, and its child's, to `pids` in its folder, or to the file --pids=FILE names, unless started with --no-pids, for a test of what it writes there.
@@ -17,10 +18,13 @@ import { Writable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 
 import * as acp from "@agentclientprotocol/sdk";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { z } from "zod";
 
 interface Session {
   readonly cwd: string;
-  readonly servers: string;
+  readonly servers: readonly acp.McpServer[];
   turns: number;
   cancelled: () => void; // Ends the turn that is waiting, if one is.
 }
@@ -158,13 +162,56 @@ async function act(client: acp.AgentContext, sessionId: string, session: Session
     }
   }
   if (has("mcp")) {
-    did.push(`servers ${session.servers}`);
+    did.push(`servers ${JSON.stringify(session.servers)}`);
   }
   if (has("whoami")) {
     const only = process.env["PLAYER_TWO_ONLY_CHAT"];
     did.push(`as ${process.env["PLAYER_TWO_AGENT"] ?? "nobody"}${only === undefined ? "" : `, reading ${only} only`}`);
   }
+  did.push(...(await askAll(sessionId, text)));
   return did;
+}
+
+const toolResultSchema = z.object({ content: z.array(z.object({ type: z.literal("text"), text: z.string() })) });
+const askedSchema = z.object({ outcome: z.string(), reason: z.string().optional(), answer: z.object({ text: z.string() }).optional() });
+
+/** Ask each agent `ask:` names, all at once, through the MCP server with --job the session was given, and say what each answered or how it ended. Rejects with Cancelled when the turn is. */
+async function askAll(sessionId: string, text: string): Promise<string[]> {
+  const session = sessions.get(sessionId);
+  if (session === undefined) {
+    return [];
+  }
+  const asks = [...text.matchAll(/(?<!\S)ask:([a-z0-9][a-z0-9_-]*\/[a-z0-9][a-z0-9._-]*)(?::(\S+))?/g)].map(([, agent = "", question = "read"]) => ({ agent, question }));
+  const server = session.servers.find((each) => "command" in each && each.args.includes("--job"));
+  if (asks.length === 0 || server === undefined || !("command" in server)) {
+    return asks.map(({ agent }) => `could not ask ${agent}: no ask_agent`);
+  }
+  const env: Record<string, string> = {};
+  for (const [name, value] of [...Object.entries(process.env), ...server.env.map((each): [string, string] => [each.name, each.value])]) {
+    if (value !== undefined) {
+      env[name] = value;
+    }
+  }
+  const client = new Client({ name: "fake-acp-agent", version: "1" });
+  await client.connect(new StdioClientTransport({ command: server.command, args: server.args, env, stderr: "ignore" }));
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    session.cancelled = () => {
+      reject(new Cancelled());
+    };
+  });
+  try {
+    const answers = asks.map(async ({ agent, question }) => {
+      const [said] = toolResultSchema.parse(await client.callTool({ name: "ask_agent", arguments: { agent, text: question } })).content;
+      const asked = askedSchema.safeParse(JSON.parse(said?.text ?? "null"));
+      if (!asked.success) {
+        return `asked ${agent}: ${said?.text ?? "nothing"}`;
+      }
+      return `asked ${agent}: ${asked.data.answer?.text ?? asked.data.outcome}${asked.data.reason === undefined ? "" : ` (${asked.data.reason})`}`;
+    });
+    return await Promise.race([Promise.all(answers), cancelled]);
+  } finally {
+    await client.close();
+  }
 }
 
 /** Start a child process of its own, as `slow` and `deaf` do. */
@@ -214,7 +261,7 @@ acp
       throw acp.RequestError.authRequired();
     }
     const sessionId = String(sessions.size + 1);
-    sessions.set(sessionId, { cwd: params.cwd, servers: JSON.stringify(params.mcpServers), turns: 0, cancelled: () => undefined });
+    sessions.set(sessionId, { cwd: params.cwd, servers: params.mcpServers, turns: 0, cancelled: () => undefined });
     return { sessionId };
   })
   .onRequest("session/prompt", async ({ params, client }) => {

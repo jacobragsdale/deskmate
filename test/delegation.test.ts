@@ -1,7 +1,8 @@
 /** Delegation: what an agent's request of another agent says, whether an acceptance lets its agent ask others, and whether the log lets a request go to its target. */
 
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { TestContext } from "node:test";
@@ -20,6 +21,19 @@ import { Session } from "../src/desk/session.ts";
 import type { Notice, ReplyView } from "../src/shared/ipc.ts";
 import { startHub, TEAM_REPOS } from "./startHub.ts";
 import type { Hub } from "./startHub.ts";
+
+// An agent's MCP server is started as `player-two`, found on the PATH: here, the command from this checkout, in the home of the identity whose agent's key file it is given.
+const BIN = mkdtempSync(join(tmpdir(), "player-two-bin-"));
+const CLI = join(import.meta.dirname, "..", "src", "cli", "main.ts");
+writeFileSync(
+  join(BIN, "player-two"),
+  `#!/bin/sh\nPLAYER_TWO_HOME="$(dirname "$(dirname "$PLAYER_TWO_AGENT_KEY_FILE")")"\nexport PLAYER_TWO_HOME\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(CLI)} "$@"\n`,
+  { mode: 0o755 }
+);
+process.env["PATH"] = `${BIN}:${process.env["PATH"] ?? ""}`;
+process.once("exit", () => {
+  rmSync(BIN, { recursive: true, force: true }); // Not in a hook of the tests': one registered among them may run before the next starts.
+});
 
 const NOW = 1_800_000_000;
 const key = loadKey("11".repeat(32));
@@ -508,5 +522,34 @@ await test(
     await stopped(fourth.child, "carol/billing");
     assert.equal(jacob.session.view().busy.working, 1);
     await jacob.session.handle({ do: "stop", id: fourth.root, repo: "uploader" });
+  }
+);
+
+await test(
+  "the scripted agent asks each agent `ask:` names through the MCP server a run let ask others is given, and puts what each answered in its own answer; given none, it says it could not ask",
+  { timeout: 60_000 },
+  async (t) => {
+    const hub = await startHub(t, () => Date.now() / 1000);
+    const jacob = await deskOf(t, hub, "jacob", ["uploader"]);
+    const bob = await hub.join("bob");
+    await bob.publish("#team", "channel.join", {});
+    /** Bob asks jacob's agent, and jacob lets it run, asking others when `delegate`. Resolves with what it answered. */
+    const answer = async (text: string, delegate: boolean, meanwhile: (id: string) => Promise<void> = () => Promise.resolve()): Promise<string> => {
+      const { id } = (await bob.publish("#team", "message", { text, via: "cli" })).event;
+      await eventually("jacob can run it", () => jacob.shown(id)?.requests[0]?.status.kind === "ready");
+      await jacob.session.handle({ do: "run", id, repo: "uploader", post: true, mode: "read-only", text, delegate });
+      await meanwhile(id);
+      const said = readContent((await sent(bob, id, "jacob/uploader", "job.result")).event);
+      return said.kind === "job.result" ? said.content.text : "";
+    };
+
+    const asked = await answer("@jacob/uploader ask:bob/client:where?", true, async (id) => {
+      const request = await eventually("jacob's agent asks bob's", async () => (await bob.events({ chat: "#team" })).find(({ event }) => event.kind === "job.request" && event.refs[0] === id));
+      assert.deepEqual(readContent(request.event), { kind: "job.request", content: { target: "bob/client", text: "where?", chain: ["jacob/uploader"] } });
+      await bob.publish("#team", "job.accepted", { repo: "client", branch: "main", commit: COMMIT, dirty: false, delivery: "review", mode: "read-only", by: "owner" }, [request.event.id]);
+      await bob.publish("#team", "job.result", { repo: "client", branch: "main", text: "in queue.py", reviewed: true }, [request.event.id]);
+    });
+    assert.match(asked, /; asked bob\/client: in queue\.py$/);
+    assert.match(await answer("@jacob/uploader ask:bob/client", false), /; could not ask bob\/client: no ask_agent$/);
   }
 );
