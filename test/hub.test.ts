@@ -350,6 +350,7 @@ await test("two people, their agents and a channel, through the real hub", { tim
       delegation: null,
       tree: [],
       patch: null,
+      approval: null,
       replyCount: 0,
       replies: []
     }

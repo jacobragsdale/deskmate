@@ -296,8 +296,11 @@ function least(a: PermissionMode, b: PermissionMode): PermissionMode {
   return atMost(a, b) ? a : b;
 }
 
-/** What the hub reported of one step of a workflow's run, and when. */
-type Report = Extract<Content, { readonly kind: "workflow.run" }>["content"] & { readonly ts: number };
+/** What the hub reported of one step of a workflow's run, when, and the events it names: the run's definition, then the message the step posted or, for an approval's outcome, waited on. */
+type Report = Extract<Content, { readonly kind: "workflow.run" }>["content"] & { readonly ts: number; readonly refs: readonly string[] };
+
+/** That a workflow's run waits for a 👍 on a message: for whom, in the hub's words, and whether the user's moves it on. */
+type Approval = NonNullable<ReplyView["approval"]>;
 
 /** What the log and the clock say of an agent's request of another: the most its run may be let do, when its root was let run, and everyone it runs on the say of; or why it may not go. */
 type Judged = { readonly ok: true; readonly mode: PermissionMode; readonly since: number; readonly people: readonly string[] } | { readonly ok: false; readonly reason: string };
@@ -586,6 +589,7 @@ export class Session {
     const rows = this.rows();
     const working = new Set([...this.runs.values()].map((run) => chatOf(run.entry.event, this.me)));
     const asked = new Map(rows.map((row) => [row.chat, this.chats.waitingForMe(row.chat, now).filter((request) => !this.isHeld(request.repo)).length]));
+    const approving = new Map(rows.map((row) => [row.chat, [...this.waitsIn(row.chat).values()].filter((wait) => wait.mine).length]));
     const rowViews: RowView[] = rows.map((row) => {
       let mark: RowView["mark"] = "";
       if (working.has(row.chat)) {
@@ -594,6 +598,8 @@ export class Session {
         mark = "draft";
       } else if ((asked.get(row.chat) ?? 0) > 0) {
         mark = "asked";
+      } else if ((approving.get(row.chat) ?? 0) > 0) {
+        mark = "approve";
       }
       return { chat: row.chat, unread: row.unread, mark, here: isChannel(row.chat) ? null : this.here(row.chat) };
     });
@@ -617,7 +623,7 @@ export class Session {
       link,
       loaded: this.loaded,
       rows: rowViews,
-      waiting: [...asked.values()].reduce((sum, count) => sum + count, 0),
+      waiting: [...asked.values(), ...approving.values()].reduce((sum, count) => sum + count, 0),
       unread: rows.reduce((sum, row) => sum + row.unread, 0),
       team: this.team,
       myRepos: [...this.checkouts.keys()],
@@ -680,6 +686,7 @@ export class Session {
     const messages: MessageView[] = [];
     let previous: Message | null = null;
     let marked = false;
+    const waits = this.waitsIn(chat);
     // ponytail: every message of the open chat is sent to the window on each change. Send only what is new if long chats make it slow.
     for (const item of this.chats.items(chat)) {
       if (item.kind === "line") {
@@ -691,23 +698,24 @@ export class Session {
       if (firstNew || (previous !== null && dayOf(previous.entry.event.ts) !== dayOf(event.ts))) {
         previous = null; // The first message of a day, and the first after the "new" line, says who wrote it.
       }
-      messages.push(item.kind === "message" ? this.messageView(item.message, previous, now) : this.warningView(item.entry));
+      messages.push(item.kind === "message" ? this.messageView(item.message, previous, now, waits) : this.warningView(item.entry));
       previous = item.kind === "message" ? item.message : null;
     }
     return messages;
   }
 
-  private messageView(message: Message, previous: Message | null, now: number): MessageView {
+  private messageView(message: Message, previous: Message | null, now: number, waits: ReadonlyMap<string, Approval>): MessageView {
     const replies: ReplyView[] = [];
     let before: Message | null = null;
     for (const reply of message.replies) {
-      replies.push(this.replyView(reply, before, now));
+      replies.push(this.replyView(reply, before, now, waits));
       before = reply;
     }
-    return { ...this.replyView(message, previous, now), replyCount: replies.length, replies };
+    return { ...this.replyView(message, previous, now, waits), replyCount: replies.length, replies };
   }
 
-  private replyView(message: Message, previous: Message | null, now: number): ReplyView {
+  /** One message or answer as the window draws it, with `waits`, the messages of its chat that a workflow's run waits on for a 👍. */
+  private replyView(message: Message, previous: Message | null, now: number, waits: ReadonlyMap<string, Approval>): ReplyView {
     const { seq, event } = message.entry;
     const answered = this.chats.answered(message);
     const accepted = this.acceptedFor(message, now);
@@ -734,7 +742,8 @@ export class Session {
       delegation:
         message.delegation === null ? null : { first: message.delegation.first, chain: message.delegation.chain, target: message.delegation.target, words: chainWords(message.delegation, this.me) },
       tree: this.treeView(message, now),
-      patch: message.patch === null ? null : patchView(message.patch.content, message.patch, this.checkoutOf(message.patch.content.repo) !== undefined)
+      patch: message.patch === null ? null : patchView(message.patch.content, message.patch, this.checkoutOf(message.patch.content.repo) !== undefined),
+      approval: waits.get(event.id) ?? null
     };
   }
 
@@ -767,6 +776,7 @@ export class Session {
       delegation: null,
       tree: [],
       patch: null,
+      approval: null,
       replyCount: 0,
       replies: []
     };
@@ -981,10 +991,29 @@ export class Session {
     for (const { trusted, event } of this.chats.events(chat)) {
       const said = readContent(event);
       if (trusted && said.kind === "workflow.run" && mayCome(event, said)) {
-        runs.set(said.content.run, [...(runs.get(said.content.run) ?? []), { ...said.content, ts: event.ts }]);
+        runs.set(said.content.run, [...(runs.get(said.content.run) ?? []), { ...said.content, ts: event.ts, refs: event.refs }]);
       }
     }
     return runs;
+  }
+
+  /**
+   * The messages of a chat that a workflow's run waits on for a 👍, as its loaded events tell: a run waits on the message its `waiting` report names until a report of the same run follows.
+   * Whom it waits for is in words in the report, and is the user when the step its run waits at, in the workflow's file, names them or anyone; while that file is not known here, nobody.
+   */
+  private waitsIn(chat: string): Map<string, Approval> {
+    const waits = new Map<string, Approval>();
+    for (const reports of this.runsIn(chat).values()) {
+      const last = reports.at(-1);
+      const [definition = "", message = ""] = last?.refs ?? [];
+      if (last?.status === "waiting") {
+        const live = this.liveIn(chat)?.find(({ trusted, event }) => trusted && event.id === definition);
+        const file = live === undefined ? null : this.fileOf(live.event);
+        const step = typeof file === "string" ? undefined : file?.steps[last.step];
+        waits.set(message, { detail: last.detail, mine: step?.kind === "approve" && (step.approve.from === "anyone" || step.approve.from === this.me) });
+      }
+    }
+    return waits;
   }
 
   /** A channel's live workflows as its panel shows them, each with its newest runs; null while they are asked, and for a direct chat. A webhook's secret is never among what is shown. */

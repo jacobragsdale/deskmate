@@ -612,6 +612,38 @@ function Tree({ message, me }: { readonly message: ReplyView; readonly me: strin
   );
 }
 
+/**
+ * Under a message a workflow's run waits on: for whose 👍, in the hub's words, drawn as text; and when it is the user's, "👍 Approve", which adds their 👍 to the message, which is what the
+ * hub waits for. Once it moves on, the line goes.
+ */
+function Approval({ message, act }: { readonly message: ReplyView; readonly act: Act }): JSX.Element | null {
+  const { approval } = message;
+  if (approval === null) {
+    return null;
+  }
+  return (
+    <p className={approval.mine ? MINE : LINE}>
+      {approval.mine ? "◆" : "◌"} the workflow is waiting {approval.detail}
+      {approval.mine && (
+        <>
+          {" · "}
+          <Button
+            size="xs"
+            variant="outline"
+            className="text-foreground"
+            type="button"
+            onClick={() => {
+              act({ do: "react", id: message.id, emoji: "👍", on: true });
+            }}
+          >
+            👍 Approve
+          </Button>
+        </>
+      )}
+    </p>
+  );
+}
+
 /** "(edited)", after the text of a message its author has changed. */
 function Edited({ message }: { readonly message: ReplyView }): JSX.Element | null {
   return message.edited ? <span className="text-xs text-muted-foreground"> (edited)</span> : null;
@@ -1070,6 +1102,7 @@ function Said({
         </PatchCard>
       )}
       <Reactions message={message} me={me} react={react} />
+      <Approval message={message} act={act} />
       {message.requests.map((request) => (
         <RequestLine
           key={`${request.owner}/${request.repo}`}

@@ -149,7 +149,9 @@ const said = {
         .readonly()
     )
     .readonly(),
-  patch: patchSchema.nullable() // For a patch, what it holds; null for anything else. Its body is its title.
+  patch: patchSchema.nullable(), // For a patch, what it holds; null for anything else. Its body is its title.
+  // For a message a workflow's run waits on for a 👍: whom it waits for, in the hub's words, such as "for a 👍 from jacob", and whether the user's 👍 moves it on. Null for any other.
+  approval: z.strictObject({ detail: z.string(), mine: z.boolean() }).readonly().nullable()
 };
 
 /** A message in a thread, under its root. */
@@ -203,7 +205,7 @@ const rowSchema = z
   .strictObject({
     chat: z.string(),
     unread: z.int(),
-    mark: z.enum(["", "working", "draft", "asked"]),
+    mark: z.enum(["", "working", "draft", "asked", "approve"]), // "approve": a workflow's run waits there for the user's 👍.
     here: z.boolean().nullable() // Whether the person is here now; null for a channel.
   })
   .readonly();
@@ -313,7 +315,7 @@ export const viewSchema = z.discriminatedUnion("kind", [
       ]),
       loaded: z.boolean(),
       rows: z.array(rowSchema).readonly(),
-      waiting: z.int(), // Requests waiting for the user's agents, in every chat.
+      waiting: z.int(), // Requests waiting for the user's agents, and workflows' runs for their 👍, in every chat.
       unread: z.int(),
       team: z.array(teamRepoSchema).readonly(),
       myRepos: z.array(z.string()).readonly(),

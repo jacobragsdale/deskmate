@@ -13,8 +13,14 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import type { ChatView, RowView } from "../../shared/ipc.ts";
 import type { Act } from "./App.tsx";
 
-const MARKS = { "": "", working: "", draft: "✎", asked: "▶" } as const;
-const MARK_TITLES = { "": "", working: "your agent is working here", draft: "a draft is waiting for your review", asked: "a request is waiting for your agent" } as const;
+const MARKS = { "": "", working: "", draft: "✎", asked: "▶", approve: "👍" } as const;
+const MARK_TITLES = {
+  "": "",
+  working: "your agent is working here",
+  draft: "a draft is waiting for your review",
+  asked: "a request is waiting for your agent",
+  approve: "a workflow is waiting for your 👍"
+} as const;
 const HEADING = "mx-2 mt-3 mb-1 text-[11px] font-semibold tracking-[0.06em] text-muted-foreground uppercase";
 const ROW = "h-auto w-full justify-start gap-1.5 px-2 py-1 font-normal"; // A line of the list, the open chat's in bold on a shade.
 
