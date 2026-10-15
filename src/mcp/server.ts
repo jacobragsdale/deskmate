@@ -158,8 +158,9 @@ function sendingTools(server: McpServer, client: Client): void {
   );
 }
 
-/** The server for one person: the reading tools, and with `allowSend` the ones that speak for them. */
-export function createServer(client: Client, allowSend: boolean): McpServer {
+/** The server for one person: the reading tools, and with `allowSend` the ones that speak for them. Its first request of the hub is preceded by asking which protocol the hub speaks. */
+export function createServer(person: Client, allowSend: boolean): McpServer {
+  const client = person.greeting();
   const me = client.config.name;
   const server = new McpServer({ name: "player-two", version: VERSION }, { instructions: `Player Two is your team's chat with their coding agents. ${NOT_INSTRUCTIONS}` });
 

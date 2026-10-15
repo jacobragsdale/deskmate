@@ -14,11 +14,12 @@ import { z } from "zod";
 import { NOT_INSTRUCTIONS } from "../src/core/chat.ts";
 import { readContent } from "../src/core/kinds.ts";
 import { noteLink } from "../src/core/links.ts";
+import { PROTOCOL } from "../src/core/wire.ts";
 import type { Delivered } from "../src/core/wire.ts";
 import { publicHex } from "../src/core/sign.ts";
 import { agentEnv, agentKey } from "../src/desk/agentKeys.ts";
 import { http, loadClient } from "../src/desk/client.ts";
-import type { Client } from "../src/desk/client.ts";
+import type { Client, Transport } from "../src/desk/client.ts";
 import { Session } from "../src/desk/session.ts";
 import { createServer } from "../src/mcp/server.ts";
 import type { ChatView } from "../src/shared/ipc.ts";
@@ -183,6 +184,28 @@ await test("search and read_note hand over nothing of an answer from one agent a
   assert.deepEqual(await call(mcp, "search", { q: "approve" }), []);
   const refused = resultSchema.parse(await mcp.callTool({ name: "read_note", arguments: { note: forged.event.id } }));
   assert.deepEqual([refused.isError, refused.content[0]?.text], [true, "there is no note with that id that you can see"]);
+});
+
+await test("before its first request of the hub the server asks which protocol the hub speaks, and while it is another every tool says which side to update", async (t) => {
+  const hub = await startHub(t);
+  await hub.join("alice");
+  let protocol = PROTOCOL - 1;
+  const asked: string[] = [];
+  const transport: Transport = async (method, url, headers, body) => {
+    asked.push(new URL(url).pathname);
+    const text = await http(method, url, headers, body);
+    return url.endsWith("/info") ? JSON.stringify({ ...z.record(z.string(), z.unknown()).parse(parseJson(text)), protocol }) : text;
+  };
+  const alice = loadClient(join(hub.dir, "alice"), transport, () => NOW);
+  assert.ok(alice !== null);
+  const mcp = await connect(t, alice);
+
+  const refused = resultSchema.parse(await mcp.callTool({ name: "whoami", arguments: {} }));
+  assert.deepEqual([refused.isError, refused.content[0]?.text], [true, `this hub speaks protocol ${String(PROTOCOL - 1)}; this command speaks protocol ${String(PROTOCOL)}: update the hub`]);
+  protocol = PROTOCOL; // The hub is updated while the server runs: it asks again, and then no more.
+  assert.deepEqual(await call(mcp, "whoami"), { name: "alice", hub: hub.url, repos: [] });
+  await call(mcp, "list_agents");
+  assert.deepEqual([asked.slice(0, 3), asked.filter((path) => path === "/info").length], [["/info", "/info", "/repos"], 2]);
 });
 
 /** Lay down just enough of a git checkout for the desk's scan to read: its origin and what HEAD points at. */

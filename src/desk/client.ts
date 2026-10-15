@@ -25,6 +25,7 @@ import {
   MAX_SKEW,
   ownerOf,
   personSchema,
+  PROTOCOL,
   receiptSchema,
   repoSchema,
   teamRepoSchema,
@@ -52,6 +53,7 @@ const eventListSchema = z.array(deliveredSchema);
 const auditHeadSchema = z.object({ seq: z.int(), chain: z.string() }).readonly();
 const pinsSchema = z.record(z.string(), z.string());
 const hubErrorSchema = z.object({ detail: z.string() });
+const protocolSchema = z.object({ protocol: z.int() }); // All of /info a client of any protocol can count on.
 const legacyConfigSchema = z.strictObject({ hub: z.string(), name: z.string(), agent: z.string() }); // config.json before phase 3.
 
 /** A search result's snippet cut at the hub's marks into plain stretches and the words the search found. */
@@ -122,23 +124,34 @@ export class Client {
   public readonly signer: string; // Who signs what this client sends and asks: the person who joined, or with `as`, one of their agents, "owner/repo". It reads as the person does.
   private readonly key: KeyObject;
   private readonly transport: Transport;
+  private readonly greets: boolean; // Whether to ask the hub which protocol it speaks before the first request: see `greeting`.
+  private greeted: Promise<void> | null = null; // Asking it, or having heard this protocol; null before, and again after a failure, so that the next request asks again.
   private settings: Config;
   private readonly registrations = new Map<string, Entry>(); // Every agent.register read from the hub, by id, with whether it holds under the key pinned for its author.
   private registeredTo = 0; // The seq of the newest event to everyone read: every agent.register up to it is in `registrations`.
   private learning: Promise<void> | null = null; // Reading the registrations newer than that, while it goes on.
 
-  constructor(home: string, config: Config, key: KeyObject, transport: Transport, now: () => number, signer: string = config.name) {
+  constructor(home: string, config: Config, key: KeyObject, transport: Transport, now: () => number, signer: string = config.name, greets = false) {
     this.home = home;
     this.settings = config;
     this.key = key;
     this.transport = transport;
     this.now = now;
     this.signer = signer;
+    this.greets = greets;
   }
 
   /** The same person's client, signing as their agent `agent`, "owner/repo", with the agent's own key: what it publishes, and the requests it makes, are the agent's. */
   public as(agent: string, key: KeyObject): Client {
-    return new Client(this.home, this.settings, key, this.transport, this.now, agent);
+    return new Client(this.home, this.settings, key, this.transport, this.now, agent, this.greets);
+  }
+
+  /**
+   * The same client, asking the hub which protocol it speaks before its first request, until it has heard this one's, and failing that request with words that say which side to update.
+   * For the command and the MCP server, which would otherwise fail on the first answer they cannot read; the desk asks for itself, and tries again later (see the session's `greet`).
+   */
+  public greeting(): Client {
+    return new Client(this.home, this.settings, this.key, this.transport, this.now, this.signer, true);
   }
 
   public get config(): Config {
@@ -392,8 +405,24 @@ export class Client {
     return { Authorization: authHeader(this.key, this.signer, Math.floor(this.now()), method, path), ...(body === null ? {} : JSON_BODY) };
   }
 
-  private call(method: string, path: string, body: string | null = null): Promise<string> {
+  private async call(method: string, path: string, body: string | null = null): Promise<string> {
+    if (this.greets) {
+      this.greeted ??= this.askProtocol().catch((error: unknown) => {
+        this.greeted = null;
+        throw error;
+      });
+      await this.greeted;
+    }
     return this.transport(method, this.config.hub + path, this.headers(method, path, body), body);
+  }
+
+  /** Fail, with words that say which side to update, when the hub speaks another protocol than this one. */
+  private async askProtocol(): Promise<void> {
+    const { protocol } = protocolSchema.parse(parseJson(await this.transport("GET", `${this.config.hub}/info`, this.headers("GET", "/info", null), null)));
+    if (protocol !== PROTOCOL) {
+      const update = protocol > PROTOCOL ? "Player Two on this machine" : "the hub";
+      throw new PlayerTwoError(`this hub speaks protocol ${String(protocol)}; this command speaks protocol ${String(PROTOCOL)}: update ${update}`);
+    }
   }
 }
 

@@ -12,11 +12,11 @@ import { main, render } from "../src/cli/main.ts";
 import { readContent } from "../src/core/kinds.ts";
 import { noteLink } from "../src/core/links.ts";
 import { loadKey, publicHex, signEvent } from "../src/core/sign.ts";
-import { eventSchema } from "../src/core/wire.ts";
+import { eventSchema, PROTOCOL } from "../src/core/wire.ts";
 import type { Delivered } from "../src/core/wire.ts";
 import { agentEnv, agentKey } from "../src/desk/agentKeys.ts";
 import { http } from "../src/desk/client.ts";
-import type { Client } from "../src/desk/client.ts";
+import type { Client, Transport } from "../src/desk/client.ts";
 import { checkSchema } from "../src/shared/ipc.ts";
 import { NOW, startHub, storedUnchecked, TOKEN } from "./startHub.ts";
 import type { Hub } from "./startHub.ts";
@@ -154,6 +154,40 @@ await test("main fails with a nonzero exit before joining", async (t) => {
     assert.deepEqual([ran.status, ran.out], [1, ""], argv.join(" "));
     assert.match(ran.err, /^player-two: not joined yet/);
   }
+});
+
+await test("before its first request the command asks which protocol the hub speaks, and asks nothing more of one that speaks another than to be updated", async (t) => {
+  const hub = await startHub(t);
+  await hub.join("alice");
+  let protocol = PROTOCOL + 1;
+  const asked: string[] = [];
+  const transport: Transport = async (method, url, headers, body) => {
+    asked.push(new URL(url).pathname);
+    const text = await http(method, url, headers, body);
+    return url.endsWith("/info") ? JSON.stringify({ ...z.record(z.string(), z.unknown()).parse(JSON.parse(text)), protocol }) : text;
+  };
+  const status = async (): Promise<readonly [number, string]> => {
+    const err: string[] = [];
+    const ran = await main(["status"], {
+      home: join(hub.dir, "alice"),
+      transport,
+      now: () => NOW,
+      env: {},
+      out: () => undefined,
+      err: (line) => {
+        err.push(line);
+      }
+    });
+    return [ran, err.join("\n")];
+  };
+  const speaks = `player-two: this hub speaks protocol ${String(PROTOCOL + 1)}; this command speaks protocol ${String(PROTOCOL)}`;
+  assert.deepEqual(await status(), [1, `${speaks}: update Player Two on this machine`]);
+  protocol = PROTOCOL - 1;
+  assert.deepEqual(await status(), [1, `${speaks.replace(String(PROTOCOL + 1), String(PROTOCOL - 1))}: update the hub`]);
+  assert.deepEqual(asked, ["/info", "/info"]);
+  protocol = PROTOCOL;
+  assert.deepEqual(await status(), [0, ""]);
+  assert.deepEqual([asked[2], asked.filter((path) => path === "/info").length], ["/info", 3]); // First and once, though it asks for several things at once after it.
 });
 
 await test("a command line that is wrong exits with 2 and the usage, a command that fails with 1 and why, and neither sends anything", async (t) => {

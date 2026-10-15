@@ -479,7 +479,7 @@ async function run(argv: readonly string[], options: Options, out: (line: string
     if (client === null) {
       throw new PlayerTwoError("not joined yet: run `player-two join HUB NAME TOKEN`");
     }
-    return client;
+    return client.greeting(); // A hub on another protocol is told apart from an answer that cannot be read.
   };
   const asUser = AS_USER.get(command);
   switch (command) {
