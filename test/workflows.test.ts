@@ -27,8 +27,10 @@ import type { Client } from "../src/desk/client.ts";
 import { Session } from "../src/desk/session.ts";
 import { Database } from "../src/hub/db.ts";
 import { allowList, lookupWithin, refusal, runWorkflows } from "../src/hub/workflows.ts";
-import { checkout, NOW, startHub, TEAM_REPOS } from "./startHub.ts";
+import { checkout, NOW, ownHome, startHub, TEAM_REPOS } from "./startHub.ts";
 import type { Hub } from "./startHub.ts";
+
+ownHome(); // git commits in the scenario's checkout as a test identity, never with the user's own configuration.
 
 /** A channel as one member reads it, oldest first: each message as its author and text, each step of a run as the hub reported it, anything else as its kind; `!` before an author whose signature fails. */
 async function channel(client: Client, chat = "#ops"): Promise<string[]> {
