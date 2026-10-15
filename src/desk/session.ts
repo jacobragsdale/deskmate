@@ -378,6 +378,7 @@ export class Session {
       return { chat: row.chat, unread: row.unread, mark, here: isChannel(row.chat) ? null : this.here(row.chat) };
     });
     const home = homedir();
+    const answering = defaultAgentOf(this.client.config);
     let link: ChatView["link"] = { state: "connecting" };
     if (this.connected) {
       link = { state: "connected" };
@@ -392,6 +393,7 @@ export class Session {
       defaultAgent: this.client.config.defaultAgent,
       presets: PRESETS,
       cannot: { "read-only": this.cannotRun("read-only"), supervised: this.cannotRun("supervised"), "auto-edits": this.cannotRun("auto-edits"), full: this.cannotRun("full") },
+      untested: answering.protocol === "acp" && this.tested[commandLineOf(answering)] === undefined,
       dev: this.dev.startsWith(home) ? `~${this.dev.slice(home.length)}` : this.dev,
       link,
       loaded: this.loaded,

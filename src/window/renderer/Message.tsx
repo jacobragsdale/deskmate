@@ -43,6 +43,7 @@ export interface Runs {
   readonly kept: ReadonlySet<string>; // The runs, as `runOf` names them, whose activity the open chat holds.
   readonly asks: readonly AskView[]; // What they wait for the user to allow or refuse.
   readonly cannot: ChatView["cannot"]; // Why the agent that answers cannot be held to each mode, "" for each it can: the modes a request may be run at.
+  readonly untested: boolean; // Whether the agent that answers is spoken to over ACP and its permissions were never tested.
   readonly show: (run: string, who: string, asked: string) => void; // Open the activity panel on a run, headed with whose agent and what it was asked.
 }
 
@@ -78,10 +79,23 @@ function runLabel(choice: Choice): string {
 
 /**
  * The menu of other ways to run a request: how the answer is delivered, and a run at each mode the agent that answers can be held to, saying why it cannot be held to the others.
- * `first` is whether the line has a first button beside it; when it does not, the menu's own button says what it is for, which is then its name.
+ * `first` is whether the line has a first button beside it; when it does not, the menu's own button says what it is for, which is then its name. An agent over ACP whose permissions
+ * were never tested is offered every mode it can keep, as one that passed is, and the menu says where to test it.
  * Each mode offered points a screen reader to the reasons, which it would otherwise pass over, as they are not items of the menu.
  */
-function RunMenu({ cannot, first, offer, run }: { readonly cannot: Runs["cannot"]; readonly first: boolean; readonly offer: Choice; readonly run: (choice: Choice) => void }): JSX.Element {
+function RunMenu({
+  cannot,
+  untested,
+  first,
+  offer,
+  run
+}: {
+  readonly cannot: Runs["cannot"];
+  readonly untested: boolean;
+  readonly first: boolean;
+  readonly offer: Choice;
+  readonly run: (choice: Choice) => void;
+}): JSX.Element {
   const [post, setPost] = useState(offer.post); // The delivery chosen here, for a run at a mode chosen here.
   const why = [...new Set(MODES.map((mode) => cannot[mode]).filter((reason) => reason !== ""))];
   const reasons = useId();
@@ -130,6 +144,7 @@ function RunMenu({ cannot, first, offer, run }: { readonly cannot: Runs["cannot"
               {reason}.
             </DropdownMenuLabel>
           ))}
+          {untested && <DropdownMenuLabel className="font-normal">Permissions not tested — Setup → Test permissions.</DropdownMenuLabel>}
         </div>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -147,6 +162,7 @@ function ReadyLine({
   who,
   status,
   cannot,
+  untested,
   act,
   children
 }: {
@@ -155,6 +171,7 @@ function ReadyLine({
   readonly who: string;
   readonly status: Extract<RequestView["status"], { kind: "ready" }>;
   readonly cannot: Runs["cannot"];
+  readonly untested: boolean;
   readonly act: Act;
   readonly children: ReactNode; // What else the line offers: the activity of the run before, when there is one.
 }): JSX.Element {
@@ -183,7 +200,7 @@ function ReadyLine({
           </Button>{" "}
         </>
       )}
-      <RunMenu cannot={cannot} first={first} offer={offer} run={run} />
+      <RunMenu cannot={cannot} untested={untested} first={first} offer={offer} run={run} />
       {status.canDecline && (
         <>
           {" "}
@@ -342,7 +359,7 @@ function RequestLine({ request, text, asker, runs, act }: { readonly request: Re
       );
     case "ready":
       return (
-        <ReadyLine request={request} text={text} who={who} status={status} cannot={runs.cannot} act={act}>
+        <ReadyLine request={request} text={text} who={who} status={status} cannot={runs.cannot} untested={runs.untested} act={act}>
           {activity}
         </ReadyLine>
       );

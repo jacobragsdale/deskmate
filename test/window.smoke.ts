@@ -651,6 +651,7 @@ await test(
     await page.until("the menu", `document.querySelector('[role="menuitemradio"]') !== null`);
     await page.click('[role="menuitemradio"]', "Post it directly");
     await page.until("posting chosen, the menu still open", `document.querySelector('[role="menuitemradio"][aria-checked="true"]')?.textContent.includes("Post it directly") === true`);
+    assert.ok(!String(await page.eval(`document.querySelector('[role="menu"]').innerText`)).includes("not tested")); // The scripted agent was tested on the Setup page.
     await page.shot("menu");
     await page.click('[role="menuitem"][data-mode="supervised"]');
     await page.until("the card under carol's request", `${card("main")}?.innerText.includes("Edit edited.txt") === true`);
@@ -736,6 +737,19 @@ await test(
         "Cursor one-shot runs either read-only, when it only proposes changes, or with full access, and nothing between."
       )
     );
+    await page.press("Escape");
+    await page.until("the menu closed again", `document.querySelector('[role="menu"]') === null`);
+
+    // With Cursor over ACP answering, whose permissions were never tested, every mode is offered all the same, and the menu says where to test it.
+    await chooseAgent("Cursor");
+    await page.until(
+      "the first button with Cursor",
+      `document.querySelector("main h1")?.textContent === "carol" && [...${newest}.querySelectorAll("button")].some((each) => each.textContent === "▶ Run read-only")`
+    );
+    await openMenu();
+    assert.deepEqual(await page.eval(menuModes), ["read-only", "supervised", "auto-edits", "full"]);
+    assert.equal(await page.eval(described), "Permissions not tested — Setup → Test permissions.");
+    await page.shot("untested");
     await page.press("Escape");
 
     assert.deepEqual(page.problems, []);

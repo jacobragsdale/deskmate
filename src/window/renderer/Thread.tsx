@@ -125,7 +125,7 @@ export function Thread({
   }, [current]);
 
   const { pinned, members } = current;
-  const runs: Runs = { kept: new Set(current.activity.map((item) => item.run)), asks: current.asks, cannot: view.cannot, show: onActivity };
+  const runs: Runs = { kept: new Set(current.activity.map((item) => item.run)), asks: current.asks, cannot: view.cannot, untested: view.untested, show: onActivity };
   const firstNew = current.newAfter === null ? undefined : current.messages.find((message) => message.seq > (current.newAfter ?? 0) && message.sender !== view.me);
   return (
     <>
