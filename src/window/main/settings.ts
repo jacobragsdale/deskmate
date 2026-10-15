@@ -3,7 +3,7 @@
  * distribution to run it in, and what is the window's alone: whether it starts at login, and whether it has said that closing it hides it to the tray.
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join as joinPath } from "node:path";
 
 import { z } from "zod";
@@ -24,16 +24,37 @@ const settingsSchema = z
 
 export type Settings = z.infer<typeof settingsSchema>;
 
-/** What was saved; the default distribution when nothing was, or what was saved cannot be read. */
+/**
+ * What was saved; the default distribution when nothing was. A file that cannot be read is kept aside, as settings.json.unreadable, for a person to look at, and replaced by settings that
+ * turn nothing on by themselves: start at login is set off, so that the first grant does not turn it on when the user may have turned it off, and the system's own setting is left as it is.
+ */
 export function loadSettings(folder: string): Settings {
+  const file = joinPath(folder, "settings.json");
   try {
-    return settingsSchema.parse(JSON.parse(readFileSync(joinPath(folder, "settings.json"), "utf8")));
-  } catch {
-    return { distro: null };
+    return settingsSchema.parse(JSON.parse(readFileSync(file, "utf8")));
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return { distro: null }; // Nothing saved yet.
+    }
   }
+  const replaced: Settings = { distro: null, atLogin: false };
+  try {
+    renameSync(file, `${file}.unreadable`);
+    write(folder, replaced);
+  } catch {
+    // Neither could be done: the same is read, and the same returned, next time.
+  }
+  return replaced;
 }
 
 /** Change some of the settings, keeping the rest as saved. */
 export function saveSettings(folder: string, changed: Partial<Settings>): void {
-  writeFileSync(joinPath(folder, "settings.json"), JSON.stringify(settingsSchema.parse({ ...loadSettings(folder), ...changed }), null, 1));
+  write(folder, settingsSchema.parse({ ...loadSettings(folder), ...changed }));
+}
+
+/** Write settings.json whole or not at all: to a file beside it, then put in its place, so that a write cut short leaves the one before. */
+function write(folder: string, settings: Settings): void {
+  const file = joinPath(folder, "settings.json");
+  writeFileSync(`${file}.new`, JSON.stringify(settings, null, 1));
+  renameSync(`${file}.new`, file);
 }
