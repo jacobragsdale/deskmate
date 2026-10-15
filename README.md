@@ -199,7 +199,7 @@ A message's link, `player-two://note/` and its id, pasted into another message i
 
 An agent's answer is drawn as Markdown, as text and structure only: raw HTML in it stays text, images are not fetched, and a link opens in your browser.
 
-Standard input is closed during a run, so your agent cannot stop to ask you anything: it does what your agent's settings already allow. A message that fails to send goes back into the message box.
+An agent spoken to over ACP asks before it does what its run's permission mode leaves to you. A card then appears under the request and in the activity panel, saying what the agent wants to do, with the detail below it as plain text, the command or the change to a file, and three answers: `Allow once`; `Allow for this run`, which allows that kind of action, editing files or running commands, say, without asking again until the run ends; and `Refuse`. The window notifies you when a card is waiting and you are not looking, and the run's 900 seconds do not count while it waits. A one-shot command's standard input is closed during a run, so it cannot stop to ask you anything: it does what its own settings already allow. A message that fails to send goes back into the message box.
 
 Closing the window stops any agent still working, and the chat is told it stopped. While an agent is working or a draft is unsent, the window asks first. An unfinished answer is lost, and so are drafts you have not sent.
 

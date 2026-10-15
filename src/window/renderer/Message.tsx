@@ -18,8 +18,8 @@ import { spans } from "../../core/chat.ts";
 import { noteLink, noteOf, notesIn } from "../../core/links.ts";
 import { oneLine } from "../../core/text.ts";
 import { runOf } from "../../shared/ipc.ts";
-import type { CurrentView, MessageView, ReplyView, RequestView } from "../../shared/ipc.ts";
-import { Spinner } from "./Activity.tsx";
+import type { AskView, CurrentView, MessageView, ReplyView, RequestView } from "../../shared/ipc.ts";
+import { AskCard, Spinner } from "./Activity.tsx";
 import type { Act } from "./App.tsx";
 
 const LINE = "my-1 text-muted-foreground"; // Where a tagged agent stands, under the message.
@@ -30,7 +30,8 @@ const BEFORE = { "": "", declined: "you declined · ", failed: "it failed · ", 
 /** What a request line needs of the user's own runs beyond the request itself. */
 export interface Runs {
   readonly kept: ReadonlySet<string>; // The runs, as `runOf` names them, whose activity the open chat holds.
-  readonly show: (run: string, heading: string) => void; // Open the activity panel on a run, headed with whose agent on what.
+  readonly asks: readonly AskView[]; // What they wait for the user to allow or refuse.
+  readonly show: (run: string, who: string, asked: string) => void; // Open the activity panel on a run, headed with whose agent and what it was asked.
 }
 
 /** Seconds since an agent started, counted here so the main process need not say so every second. */
@@ -125,7 +126,7 @@ function ShowActivity({ request, who, text, runs }: { readonly request: RequestV
       className="text-foreground"
       type="button"
       onClick={() => {
-        runs.show(runOf(request.id, request.repo), `${who} · ${oneLine(text, 80)}`);
+        runs.show(runOf(request.id, request.repo), who, oneLine(text, 80));
       }}
     >
       <ActivityIcon /> Show activity
@@ -199,21 +200,28 @@ function RequestLine({ request, text, asker, runs, act }: { readonly request: Re
       );
     case "running":
       return (
-        <p className={LINE}>
-          <Spinner /> {who} is working
-          <Ran accepted={request.accepted} /> · <Elapsed since={status.startedAt} /> · <ShowActivity request={request} who={who} text={text} runs={runs} />{" "}
-          <Button
-            size="xs"
-            variant="outline"
-            className="text-foreground"
-            type="button"
-            onClick={() => {
-              act({ do: "stop", id, repo });
-            }}
-          >
-            ■ Stop
-          </Button>
-        </p>
+        <>
+          <p className={LINE}>
+            <Spinner /> {who} is working
+            <Ran accepted={request.accepted} /> · <Elapsed since={status.startedAt} /> · <ShowActivity request={request} who={who} text={text} runs={runs} />{" "}
+            <Button
+              size="xs"
+              variant="outline"
+              className="text-foreground"
+              type="button"
+              onClick={() => {
+                act({ do: "stop", id, repo });
+              }}
+            >
+              ■ Stop
+            </Button>
+          </p>
+          {runs.asks
+            .filter((ask) => ask.run === runOf(id, repo))
+            .map((ask) => (
+              <AskCard key={ask.id} ask={ask} who={who} act={act} />
+            ))}
+        </>
       );
     case "noCheckout":
       return (

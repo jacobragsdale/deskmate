@@ -197,7 +197,7 @@ async function addAgent(page: Page, program: string, args: readonly string[]): P
 }
 
 await test(
-  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, and runs a teammate's request with the user's agent, step by step in the activity panel",
+  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, runs a teammate's request with the user's agent, step by step in the activity panel, and the user's own, which asks on a card before it runs a command",
   { skip: NO_DISPLAY ? "no display: run it under xvfb-run" : false, timeout: 120_000 },
   async (t) => {
     assert.ok(existsSync(join(ROOT, "dist", "main.js")), "dist/ is not built: run `npm run build` first");
@@ -540,6 +540,23 @@ await test(
     await page.shot("waiting");
     await page.click("main button", "Stop");
     await page.until("the run stopped", `${rows}.at(-1) === "plain Stopped"`);
+
+    // Her own tag, sent from her window, runs at once at the mode for her own requests, auto-edits, where running a command asks first: the card is under her message and in the panel,
+    // and "Allow once" lets the agent go on to its answer. In her chat with bob, whose earlier messages hold no word the agent acts on.
+    const card = (where: string): string => `document.querySelector('${where} section[aria-label="Permission"]')`;
+    await page.click("nav button", "bob");
+    await page.until("the chat with bob, for her own request", `document.querySelector("main h1")?.textContent === "bob"`);
+    await page.type('textarea[aria-label="Message bob"]', "@alice/billing run the tests");
+    await page.press("Enter");
+    await page.until("the card under her message", `${card("main")}?.innerText.includes("Run npm test") === true`);
+    await page.click("main button", "Show activity");
+    await page.until("the card in the panel", `${card("aside")}?.innerText.includes("Run npm test") === true`);
+    await page.shot("card");
+    await page.eval(`[...${card("aside")}.querySelectorAll("button")].find((each) => each.textContent === "Allow once").click()`);
+    await page.until("her agent's answer", `[...document.querySelectorAll("main article")].some((each) => each.innerText.includes("turn 1: run allowed"))`);
+    await page.until("the run to its end in the panel", `${rows}.at(-1) === "plain Answered"`);
+    assert.deepEqual(await page.eval(rows), [`plain Started ${process.execPath}, auto-edits`, "loud Run npm test", "plain Run npm test", "plain turn 1: run allowed", "plain Answered"]);
+    assert.equal(await page.eval(`document.querySelectorAll('section[aria-label="Permission"]').length`), 0);
 
     assert.deepEqual(page.problems, []);
   }

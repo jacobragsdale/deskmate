@@ -55,7 +55,7 @@ export function Thread({
   const items: readonly (MessageView | LineView)[] = [...current.messages, ...current.lines].sort((a, b) => a.seq - b.seq); // The lines go among the messages in the order the hub stored them.
   const newest = items.at(-1)?.seq ?? 0;
 
-  // Keep the newest message in view when the chat is opened, and when one arrives while the reader is already at the end.
+  // Keep the newest message in view when the chat is opened, and when one arrives, or a card asking the user to allow something, while the reader is already at the end.
   useLayoutEffect(() => {
     const box = scroller.current;
     if (box !== null && (atEnd.current || shown.current !== current.chat)) {
@@ -63,7 +63,7 @@ export function Thread({
       atEnd.current = true;
     }
     shown.current = current.chat;
-  }, [current.chat, newest]);
+  }, [current.chat, newest, current.asks.length]);
 
   // While older events are being loaded: the first item shown when they were asked for, and where it was on the screen, to keep it there as they arrive above it.
   const anchor = useRef<{ readonly chat: string; readonly seq: number; readonly top: number; answered: boolean } | null>(null);
@@ -114,7 +114,7 @@ export function Thread({
   }, [current]);
 
   const { pinned, members } = current;
-  const runs: Runs = { kept: new Set(current.activity.map((item) => item.run)), show: onActivity };
+  const runs: Runs = { kept: new Set(current.activity.map((item) => item.run)), asks: current.asks, show: onActivity };
   const firstNew = current.newAfter === null ? undefined : current.messages.find((message) => message.seq > (current.newAfter ?? 0) && message.sender !== view.me);
   return (
     <>

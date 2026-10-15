@@ -192,8 +192,8 @@ function Chat({ view, act, tell, onSetup }: { readonly view: ChatView; readonly 
                 onPin={() => {
                   setDialog("pin");
                 }}
-                onActivity={(id, heading) => {
-                  setShown({ chat: current.chat, run: id, heading });
+                onActivity={(id, who, asked) => {
+                  setShown({ chat: current.chat, run: id, who, asked });
                 }}
               />
               <Composer view={view} current={current} act={act} submit={submit} tell={tell} />
@@ -217,10 +217,8 @@ function Chat({ view, act, tell, onSetup }: { readonly view: ChatView; readonly 
           <ResizableHandle />
           <ResizablePanel id="activity" defaultSize={360} minSize={240} maxSize="60" groupResizeBehavior="preserve-pixel-size">
             <ActivityPanel
-              heading={panel.heading}
-              run={panel.run}
-              items={panel.items}
-              running={panel.running}
+              panel={panel}
+              act={act}
               onClose={() => {
                 setShown(null);
               }}
