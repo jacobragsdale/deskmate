@@ -205,6 +205,7 @@ export class Session {
   private notesOpened = 0;
   private connected = false;
   private problem = "";
+  private toldKey = false; // Whether the user has been told the hub lists another key for them.
   private loaded = false;
   private attentive = true; // Whether the user is looking at the window. Messages that arrive while they are not stay unread.
   private following: Promise<void> = Promise.resolve();
@@ -767,9 +768,18 @@ export class Session {
     }
   }
 
-  /** Ask who is here, which channels there are and who has which repo. */
+  /** Ask who is here, which channels there are and who has which repo; and tell the user, once, when the hub lists another key for them than the one this machine holds, which is never believed. */
   private async refresh(): Promise<void> {
     const [people, channels, team] = await Promise.all([this.client.users(), this.client.channels(), this.client.repos()]);
+    const listed = people.find((person) => person.name === this.me)?.pubkey ?? this.client.ownKey;
+    if (listed !== this.client.ownKey && !this.toldKey) {
+      this.toldKey = true;
+      this.hooks.notice({
+        title: "the hub lists another key for you than this machine's",
+        body: `It says ${this.me}'s key is ${listed}, and ${joinPath(this.client.home, "key")} holds ${this.client.ownKey}. Only what your own key signed is taken as yours, but the hub may be trying to pass something off in your name: tell whoever runs it.`,
+        severity: "error"
+      });
+    }
     this.people = people;
     this.channels = channels;
     this.team = team;

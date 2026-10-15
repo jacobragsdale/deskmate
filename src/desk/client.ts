@@ -122,6 +122,7 @@ export class Client {
   public readonly home: string;
   public readonly now: () => number; // Unix seconds.
   public readonly signer: string; // Who signs what this client sends and asks: the person who joined, or with `as`, one of their agents, "owner/repo". It reads as the person does.
+  public readonly ownKey: string; // The person's public key, from the key file this machine holds: what their own events are checked against, whatever the hub says.
   private readonly key: KeyObject;
   private readonly transport: Transport;
   private readonly greets: boolean; // Whether to ask the hub which protocol it speaks before the first request: see `greeting`.
@@ -131,7 +132,7 @@ export class Client {
   private registeredTo = 0; // The seq of the newest event to everyone read: every agent.register up to it is in `registrations`.
   private learning: Promise<void> | null = null; // Reading the registrations newer than that, while it goes on.
 
-  constructor(home: string, config: Config, key: KeyObject, transport: Transport, now: () => number, signer: string = config.name, greets = false) {
+  constructor(home: string, config: Config, key: KeyObject, transport: Transport, now: () => number, signer: string = config.name, greets = false, ownKey: string = publicHex(key)) {
     this.home = home;
     this.settings = config;
     this.key = key;
@@ -139,11 +140,12 @@ export class Client {
     this.now = now;
     this.signer = signer;
     this.greets = greets;
+    this.ownKey = ownKey;
   }
 
   /** The same person's client, signing as their agent `agent`, "owner/repo", with the agent's own key: what it publishes, and the requests it makes, are the agent's. */
   public as(agent: string, key: KeyObject): Client {
-    return new Client(this.home, this.settings, key, this.transport, this.now, agent, this.greets);
+    return new Client(this.home, this.settings, key, this.transport, this.now, agent, this.greets, this.ownKey);
   }
 
   /**
@@ -151,7 +153,7 @@ export class Client {
    * For the command and the MCP server, which would otherwise fail on the first answer they cannot read; the desk asks for itself, and tries again later (see the session's `greet`).
    */
   public greeting(): Client {
-    return new Client(this.home, this.settings, this.key, this.transport, this.now, this.signer, true);
+    return new Client(this.home, this.settings, this.key, this.transport, this.now, this.signer, true, this.ownKey);
   }
 
   public get config(): Config {
@@ -333,8 +335,9 @@ export class Client {
   }
 
   /**
-   * Whether an event, at its place in the log, holds under its author's key. A person's is the key first seen for them, so a hub that later swaps a key cannot forge one.
+   * Whether an event, at its place in the log, holds under its author's key. A person's is the key first seen for them, so a hub that later swaps a key cannot forge one; the user's own is the one in their key file.
    * An agent's is the one its owner's newest registration before the event holds, among those that hold under the owner's: an agent with none, or whose owner's key is not the one pinned, is not trusted.
+   * So the user's own agents are checked against registrations their own key signed, and never against a key the hub vouches for.
    * A registration is learned as it passes; one this client has not seen is asked of the hub before an agent's event is refused.
    */
   public async isTrusted({ seq, event }: Delivered): Promise<boolean> {
@@ -393,14 +396,20 @@ export class Client {
     return this.learning;
   }
 
-  /** Whether an event holds under the key first seen for its author, a person: the one the hub said when this client first asked, or the one in known.json when it did before. */
+  /**
+   * Whether an event holds under the key first seen for its author, a person: the one the hub said when this client first asked, or the one in known.json when it did before.
+   * The user's own is the key in the file this machine holds, never one the hub says: a hub could otherwise sign a grant in their name, and their desk would run what it lets go.
+   */
   private async pinned(event: Event): Promise<boolean> {
     const { author } = event;
+    if (author === this.config.name) {
+      return eventIsAuthentic(event, this.ownKey);
+    }
     const pinFile = joinPath(this.home, "known.json");
     let pins = existsSync(pinFile) ? pinsSchema.parse(parseJson(readFileSync(pinFile, "utf8"))) : {};
     if (pins[author] === undefined) {
       const fromHub = Object.fromEntries((await this.users()).map((user) => [user.name, user.pubkey]));
-      pins = { ...fromHub, ...pins }; // Keys already pinned win over what the hub says now.
+      pins = { ...fromHub, ...pins, [this.config.name]: this.ownKey }; // Keys already pinned win over what the hub says now, and the user's own over both.
       writeFileSync(pinFile, JSON.stringify(pins, null, 1));
     }
     const pubkey = pins[author];
@@ -458,6 +467,9 @@ export async function join(home: string, hub: string, name: string, token: strin
   const request = { ...userSchema.parse({ name, pubkey: publicHex(loadKey(readFileSync(keyFile, "utf8").trim())) }), token };
   await transport("POST", `${config.hub}/join`, JSON_BODY, JSON.stringify(request));
   writeFileSync(joinPath(home, "config.json"), JSON.stringify(config, null, 1));
+  const pinFile = joinPath(home, "known.json");
+  const pins = existsSync(pinFile) ? pinsSchema.parse(parseJson(readFileSync(pinFile, "utf8"))) : {};
+  writeFileSync(pinFile, JSON.stringify({ ...pins, [name]: request.pubkey }, null, 1)); // The user's own key is pinned from the start, as their own file has it.
   return config;
 }
 

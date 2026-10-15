@@ -14,7 +14,8 @@ import { z } from "zod";
 import { main } from "../src/cli/main.ts";
 import { MAX_GRANT, readContent } from "../src/core/kinds.ts";
 import { noteLink, notesIn } from "../src/core/links.ts";
-import { authHeader, eventIsAuthentic, loadKey, publicHex, signEvent } from "../src/core/sign.ts";
+import { authHeader, eventIsAuthentic, loadKey, newKey, publicHex, signEvent } from "../src/core/sign.ts";
+import { deliveredSchema, personSchema } from "../src/core/wire.ts";
 import type { Event, PermissionMode } from "../src/core/wire.ts";
 import { AGENT_KEY_VAR, agentKey } from "../src/desk/agentKeys.ts";
 import { CURSOR_ONESHOT, oneshotAgent } from "../src/desk/agents/presets.ts";
@@ -1462,5 +1463,63 @@ await test(
     assert.equal(bob.session.view().grants.length, 1);
     clock += 60;
     assert.deepEqual(bob.session.view().grants, []);
+  }
+);
+
+await test(
+  "a hub that lists another key for the user cannot pass off a grant, or a registration, in their name: their desk checks their own events against the key file it holds, lets nothing the forgery names run, and tells them",
+  { timeout: 30_000 },
+  async (t) => {
+    const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+    const alice = await hub.join("alice");
+    const home = join(hub.dir, "bob");
+    const dev = join(hub.dir, "dev-bob");
+    checkout(dev, "uploader");
+    const honest = await hub.join("bob");
+    assert.deepEqual(JSON.parse(readFileSync(join(home, "known.json"), "utf8")), { bob: honest.ownKey }); // Pinned from his own key file when he joined.
+    rmSync(join(home, "known.json")); // As for one who joined before that, or deleted it: the hub is the first to say who anyone is.
+
+    // The hub says bob's key is mallory's, and hands everyone a grant and a registration she signed in bob's name, which it could not have stored.
+    const mallory = newKey();
+    const now = Math.floor(Date.now() / 1000);
+    const forge = (kind: string, content: object): Event => signEvent(mallory, { author: "bob", to: "*", kind, content: JSON.stringify(content), ts: now, refs: [] });
+    const forged = [
+      forge("grant", { agent: "bob/uploader", askers: ["alice"], mode: "full", delivery: "post", expires: now + 3600, runsPerDay: 20 }),
+      forge("agent.register", { repo: "uploader", pubkey: publicHex(newKey()) })
+    ];
+    const lying: Transport = async (method, url, headers, body) => {
+      const said = await http(method, url, headers, body);
+      if (url.endsWith("/users")) {
+        return JSON.stringify(
+          z
+            .array(personSchema)
+            .parse(JSON.parse(said))
+            .map((person) => (person.name === "bob" ? { ...person, pubkey: publicHex(mallory) } : person))
+        );
+      }
+      if (url.includes("chat=*") && !url.includes("before=")) {
+        const page = z.array(deliveredSchema).parse(JSON.parse(said));
+        return JSON.stringify([...forged.map((event, index) => ({ seq: (page[0]?.seq ?? 0) + forged.length - index, event })), ...page]);
+      }
+      return said;
+    };
+    const owner = loadClient(home, lying, () => Date.now() / 1000);
+    assert.ok(owner !== null);
+    const bob = deskOf(t, owner, dev, { describe: () => Promise.resolve({ branch: "main", commit: COMMIT, dirty: false }) });
+    await until(bob.session, "the checkout shared", (view) => view.loaded && view.myRepos.includes("uploader"));
+
+    const { event } = await alice.publish("bob", "message", { text: "@bob/uploader write a file", via: "window" });
+    await until(bob.session, "the request waiting", () => {
+      bob.session.handle({ do: "open", chat: "alice" }).catch(() => undefined);
+      return shownTo(bob.session, event.id)?.requests[0]?.status.kind === "ready";
+    });
+    await pause(300);
+    assert.deepEqual([bob.ran, bob.session.view().grants], [[], []]);
+    assert.equal(await owner.registeredKey("bob/uploader"), publicHex(agentKey(home, "uploader")));
+    assert.deepEqual(JSON.parse(readFileSync(join(home, "known.json"), "utf8")), { alice: alice.ownKey, bob: honest.ownKey });
+    assert.deepEqual(
+      bob.notices.map((notice) => [notice.title, notice.body.includes(publicHex(mallory)), notice.severity]),
+      [["the hub lists another key for you than this machine's", true, "error"]]
+    );
   }
 );
