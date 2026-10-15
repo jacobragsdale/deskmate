@@ -90,6 +90,7 @@ const PULL_KEPT = 60;
 const PULLS = 100;
 const PULLS_EACH = 5;
 const ROOM_EVERY = 60; // Seconds between looks at the open branch room's pull request and build on Azure DevOps, while the user looks at the window.
+const ROOM_GAP = 5; // Least seconds between two looks at any branch room, so that a pin changed again and again, each change another room, sets no pace of its own.
 const RUNS_SHOWN = 5; // Runs of each workflow its panel shows, the newest.
 
 /**
@@ -142,7 +143,6 @@ interface Watched {
   readonly repo: RepoRef;
   readonly branch: string;
   readonly at: number; // When it was last looked at, Unix milliseconds; 0 before it has been.
-  readonly looking: boolean; // While it is being looked at.
   readonly found: NonNullable<CurrentView["pinned"]>["azure"];
   readonly build: Build | null | undefined; // Its latest build as last found, null for none; undefined before one was found.
 }
@@ -347,6 +347,9 @@ export class Session {
   private readonly pulls = new Map<string, { readonly at: number; readonly found: PullRequest | null }>(); // Pull requests referred to, by repo key and id, as Azure DevOps answered when, Unix milliseconds.
   private watched: Watched | null = null; // The open branch room on Azure DevOps.
   private roomTimer: NodeJS.Timeout | undefined; // Until it is next looked at, while the user looks at the window.
+  private looking = false; // While a branch room is being looked at: one at a time, whichever room it is.
+  private lookedLast = 0; // When a branch room, any, was last looked at, Unix milliseconds.
+  private readonly roomGap: number;
   // Each channel's live workflows, as the hub last listed them, `entries` null while it is being asked; asked again once one is published or removed there. When the hub could not list
   // them, why, and when, on this desk's clock: they are asked again once RETRY_DELAY has passed.
   private readonly live = new Map<string, { readonly entries: readonly Entry[] | null; readonly failed?: { readonly why: string; readonly at: number } }>();
@@ -391,6 +394,7 @@ export class Session {
     this.limit = options.limit ?? AGENT_TIMEOUT;
     this.rootTime = options.rootTime ?? ROOT_TIME;
     this.roomEvery = options.rooms ?? ROOM_EVERY;
+    this.roomGap = Math.min(ROOM_GAP, this.roomEvery); // A test that looks more often has a shorter gap too.
     this.me = client.config.name;
     this.chats = new ChatLog(this.me);
     const saved = this.loadSaved();
@@ -908,7 +912,8 @@ export class Session {
 
   /**
    * Keep an eye on the open chat when it is a room about a branch of a repo on Azure DevOps: look at its pull request and build at once, and again every ROOM_EVERY seconds while it stays
-   * open and the user is looking at the window. Leaving it, or looking away, stops that; coming back looks again once ROOM_EVERY seconds have passed since it last looked.
+   * open and the user is looking at the window. Leaving it, or looking away, stops that; coming back looks again once ROOM_EVERY seconds have passed since it last looked. Whatever the
+   * room, one look at a time, and none sooner than ROOM_GAP seconds after the last began: a pin changed is another room, never looked at, which a teammate can change again and again.
    */
   private watchRoom(): Watched["found"] {
     const open = this.openRoom();
@@ -921,7 +926,8 @@ export class Session {
     if (watched === null || !this.attentive || this.stopping.signal.aborted) {
       clearTimeout(this.roomTimer);
       this.roomTimer = undefined;
-    } else if (this.roomTimer === undefined && !watched.looking) {
+    } else if (this.roomTimer === undefined && !this.looking) {
+      const now = Date.now();
       this.roomTimer = setTimeout(
         () => {
           this.roomTimer = undefined;
@@ -929,7 +935,7 @@ export class Session {
             this.lookedAt(watched.id, { ok: false, problem: problemOf(error) }, undefined);
           });
         },
-        Math.max(0, watched.at + this.roomEvery * 1000 - Date.now())
+        Math.max(0, watched.at + this.roomEvery * 1000 - now, this.lookedLast + this.roomGap * 1000 - now)
       );
     }
     return watched?.found ?? null;
@@ -940,7 +946,7 @@ export class Session {
     const info = this.channels.find((channel) => channel.name === this.current);
     const repo = info === undefined || info.repo === null ? null : onAzure(info.repo.key);
     const branch = info?.branch ?? null;
-    return repo === null || branch === null ? null : { id: JSON.stringify([this.current, repo.key, branch]), repo, branch, at: 0, looking: false, found: null, build: undefined };
+    return repo === null || branch === null ? null : { id: JSON.stringify([this.current, repo.key, branch]), repo, branch, at: 0, found: null, build: undefined };
   }
 
   /** Ask Azure DevOps for the pull requests from the branch of the room `id`, while it is the one open, and the branch's latest build. */
@@ -949,7 +955,9 @@ export class Session {
     if (room?.id !== id) {
       return;
     }
-    this.watched = { ...room, at: Date.now(), looking: true };
+    this.looking = true;
+    this.lookedLast = Date.now();
+    this.watched = { ...room, at: this.lookedLast };
     const pulls = await this.azure.pullRequestsFor(room.repo, room.branch);
     const build = pulls.ok ? await this.azure.latestBuild(room.repo, room.branch) : pulls;
     let found: NonNullable<Watched["found"]>;
@@ -970,8 +978,9 @@ export class Session {
    */
   private lookedAt(id: string, found: NonNullable<Watched["found"]>, build: Build | null | undefined): void {
     const room = this.watched;
+    this.looking = false;
     if (room?.id === id) {
-      this.watched = { ...room, looking: false, found, build: build === undefined ? room.build : build };
+      this.watched = { ...room, found, build: build === undefined ? room.build : build };
       if (build?.result === "failed" && room.build !== undefined && !(room.build?.id === build.id && room.build.result === "failed")) {
         this.hooks.notice({ title: `the build of ${room.repo.name} on ${plain(room.branch)} failed`, body: `${buildWords(build)}, ${build.web}`, severity: "error" });
       }
@@ -2099,7 +2108,7 @@ export class Session {
   private lookAgain(): void {
     if (this.watched !== null) {
       this.watched = { ...this.watched, at: 0 };
-      if (!this.watched.looking) {
+      if (!this.looking) {
         clearTimeout(this.roomTimer);
         this.roomTimer = undefined;
         this.watchRoom();

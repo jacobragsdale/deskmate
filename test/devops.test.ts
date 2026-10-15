@@ -20,7 +20,7 @@ import type { Options } from "../src/desk/session.ts";
 import { Database } from "../src/hub/db.ts";
 import type { MessageView, Notice, Question } from "../src/shared/ipc.ts";
 import { fakeAzure, platform } from "./fakeAzure.ts";
-import type { Call, Project } from "./fakeAzure.ts";
+import type { Call, Project, Reply } from "./fakeAzure.ts";
 import { checkout, ownHome, startHub, TEAM_REPOS } from "./startHub.ts";
 
 ownHome();
@@ -54,10 +54,13 @@ async function until<T>(what: string, find: () => T | undefined | false | Promis
   throw new Error(`never happened: ${what}`);
 }
 
-/** The fake Azure DevOps, which every session made after this asks, with a token for it in the environment. */
-async function azure(t: TestContext): Promise<{ readonly calls: Call[]; readonly project: Project }> {
+/** The fake Azure DevOps, which every session made after this asks, with a token for it in the environment; `change` may change or hold back what it answers. */
+async function azure(
+  t: TestContext,
+  change: (call: Call, reply: Reply | null) => Reply | null | Promise<Reply | null> = (_call, reply) => reply
+): Promise<{ readonly calls: Call[]; readonly project: Project }> {
   const { project, answer } = platform(PAT);
-  const fake = await fakeAzure(t, answer);
+  const fake = await fakeAzure(t, (call) => change(call, answer(call)));
   process.env["PLAYER_TWO_TEST_AZURE"] = fake.base;
   process.env["AZURE_DEVOPS_EXT_PAT"] = PAT;
   return { calls: fake.calls, project };
@@ -240,6 +243,53 @@ await test("a branch room on Azure DevOps shows its branch's pull request, an ac
   assert.equal(odd?.ok === true ? odd.pull : undefined, null);
   const asked = calls.findLast((call) => call.path.endsWith("/pullrequests"));
   assert.deepEqual([asked?.query.get("searchCriteria.sourceRefName"), asked?.query.get("$top")], ["refs/heads/x&$top=500#y", "5"]);
+});
+
+await test("a teammate changing a room's pin again and again sets no pace: the desk looks again no sooner than five seconds on, whatever the room", async (t) => {
+  const { calls } = await azure(t);
+  const hub = await startHub(t, () => Date.now() / 1000);
+  const [bob, jacob] = [await hub.join("bob"), await hub.join("jacob")];
+  for (const person of [bob, jacob]) {
+    await person.publish("#room", "channel.join", {});
+  }
+  await bob.publish("#room", "channel.pin", { repo: UPLOADER, branch: "npaulk/my_work" });
+  const { session } = await deskOf(t, jacob, join(hub.dir, "dev-jacob"), "#room");
+  await until("the first look", () => session.view().current?.pinned?.azure ?? undefined);
+  const lists = (): Call[] => calls.filter((call) => call.path.endsWith("/pullrequests"));
+
+  // Twenty-one changes, each drawn as the window draws a change, the last to feature/retry: looked at once the five seconds are up, and then only that room.
+  for (let change = 0; change <= 20; change += 1) {
+    await bob.publish("#room", "channel.pin", { repo: UPLOADER, branch: change % 2 === 0 ? "feature/retry" : "npaulk/my_work" });
+    session.view();
+  }
+  await until("the last pin read", () => session.view().current?.pinned?.branch === "feature/retry");
+  assert.equal(lists().length, 1);
+  await until("the room as it is pinned now looked at", () => session.view().current?.pinned?.azure?.ok === true && lists().length === 2);
+  assert.equal(lists().at(-1)?.query.get("searchCriteria.sourceRefName"), "refs/heads/feature/retry");
+});
+
+await test("a look at a room still under way when its pin changes ends before the room as pinned now is looked at", async (t) => {
+  const { promise: held, resolve: release } = Promise.withResolvers<undefined>();
+  const { calls } = await azure(t, (call, reply) => (call.path.endsWith("/build/builds") ? held.then(() => reply) : reply)); // Every build, until released.
+  const hub = await startHub(t, () => Date.now() / 1000);
+  const [bob, jacob] = [await hub.join("bob"), await hub.join("jacob")];
+  for (const person of [bob, jacob]) {
+    await person.publish("#room", "channel.join", {});
+  }
+  await bob.publish("#room", "channel.pin", { repo: UPLOADER, branch: "npaulk/my_work" });
+  const { session } = await deskOf(t, jacob, join(hub.dir, "dev-jacob"), "#room", { rooms: 0.1 });
+  const lists = (): Call[] => calls.filter((call) => call.path.endsWith("/pullrequests"));
+  await until("the first look waiting on its build", () => calls.some((call) => call.path.endsWith("/build/builds")));
+  await bob.publish("#room", "channel.pin", { repo: UPLOADER, branch: "feature/retry" });
+  await until("the pin read", () => session.view().current?.pinned?.branch === "feature/retry");
+  for (let drawn = 0; drawn < 5; drawn += 1) {
+    session.view();
+    await delay(100);
+  }
+  assert.equal(lists().length, 1);
+  release(undefined);
+  await until("the room as pinned now looked at", () => lists().length === 2);
+  assert.equal(lists().at(-1)?.query.get("searchCriteria.sourceRefName"), "refs/heads/feature/retry");
 });
 
 /**

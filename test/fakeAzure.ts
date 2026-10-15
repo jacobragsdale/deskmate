@@ -58,8 +58,8 @@ export function refusal(status: number, message: string): Reply {
 /** The sign-in page Azure DevOps answers a request it does not let in with, as 203. */
 export const SIGN_IN: Reply = { status: 203, type: "text/html; charset=utf-8", body: fixture("sign-in.html") };
 
-/** The fake, answering each request as `answer` says, or never when it says null. */
-export async function fakeAzure(t: TestContext, answer: (call: Call) => Reply | null): Promise<Fake> {
+/** The fake, answering each request as `answer` says, once it says, or never when it says null. */
+export async function fakeAzure(t: TestContext, answer: (call: Call) => Reply | null | Promise<Reply | null>): Promise<Fake> {
   const calls: Call[] = [];
   const server = createServer((request, response) => {
     let body = "";
@@ -70,10 +70,14 @@ export async function fakeAzure(t: TestContext, answer: (call: Call) => Reply | 
       const url = new URL(request.url ?? "/", "http://azure.test");
       const call = { method: request.method ?? "", path: url.pathname, query: url.searchParams, authorization: request.headers.authorization ?? "", body };
       calls.push(call);
-      const reply = answer(call);
-      if (reply !== null) {
-        response.writeHead(reply.status, { "Content-Type": reply.type }).end(reply.body);
-      }
+      Promise.resolve(answer(call)).then(
+        (reply) => {
+          if (reply !== null) {
+            response.writeHead(reply.status, { "Content-Type": reply.type }).end(reply.body);
+          }
+        },
+        () => undefined
+      );
     });
   });
   server.listen(0, "127.0.0.1");
