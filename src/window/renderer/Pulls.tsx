@@ -150,8 +150,8 @@ export function PullButton({ from, act, children }: { readonly from: From; reado
 }
 
 /**
- * In a branch room whose repo is on Azure DevOps, the branch's pull request and its latest build, each a link, as the desk last found them, or why it could not; and with no pull
- * request, for a user with a checkout of the repo, "Create one".
+ * In a branch room whose repo is on Azure DevOps, the branch's pull request and its latest build, each a link, as the desk last found them, or why it could not find each; and with no
+ * pull request, for a user with a checkout of the repo, "Create one". While the pull request cannot be looked up the build is not asked, and the line says only why.
  */
 export function RoomLine({
   azure,
@@ -167,11 +167,12 @@ export function RoomLine({
   if (azure === null) {
     return null;
   }
+  const { pull, build } = azure;
   return (
     <p className="border-b px-4 py-1.5 text-muted-foreground" data-room-azure>
-      {azure.ok ? (
+      {pull.ok ? (
         <>
-          {azure.pull === null ? (
+          {pull.data === null ? (
             <>
               No pull request
               {mine && (
@@ -184,21 +185,21 @@ export function RoomLine({
               )}
             </>
           ) : (
-            <AzureLink web={azure.pull.web} className="underline-offset-2 hover:underline">
-              {pullWords(azure.pull)}
+            <AzureLink web={pull.data.web} className="underline-offset-2 hover:underline">
+              {pullWords(pull.data)}
             </AzureLink>
           )}
           {" · "}
-          {azure.build === null ? (
-            "no build yet"
-          ) : (
-            <AzureLink web={azure.build.web} className={cn("underline-offset-2 hover:underline", azure.build.result === "failed" && "text-destructive")}>
-              {buildWords(azure.build)}
+          {!build.ok && `build: ${build.problem}`}
+          {build.ok && build.data === null && "no build yet"}
+          {build.ok && build.data !== null && (
+            <AzureLink web={build.data.web} className={cn("underline-offset-2 hover:underline", build.data.result === "failed" && "text-destructive")}>
+              {buildWords(build.data)}
             </AzureLink>
           )}
         </>
       ) : (
-        `Azure DevOps: ${azure.problem}`
+        `Azure DevOps: ${pull.problem}`
       )}
     </p>
   );

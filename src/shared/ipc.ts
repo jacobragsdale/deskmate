@@ -103,6 +103,9 @@ const pullRequestSchema = z
 /** A build on Azure DevOps: its pipeline's name, its status, its result once it has one, null while it runs, as Azure gives them, and its address in the browser. */
 const buildSchema = z.strictObject({ id: z.int(), name: z.string(), status: z.string(), result: z.string().nullable(), web: z.string() }).readonly();
 
+/** Why the desk could not find out something from Azure DevOps, in words. */
+const problemSchema = z.strictObject({ ok: z.literal(false), problem: z.string() }).readonly();
+
 /** What a message and a reply both show. */
 const said = {
   id: z.string(), // The event's id: what a command about it names.
@@ -254,13 +257,14 @@ const currentSchema = z
         branch: z.string().nullable(),
         on: z.array(z.string()).readonly(),
         elsewhere: z.array(z.strictObject({ who: z.string(), branch: z.string() }).readonly()).readonly(),
-        // In a branch room whose repo is on Azure DevOps, the branch's pull request, an active one first, null for none, and its latest build, null for none, as the desk last
-        // looked them up, or the problem that kept it from them; null before it first has, and in any other room.
+        // In a branch room whose repo is on Azure DevOps, the branch's pull request, an active one first, null for none, and its latest build, null for none, each as the desk last
+        // looked it up or the problem that kept it from it, the build's that of the pull request while that could not be looked up; null before it first has, and in any other room.
         azure: z
-          .discriminatedUnion("ok", [
-            z.strictObject({ ok: z.literal(true), pull: pullRequestSchema.nullable(), build: buildSchema.nullable() }).readonly(),
-            z.strictObject({ ok: z.literal(false), problem: z.string() }).readonly()
-          ])
+          .strictObject({
+            pull: z.discriminatedUnion("ok", [z.strictObject({ ok: z.literal(true), data: pullRequestSchema.nullable() }).readonly(), problemSchema]),
+            build: z.discriminatedUnion("ok", [z.strictObject({ ok: z.literal(true), data: buildSchema.nullable() }).readonly(), problemSchema])
+          })
+          .readonly()
           .nullable()
       })
       .nullable(),

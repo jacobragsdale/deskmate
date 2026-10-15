@@ -960,7 +960,8 @@ export class Session {
         () => {
           this.roomTimer = undefined;
           this.lookAtRoom(watched.id).catch((error: unknown) => {
-            this.lookedAt(watched.id, { ok: false, problem: problemOf(error) }, undefined);
+            const failed = { ok: false, problem: problemOf(error) } as const;
+            this.lookedAt(watched.id, { pull: failed, build: failed }, undefined);
           });
         },
         Math.max(0, watched.at + this.roomEvery * 1000 - now, this.lookedLast + this.roomGap * 1000 - now)
@@ -987,17 +988,10 @@ export class Session {
     this.lookedLast = Date.now();
     this.watched = { ...room, at: this.lookedLast };
     const pulls = await this.azure.pullRequestsFor(room.repo, room.branch);
-    const build = pulls.ok ? await this.azure.latestBuild(room.repo, room.branch) : pulls;
-    let found: NonNullable<Watched["found"]>;
-    if (!pulls.ok) {
-      found = pulls;
-    } else if (!build.ok) {
-      found = build;
-    } else {
-      const from = pulls.data.filter((pull) => pull.source === room.branch); // Asked for by its branch: one from any other that a list holds is not believed.
-      found = { ok: true, pull: from.find((pull) => pull.status === "active") ?? from[0] ?? null, build: build.data };
-    }
-    this.lookedAt(id, found, build.ok ? build.data : undefined);
+    const build = pulls.ok ? await this.azure.latestBuild(room.repo, room.branch) : pulls; // Not asked when the pull requests could not be: it would fail as they did.
+    const from = pulls.ok ? pulls.data.filter((pull) => pull.source === room.branch) : []; // Asked for by its branch: one from any other that a list holds is not believed.
+    const pull = pulls.ok ? { ok: true as const, data: from.find((each) => each.status === "active") ?? from[0] ?? null } : pulls;
+    this.lookedAt(id, { pull, build }, build.ok ? build.data : undefined);
   }
 
   /**

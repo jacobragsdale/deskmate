@@ -20,7 +20,7 @@ import type { Options } from "../src/desk/session.ts";
 import { Database } from "../src/hub/db.ts";
 import { commandSchema } from "../src/shared/ipc.ts";
 import type { MessageView, Notice, Question } from "../src/shared/ipc.ts";
-import { fakeAzure, platform } from "./fakeAzure.ts";
+import { fakeAzure, platform, refusal } from "./fakeAzure.ts";
 import type { Call, Project, Reply } from "./fakeAzure.ts";
 import { checkout, ownHome, startHub, TEAM_REPOS } from "./startHub.ts";
 
@@ -209,9 +209,9 @@ await test("a branch room on Azure DevOps shows its branch's pull request, an ac
   await bob.publish("#odd", "channel.pin", { repo: UPLOADER, branch: "x&$top=500#y" });
   const { session } = await deskOf(t, jacob, join(hub.dir, "dev-jacob"), "#room", { rooms: 0.2 });
   const found = await until("the pull request and the build", () => session.view().current?.pinned?.azure ?? undefined);
-  assert.ok(found.ok);
+  assert.ok(found.pull.ok && found.build.ok);
   assert.deepEqual(
-    [found.pull?.id, found.pull?.status, found.pull?.web, found.build],
+    [found.pull.data?.id, found.pull.data?.status, found.pull.data?.web, found.build.data],
     [
       22,
       "active",
@@ -240,10 +240,27 @@ await test("a branch room on Azure DevOps shows its branch's pull request, an ac
 
   // A branch goes to Azure DevOps as one value of the query, whatever it holds; and with no pull request from it, there is none.
   await session.handle({ do: "open", chat: "#odd" });
-  const odd = await until("the odd branch's room", () => (session.view().current?.pinned?.azure?.ok === true ? session.view().current?.pinned?.azure : undefined));
-  assert.equal(odd?.ok === true ? odd.pull : undefined, null);
+  const odd = await until("the odd branch's room", () => {
+    const azure = session.view().current?.pinned?.azure;
+    return azure?.pull.ok === true ? azure : undefined;
+  });
+  assert.equal(odd.pull.ok ? odd.pull.data : undefined, null);
   const asked = calls.findLast((call) => call.path.endsWith("/pullrequests"));
   assert.deepEqual([asked?.query.get("searchCriteria.sourceRefName"), asked?.query.get("$top")], ["refs/heads/x&$top=500#y", "5"]);
+});
+
+await test("a build that cannot be looked up leaves the branch's pull request in the room, beside why", async (t) => {
+  const refused = "TF400813: The user is not authorized to access this resource."; // As for a token without Build (read).
+  await azure(t, (call, reply) => (call.path.endsWith("/build/builds") ? refusal(403, refused) : reply));
+  const hub = await startHub(t, () => Date.now() / 1000);
+  const [bob, jacob] = [await hub.join("bob"), await hub.join("jacob")];
+  for (const person of [bob, jacob]) {
+    await person.publish("#room", "channel.join", {});
+  }
+  await bob.publish("#room", "channel.pin", { repo: UPLOADER, branch: "npaulk/my_work" });
+  const { session } = await deskOf(t, jacob, join(hub.dir, "dev-jacob"), "#room");
+  const found = await until("the room looked at", () => session.view().current?.pinned?.azure ?? undefined);
+  assert.deepEqual([found.pull.ok ? found.pull.data?.id : found.pull.problem, found.build], [22, { ok: false, problem: `Azure DevOps answered 403: ${refused}` }]);
 });
 
 await test("a teammate changing a room's pin again and again sets no pace: the desk looks again no sooner than five seconds on, whatever the room", async (t) => {
@@ -265,7 +282,7 @@ await test("a teammate changing a room's pin again and again sets no pace: the d
   }
   await until("the last pin read", () => session.view().current?.pinned?.branch === "feature/retry");
   assert.equal(lists().length, 1);
-  await until("the room as it is pinned now looked at", () => session.view().current?.pinned?.azure?.ok === true && lists().length === 2);
+  await until("the room as it is pinned now looked at", () => session.view().current?.pinned?.azure?.pull.ok === true && lists().length === 2);
   assert.equal(lists().at(-1)?.query.get("searchCriteria.sourceRefName"), "refs/heads/feature/retry");
 });
 
@@ -354,7 +371,7 @@ await test("a pull request from a branch room's branch is filled from its commit
   assert.deepEqual(JSON.parse(said?.event.content ?? "{}"), { text: "Opened pull request 101: https://dev.azure.com/acme/Platform/_git/uploader/pullrequest/101", via: "window" });
   await until("its pull request in the room", () => {
     const azure = session.view().current?.pinned?.azure;
-    return azure?.ok === true && azure.pull?.id === 101;
+    return azure?.pull.ok === true && azure.pull.data?.id === 101;
   });
 
   // Pushed already, it is not asked again; with a commit origin lacks, it is.
@@ -474,7 +491,7 @@ await test("the user is told, on their desk alone, once each time the latest bui
   const { session, notices } = await deskOf(t, jacob, join(hub.dir, "dev-jacob"), "#room", { rooms: 0.1 });
   const result = (): string | null | undefined => {
     const azure = session.view().current?.pinned?.azure;
-    return azure?.ok === true ? azure.build?.result : undefined;
+    return azure?.build.ok === true ? azure.build.data?.result : undefined;
   };
   await until("the build, failed when first seen", () => result() === "failed");
   await delay(300);
