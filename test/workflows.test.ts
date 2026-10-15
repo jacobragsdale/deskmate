@@ -2,10 +2,13 @@
 
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import { createServer } from "node:http";
+import type { ServerResponse } from "node:http";
 import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import type { TestContext } from "node:test";
 
 import { scheduledJobs } from "croner";
 import { z } from "zod";
@@ -14,7 +17,8 @@ import { mentions } from "../src/core/chat.ts";
 import { readContent } from "../src/core/kinds.ts";
 import { fitText } from "../src/core/wire.ts";
 import type { Client } from "../src/desk/client.ts";
-import { NOW, startHub } from "./startHub.ts";
+import { allowList, refusal } from "../src/hub/workflows.ts";
+import { NOW, startHub, TEAM_REPOS } from "./startHub.ts";
 import type { Hub } from "./startHub.ts";
 
 /** A channel as one member reads it, oldest first: each message as its author and text, each step of a run as the hub reported it, anything else as its kind; `!` before an author whose signature fails. */
@@ -385,3 +389,227 @@ await test("an approval from anyone takes any member's 👍; past its time, a �
   );
   assert.deepEqual(runs(hub), ["deploy 1 2 ended", "deploy 2 2 ended", "deploy 3 0 ended", "deploy 4 0 ended", "deploy 5 0 ended", "deploy 6 0 ended"]);
 });
+
+await test("the allow list names hosts, each a name and every name under it at a dot, or one IP address; http goes only to a host it names exactly, and nothing at all when it names none", () => {
+  const allow = allowList(" Example.COM, ci.corp.internal ,10.0.0.5,[0:0::1], bücher.example,");
+  assert.deepEqual(allow, ["example.com", "ci.corp.internal", "10.0.0.5", "[::1]", "xn--bcher-kva.example"]);
+  const not = (host: string): string => `${host} is not on PLAYER_TWO_WEBHOOK_ALLOW`;
+  const cases = [
+    ["https://example.com/retry", ""],
+    ["https://ci.example.com:8443/retry?build=7", ""],
+    ["https://%65xample.com/", ""], // The host as the address reads, once its percent-encoding is undone.
+    ["https://bücher.example/", ""],
+    ["https://evil-example.com/", not("evil-example.com")],
+    ["https://evilexample.com/", not("evilexample.com")],
+    ["https://example.com.evil.com/", not("example.com.evil.com")],
+    ["https://example.com./", not("example.com.")],
+    ["https://10.0.0.5/", ""],
+    ["https://0xa.0.0.5/", ""], // The same address, written another way.
+    ["https://10.0.0.6/", not("10.0.0.6")],
+    ["https://0.5/", not("0.0.0.5")], // An address is never under a name, here "0.5".
+    ["https://2130706433/", not("127.0.0.1")],
+    ["https://[::1]/", ""],
+    ["https://[::ffff:127.0.0.1]/", not("[::ffff:7f00:1]")],
+    ["https://user:secret@example.com/", "an address with a user name or password in it is never called"],
+    ["https://example.com@evil.com/", "an address with a user name or password in it is never called"],
+    ["http://ci.corp.internal/retry", ""],
+    ["http://build.ci.corp.internal/", "http goes only to a host PLAYER_TWO_WEBHOOK_ALLOW names exactly, which build.ci.corp.internal is under; use https"],
+    ["http://10.0.0.5/", ""],
+    ["ftp://example.com/", "not an https or http address once filled in"],
+    ["https://exa mple.com/", "not an https or http address once filled in"]
+  ] as const;
+  for (const [address, why] of cases) {
+    assert.equal(refusal(address, allow), why, address);
+  }
+  assert.equal(refusal("https://example.com/", []), "PLAYER_TWO_WEBHOOK_ALLOW is not set, so the hub calls no address");
+  for (const entry of ["example.com:443", "https://example.com", "example.com/retry", "*.example.com", "user@example.com", "[example]"]) {
+    assert.throws(() => allowList(entry), new RegExp(`^Error: ${entry.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} is not a host name or an IP address`), entry);
+  }
+  assert.deepEqual(allowList(""), []);
+});
+
+/** A server for a webhook step to call, on this machine: each call it took, as its path, content type and body; and how it answers each. */
+async function target(
+  t: TestContext,
+  answer: (response: ServerResponse) => void = (response) => response.end("an answer the chat must never see")
+): Promise<{ readonly url: string; readonly calls: string[] }> {
+  const calls: string[] = [];
+  const server = createServer((request, response) => {
+    let body = "";
+    request.setEncoding("utf8").on("data", (chunk: string) => {
+      body += chunk;
+    });
+    request.on("end", () => {
+      calls.push(`${request.url ?? ""} ${request.headers["content-type"] ?? ""} ${body}`);
+      answer(response);
+    });
+  });
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  t.after(
+    () =>
+      new Promise((resolve) => {
+        server.close(resolve);
+        server.closeAllConnections();
+      })
+  );
+  const address = server.address();
+  assert.ok(address !== null && typeof address === "object");
+  return { url: `http://127.0.0.1:${String(address.port)}`, calls };
+}
+
+/** Wait until the channel as `client` reads it holds a line that `wanted` matches, and return the channel. */
+async function until(client: Client, wanted: RegExp): Promise<string[]> {
+  for (let tries = 0; tries < 300; tries += 1) {
+    const lines = await channel(client);
+    if (lines.some((line) => wanted.test(line))) {
+      return lines;
+    }
+    await new Promise((resolve) => {
+      setTimeout(resolve, 50);
+    });
+  }
+  throw new Error(`never came: ${String(wanted)}\n${(await channel(client)).join("\n")}`);
+}
+
+/** A webhook workflow, set off by a hook with an empty secret-less body, whose steps are `steps` in YAML. */
+const hooked = (name: string, ...steps: readonly string[]): string => `name: ${name}\non:\n  webhook: {}\nsteps:\n${steps.map((step) => `  - ${step}\n`).join("")}`;
+
+/** Set off a webhook workflow published as `definition` with `body`. */
+async function setOff(hub: Hub, definition: string, body: unknown = {}): Promise<void> {
+  const answer = await fetch(`${hub.url}/hooks/${definition.slice(0, 32)}`, { method: "POST", body: JSON.stringify(body) });
+  assert.equal(answer.status, 202);
+}
+
+await test("a webhook step POSTs its body to a host on the allow list, each value filled into a JSON body as JSON and into the address percent-encoded, and is done at a 2xx; nothing of the answer reaches the chat", async (t) => {
+  const called = await target(t);
+  const hub = await startHub(t, () => NOW, "", TEAM_REPOS, ["127.0.0.1"]);
+  const [alice] = await team(hub, "alice");
+  assert.ok(alice !== undefined);
+  const yaml = hooked(
+    "retry",
+    `webhook: { url: "${called.url}/retry/{{body.path}}?build={{body.id}}", body: '{"build": "{{body.id}}", "note": "{{body.note}}", "missing": "{{body.none}}"}' }`,
+    `webhook: { url: "${called.url}/plain" }`,
+    `webhook: { url: "${called.url}/text", body: "build {{body.note}}" }`,
+    `post: "retried"`
+  );
+  const { event: definition } = await alice.publish("#ops", "workflow.define", { name: "retry", yaml });
+
+  await setOff(hub, definition.id, { id: 7, path: "../admin?all=1", note: 'a "note", }, {"x": 1' });
+
+  const lines = await until(alice, /retry run 1 step 3 done/);
+  assert.deepEqual(lines.slice(-5), ["hub: retry run 1 step 0 done", "hub: retry run 1 step 1 done", "hub: retry run 1 step 2 done", "hub: retried", "hub: retry run 1 step 3 done"]);
+  assert.deepEqual(called.calls, [
+    '/retry/..%2Fadmin%3Fall%3D1?build=7 application/json {"build": "7", "note": "a \\"note\\", }, {\\"x\\": 1", "missing": "{{body.none}}"}',
+    "/plain text/plain; charset=utf-8 ",
+    '/text text/plain; charset=utf-8 build a "note", }, {"x": 1'
+  ]);
+  assert.deepEqual(JSON.parse(called.calls[0]?.split(" application/json ")[1] ?? ""), { build: "7", note: 'a "note", }, {"x": 1', missing: "{{body.none}}" }); // The shape it was written in.
+  assert.ok(lines.every((line) => !line.includes("must never see")));
+});
+
+await test("a webhook step is refused with the allow list unset, to a host not on it, and to a name that leads to this machine; it fails at an answer that is not 2xx, a redirect, which it does not follow, more than 1 MB, or no connection; each ends its run", async (t) => {
+  const redirected = await target(t);
+  const answers = new Map<string, (response: ServerResponse) => unknown>([
+    ["/500", (response) => response.writeHead(500).end()],
+    ["/302", (response) => response.writeHead(302, { Location: `${redirected.url}/followed` }).end()],
+    ["/big", (response) => response.end("x".repeat(1024 * 1024 + 1))],
+    ["/1mb", (response) => response.end("x".repeat(1024 * 1024))]
+  ]);
+  const called = await target(t, (response) => {
+    const path = called.calls.at(-1)?.split(" ")[0] ?? "";
+    (answers.get(path) ?? ((other: ServerResponse): unknown => other.end()))(response);
+  });
+  const hubs = { unset: await startHub(t), listed: await startHub(t, () => NOW, "", TEAM_REPOS, ["127.0.0.1"]), named: await startHub(t, () => NOW, "", TEAM_REPOS, ["localhost"]) };
+  let made = 0;
+  /** How a run of a workflow that calls `url` then posts went on the hub `which`: its first step's outcome, and whether it went on. */
+  const outcome = async (which: keyof typeof hubs, url: string): Promise<string> => {
+    made += 1;
+    const name = `w${String(made)}`;
+    const [person] = await team(hubs[which], `p${String(made)}`);
+    assert.ok(person !== undefined);
+    const { event } = await person.publish("#ops", "workflow.define", { name, yaml: hooked(name, `webhook: { url: "${url}" }`, `post: "${name} went on"`) });
+    await setOff(hubs[which], event.id);
+    const lines = await until(person, new RegExp(`${name} run \\d+ step 0`));
+    return `${(lines.find((line) => line.includes(`${name} run`)) ?? "").replace(/^hub: \w+ run \d+ step 0 /, "")}${lines.includes(`hub: ${name} went on`) ? " and went on" : ""}`;
+  };
+
+  assert.equal(await outcome("unset", `${called.url}/ok`), "refused: PLAYER_TWO_WEBHOOK_ALLOW is not set, so the hub calls no address");
+  assert.equal(await outcome("listed", "https://ci.corp.internal/retry"), "refused: ci.corp.internal is not on PLAYER_TWO_WEBHOOK_ALLOW");
+  assert.match(
+    await outcome("named", `${called.url.replace("127.0.0.1", "localhost")}/ok`),
+    /^refused: localhost is at (127\.0\.0\.1|::1), which the hub calls only when PLAYER_TWO_WEBHOOK_ALLOW names that address$/
+  );
+  assert.deepEqual(called.calls, []);
+  const host = new URL(called.url).host;
+  assert.equal(await outcome("listed", `${called.url}/500`), `failed: ${host} answered 500`);
+  assert.equal(await outcome("listed", `${called.url}/302`), `failed: ${host} answered 302, and the hub follows no redirect`);
+  assert.equal(await outcome("listed", `${called.url}/big`), `failed: ${host} answered with more than 1 MB`);
+  assert.equal(await outcome("listed", `${called.url}/1mb`), "done and went on");
+  assert.equal(await outcome("listed", "http://127.0.0.1:1/"), "failed: could not call 127.0.0.1:1: ECONNREFUSED"); // Nothing listens there.
+  assert.deepEqual(redirected.calls, []);
+});
+
+await test(
+  "a webhook that takes its time holds up nothing else; the hub hangs up on it when it stops, ending its run at that step when it starts again, and after ten seconds; a run whose workflow changed while it called goes no further",
+  { timeout: 60_000 },
+  async (t) => {
+    const held: ServerResponse[] = [];
+    let hungUp = 0;
+    const slow = await target(t, (response) => {
+      held.push(response);
+      response.on("close", () => {
+        hungUp += response.writableEnded ? 0 : 1;
+      });
+    });
+    const hub = await startHub(t, () => NOW, "", TEAM_REPOS, ["127.0.0.1"]);
+    const [alice] = await team(hub, "alice");
+    assert.ok(alice !== undefined);
+    const waits = hooked("waits", `webhook: { url: "${slow.url}/slow" }`, `post: "after the call"`);
+    const { event: first } = await alice.publish("#ops", "workflow.define", { name: "waits", yaml: waits });
+    const { event: quick } = await alice.publish("#ops", "workflow.define", { name: "quick", yaml: hooked("quick", `post: "meanwhile"`) });
+    const called = async (count: number): Promise<void> => {
+      for (let tries = 0; slow.calls.length < count && tries < 100; tries += 1) {
+        await new Promise((resolve) => {
+          setTimeout(resolve, 50);
+        });
+      }
+      assert.equal(slow.calls.length, count);
+    };
+
+    await setOff(hub, first.id);
+    await called(1);
+    assert.equal((await fetch(`${hub.url}/healthz`)).status, 200);
+    await setOff(hub, quick.id);
+    await until(alice, /quick run 2 step 0 done/);
+    const { event: second } = await alice.publish("#ops", "workflow.define", { name: "waits", yaml: waits });
+    held[0]?.end();
+    await until(alice, /waits run 1 step 1 cancelled/);
+
+    await setOff(hub, second.id);
+    await called(2);
+    await hub.restart();
+    await until(alice, /waits run 3 step 0 failed/);
+    assert.equal(hungUp, 1);
+
+    const started = Date.now();
+    await setOff(hub, second.id);
+    await until(alice, /waits run 4 step 0 failed/);
+    assert.ok(Date.now() - started >= 9_500, String(Date.now() - started));
+    assert.equal(hungUp, 2);
+
+    const host = new URL(slow.url).host;
+    assert.deepEqual(
+      (await channel(alice)).filter((line) => line.startsWith("hub:")),
+      [
+        "hub: meanwhile",
+        "hub: quick run 2 step 0 done",
+        "hub: waits run 1 step 0 done",
+        "hub: waits run 1 step 1 cancelled: waits was replaced",
+        "hub: waits run 3 step 0 failed: the hub stopped during this step",
+        `hub: waits run 4 step 0 failed: ${host} did not answer within 10 seconds`
+      ]
+    );
+  }
+);

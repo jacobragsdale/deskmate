@@ -31,12 +31,12 @@ export interface Hub {
 
 /**
  * A hub of its own for one test, listening on a port the system picked. A test of something that reads the real clock, as the desk does, passes that clock as `now`; one of what a teammate installs
- * passes the folder it serves; one of a team whose repos are somewhere else passes where.
+ * passes the folder it serves; one of a team whose repos are somewhere else passes where; one of workflows' webhook steps, the hosts they may call.
  */
-export async function startHub(t: TestContext, now: () => number = () => NOW, downloads = "", repos = TEAM_REPOS): Promise<Hub> {
+export async function startHub(t: TestContext, now: () => number = () => NOW, downloads = "", repos = TEAM_REPOS, webhooks: readonly string[] = []): Promise<Hub> {
   const dir = mkdtempSync(join(tmpdir(), "player-two-hub-"));
   const listening = async (port: number): Promise<Server> => {
-    const started = createHub({ joinToken: TOKEN, db: join(dir, "hub.db"), repos, downloads }, now);
+    const started = createHub({ joinToken: TOKEN, db: join(dir, "hub.db"), repos, downloads, webhooks }, now);
     await new Promise<void>((resolve) => {
       started.listen(port, "127.0.0.1", resolve);
     });

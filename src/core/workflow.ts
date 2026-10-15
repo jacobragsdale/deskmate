@@ -163,15 +163,18 @@ export function parseWorkflow(source: string): Workflow {
   throw new Error(`line ${String(lineOf(doc, lines, at))}: ${issue.path.length === 0 ? "" : `${issue.path.join(".")}: `}${issue.message}`);
 }
 
-/** A template with each `{{name}}` that names a string, number or true/false in `values` filled in, in one pass: what is filled in is not read again. An unknown name is left as written. */
-export function fill(template: string, values: Values): string {
+/**
+ * A template with each `{{name}}` that names a string, number or true/false in `values` filled in, in one pass: what is filled in is not read again. An unknown name is left as written.
+ * `escape` writes each value as where it goes needs, such as inside a JSON string.
+ */
+export function fill(template: string, values: Values, escape: (value: string) => string = (value) => value): string {
   return template.replace(/\{\{[^{}]*\}\}/g, (written) => {
     const value = written
       .slice(2, -2)
       .trim()
       .split(".")
       .reduce<unknown>((at, key) => (isRecord(at) && Object.hasOwn(at, key) ? at[key] : undefined), values);
-    return typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? String(value) : written;
+    return typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? escape(String(value)) : written;
   });
 }
 

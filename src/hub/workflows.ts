@@ -4,6 +4,11 @@
  */
 
 import type { KeyObject } from "node:crypto";
+import { lookup } from "node:dns";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
+import { BlockList } from "node:net";
+import type { LookupFunction } from "node:net";
 
 import { Cron } from "croner";
 
@@ -13,7 +18,7 @@ import type { Content, ContentOf, RunStatus } from "../core/kinds.ts";
 import { signEvent } from "../core/sign.ts";
 import { problemOf } from "../core/text.ts";
 import { fill, holds, parseWorkflow } from "../core/workflow.ts";
-import type { Trigger, Values, Workflow } from "../core/workflow.ts";
+import type { Step, Trigger, Values, Workflow } from "../core/workflow.ts";
 import { fitText, HUB, isAgent, isChannel } from "../core/wire.ts";
 import type { Event } from "../core/wire.ts";
 import type { Log } from "./app.ts";
@@ -25,7 +30,7 @@ export interface Workflows {
   readonly seen: (event: Event) => void;
   /** The live workflow a webhook's id, the first 32 hex of its definition's id, names: the secret it asks for, and setting a run off with a request's body. Null for none. */
   readonly hook: (id: string) => { readonly secret: string | null; readonly start: (body: unknown) => void } | null;
-  /** Stop for good, as the hub closes: no schedule fires after, and no wait is checked. */
+  /** Stop for good, as the hub closes: no schedule fires after, no wait is checked, and a webhook being called is hung up on. */
   readonly stop: () => void;
 }
 
@@ -47,6 +52,24 @@ interface Place {
 
 const SWEEP = 60; // Seconds between looks for approvals whose time has passed. ponytail: one may end up to a minute late; a timer per wait if that ever matters.
 const THUMBS_UP = /^👍[\u{1F3FB}-\u{1F3FF}]?$/u; // In any skin tone.
+const CALL_TIME = 10; // Seconds a webhook step's call may take, answer and all.
+const MAX_ANSWER = 1024 * 1024; // Most bytes of a webhook's answer the hub reads, and throws away: nothing of it goes into the chat.
+const ALLOW = "PLAYER_TWO_WEBHOOK_ALLOW";
+
+// Where the hub's own machine, and a cloud's metadata service, answer: loopback, link-local and "this network". A name may lead there only when the allow list names the address itself.
+const NEARBY = new BlockList();
+NEARBY.addSubnet("0.0.0.0", 8, "ipv4");
+NEARBY.addSubnet("127.0.0.0", 8, "ipv4");
+NEARBY.addSubnet("169.254.0.0", 16, "ipv4");
+NEARBY.addAddress("::", "ipv6");
+NEARBY.addAddress("::1", "ipv6");
+NEARBY.addSubnet("fe80::", 10, "ipv6");
+
+type Outcome = readonly [RunStatus, string];
+type Webhook = Extract<Step, { readonly kind: "webhook" }>["webhook"];
+
+/** A call the allow list does not let the hub make, found only once a name is looked up. */
+class Refused extends Error {}
 
 /** What an event stored in a channel would set off: which triggers it fires, and the values a run it sets off fills its templates with. */
 interface Firing {
@@ -65,10 +88,126 @@ function untagged(template: string, text: string): string {
     .join("");
 }
 
-/** Run the workflows live in the hub's database, signing what they do with `key` as the hub, and calling `wake` once something is stored. */
-export function runWorkflows(db: Database, key: KeyObject, now: () => number, wake: () => void, log: Log): Workflows {
+/**
+ * The hosts PLAYER_TWO_WEBHOOK_ALLOW lists, separated by commas, each as a URL writes its host: a name, which lets the hub call it and every name under it, or an IP address, IPv6 in brackets,
+ * which lets it call that address and no other. Nothing listed lets it call nothing. Throws, saying which, for an entry that is neither, one with a port, or a pattern such as "*.example.com".
+ */
+export function allowList(text: string): readonly string[] {
+  return text
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== "")
+    .map((entry) => {
+      const url = /^[^\s/?#@\\:*[\]]+$|^\[[0-9A-Fa-f:.]+\]$/.test(entry) ? URL.parse(`https://${entry}`) : null;
+      if (url === null) {
+        throw new Error(`${entry} is not a host name or an IP address; a name lets the hub call every name under it, so example.com rather than *.example.com`);
+      }
+      return url.hostname; // Written as the address it is checked against will be: lowercase, IPv4 in four decimal parts, a name in punycode.
+    });
+}
+
+/**
+ * Why a webhook step may not call `address`, filled in; "" when it may. With nothing allowed, nothing is called. Then the address must have no user name or password, and its host be on
+ * the list: a name equal to a name listed or under one, at a dot, so neither evil-example.com nor example.com.evil.com is under example.com; or an IP address listed exactly, however it
+ * was written, since a URL reads a host whose last part is a number as an address, so no name ends in one and no address in a name. `https` goes to any of those; `http`, which anyone on
+ * the way can read and change, only to a host the list names exactly.
+ */
+export function refusal(address: string, allow: readonly string[]): string {
+  const url = URL.parse(address);
+  if (allow.length === 0) {
+    return `${ALLOW} is not set, so the hub calls no address`;
+  }
+  if (url === null || (url.protocol !== "https:" && url.protocol !== "http:")) {
+    return "not an https or http address once filled in";
+  }
+  if (url.username !== "" || url.password !== "") {
+    return "an address with a user name or password in it is never called";
+  }
+  const host = url.hostname;
+  if (!allow.some((entry) => host === entry || host.endsWith(`.${entry}`))) {
+    return `${host} is not on ${ALLOW}`;
+  }
+  return url.protocol === "http:" && !allow.includes(host) ? `http goes only to a host ${ALLOW} names exactly, which ${host} is under; use https` : "";
+}
+
+/**
+ * Look a name up as the system does, and refuse it when an address it has is NEARBY and not on the list. The connection is made to an address looked at here, so a name that answers
+ * differently the next time it is asked cannot lead the call elsewhere after it was let through.
+ */
+function lookupWithin(allow: readonly string[]): LookupFunction {
+  return (hostname, options, callback) => {
+    lookup(hostname, { ...options, all: true }, (error, addresses) => {
+      const near = addresses.find(({ address, family }) => NEARBY.check(address, family === 6 ? "ipv6" : "ipv4") && !allow.includes(family === 6 ? `[${address}]` : address));
+      if (error !== null) {
+        callback(error, []);
+      } else if (near !== undefined) {
+        callback(new Refused(`${hostname} is at ${near.address}, which the hub calls only when ${ALLOW} names that address`), []);
+      } else if (options.all === true) {
+        callback(null, addresses);
+      } else {
+        callback(null, addresses[0]?.address ?? "", addresses[0]?.family ?? 4);
+      }
+    });
+  };
+}
+
+/** Why a call came to nothing: its time ran out, the hub stopped, or what the system said, by its code alone, so that nothing of what is around the hub is written into the chat. */
+function failure(host: string, error: unknown, signal: AbortSignal): string {
+  if (signal.aborted) {
+    return signal.reason instanceof DOMException && signal.reason.name === "TimeoutError" ? `${host} did not answer within ${String(CALL_TIME)} seconds` : "the hub stopped during this step";
+  }
+  return `could not call ${host}: ${error instanceof Error && "code" in error && typeof error.code === "string" ? error.code : "the connection failed"}`;
+}
+
+/** POST `body` to `url`, following no redirect, reading at most MAX_ANSWER of the answer and keeping none of it, until `signal` ends it: done for a 2xx, failed for anything else. */
+function call(url: URL, body: string, type: string, allow: readonly string[], signal: AbortSignal): Promise<Outcome> {
+  return new Promise((resolve) => {
+    const send = url.protocol === "https:" ? httpsRequest : httpRequest;
+    const asked = send(url, { method: "POST", headers: { "Content-Type": type, "User-Agent": "player-two-hub" }, lookup: lookupWithin(allow), signal }, (answer) => {
+      let read = 0;
+      answer.on("data", (chunk: Buffer) => {
+        read += chunk.length;
+        if (read > MAX_ANSWER) {
+          resolve(["failed", `${url.host} answered with more than 1 MB`]);
+          asked.destroy();
+        }
+      });
+      answer.on("error", () => undefined); // Said by "close", which follows.
+      answer.on("close", () => {
+        const status = answer.statusCode ?? 0;
+        const redirect = status >= 300 && status < 400 ? ", and the hub follows no redirect" : "";
+        resolve(!answer.complete ? ["failed", failure(url.host, null, signal)] : status >= 200 && status < 300 ? ["done", ""] : ["failed", `${url.host} answered ${String(status)}${redirect}`]);
+      });
+    });
+    asked.on("error", (error) => {
+      resolve(error instanceof Refused ? ["refused", error.message] : ["failed", failure(url.host, error, signal)]);
+    });
+    asked.end(body);
+  });
+}
+
+/** Whether text is JSON as it is. */
+function isJson(text: string): boolean {
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Run the workflows live in the hub's database, signing what they do with `key` as the hub, calling only the hosts `allow` lists from a webhook step (see `allowList`), and calling `wake`
+ * once something is stored.
+ */
+export function runWorkflows(db: Database, key: KeyObject, now: () => number, allow: readonly string[], wake: () => void, log: Log): Workflows {
   const files = new Map<string, Workflow>(); // Each file as it reads, by the id of its definition, which never changes what it holds.
+  const closing = new AbortController(); // Hangs up every webhook being called once the hub stops.
   let crons: Cron[] = [];
+
+  function failed(error: unknown): void {
+    log("workflow failed", { error: problemOf(error) });
+  }
 
   function fileOf(live: Live): Workflow {
     const known = files.get(live.event) ?? parseWorkflow(live.yaml); // It read when the hub took it, or it would not be live.
@@ -113,24 +252,64 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, wa
     return untagged(template, fitText(fill(template, values)));
   }
 
-  /** Take a run's steps one at a time from `from`, each recorded as it ends. */
-  function go(going: Going, from: number): void {
+  /** Take step `at` of a run, one that takes no time, and record how it came out: whether the run goes on to the next. */
+  function took(going: Going, at: number, step: Step): boolean {
+    if (step.if !== undefined && !holds(step.if, going.values)) {
+      record(going, at, "skipped", "", onward(going, at));
+      return true;
+    }
+    if (step.kind === "post" || step.kind === "tag") {
+      // A tag is a message like a person's, and the step ends once it is stored: the job it makes waits for the agent's owner, or a grant naming the workflow, on their own desk.
+      record(going, at, "done", "", onward(going, at), told(step.kind === "post" ? step.post : `${step.tag} ${step.text}`, going.values));
+      return true;
+    }
+    if (step.kind === "approve") {
+      const from = step.approve.from === "anyone" ? `anyone in ${going.channel}` : step.approve.from;
+      record(going, at, "waiting", `for a 👍 from ${from}`, { step: at, state: "waiting", within: step.approve.within }, told(step.approve.text, going.values));
+    }
+    return false; // Until `approve` hears the 👍, or `sweep` finds the time has passed.
+  }
+
+  /** Why a run can no longer go on: its workflow replaced or removed since it began; "" while the file it started under is live. */
+  function changed(ref: Ref): string {
+    const live = db.liveWorkflows(ref.channel).find((each) => each.name === ref.name);
+    return live?.event === ref.definition ? "" : `${ref.name} was ${live === undefined ? "removed" : "replaced"}`;
+  }
+
+  /**
+   * Take a webhook step: POST its body to its address, both filled in, once `refusal` lets it, and record how that came out once it has; whether the run goes on to the next. A value is
+   * filled into the address percent-encoded, so it is one part of it and cannot add a path, a query, a port or a user, and the allow list is checked on the address as filled in. A body
+   * that is JSON as written has each value filled in as JSON string content, which keeps it the JSON it was; any other is sent as text. A run whose workflow changed while it waited goes no further.
+   */
+  async function called(going: Going, at: number, webhook: Webhook): Promise<boolean> {
+    const address = fill(webhook.url, going.values, encodeURIComponent);
+    const url = URL.parse(address);
+    const why = refusal(address, allow);
+    const json = isJson(webhook.body ?? "");
+    const body = fill(webhook.body ?? "", going.values, json ? (value) => JSON.stringify(value).slice(1, -1) : (value) => value);
+    const signal = AbortSignal.any([closing.signal, AbortSignal.timeout(CALL_TIME * 1000)]);
+    const [status, detail]: Outcome = why !== "" || url === null ? ["refused", why] : await call(url, body, json ? "application/json" : "text/plain; charset=utf-8", allow, signal);
+    if (closing.signal.aborted) {
+      return false; // The database has closed. The run's row says it is at this step, and the hub ends it there when it starts again.
+    }
+    const gone = changed(going);
+    const goes = status === "done" && gone === "";
+    record(going, at, status, detail, goes ? onward(going, at) : { step: at, state: "ended" });
+    if (status === "done" && gone !== "" && at + 1 < going.file.steps.length) {
+      record(going, at + 1, "cancelled", gone, { step: at + 1, state: "ended" });
+    }
+    return goes;
+  }
+
+  /** Take a run's steps one at a time from `from`, each recorded as it ends. Steps that take no time are taken before this returns its promise. */
+  async function go(going: Going, from: number): Promise<void> {
     for (let at = from; at < going.file.steps.length; at += 1) {
       const step = going.file.steps[at];
       if (step === undefined) {
         return;
       }
-      if (step.if !== undefined && !holds(step.if, going.values)) {
-        record(going, at, "skipped", "", onward(going, at));
-      } else if (step.kind === "post" || step.kind === "tag") {
-        // A tag is a message like a person's, and the step ends once it is stored: the job it makes waits for the agent's owner, or a grant naming the workflow, on their own desk.
-        record(going, at, "done", "", onward(going, at), told(step.kind === "post" ? step.post : `${step.tag} ${step.text}`, going.values));
-      } else if (step.kind === "approve") {
-        const from = step.approve.from === "anyone" ? `anyone in ${going.channel}` : step.approve.from;
-        record(going, at, "waiting", `for a 👍 from ${from}`, { step: at, state: "waiting", within: step.approve.within }, told(step.approve.text, going.values));
-        return; // Until `approve` hears the 👍, or `sweep` finds the time has passed.
-      } else {
-        record(going, at, "failed", `this hub does not yet take ${step.kind} steps`, { step: at, state: "ended" });
+      const calls = step.kind === "webhook" && (step.if === undefined || holds(step.if, going.values));
+      if (!(calls ? await called(going, at, step.webhook) : took(going, at, step))) {
         return;
       }
     }
@@ -161,7 +340,7 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, wa
       return;
     }
     record(going, run.step, "approved", `by ${event.author}`, onward(going, run.step), null, run.approval);
-    go(going, run.step + 1);
+    go(going, run.step + 1).catch(failed);
   }
 
   /**
@@ -170,10 +349,10 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, wa
    */
   function sweep(): void {
     for (const run of db.runsIn("waiting")) {
-      const live = db.liveWorkflows(run.channel).find((each) => each.name === run.name);
+      const gone = changed(run);
       const end = { step: run.step, state: "ended" } as const;
-      if (live?.event !== run.definition) {
-        record(run, run.step, "cancelled", `${run.name} was ${live === undefined ? "removed" : "replaced"}`, end, null, run.approval);
+      if (gone !== "") {
+        record(run, run.step, "cancelled", gone, end, null, run.approval);
       } else if (now() > run.until) {
         record(run, run.step, "expired", "no 👍 came in time", end, null, run.approval);
       }
@@ -184,9 +363,9 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, wa
   function start(live: Live, values: Values): void {
     try {
       const going = { run: db.addRun(live, values, Math.floor(now()), "running"), channel: live.channel, name: live.name, definition: live.event, file: fileOf(live), values };
-      go(going, 0);
+      go(going, 0).catch(failed);
     } catch (error) {
-      log("workflow failed", { channel: live.channel, workflow: live.name, error: problemOf(error) });
+      failed(error);
     }
   }
 
@@ -252,6 +431,10 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, wa
     });
   }
 
+  // A run the hub stopped in the middle of a step, a webhook being called, is not taken up again: whether the call did what it does is not known, so the run ends there.
+  for (const run of db.runsIn("running")) {
+    record(run, run.step, "failed", "the hub stopped during this step", { step: run.step, state: "ended" });
+  }
   schedule();
   sweep();
   const sweeping = setInterval(() => {
@@ -278,6 +461,7 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, wa
       };
     },
     stop: () => {
+      closing.abort();
       clearInterval(sweeping);
       for (const cron of crons) {
         cron.stop();

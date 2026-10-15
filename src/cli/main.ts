@@ -45,7 +45,7 @@ const USAGE = `usage: player-two COMMAND
   workflow list --in CHANNEL            list a channel's workflows: what sets each off, who published it and when, and a webhook's address
   workflow remove NAME --in CHANNEL     take a channel's workflow away
   channel [join NAME | leave NAME]      list the channels, or join or leave one
-  hub [--host HOST] [--port PORT]       run the hub; it reads PLAYER_TWO_JOIN_TOKEN, PLAYER_TWO_DB, PLAYER_TWO_REPOS and, if set, PLAYER_TWO_DOWNLOADS
+  hub [--host HOST] [--port PORT]       run the hub; it reads PLAYER_TWO_JOIN_TOKEN, PLAYER_TWO_DB, PLAYER_TWO_REPOS and, if set, PLAYER_TWO_DOWNLOADS and PLAYER_TWO_WEBHOOK_ALLOW
   hub verify                            check that no event in the log in PLAYER_TWO_DB was changed or taken out since it was stored
   desk                                  run your side with no window, for the window to start: it speaks JSON lines on standard input and output
   mcp [--allow-send]                    run the MCP server, for an agent's editor to start: the chat as tools, over standard input and output; --allow-send adds sending, asking and withdrawing

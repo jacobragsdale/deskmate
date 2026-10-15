@@ -44,6 +44,7 @@ export interface HubSettings {
   readonly db: string; // The file the hub keeps everything in.
   readonly repos: string; // The URL the team's repos live under; only those may be shared.
   readonly downloads: string; // The folder of what a teammate installs, served to anyone who asks; "" when there is none.
+  readonly webhooks?: readonly string[]; // The hosts a workflow's webhook step may call, as `allowList` reads them; none when not given.
 }
 
 /** Something worth a line in the hub's log: what happened, and the facts of it. */
@@ -221,7 +222,7 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
       send();
     });
   };
-  const workflows = runWorkflows(db, key, now, wake, log); // What it signs, it stores itself, then wakes the streams.
+  const workflows = runWorkflows(db, key, now, settings.webhooks ?? [], wake, log); // What it signs, it stores itself, then wakes the streams.
 
   /** Who signed the request, a person or one of their agents, once their header is seen to be signed for this very request: its method, and its path and query as they arrived. */
   function caller(request: IncomingMessage): string {

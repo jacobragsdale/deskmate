@@ -19,6 +19,12 @@ await test("the hub refuses to start without its settings and names each one", (
 
   assert.equal(run.status, 1);
   assert.equal(run.stderr, "player-two: PLAYER_TWO_JOIN_TOKEN must be at least 16 characters; PLAYER_TWO_DB is not set\n");
+  const env = { PLAYER_TWO_JOIN_TOKEN: TOKEN, PLAYER_TWO_DB: "unused.db", PLAYER_TWO_REPOS: "https://dev.azure.com/acme/", PLAYER_TWO_WEBHOOK_ALLOW: "ci.example.com, *.corp.internal" };
+  const listed = spawnSync(process.execPath, [COMMAND, "hub"], { env, encoding: "utf8" });
+  assert.deepEqual(
+    [listed.status, listed.stderr],
+    [1, "player-two: PLAYER_TWO_WEBHOOK_ALLOW *.corp.internal is not a host name or an IP address; a name lets the hub call every name under it, so example.com rather than *.example.com\n"]
+  );
 });
 
 await test("the hub stops at once when told to, even with a reader waiting", { timeout: 20_000 }, async (t) => {

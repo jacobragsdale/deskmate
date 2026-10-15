@@ -125,6 +125,10 @@ await test("a template is filled in one pass, and an unknown name is left as wri
   for (const [template, filled] of cases) {
     assert.equal(fill(template, values), filled, template);
   }
+  assert.equal(
+    fill("{{body.branch}}/{{body.id}}/{{nope}}", values, (value) => `<${value}>`),
+    "<main>/<7>/{{nope}}"
+  ); // Each value written as where it goes needs; what is left as written is not.
 });
 
 await test("a condition compares its two templates once they are filled in", () => {

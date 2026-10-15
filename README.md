@@ -303,6 +303,7 @@ The hub reads its settings from the environment and refuses to start when a requ
 | `PLAYER_TWO_REPOS` | yes | The address the team's repos live under, such as `https://dev.azure.com/acme/`. The hub refuses to share a repo outside it. |
 | `PLAYER_TWO_DB` | yes | Path of the SQLite database. The Docker image sets it to `/data/player-two.db`. |
 | `PLAYER_TWO_DOWNLOADS` | no | A folder holding `player-two-setup.exe`, `wsl-runtime.tar.gz` and `wsl-runtime.tar.gz.sha256`. With it, the hub serves a page at `/` with the installer and the install steps, the files under `/downloads/`, and `/install.sh`; without it, those answer `404`. |
+| `PLAYER_TWO_WEBHOOK_ALLOW` | no | The hosts a workflow's `webhook` step may call, separated by commas: a name, such as `ci.corp.internal`, allows itself and every name under it, and an IP address allows itself alone. `https` goes to any of them, `http` only to a host listed exactly. Without it, every webhook step is refused. A name that leads to the hub's own machine or a link-local address, such as a cloud's metadata service, is refused unless that address is listed too. An entry with a port, a path or a `*` stops the hub from starting. |
 
 The address the page and the install script give is the one the request came to, with `https` when the `X-Forwarded-Proto` header says so.
 

@@ -6,18 +6,32 @@ import { parseArgs } from "node:util";
 
 import { z } from "zod";
 
+import { problemOf } from "../core/text.ts";
 import { createHub } from "./app.ts";
 import type { Log } from "./app.ts";
 import { verifyChain } from "./db.ts";
+import { allowList } from "./workflows.ts";
 
 const settingsSchema = z
   .object({
     PLAYER_TWO_JOIN_TOKEN: z.string("is not set").min(16, "must be at least 16 characters"),
     PLAYER_TWO_DB: z.string("is not set").min(1, "is empty"),
     PLAYER_TWO_REPOS: z.string("is not set").min(1, "is empty"),
-    PLAYER_TWO_DOWNLOADS: z.string().default("") // Optional: without it the hub serves no installers.
+    PLAYER_TWO_DOWNLOADS: z.string().default(""), // Optional: without it the hub serves no installers.
+    // Optional: without it no workflow's webhook step calls anything.
+    PLAYER_TWO_WEBHOOK_ALLOW: z
+      .string()
+      .default("")
+      .transform((text, ctx) => {
+        try {
+          return allowList(text);
+        } catch (error) {
+          ctx.addIssue({ code: "custom", message: problemOf(error) });
+          return z.NEVER;
+        }
+      })
   })
-  .transform((env) => ({ joinToken: env.PLAYER_TWO_JOIN_TOKEN, db: env.PLAYER_TWO_DB, repos: env.PLAYER_TWO_REPOS, downloads: env.PLAYER_TWO_DOWNLOADS }));
+  .transform((env) => ({ joinToken: env.PLAYER_TWO_JOIN_TOKEN, db: env.PLAYER_TWO_DB, repos: env.PLAYER_TWO_REPOS, downloads: env.PLAYER_TWO_DOWNLOADS, webhooks: env.PLAYER_TWO_WEBHOOK_ALLOW }));
 const portSchema = z.string().regex(/^\d+$/).transform(Number).pipe(z.int().max(65_535));
 const dbSchema = z.object({ PLAYER_TWO_DB: z.string("is not set").min(1, "is empty") });
 
