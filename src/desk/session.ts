@@ -27,7 +27,7 @@ import * as repos from "./repos.ts";
 import type { Checkout, Head } from "./repos.ts";
 import { cloneFolder } from "../core/remotes.ts";
 import { oneLine, problemOf } from "../core/text.ts";
-import { commandLineOf, defaultAgentOf, fitText, isChannel, MODES, nameSchema, PROTOCOL } from "../core/wire.ts";
+import { commandLineOf, defaultAgentOf, fitText, isChannel, MODES, nameSchema, permissionModeSchema, PROTOCOL } from "../core/wire.ts";
 import type { Agent, ChannelInfo, Delivered, PermissionMode, Person, RepoRef, TeamRepo } from "../core/wire.ts";
 
 const PRESENCE = 25; // Seconds between asking the hub who is here, which channels there are and who has which repo. Each is a signed request, which is what says the user is here; the repo scan runs on the same beat.
@@ -39,8 +39,13 @@ const PROGRESS = 10; // Least seconds between two job.progress events of one run
 const ITEMS = 500; // Items of one run's activity kept, the newest.
 const FEEDS = 20; // Runs that have ended whose activity is kept, the newest.
 
-/** What the session remembers between runs, in app-state.json. */
-const savedSchema = z.strictObject({ read: z.record(z.string(), z.int()), chat: z.string().nullable() });
+/** How the user last ran a request: at which mode, and whether its answer was posted without a review. */
+const choiceSchema = z.strictObject({ mode: permissionModeSchema, post: z.boolean() });
+
+/** What the session remembers between runs, in app-state.json: read marks, the chat open last, and how each asker's requests of each repo were last run, by the asker and the repo. */
+const savedSchema = z.strictObject({ read: z.record(z.string(), z.int()), chat: z.string().nullable(), choices: z.record(z.string(), choiceSchema).default({}) });
+
+const FIRST_CHOICE: z.infer<typeof choiceSchema> = { mode: "read-only", post: false }; // What a request is offered at until its asker's requests of that repo have been run: the least an agent may do, reviewed.
 
 export interface Hooks {
   readonly changed: () => void; // What `view()` returns is different now.
@@ -163,6 +168,7 @@ export class Session {
   private readonly feeds = new Map<string, { readonly chat: string; readonly items: ActivityItem[] }>(); // Each run's activity, by its key, oldest run first. Only ever in memory.
   private asked = 0; // Asks made so far, for each one's id.
   private readonly read: Record<string, number>; // Per chat, the seq of the newest event the user has seen.
+  private readonly choices: Record<string, z.infer<typeof choiceSchema>>; // How each asker's requests of each repo were last run, by `${asker} ${repo}`.
   private readonly paged = new Map<string, boolean>(); // Chats whose newest page has been loaded, and whether there may be events before what is loaded.
   private readonly linked = new Map<string, NoteView | null>(); // Notes linked to that are not loaded here, as the hub answered for each; null while it is being asked.
   private lastChat: string | null; // The chat that was open when the session last ran.
@@ -198,6 +204,7 @@ export class Session {
     this.chats = new ChatLog(this.me);
     const saved = this.loadSaved();
     this.read = { ...saved.read };
+    this.choices = { ...saved.choices };
     this.lastChat = saved.chat;
     this.tested = permissionTests(client.home);
   }
@@ -565,7 +572,7 @@ export class Session {
       return { kind: "noCheckout" };
     }
     const before = state === "working" ? "interrupted" : state === "waiting" || state === "answered" ? "" : state;
-    return { kind: "ready", before, canDecline: event.author !== this.me && state !== "declined" };
+    return { kind: "ready", before, canDecline: event.author !== this.me && state !== "declined", offer: this.choices[`${event.author} ${repo}`] ?? FIRST_CHOICE };
   }
 
   private theirStatus(request: Request): RequestView["status"] {
@@ -779,8 +786,12 @@ export class Session {
     if ((this.read[this.current] ?? 0) < newest || this.lastChat !== this.current) {
       this.read[this.current] = Math.max(newest, this.read[this.current] ?? 0);
       this.lastChat = this.current;
-      writeFileSync(this.savedPath(), JSON.stringify(savedSchema.parse({ read: this.read, chat: this.lastChat }), null, 1));
+      this.save();
     }
+  }
+
+  private save(): void {
+    writeFileSync(this.savedPath(), JSON.stringify(savedSchema.parse({ read: this.read, chat: this.lastChat, choices: this.choices }), null, 1));
   }
 
   private savedPath(): string {
@@ -793,9 +804,9 @@ export class Session {
         return savedSchema.parse(JSON.parse(readFileSync(this.savedPath(), "utf8")));
       }
     } catch {
-      // A file from another version only costs read marks and the last open chat.
+      // A file from another version only costs read marks, the last open chat and how requests were last run.
     }
-    return { read: {}, chat: null };
+    return { read: {}, chat: null, choices: {} };
   }
 
   // ── what the user does ────────────────────────────────────────────────────
@@ -946,7 +957,7 @@ export class Session {
 
   /**
    * Run the user's agent on a request at `mode`, with its text as it stands now; which must be what the user was shown, `seen`, when they said to run it, or the agent would be given something they never saw.
-   * The mode is the user's choice each time: a teammate's request is offered read-only first.
+   * The mode is the user's choice each time: a teammate's request is offered read-only first, and then as the user last ran that asker's requests of that repo.
    */
   private runRequest(request: string, repo: string, post: boolean, mode: PermissionMode, seen: string): void {
     const message = this.chats.message(request);
@@ -955,6 +966,8 @@ export class Session {
         throw new PlayerTwoError(`${message.entry.event.author} edited the request after you saw it: read it again before you run it`);
       }
       this.startRun(message, repo, post, mode);
+      this.choices[`${message.entry.event.author} ${repo}`] = { mode, post };
+      this.save();
     }
   }
 

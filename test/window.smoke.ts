@@ -11,7 +11,9 @@ import { test } from "node:test";
 
 import { z } from "zod";
 
+import { readContent } from "../src/core/kinds.ts";
 import { noteLink } from "../src/core/links.ts";
+import type { Client } from "../src/desk/client.ts";
 import { startHub, TOKEN } from "./startHub.ts";
 
 const ROOT = join(import.meta.dirname, "..");
@@ -177,6 +179,12 @@ function repository(dir: string, origin: string): void {
   }
 }
 
+/** The mode the newest run in a chat was let go at, as its job.accepted records it, read by someone in the chat; "" when there is none. */
+async function acceptedAt(client: Client, chat: string): Promise<string> {
+  const said = (await client.events({ chat })).map((each) => readContent(each.event)).find((each) => each.kind === "job.accepted"); // Newest first.
+  return said?.kind === "job.accepted" ? said.content.mode : "";
+}
+
 /** On the Setup page, add an agent of the user's own over ACP, a program and its arguments typed in one per row, and choose it to answer. */
 async function addAgent(page: Page, program: string, args: readonly string[]): Promise<void> {
   const picker = `[...document.querySelectorAll("label")].find((each) => each.textContent.startsWith("Add an agent")).querySelector("select")`;
@@ -197,7 +205,7 @@ async function addAgent(page: Page, program: string, args: readonly string[]): P
 }
 
 await test(
-  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, runs a teammate's request with the user's agent, step by step in the activity panel, and the user's own, which asks on a card before it runs a command",
+  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command",
   { skip: NO_DISPLAY ? "no display: run it under xvfb-run" : false, timeout: 120_000 },
   async (t) => {
     assert.ok(existsSync(join(ROOT, "dist", "main.js")), "dist/ is not built: run `npm run build` first");
@@ -513,8 +521,8 @@ await test(
     await carol.publish("alice", "message", { text: "@alice/billing read the README for me", via: "cli" });
     await page.until("carol in the chat list", `[...document.querySelectorAll("nav button")].some((each) => each.textContent.includes("carol"))`);
     await page.click("nav button", "carol");
-    await page.until("carol's request, ready to run", `document.querySelector("main h1")?.textContent === "carol" && ${button("Run and review")}`);
-    await page.click("main button", "Run and review");
+    await page.until("carol's request, ready to run", `document.querySelector("main h1")?.textContent === "carol" && ${button("▶ Run read-only")}`);
+    await page.click("main button", "▶ Run read-only");
     await page.until("Show activity", button("Show activity"));
     await page.click("main button", "Show activity");
     await page.until("the run to its end in the panel", `${rows}.at(-1) === "plain Answered"`);
@@ -535,8 +543,8 @@ await test(
     // A run with nothing new for ten seconds says "waiting…", and Stop ends it: in a channel of its own, so that its "slow" reaches no later prompt.
     await carol.publish("#history", "message", { text: "@alice/billing slow", via: "cli" });
     await page.click("nav button", "#history");
-    await page.until("the slow request, ready to run", `document.querySelector("main h1")?.textContent === "#history" && ${button("Run and review")}`);
-    await page.click("main button", "Run and review");
+    await page.until("the slow request, ready to run", `document.querySelector("main h1")?.textContent === "#history" && ${button("▶ Run read-only")}`);
+    await page.click("main button", "▶ Run read-only");
     await page.until("Show activity on the run", button("Show activity"));
     await page.click("main button", "Show activity");
     await page.until("waiting…", `${panel}?.innerText.includes("waiting…") === true`);
@@ -560,6 +568,44 @@ await test(
     await page.until("the run to its end in the panel", `${rows}.at(-1) === "plain Answered"`);
     assert.deepEqual(await page.eval(rows), [`plain Started ${process.execPath}, auto-edits`, "loud Run npm test", "plain Run npm test", "plain turn 1: run allowed", "plain Answered"]);
     assert.equal(await page.eval(`document.querySelectorAll('section[aria-label="Permission"]').length`), 0);
+
+    // Carol asks again, and alice runs it from the menu: the answer posted directly, at supervised, where the agent asks before it edits. "Allow once" on the card under the request
+    // lets it write the file and answer, and the chat's record says it ran supervised. Carol's next request is offered as alice ran this one, from app-state.json.
+    const newest = `[...document.querySelectorAll("main article")].at(-1)`;
+    const another = `${newest}.querySelector('button[aria-label="Run it another way"]')`;
+    await carol.publish("alice", "message", { text: "@alice/billing edit the README", via: "cli" });
+    await page.click("nav button", "carol");
+    await page.until("carol's second request, ready to run", `document.querySelector("main h1")?.textContent === "carol" && ${newest}.innerText.includes("edit the README") && ${another} !== null`);
+    await page.eval(`${another}.focus()`);
+    await page.press("Enter");
+    await page.until("the menu", `document.querySelector('[role="menuitemradio"]') !== null`);
+    await page.click('[role="menuitemradio"]', "Post it directly");
+    await page.until("posting chosen, the menu still open", `document.querySelector('[role="menuitemradio"][aria-checked="true"]')?.textContent.includes("Post it directly") === true`);
+    await page.shot("menu");
+    await page.click('[role="menuitem"][data-mode="supervised"]');
+    await page.until("the card under carol's request", `${card("main")}?.innerText.includes("Edit edited.txt") === true`);
+    await page.eval(`[...${newest}.querySelectorAll("button")].find((each) => each.textContent.includes("Show activity")).click()`);
+    await page.until("the card in the panel", `${card("aside")}?.innerText.includes("Edit edited.txt") === true`);
+    await page.eval(`[...${card("main")}.querySelectorAll("button")].find((each) => each.textContent === "Allow once").click()`);
+    await page.until("the answer posted", `[...document.querySelectorAll("main article")].some((each) => each.innerText.includes("turn 1: read; edit allowed"))`);
+    await page.until("the run to its end in the panel", `${rows}.at(-1) === "plain Answered"`);
+    assert.deepEqual(await page.eval(rows), [
+      `plain Started ${process.execPath}, supervised`,
+      "quiet Read README.md",
+      "loud Edit edited.txt",
+      "plain Edit edited.txt",
+      "plain turn 1: read; edit allowed",
+      "plain Answered"
+    ]);
+    assert.ok(existsSync(join(home, "dev", "billing", "edited.txt")));
+    assert.equal(await acceptedAt(carol, "alice"), "supervised");
+    const saved = z.object({ choices: z.record(z.string(), z.unknown()) }).parse(JSON.parse(readFileSync(join(home, ".config", "player-two", "app-state.json"), "utf8")));
+    assert.deepEqual(saved.choices["carol billing"], { mode: "supervised", post: true });
+    await carol.publish("alice", "message", { text: "@alice/billing and once more", via: "cli" });
+    await page.until(
+      "carol's next request, offered as alice ran the last",
+      `${newest}.innerText.includes("and once more") && [...${newest}.querySelectorAll("button")].some((each) => each.textContent === "▶▶ Run supervised and post")`
+    );
 
     assert.deepEqual(page.problems, []);
   }

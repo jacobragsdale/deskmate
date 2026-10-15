@@ -228,7 +228,7 @@ Inside WSL (or the home folder on Linux and macOS):
 | `~/.config/player-two/config.json` | Hub address, name, agents. |
 | `~/.config/player-two/key` | The person's private key. Mode `0600`. |
 | `~/.config/player-two/known.json` | The key first seen for each teammate and agent. |
-| `~/.config/player-two/app-state.json` | Read marks, last open chat. Safe to delete. |
+| `~/.config/player-two/app-state.json` | Read marks, last open chat, and the mode and delivery each asker's requests of each repo were last run at (phase 3). Safe to delete. |
 | `~/.config/player-two/agent-permissions.json` | Phase 3. How each agent over ACP did in the permission test, by its command line, with its version. Deleting it makes every agent untested again. |
 | `~/.config/player-two/agents/<repo>.key` | Phase 4. One key per checkout's agent. Mode `0600`. |
 | `~/.config/player-two/azure.json` | Phase 6. An Azure DevOps token, if one was saved. Mode `0600`. |

@@ -17,7 +17,13 @@ const requestSchema = z
       z.strictObject({ kind: z.literal("drafted") }), // Mine: an answer is waiting for my review.
       z.strictObject({ kind: z.literal("running"), startedAt: z.number(), branch: z.string() }), // Mine: at work since `startedAt`, Unix milliseconds.
       z.strictObject({ kind: z.literal("noCheckout") }), // Mine: I have no copy of the repo.
-      z.strictObject({ kind: z.literal("ready"), before: z.enum(["", "declined", "failed", "stopped", "interrupted"]), canDecline: z.boolean() }), // Mine: I can run it.
+      // Mine: I can run it. `offer` is how I last ran its asker's requests of that repo, which the window offers first; read-only with a review before I ever have.
+      z.strictObject({
+        kind: z.literal("ready"),
+        before: z.enum(["", "declined", "failed", "stopped", "interrupted"]),
+        canDecline: z.boolean(),
+        offer: z.strictObject({ mode: permissionModeSchema, post: z.boolean() })
+      }),
       z.strictObject({ kind: z.literal("working"), branch: z.string(), summary: z.string() }), // A teammate's at work, and what their desk last said it is doing: one of job.progress's few words, "" before it has said.
       z.strictObject({ kind: z.literal("waiting"), away: z.boolean() }),
       z.strictObject({ kind: z.literal("nobody") }), // Nobody of that name has joined.

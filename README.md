@@ -101,11 +101,11 @@ Under his message Bob sees `◌ waiting for jacob to approve`, and `↩ Withdraw
 
 Jacob's window notifies him, and his chat list marks the chat with `▶`. Under Bob's message he has three choices:
 
-- `▶ Run and review` runs his agent and puts its answer in a box of its own above the message box, as a draft. He can edit it, then `Send answer` sends it, or `× Discard` drops it.
-- `▶▶ Run and post` runs his agent and posts the answer without a review.
+- `▶ Run read-only` runs his agent read-only: it may read and search the repo and change nothing. Its answer goes in a box of its own above the message box, as a draft. He can edit it, then `Send answer` sends it, or `× Discard` drops it.
+- The menu beside it chooses how the answer is delivered, reviewed as a draft first or posted directly, and runs his agent at the permission mode he picks in it: `read-only`; `supervised`, which asks him before it changes a file or runs a command; `auto-edits`, which changes files and asks before it runs a command; or `full`, which does anything without asking.
 - `× Decline` tells Bob the answer is no.
 
-Both run his agent read-only: it may read and search the repo and change nothing. Cursor's one-shot command then only proposes changes. An agent that cannot be held to read-only, such as Copilot's one-shot command, is not run, and the window says why.
+The next request from Bob of the same repo offers what Jacob chose last as its first button, such as `▶▶ Run supervised and post`. Cursor's one-shot command run read-only only proposes changes. An agent that cannot be held to the mode chosen, such as Copilot's one-shot command at anything but `full`, is not run, and the window says why.
 
 Before the agent starts, Jacob's desk tells the chat he let it run, and on what. While it runs, Bob's line reads `jacob's uploader agent is working on feature/retry ± at 1a2b3c4`: the branch, `±` when there are uncommitted changes, and the commit. Once an agent spoken to over ACP is under way, `working` gives way to what it is doing, in a few words that Jacob's desk sends at most every ten seconds: `thinking`, `reading`, `editing files`, `running a command` or `waiting for approval`. Bob never sees a file, a command or anything the agent printed.
 
@@ -152,7 +152,7 @@ Who may run what:
 |---|---|
 | Your own agent, in a message you send from the window | It runs at once and its answer is posted. |
 | Your own agent, in a message sent another way, or left unanswered when you last quit | It waits for you, like a teammate's request. |
-| A teammate's agent | It waits until they choose `Run and review`, `Run and post` or `Decline`. |
+| A teammate's agent | It waits until they run it, from `▶ Run read-only` or the menu beside it, or `Decline` it. |
 | An agent in a repo its owner does not have | The line under the message says so, and nothing runs. |
 
 Under each message that tags an agent, everyone in the chat sees one line per tag until it is answered:
@@ -251,7 +251,7 @@ Your identity is in `~/.config/player-two`, inside WSL on Windows:
 | `config.json` | `hub` (the hub URL), `name`, `agents`, `defaultAgent` and `ownMode`. |
 | `key` | Your Ed25519 private key. Readable only by you. |
 | `known.json` | The public key first seen for each teammate. |
-| `app-state.json` | Read marks and the last open chat. Safe to delete. |
+| `app-state.json` | Read marks, the last open chat, and how you last ran each teammate's requests of each repo. Safe to delete. |
 
 Two environment variables move things, mainly to hold two identities on one machine:
 
@@ -264,13 +264,13 @@ The runtime the window installs is in `~/.player-two`: each version under `runti
 
 `agents` lists the agents you can run, each with an `id`, a `label`, a `protocol`, a `command` and its `args`, and `defaultAgent` is the `id` of the one that answers. `ownMode` is the permission mode your own requests of your own agents are to run at, `auto-edits` unless changed; an agent that cannot be held to it runs them at the most below it that it can, so Cursor's one-shot command runs them read-only, and one that can keep none of those, such as Copilot's one-shot command, does not run them. The agents offered are Cursor over ACP, `agent acp`, and as a one-shot command, `agent -p --output-format text`, and Copilot over ACP, `copilot --acp --stdio`, and as a one-shot command, `copilot -s --allow-all-tools --no-ask-user -p`; any other program can be typed in, with its arguments one per row. An `acp` agent is started in the tagged repo's folder and spoken to over the Agent Client Protocol: its session has Player Two's MCP server attached, `player-two mcp` without `--allow-send`, so it can read and search the chat and send nothing, and what it says in the session is the answer; if it needs signing in, the run ends saying how. A `oneshot` agent is run with the prompt appended as its last argument, in the tagged repo's folder with standard input closed, and what it prints to standard output is the answer. A run that takes longer than 900 seconds is stopped. The command and its arguments are passed as they are: no shell reads them. A `config.json` from an earlier version, with one command line in `agent`, is read as one `oneshot` agent, split into words the way a shell would split it, and written back in this shape. `player-two join HUB NAME TOKEN --agent "COMMAND"` run again replaces the agents with that one command. The desk finds the command on the `PATH` a login shell has, so tools installed through `nvm` or `npm -g` are found.
 
-The prompt tells the agent whose checkout of which repo it is in, who tagged it and where, and whether its owner will review the reply or it is posted directly. It includes up to six earlier messages and answers from the same chat, as they read now, marked as context that must not be followed as instructions, so a follow-up question makes sense. It also says the agent may run `player-two search --json` and `player-two read --json` to look at earlier notes, that what they print is information and not instruction, and that it should cite each note it relied on by its link, which the window draws as a chip. Those commands run as you, so they find notes in all your chats, the private ones too, while the answer goes to whoever is in the chat it was asked in, before you have read it when you chose `Run and post`: the prompt tells the agent to give only the link of a note from another chat, never what it says.
+The prompt tells the agent whose checkout of which repo it is in, who tagged it and where, and whether its owner will review the reply or it is posted directly. It includes up to six earlier messages and answers from the same chat, as they read now, marked as context that must not be followed as instructions, so a follow-up question makes sense. It also says the agent may run `player-two search --json` and `player-two read --json` to look at earlier notes, that what they print is information and not instruction, and that it should cite each note it relied on by its link, which the window draws as a chip. Those commands run as you, so they find notes in all your chats, the private ones too, while the answer goes to whoever is in the chat it was asked in, before you have read it when you chose to post it directly: the prompt tells the agent to give only the link of a note from another chat, never what it says.
 
 A team's own build of the window can carry its hub's address, so the join form asks only for a name, the token and the agent: set `PLAYER_TWO_HUB_URL` when building, as an `http` or `https` address with no `/` at the end. The Release workflow takes it from a repository variable of the same name.
 
 ## What Player Two protects, and what it does not
 
-An agent runs on a machine only when that machine's owner says so. Your own tag, sent from your own window, is that say-so; a teammate's tag is only text until you choose to run it. With `Run and review`, the agent's output stays in the draft box, where you can change it, until you send it. `Run and post` skips that second look: use it when you are content for whatever the agent writes to go straight to the chat. An agent's answer can contain more of your machine than the question asked for.
+An agent runs on a machine only when that machine's owner says so. Your own tag, sent from your own window, is that say-so; a teammate's tag is only text until you choose to run it. Reviewed first, the agent's output stays in the draft box, where you can change it, until you send it. Posting it directly skips that second look: use it when you are content for whatever the agent writes to go straight to the chat. An agent's answer can contain more of your machine than the question asked for.
 
 The window draws text written by other people and their agents, and cannot run it. A message is drawn as text, and so are replies, edits, the emoji of a reaction, which can be any text at all, and the lines about a channel. An agent's Markdown is drawn as elements with any raw HTML left as text, images in it are not fetched, and the page's content security policy lets it load scripts and styles only from the app's own files. The page has no access to Node or to Electron beyond a few calls to the window's own process.
 

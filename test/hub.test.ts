@@ -250,7 +250,9 @@ await test("two people, their agents and a channel, through the real hub", { tim
   const waiting = await until(bob.session, "bob sees his request waiting", (view) => messages(view).find((message) => message.requests[0]?.status.kind === "waiting"));
   assert.deepEqual(waiting.requests[0]?.status, { kind: "waiting", away: false });
   const asked = await until(jacob.session, "jacob can run it", (view) => messages(view).find((message) => message.requests[0]?.status.kind === "ready"));
-  assert.deepEqual(asked.requests, [{ id: asked.id, owner: "jacob", repo: "uploader", mine: true, accepted: null, status: { kind: "ready", before: "", canDecline: true } }]);
+  assert.deepEqual(asked.requests, [
+    { id: asked.id, owner: "jacob", repo: "uploader", mine: true, accepted: null, status: { kind: "ready", before: "", canDecline: true, offer: { mode: "read-only", post: false } } }
+  ]);
   assert.equal(jacob.prompts.length, 0);
   await until(jacob.session, "the message counts as unread and waiting while jacob looks away", (view) => view.unread === 1 && view.waiting === 1);
   assert.deepEqual(
@@ -305,7 +307,7 @@ await test("two people, their agents and a channel, through the real hub", { tim
 
   // His own tag sent any other way waits for his click, wherever it came from: here, from the command line, and in what his desk loads when it starts again.
   await jacob.client.publish("bob", "message", { text: "@jacob/uploader from the command line", via: "cli" });
-  const ready = { kind: "ready", before: "", canDecline: false };
+  const ready = { kind: "ready", before: "", canDecline: false, offer: { mode: "read-only", post: false } };
   const fromCommand = (view: ChatView): MessageView | undefined => messages(view).find((message) => message.body === "@jacob/uploader from the command line");
   await until(jacob.session, "the command line's tag waiting for jacob", (view) => fromCommand(view)?.requests[0]?.status.kind === "ready");
   const restarted = await person(hub, "jacob");
@@ -790,6 +792,27 @@ await test("a teammate's request runs at the mode its owner chose, which job.acc
       ["state", "Answered"]
     ]
   ); // A one-shot run says only that it started and how it ended.
+
+  // Her next request is offered as bob last ran hers in that repo, and still is once his desk has started again, from app-state.json; another asker's is offered read-only, reviewed.
+  const carol = await hub.join("carol");
+  const again = await alice.publish("bob", "message", { text: "@bob/uploader once more", via: "cli" });
+  const other = await carol.publish("bob", "message", { text: "@bob/uploader from carol", via: "cli" });
+  const offered = (session: Session, chat: string, id: string): Promise<unknown> =>
+    until(session, `the request in ${chat}, ready to run`, () => {
+      session.handle({ do: "open", chat }).catch(() => undefined); // Its chat is listed once its first message has arrived.
+      const status = shownTo(session, id)?.requests[0]?.status;
+      return status?.kind === "ready" && status.offer;
+    });
+  const restarted = deskOf(t, owner, dev);
+  for (const session of [bob.session, restarted.session]) {
+    assert.deepEqual(
+      [await offered(session, "alice", again.event.id), await offered(session, "carol", other.event.id)],
+      [
+        { mode: "full", post: false },
+        { mode: "read-only", post: false }
+      ]
+    );
+  }
 });
 
 await test(

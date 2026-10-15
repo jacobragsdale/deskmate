@@ -1,14 +1,23 @@
 /** One message in the open chat and what hangs off it: its author's edit and delete, its reactions, where each agent it tags stands, and its thread, with a box to reply in. Everything in it that someone else wrote is drawn as text. */
 
 import { cn } from "cn";
-import { ActivityIcon, EllipsisIcon, LinkIcon, PencilIcon, ReplyIcon, SmilePlusIcon, Trash2Icon } from "lucide-react";
+import { ActivityIcon, ChevronDownIcon, EllipsisIcon, LinkIcon, PencilIcon, ReplyIcon, SmilePlusIcon, Trash2Icon } from "lucide-react";
 import { Fragment, useEffect, useState } from "react";
 import type { JSX, ReactNode, SyntheticEvent } from "react";
 import Markdown, { defaultUrlTransform } from "react-markdown";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
@@ -17,6 +26,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { spans } from "../../core/chat.ts";
 import { noteLink, noteOf, notesIn } from "../../core/links.ts";
 import { oneLine } from "../../core/text.ts";
+import { MODES } from "../../core/wire.ts";
+import type { PermissionMode } from "../../core/wire.ts";
 import { runOf } from "../../shared/ipc.ts";
 import type { AskView, CurrentView, MessageView, ReplyView, RequestView } from "../../shared/ipc.ts";
 import { AskCard, Spinner } from "./Activity.tsx";
@@ -48,31 +59,51 @@ function Elapsed({ since }: { readonly since: number }): JSX.Element {
   return <>{Math.max(0, Math.round((now - since) / 1000))}s</>;
 }
 
+/** How a request is run: at which mode, and whether the answer is posted without a review. */
+type Choice = Extract<RequestView["status"], { kind: "ready" }>["offer"];
+
+/** What each mode lets the agent do without asking, as the menu explains it. */
+const ACCESS: Record<PermissionMode, string> = {
+  "read-only": "reads and searches, and changes nothing",
+  supervised: "asks you before it changes a file or runs a command",
+  "auto-edits": "changes files, and asks before it runs a command",
+  full: "does anything without asking"
+};
+
+/** What the button that runs a request at a choice says. */
+function runLabel(choice: Choice): string {
+  return choice.post ? `▶▶ Run ${choice.mode} and post` : `▶ Run ${choice.mode}`;
+}
+
 /**
- * One of the user's own agents, ready to run: the buttons that run it, and one that declines it. A run carries `text`, the request as the user sees it here, so the desk can refuse one edited since.
- * Both run it read-only, the least an agent may do, which is where a request from anyone but the user's own window starts.
+ * One of the user's own agents, ready to run: a button that runs it as the user last ran that asker's requests of that repo, read-only with a review before they ever have;
+ * a menu to choose how the answer is delivered and run it at another mode; and a button that declines it. A run carries `text`, the request as the user sees it here,
+ * so the desk can refuse one edited since.
  */
 function ReadyLine({
   request,
   text,
   who,
-  before,
-  canDecline,
+  status,
   act,
   children
 }: {
   readonly request: RequestView;
   readonly text: string;
   readonly who: string;
-  readonly before: keyof typeof BEFORE;
-  readonly canDecline: boolean;
+  readonly status: Extract<RequestView["status"], { kind: "ready" }>;
   readonly act: Act;
   readonly children: ReactNode; // What else the line offers: the activity of the run before, when there is one.
 }): JSX.Element {
   const { id, repo } = request;
+  const { offer } = status;
+  const [post, setPost] = useState(offer.post); // The delivery chosen in the menu, for a run at a mode chosen there.
+  const run = (choice: Choice): void => {
+    act({ do: "run", id, repo, text, ...choice });
+  };
   return (
     <p className={MINE}>
-      ◆ {BEFORE[before]}
+      ◆ {BEFORE[status.before]}
       {who} ·{" "}
       <Button
         size="xs"
@@ -80,23 +111,50 @@ function ReadyLine({
         className="text-foreground"
         type="button"
         onClick={() => {
-          act({ do: "run", id, repo, post: false, mode: "read-only", text });
+          run(offer);
         }}
       >
-        ▶ Run and review
+        {runLabel(offer)}
       </Button>{" "}
-      <Button
-        size="xs"
-        variant="outline"
-        className="text-foreground"
-        type="button"
-        onClick={() => {
-          act({ do: "run", id, repo, post: true, mode: "read-only", text });
-        }}
-      >
-        ▶▶ Run and post
-      </Button>
-      {canDecline && (
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button size="icon-xs" variant="outline" className="text-foreground" type="button" aria-label="Run it another way" title="Run it another way">
+            <ChevronDownIcon />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="w-auto">
+          <DropdownMenuLabel>The answer</DropdownMenuLabel>
+          <DropdownMenuRadioGroup
+            value={post ? "post" : "review"}
+            onValueChange={(value) => {
+              setPost(value === "post");
+            }}
+          >
+            {/* Choosing how the answer is delivered keeps the menu open, for the mode to be chosen next. */}
+            <DropdownMenuRadioItem value="review" onSelect={keepOpen}>
+              Review it before it is posted
+            </DropdownMenuRadioItem>
+            <DropdownMenuRadioItem value="post" onSelect={keepOpen}>
+              Post it directly
+            </DropdownMenuRadioItem>
+          </DropdownMenuRadioGroup>
+          <DropdownMenuSeparator />
+          <DropdownMenuLabel>Run it</DropdownMenuLabel>
+          {MODES.map((mode) => (
+            <DropdownMenuItem
+              key={mode}
+              data-mode={mode}
+              onSelect={() => {
+                run({ mode, post });
+              }}
+            >
+              <span className="font-medium">{mode}</span>
+              <span className="text-muted-foreground">{ACCESS[mode]}</span>
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
+      {status.canDecline && (
         <>
           {" "}
           <Button
@@ -115,6 +173,11 @@ function ReadyLine({
       {children}
     </p>
   );
+}
+
+/** Keep a menu open when one of its items is chosen. */
+function keepOpen(event: Event): void {
+  event.preventDefault();
 }
 
 /** Opens the side panel on what the user's agent did, or is doing, on a request. */
@@ -242,7 +305,7 @@ function RequestLine({ request, text, asker, runs, act }: { readonly request: Re
       );
     case "ready":
       return (
-        <ReadyLine request={request} text={text} who={who} before={status.before} canDecline={status.canDecline} act={act}>
+        <ReadyLine request={request} text={text} who={who} status={status} act={act}>
           {activity}
         </ReadyLine>
       );
