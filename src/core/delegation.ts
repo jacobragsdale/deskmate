@@ -3,7 +3,7 @@
  * Every function takes entries that already carry their trust verdict, as src/core/grants.ts does: one whose signature does not hold counts for nothing. No IO and no clock.
  */
 
-import { mentions } from "./chat.ts";
+import { mayCome, mentions } from "./chat.ts";
 import type { Accepted, Entry } from "./chat.ts";
 import { readContent } from "./kinds.ts";
 import { MODES, nameSchema } from "./wire.ts";
@@ -35,7 +35,8 @@ function rootOf(log: readonly Entry[], id: string): { readonly entry: Entry; rea
 /** The jobs under a root request: one for each agent its message tags, each with the jobs it asked below it. None when the root is not a person's message in the log. */
 export function tree(log: readonly Entry[], root: string): Node[] {
   const found = rootOf(log, root);
-  const asked = log.filter((entry) => entry.trusted && entry.event.kind === "job.request" && entry.event.refs[0] === root).toSorted((a, b) => a.seq - b.seq);
+  // Only a request the chat counts: one whose signature holds, from an agent, as the last agent its chain names.
+  const asked = log.filter((entry) => entry.trusted && entry.event.kind === "job.request" && entry.event.refs[0] === root && mayCome(entry.event)).toSorted((a, b) => a.seq - b.seq);
   // A job's children are the requests its agent made under the request it was asked: an event names its parent by id, which is the hash of what it signs, so no request can be its own ancestor.
   const under = (request: Entry, agent: string): Node => ({
     request,

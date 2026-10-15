@@ -84,7 +84,19 @@ const key = loadKey(PRIVATE_KEY);
 /** A message as the fold would leave it, or with `agent` an agent's answer: all an agent's prompt reads of one. */
 function shown(seq: number, author: string, to: string, text: string, agent: string | null = null): Message {
   const event = signEvent(key, { author, to, kind: agent === null ? "message" : "job.result", content: "{}", ts: TS, refs: [] });
-  return { entry: { seq, event, trusted: true }, agent, answers: agent === null ? null : event.id, branch: "", root: null, text, edited: false, deleted: false, reactions: new Map(), replies: [] };
+  return {
+    entry: { seq, event, trusted: true },
+    agent,
+    answers: agent === null ? null : event.id,
+    branch: "",
+    root: null,
+    text,
+    edited: false,
+    deleted: false,
+    reactions: new Map(),
+    replies: [],
+    delegation: null
+  };
 }
 
 const earlier = [shown(1, "bob", "#backend", "it was the connection pool"), shown(2, "carol", "#backend", "Retries live in queue.py", "uploader")];

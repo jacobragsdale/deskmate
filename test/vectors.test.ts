@@ -34,7 +34,19 @@ const key = loadKey(vectors.private_key);
 /** A message as the fold would leave it, or with `agent` an agent's answer: all an agent's prompt reads of one. */
 function shown(seq: number, author: string, to: string, text: string, agent: string | null = null): Message {
   const event = signEvent(key, { author, to, kind: agent === null ? "message" : "job.result", content: "{}", ts: vectors.ts, refs: [] });
-  return { entry: { seq, event, trusted: true }, agent, answers: agent === null ? null : event.id, branch: "", root: null, text, edited: false, deleted: false, reactions: new Map(), replies: [] };
+  return {
+    entry: { seq, event, trusted: true },
+    agent,
+    answers: agent === null ? null : event.id,
+    branch: "",
+    root: null,
+    text,
+    edited: false,
+    deleted: false,
+    reactions: new Map(),
+    replies: [],
+    delegation: null
+  };
 }
 
 await test("a key loads from its hex and gives the same public key", () => {

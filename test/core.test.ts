@@ -12,6 +12,7 @@ import { z } from "zod";
 
 import { candidates, ChatLog, chatOf, continues, rings, STALE } from "../src/core/chat.ts";
 import type { Entry, Message } from "../src/core/chat.ts";
+import type { Node } from "../src/core/delegation.ts";
 import { oneshotRunner, runAgent, splitCommand } from "../src/desk/agents/oneshot.ts";
 import { DEFAULT_PRESET, oneshotAgent } from "../src/desk/agents/presets.ts";
 import { AgentCancelledError, Client, PlayerTwoError, readConfig } from "../src/desk/client.ts";
@@ -239,6 +240,36 @@ await test("a job's event from an agent, owner/repo, counts exactly as one from 
   assert.deepEqual(states(forged, again), ["jacob/uploader waiting"]);
   assert.deepEqual(shown(forged, "bob"), ["bob: @jacob/uploader again"]);
   assert.deepEqual(forged.waitingForMe("bob", NOW).length, 1);
+});
+
+await test("an agent's request of another sits in its root's thread with where it came from, and is one job, of the agent it asks, that moves as a tagged agent's does; the tree under the root is read from the chat", () => {
+  const root = say("bob", "#team", "@jacob/uploader does removing `retries` break anything?");
+  const by = (author: string, kind: string, content: object, about: Entry): Entry => entry(author, "#team", kind, content, { refs: [about.event.id] });
+  const asking = (author: string, chain: readonly string[], text = "does it break your caller?"): Entry =>
+    entry(author, "#team", "job.request", { target: "carol/billing", text, chain }, { refs: [root.event.id, root.event.id] });
+  const asked = asking("jacob/uploader", ["jacob/uploader"]);
+  const log = logOf("carol", [
+    root,
+    by("jacob", "job.accepted", { repo: "uploader", ...ACCEPTED, delegate: true }, root),
+    asked,
+    asking("bob", ["jacob/uploader"], "from bob himself"), // Only an agent asks another this way.
+    asking("jacob/uploader", ["bob/client"], "through another agent") // Its chain does not end with it.
+  ]);
+  const shape = (nodes: readonly Node[]): string => nodes.map((node) => (node.children.length === 0 ? node.agent : `${node.agent} [${shape(node.children)}]`)).join(", ");
+
+  assert.deepEqual(shown(log, "#team"), ["bob: @jacob/uploader does removing `retries` break anything?", "  jacob/uploader/uploader: does it break your caller?"]);
+  assert.deepEqual(log.message(asked.event.id)?.delegation, { root: root.event.id, parent: root.event.id, chain: ["jacob/uploader"], first: "bob" });
+  assert.equal(log.message(root.event.id)?.delegation, null);
+  assert.deepEqual([states(log, root), states(log, asked)], [["jacob/uploader working"], ["carol/billing waiting"]]);
+  assert.equal(log.waitingForMe("#team", NOW).length, 1);
+  assert.equal(shape(log.tree(root.event.id)), "jacob/uploader [carol/billing]");
+  assert.deepEqual(log.tree(asked.event.id), []); // Only a person's message is a root.
+
+  log.add([by("carol", "job.accepted", { repo: "billing", ...ACCEPTED }, asked), by("carol/billing", "job.result", { repo: "billing", branch: "main", text: "no", reviewed: false }, asked)]);
+  assert.deepEqual(states(log, asked), ["carol/billing answered"]);
+  assert.deepEqual(shown(log, "#team").at(-1), "  carol/billing/billing: no"); // The answer follows its request, in the thread.
+  assert.equal(log.unread("#team", 0), 2); // Bob's message and jacob's agent's request; carol's own agent's answer is not new to her.
+  assert.equal(logOf("carol", [asked]).message(asked.event.id)?.delegation?.first, ""); // Its root not loaded: who asked first is not known here.
 });
 
 await test("an event whose signature fails changes nothing and is shown as a warning, without what it says", () => {

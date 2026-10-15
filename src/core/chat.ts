@@ -1,5 +1,7 @@
 /** Chat state behind the interface: each chat's events folded into what it shows, where each tagged agent stands, what is unread, and the tag list. No IO. */
 
+import { tree } from "./delegation.ts";
+import type { Node } from "./delegation.ts";
 import { AGENT_KINDS, readContent } from "./kinds.ts";
 import type { Content, Summary } from "./kinds.ts";
 import { byCodeUnit, head } from "./text.ts";
@@ -33,10 +35,21 @@ export interface Entry {
 /** What the owner said when they let an agent run. */
 export type Accepted = Extract<Content, { readonly kind: "job.accepted" }>["content"];
 
-/** A message someone typed, or an agent's answer, as it stands after everything said about it since. */
+/**
+ * Where an agent's request of another came from: the root request, a person's message, the request its asker was working on, the agents it came through from the root's down to its asker,
+ * and who asked first, the root's author, or "" while the root is not loaded.
+ */
+export interface Delegation {
+  readonly root: string;
+  readonly parent: string;
+  readonly chain: readonly string[];
+  readonly first: string;
+}
+
+/** A message someone typed, an agent's answer, or an agent's request of another, as it stands after everything said about it since. */
 export interface Message {
   readonly entry: Entry;
-  readonly agent: string | null; // The repo of the agent whose answer this is; null for a message a person typed.
+  readonly agent: string | null; // The repo of the agent whose answer or request this is; null for a message a person typed.
   readonly answers: string | null; // The request an answer is to; null for a message.
   readonly branch: string; // The branch an answer was written on; "" for a message.
   readonly root: string | null; // The thread it is a reply in; null when it is not a reply.
@@ -45,6 +58,7 @@ export interface Message {
   readonly deleted: boolean;
   readonly reactions: ReadonlyMap<string, ReadonlySet<string>>; // Each emoji, and who reacted with it.
   readonly replies: readonly Message[]; // Oldest first.
+  readonly delegation: Delegation | null; // For an agent's request of another, where it came from; null for anything else.
 }
 
 /** One thing in a chat, in the order the hub stored it. Replies are under their thread's root, not here. */
@@ -187,13 +201,14 @@ interface Folding {
   readonly agent: string | null;
   readonly answers: string | null;
   readonly branch: string;
+  readonly delegation: Delegation | null;
   readonly root: string | null;
   text: string;
   edited: boolean;
   deleted: boolean;
   readonly reactions: Map<string, Set<string>>;
   readonly replies: Folding[];
-  readonly jobs: Job[]; // The agents it tags, in the order they are tagged.
+  readonly jobs: Job[]; // The agents it tags, in the order they are tagged; for an agent's request of another, that one.
 }
 
 /** A job while its chat is being folded. */
@@ -238,22 +253,13 @@ function jobKey(request: string, agent: string): string {
   return `${request} ${agent}`;
 }
 
-/** A message or an answer in a thread when `parent` is in one or is a thread's root, and at the top of the chat when there is no parent. */
-function newMessage(entry: Entry, text: string, parent: Folding | undefined, answer: { readonly agent: string; readonly answers: string; readonly branch: string } | null): Folding {
+/** What a message a person typed has of an agent's answer or request: nothing. */
+const TYPED = { agent: null, answers: null, branch: "", delegation: null } as const;
+
+/** A message, an answer or an agent's request in a thread when `parent` is in one or is a thread's root, and at the top of the chat when there is no parent. */
+function newMessage(entry: Entry, text: string, parent: Folding | undefined, about: Pick<Folding, "agent" | "answers" | "branch" | "delegation"> = TYPED): Folding {
   const root = parent === undefined ? null : (parent.root ?? parent.entry.event.id);
-  return {
-    entry,
-    agent: answer?.agent ?? null,
-    answers: answer?.answers ?? null,
-    branch: answer?.branch ?? "",
-    root,
-    text,
-    edited: false,
-    deleted: false,
-    reactions: new Map(),
-    replies: [],
-    jobs: []
-  };
+  return { entry, ...about, root, text, edited: false, deleted: false, reactions: new Map(), replies: [], jobs: [] };
 }
 
 function place(folded: Folded, message: Folding): void {
@@ -271,7 +277,7 @@ function applyToMessage(folded: Folded, entry: Entry, said: Extract<Content, { r
   const { event } = entry;
   const target = folded.messages.get(event.refs[0] ?? "");
   if (said.kind === "message") {
-    const message = newMessage(entry, said.content.text, target, null);
+    const message = newMessage(entry, said.content.text, target);
     place(folded, message);
     for (const [owner, repo] of mentions(said.content.text)) {
       const job: Job = { request: message, owner, repo, state: "waiting", since: event.ts, accepted: null, summary: "" }; // A tag counts only here, in a message as it was sent: not in an answer, and not in an edit.
@@ -311,8 +317,26 @@ function applyToJob(folded: Folded, entry: Entry, said: Extract<Content, { reado
   }
   if (said.kind === "job.result") {
     const asked = folded.messages.get(request);
-    place(folded, newMessage(entry, said.content.text, asked?.root === null ? undefined : asked, { agent: said.content.repo, answers: request, branch: said.content.branch }));
+    place(folded, newMessage(entry, said.content.text, asked?.root === null ? undefined : asked, { agent: said.content.repo, answers: request, branch: said.content.branch, delegation: null }));
   }
+}
+
+/**
+ * An agent's request of another: shown in its root request's thread as what the asking agent said, and one job, of the agent it asks, which then moves as a tagged agent's does.
+ * Whether it may go to that agent is for the agent's owner's desk to judge, from the log (src/core/delegation.ts).
+ */
+function applyRequest(folded: Folded, entry: Entry, said: Extract<Content, { readonly kind: "job.request" }>): void {
+  const { event } = entry;
+  const [root = "", parent = root] = event.refs;
+  const rooted = folded.messages.get(root);
+  const first = rooted?.entry.event.kind === "message" ? rooted.entry.event.author : ""; // A tag counts only in a message a person wrote, so only one can be a root.
+  const delegation = { root, parent, chain: said.content.chain, first };
+  const message = newMessage(entry, said.content.text, rooted, { agent: event.author.slice(ownerOf(event.author).length + 1), answers: null, branch: "", delegation });
+  place(folded, message);
+  const [owner = "", repo = ""] = said.content.target.split("/");
+  const job: Job = { request: message, owner, repo, state: "waiting", since: event.ts, accepted: null, summary: "" };
+  message.jobs.push(job);
+  folded.jobs.set(jobKey(event.id, said.content.target), job);
 }
 
 function aboutMessage(said: ReturnType<typeof readContent>): said is Extract<Content, { readonly kind: MessageKind }> {
@@ -324,16 +348,29 @@ function aboutJob(said: ReturnType<typeof readContent>): said is Extract<Content
 }
 
 /**
- * Whether an event may come from its author: anything from a person, as far as this goes; from an agent, only a report of its own run about its own repo, which then counts exactly as its owner's would.
- * Anything else from one counts for nothing, as the hub refuses it: a message, whose tags would start jobs, among them, and an answer said to be reviewed, which only its owner can send. What shows an event outside the fold (search, notifications, the command, the MCP server)
- * asks this too, so that one a hub let through is shown nowhere, rather than hidden in the chat and credited to another agent everywhere else.
+ * Whether an event may come from its author: anything from a person but a request of an agent by another, as far as this goes; from an agent, only a report of its own run about its own repo,
+ * which then counts exactly as its owner's would, and a request of another agent as the last agent its chain names. Anything else from one counts for nothing, as the hub refuses it:
+ * a message, whose tags would start jobs, among them, and an answer said to be reviewed, which only its owner can send. What shows an event outside the fold (search, notifications,
+ * the command, the MCP server) asks this too, so that one a hub let through is shown nowhere, rather than hidden in the chat and credited to another agent everywhere else.
  */
 export function mayCome(event: Event, said: ReturnType<typeof readContent> = readContent(event)): boolean {
   if (!isAgent(event.author)) {
-    return true;
+    return said.kind !== "job.request"; // Only an agent asks another this way: a person tags it.
+  }
+  if (said.kind === "job.request") {
+    return said.content.chain.at(-1) === event.author;
   }
   const own = event.author.slice(ownerOf(event.author).length + 1);
   return AGENT_KINDS.has(said.kind) && said.kind !== "unknown" && "repo" in said.content && said.content.repo === own && !(said.kind === "job.result" && said.content.reviewed);
+}
+
+/** What the agent is doing, from its owner or itself, while it works: looked up under the agent its author owns, as any job's event is. It is word that the run goes on, so it is believed for STALE seconds from it. */
+function applyProgress(folded: Folded, entry: Entry, said: Extract<Content, { readonly kind: "job.progress" }>): void {
+  const job = folded.jobs.get(jobKey(entry.event.refs[0] ?? "", `${ownerOf(entry.event.author)}/${said.content.repo}`));
+  if (job?.state === "working") {
+    job.summary = said.content.summary;
+    job.since = Math.max(job.since, entry.event.ts);
+  }
 }
 
 /** Apply one event whose signature holds. A kind this version does not know, content its kind does not hold, or anything an agent may not send, changes nothing. */
@@ -344,15 +381,12 @@ function apply(folded: Folded, entry: Entry): void {
   }
   if (aboutMessage(said)) {
     applyToMessage(folded, entry, said);
+  } else if (said.kind === "job.request") {
+    applyRequest(folded, entry, said);
   } else if (aboutJob(said)) {
     applyToJob(folded, entry, said);
   } else if (said.kind === "job.progress") {
-    // What the agent is doing, from its owner or itself, while it works: looked up under the agent its author owns, as any job's event is. It is word that the run goes on, so it is believed for STALE seconds from it.
-    const job = folded.jobs.get(jobKey(entry.event.refs[0] ?? "", `${ownerOf(entry.event.author)}/${said.content.repo}`));
-    if (job?.state === "working") {
-      job.summary = said.content.summary;
-      job.since = Math.max(job.since, entry.event.ts);
-    }
+    applyProgress(folded, entry, said);
   } else if (said.kind === "channel.join" || said.kind === "channel.leave") {
     folded.items.push({ kind: "line", entry, did: said.kind === "channel.join" ? "joined" : "left", repo: "" });
   } else if (said.kind === "channel.pin") {
@@ -464,6 +498,11 @@ export class ChatLog {
       accepted: job.accepted,
       summary: job.summary
     }));
+  }
+
+  /** The jobs under a root request, a person's message, as src/core/delegation.ts's `tree` reads them from the chat it is in: none when it is not loaded here. */
+  public tree(root: string): Node[] {
+    return tree(this.chats.get(this.where.get(root) ?? "") ?? [], root);
   }
 
   /** The messages and answers just before this one in its chat, oldest first, for an agent to read as context. */
