@@ -32,6 +32,18 @@ function askersOf(grant: GrantView): string {
   return grant.askers.includes("*") ? "anyone on the hub" : grant.askers.join(", ");
 }
 
+/**
+ * Why the agent that answers would run nothing under a grant at `mode`, so that a request waits for the user all the same; "" when it would run. Below full, an agent over ACP whose permissions
+ * were never tested is not taken at its word with nobody watching (see startRun in the session).
+ */
+function stalled(view: ChatView, mode: PermissionMode): string {
+  if (view.cannot[mode] !== "") {
+    return view.cannot[mode];
+  }
+  const label = view.agents.find((agent) => agent.id === view.defaultAgent)?.label ?? "";
+  return view.untested && mode !== "full" ? `${label}'s permissions have not been tested, so nothing shows it keeps to less than full with nobody watching: Setup → Test permissions` : "";
+}
+
 /** A grant's answers, as the dialog and the list put them. */
 function deliveryOf(delivery: GrantView["delivery"]): string {
   return delivery === "post" ? "posted directly" : "kept for your review";
@@ -41,15 +53,17 @@ interface NewGrantProps {
   readonly repo: string;
   readonly people: readonly string[]; // Everyone else on the hub, who may be named as the one to ask.
   readonly cannot: ChatView["cannot"];
+  readonly untested: string; // Why a grant below full would never run, the agent that answers being over ACP and untested, so that only full can be chosen; "" when it is not.
   readonly act: Act;
   readonly onDone: () => void;
 }
 
 /** The dialog that makes a grant on the user's agent in `repo`: who may ask, at which of the modes the agent that answers can be held to, how its answers go out, for how long, and how often a day. */
-function NewGrant({ repo, people, cannot, act, onDone }: NewGrantProps): JSX.Element {
+function NewGrant({ repo, people, cannot, untested, act, onDone }: NewGrantProps): JSX.Element {
   const modes = MODES.filter((mode) => cannot[mode] === "");
+  const usable = untested === "" ? modes : modes.filter((mode) => mode === "full"); // Those listed but not these are shown, and cannot be chosen.
   const [asker, setAsker] = useState(people[0] ?? "*");
-  const [mode, setMode] = useState<PermissionMode>(modes[0] ?? "full");
+  const [mode, setMode] = useState<PermissionMode>(usable[0] ?? "full");
   const [delivery, setDelivery] = useState<GrantView["delivery"]>("review");
   const [lasts, setLasts] = useState<number>(LASTS[0].seconds);
   const [runs, setRuns] = useState(RUNS);
@@ -124,18 +138,24 @@ function NewGrant({ repo, people, cannot, act, onDone }: NewGrantProps): JSX.Ele
           <select
             name="mode"
             value={mode}
+            aria-describedby={untested === "" ? undefined : "untested"}
             onChange={(event) => {
               const chosen = event.currentTarget.value;
-              setMode(modes.find((each) => each === chosen) ?? mode);
+              setMode(usable.find((each) => each === chosen) ?? mode);
             }}
           >
             {modes.map((each) => (
-              <option key={each} value={each}>
+              <option key={each} value={each} disabled={!usable.includes(each)}>
                 {each}: {ACCESS[each]}
               </option>
             ))}
           </select>
         </Label>
+        {untested !== "" && (
+          <p id="untested" className="-mt-2 text-xs text-warn">
+            Only full can be chosen. {untested}.
+          </p>
+        )}
         <Label className={FIELD}>
           Its answer
           <select
@@ -196,7 +216,7 @@ function NewGrant({ repo, people, cannot, act, onDone }: NewGrantProps): JSX.Ele
 }
 
 /** The grants that stand on one of the user's agents, each with what it allows, until when, its runs today, and Revoke. */
-function Grants({ grants, act }: { readonly grants: readonly GrantView[]; readonly act: Act }): JSX.Element {
+function Grants({ grants, view, act }: { readonly grants: readonly GrantView[]; readonly view: ChatView; readonly act: Act }): JSX.Element {
   const [revoking, setRevoking] = useState<readonly string[]>([]); // The grants being revoked: their Revoke does nothing more until the desk answers.
   if (grants.length === 0) {
     return <p className="pl-4 text-muted-foreground">No grants: a teammate&rsquo;s request of it waits for you.</p>;
@@ -207,6 +227,7 @@ function Grants({ grants, act }: { readonly grants: readonly GrantView[]; readon
         <li key={grant.id} data-grant={grant.id} className="flex items-center gap-2">
           <span className="flex-1">
             {askersOf(grant)} · {grant.mode} · {deliveryOf(grant.delivery)} · until <Until expires={grant.expires} /> · {grant.runsToday} of {grant.runsPerDay} runs today
+            {stalled(view, grant.mode) !== "" && <span className="block text-xs text-warn">A request under it waits for you: {stalled(view, grant.mode)}.</span>}
           </span>
           <Button
             type="button"
@@ -285,7 +306,7 @@ export function MyAgents({ view, act, onClose }: { readonly view: ChatView; read
                 New grant
               </Button>
             </p>
-            <Grants grants={view.grants.filter((grant) => grant.repo === repo)} act={act} />
+            <Grants grants={view.grants.filter((grant) => grant.repo === repo)} view={view} act={act} />
           </li>
         ))}
       </ul>
@@ -297,7 +318,7 @@ export function MyAgents({ view, act, onClose }: { readonly view: ChatView; read
             {away.map((repo) => (
               <li key={repo} data-away={repo} className="flex flex-col gap-1.5">
                 <strong>{repo}</strong>
-                <Grants grants={view.grants.filter((grant) => grant.repo === repo)} act={act} />
+                <Grants grants={view.grants.filter((grant) => grant.repo === repo)} view={view} act={act} />
               </li>
             ))}
           </ul>
@@ -313,6 +334,7 @@ export function MyAgents({ view, act, onClose }: { readonly view: ChatView; read
           repo={granting}
           people={people}
           cannot={view.cannot}
+          untested={view.untested ? stalled(view, "read-only") : ""}
           act={act}
           onDone={() => {
             setGranting("");

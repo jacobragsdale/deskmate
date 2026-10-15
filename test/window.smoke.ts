@@ -234,7 +234,7 @@ async function addAgent(page: Page, program: string, args: readonly string[]): P
 }
 
 await test(
-  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, keeps a card in reach in a closed thread and brings one far above the end into view, refuses and allows for the run from a card, and offers only the modes the agent that answers can keep, full alone beside its reason when that is all, and a full chosen once not again in one click when less is there; and on My agents makes grants from its dialog, which asks a second yes for full access posted directly for anyone, one grant for each double click, revokes one with a double click and not the next, counts the run a grant lets go, and holds a repo back with a double click, unshared and answering nobody under that grant, and lets it answer again; and says under whose grant a run went ahead, to its owner and to whoever asked, and that an answer its agent signed was not reviewed; and while a grant is live hides on close, answering on, until started again; lists a grant apart once its repo is not checked out here, and revokes it there; and quits on close once none is",
+  "the window joins, opens a chat, sends a message and reads it back, shows a popover, a dialog and a toast in place, draws hostile messages, replies, reactions, edits and links to notes as text, pages back, keeping its place, shows editor agents' snippets and the user's own agents on the Setup page, where one over ACP is tested for asking first, runs a teammate's request with the user's agent read-only, step by step in the activity panel, and supervised from the menu, where it asks on a card before it edits, as the user's own does before it runs a command, keeps a card in reach in a closed thread and brings one far above the end into view, refuses and allows for the run from a card, and offers only the modes the agent that answers can keep, full alone beside its reason when that is all, and a full chosen once not again in one click when less is there, and for a grant full alone while it is untested; and on My agents makes grants from its dialog, which asks a second yes for full access posted directly for anyone, one grant for each double click, revokes one with a double click and not the next, counts the run a grant lets go, and holds a repo back with a double click, unshared and answering nobody under that grant, and lets it answer again; and says under whose grant a run went ahead, to its owner and to whoever asked, and that an answer its agent signed was not reviewed; and while a grant is live hides on close, answering on, until started again; lists a grant apart once its repo is not checked out here, and revokes it there; and quits on close once none is",
   { skip: NO_DISPLAY ? "no display: run it under xvfb-run" : false, timeout: 120_000 },
   async (t) => {
     assert.ok(existsSync(join(ROOT, "dist", "main.js")), "dist/ is not built: run `npm run build` first");
@@ -779,6 +779,27 @@ await test(
     assert.equal(await page.eval(described), "Permissions not tested — Setup → Test permissions.");
     await page.shot("untested");
     await page.press("Escape");
+    await page.until("the menu closed once more", `document.querySelector('[role="menu"]') === null`);
+
+    // On My agents, a grant on it below full would never run with nobody watching, so the dialog offers full alone, and says where to test it.
+    await page.click("footer button", "My agents");
+    const newGrant = `[...document.querySelectorAll('li[data-repo="billing"] button')].find((each) => each.textContent === "New grant")`;
+    await page.until("her billing agent with Cursor answering", `${newGrant} !== undefined`);
+    await page.eval(`${newGrant}.click()`);
+    const modes = `document.querySelector('[role="dialog"] select[name="mode"]')`;
+    await page.until("the grant's dialog with Cursor answering", `${modes} !== null`);
+    assert.deepEqual(await page.eval(`[...${modes}.options].map((each) => each.value + (each.disabled ? " disabled" : ""))`), [
+      "read-only disabled",
+      "supervised disabled",
+      "auto-edits disabled",
+      "full"
+    ]);
+    assert.equal(await page.eval(`${modes}.value`), "full");
+    assert.match(String(await page.eval(`document.querySelector('[role="dialog"]').innerText`)), /Only full can be chosen\. Cursor's permissions have not been tested.*Setup → Test permissions/);
+    await page.shot("grant-untested");
+    await page.press("Escape");
+    await page.until("the grant's dialog closed", `document.querySelector('[role="dialog"]') === null`);
+    await page.click("button", "Back");
 
     // My agents, with the scripted agent answering again: a row for her billing agent, on its branch, and who answers for it. From its dialog, which offers the modes that agent can keep, she
     // grants full access posted directly for anyone, which asks a second yes first, and carol read-only, posted directly, twice a day, double-clicking each time: each makes one grant.
