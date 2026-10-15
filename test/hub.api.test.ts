@@ -292,6 +292,33 @@ await test("joining, leaving and pinning are events the hub acts on, and one it 
   assert.deepEqual(await post(hub, "alice", signed(hub, "alice", "#backend", "message", { text: "still here", via: "cli" })), [201, 7]); // Nothing refused was stored.
 });
 
+await test("a pin names the branch a room is about, which GET /channels reports until the room is pinned to the whole repo or unpinned, and a branch that is not one, or one without a repo, is refused", async (t) => {
+  const hub = await startHub(t);
+  const alice = await hub.join("alice");
+  const uploader = { name: UPLOADER.name, key: UPLOADER.key, url: UPLOADER.url };
+  const pin = async (content: unknown): Promise<readonly [number, number | string]> => post(hub, "alice", signed(hub, "alice", "#retry", "channel.pin", content));
+  const channel = async (): Promise<unknown> => (await alice.channels())[0];
+
+  assert.deepEqual(await post(hub, "alice", signed(hub, "alice", "#retry", "channel.join")), [201, 1]);
+  assert.deepEqual(await pin({ repo: uploader, branch: "feature/retry" }), [201, 2]);
+  assert.deepEqual(await channel(), { name: "#retry", members: ["alice"], repo: uploader, branch: "feature/retry" });
+  for (const content of [
+    { repo: uploader, branch: "" },
+    { repo: uploader, branch: "feature\nretry" },
+    { repo: uploader, branch: "x".repeat(201) },
+    { repo: uploader },
+    { repo: null, branch: "feature/retry" }
+  ]) {
+    assert.deepEqual(await pin(content), [422, "invalid content: not what channel.pin holds"], JSON.stringify(content));
+  }
+  assert.deepEqual(await channel(), { name: "#retry", members: ["alice"], repo: uploader, branch: "feature/retry" });
+  assert.deepEqual(await pin({ repo: uploader, branch: null }), [201, 3]);
+  assert.deepEqual(await channel(), { name: "#retry", members: ["alice"], repo: uploader, branch: null });
+  assert.deepEqual(await pin({ repo: uploader, branch: "x".repeat(200) }), [201, 4]);
+  assert.deepEqual(await pin({ repo: null, branch: null }), [201, 5]);
+  assert.deepEqual(await channel(), { name: "#retry", members: ["alice"], repo: null, branch: null });
+});
+
 await test("a direct event reaches the two people in it and nobody else, and a chat with one person holds both directions", async (t) => {
   const hub = await startHub(t);
   for (const name of ["alice", "bob", "carol", "dave"]) {

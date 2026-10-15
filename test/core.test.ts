@@ -20,13 +20,15 @@ import type { Runner, Transport } from "../src/desk/client.ts";
 import type { RunHandlers } from "../src/desk/agents/runner.ts";
 import { readContent } from "../src/core/kinds.ts";
 import { noteIn, noteLink, noteOf, notesIn } from "../src/core/links.ts";
+import { roomName, suggestions } from "../src/core/rooms.ts";
+import type { Room } from "../src/core/rooms.ts";
 import { loadKey, publicHex, signEvent } from "../src/core/sign.ts";
 import * as repos from "../src/desk/repos.ts";
 import { Session } from "../src/desk/session.ts";
-import { commandLineOf, eventSchema, fitText, MAX_CONTENT, MAX_PATCH, MODES, PROTOCOL } from "../src/core/wire.ts";
+import { channelSchema, commandLineOf, eventSchema, fitText, MAX_CONTENT, MAX_PATCH, MODES, PROTOCOL } from "../src/core/wire.ts";
 import { atMost, decide } from "../src/desk/permissions.ts";
 import type { Action, Decision } from "../src/desk/permissions.ts";
-import type { Delivered, TeamRepo } from "../src/core/wire.ts";
+import type { ChannelInfo, Delivered, TeamRepo } from "../src/core/wire.ts";
 import { startHub } from "./startHub.ts";
 
 const NOW = 1_800_000_000;
@@ -456,6 +458,62 @@ await test("the tag list leads with the agents on a branch room's branch, then t
   assert.deepEqual(candidates("", team, "jacob", null, null, 2).more, 4);
 });
 
+await test("a room is suggested for each branch I am on, not the repo's default, with the teammates on it too, unless a channel is pinned to it or I dismissed it", () => {
+  const on = (user: string, name: string, branch: string): TeamRepo => ({ ...repo(user, name), branch });
+  const team = [
+    on("bob", "uploader", "feature/retry"),
+    on("carol", "uploader", "feature/retry"),
+    on("dave", "uploader", "main"),
+    on("jacob", "uploader", "feature/retry"),
+    on("bob", "billing", "master"), // Billing's origin names no default, so master is taken for it.
+    on("jacob", "billing", "master"),
+    on("bob", "theme", "main"), // Theme's origin names develop, so main is a branch like any other.
+    on("jacob", "theme", "main"),
+    on("bob", "api", "detached at a1b2c3d"), // No branch.
+    on("jacob", "api", "detached at a1b2c3d"),
+    on("jacob", "docs", "notes"), // Nobody else is on it.
+    on("bob", "web", "feature/retry"), // Not mine.
+    { ...on("bob", "other", "feature/retry"), name: "uploader" } // Another repo of the same name, as its key says.
+  ];
+  const defaults = new Map([
+    ["uploader", null],
+    ["theme", "develop"]
+  ]);
+  const pinned = (name: string, branch: string | null): ChannelInfo => ({ name: "#room", members: ["bob"], repo: { name, key: repo("bob", name).key, url: repo("bob", name).url }, branch });
+  const suggested = (channels: readonly ChannelInfo[], dismissed: readonly Room[] = []): string[] =>
+    suggestions(team, "jacob", channels, defaults, dismissed).map(({ repo: name, branch, others }) => `${name}/${branch} ${others.join(" ")}`);
+
+  assert.deepEqual(suggested([]), ["uploader/feature/retry bob carol", "theme/main bob"]);
+  assert.deepEqual(suggested([pinned("uploader", "feature/retry")]), ["theme/main bob"]); // A room I am not in counts.
+  assert.deepEqual(suggested([pinned("uploader", null), pinned("uploader", "main"), pinned("web", "feature/retry")]), ["uploader/feature/retry bob carol", "theme/main bob"]);
+  assert.deepEqual(suggested([], [{ repo: "theme", branch: "main" }]), ["uploader/feature/retry bob carol"]);
+  assert.deepEqual(suggested([], [{ repo: "theme", branch: "develop" }]), ["uploader/feature/retry bob carol", "theme/main bob"]);
+  // Bob's desk knows no default for theme, so main is taken for it.
+  assert.deepEqual(
+    suggestions(team, "bob", [], new Map(), []).map(({ repo: name, branch }) => `${name}/${branch}`),
+    ["uploader/feature/retry"]
+  );
+});
+
+await test("a branch room's name is the repo and the branch, cleaned and cut to fit a channel's name, with a number in place of its end while it is taken", () => {
+  assert.equal(roomName("uploader", "feature/retry", []), "#uploader-feature-retry");
+  assert.equal(roomName("uploader", "feature/retry", ["#uploader-feature-retry"]), "#uploader-feature-retry-2");
+  assert.equal(roomName("uploader", "feature/retry", ["#uploader-feature-retry", "#uploader-feature-retry-2"]), "#uploader-feature-retry-3");
+  assert.equal(roomName("uploader", "release/2026.10", []), "#uploader-release-2026-10");
+  assert.equal(roomName("acme.billing.api", "Users/Jacob/ABC-123_Fix--it", []), "#acme-billing-api-users-jacob-abc"); // The repo keeps 16 characters, and the rest is cut.
+  assert.equal(roomName("platform.services.uploader-v2", "fix", []), "#platform-services-uploader-v-fix"); // The repo is cut to leave the branch room.
+  assert.equal(roomName("uploader", "a-branch-name-that-goes-on-and-on", []), "#uploader-a-branch-name-that-goes");
+  assert.equal(roomName("uploader", "a-branch-name-that-goes-on-and-on", ["#uploader-a-branch-name-that-goes"]), "#uploader-a-branch-name-that-go-2");
+  assert.equal(roomName("uploader", "ÄÖÜ", []), "#uploader"); // Nothing of the branch a name can hold.
+  for (const { name, branch } of [
+    { name: "a", branch: "-_-" },
+    { name: "x".repeat(64), branch: "y".repeat(200) },
+    { name: "a.b", branch: "😀/🎉" }
+  ]) {
+    assert.ok(channelSchema.safeParse(roomName(name, branch, [])).success, `${name} ${branch}`);
+  }
+});
+
 /** A client whose hub is a table of answers, by method and path. Nothing is sent anywhere; what was asked is added to `asked`. */
 function clientOf(answers: Readonly<Record<string, unknown>>, asked: string[] = []): Client {
   const transport: Transport = (method, url) => {
@@ -781,6 +839,25 @@ await test("a text is cut so the event carrying it fits what the hub accepts, ho
     assert.ok(eventSchema.safeParse(signEvent(key, { author: "jacob", to: "bob", kind: "job.result", content, ts: NOW, refs: [] })).success);
   }
   assert.equal(fitText("plain"), "plain");
+});
+
+await test("a checkout's default branch is the one its origin names, as git clone notes it, and none after git init", async (t) => {
+  const dev = mkdtempSync(join(tmpdir(), "player-two-default-"));
+  t.after(() => {
+    rmSync(dev, { recursive: true, force: true });
+  });
+  const path = join(dev, "uploader");
+  await repos.git(["init", "-q", "-b", "main", path], 20);
+  await repos.git(["-C", path, "remote", "add", "origin", "https://dev.azure.com/acme/Platform/_git/uploader"], 20);
+  assert.deepEqual(
+    repos.scan(dev, "dev.azure.com/acme").map((checkout) => [checkout.branch, checkout.defaultBranch]),
+    [["main", null]]
+  );
+  await repos.git(["-C", path, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop"], 20);
+  assert.deepEqual(
+    repos.scan(dev, "dev.azure.com/acme").map((checkout) => [checkout.branch, checkout.defaultBranch]),
+    [["main", "develop"]]
+  );
 });
 
 await test("a checkout's head is its branch, the commit it is at and whether anything is uncommitted, and one with no commit, or whose status git cannot read, cannot be described", async (t) => {
