@@ -11,7 +11,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import { z } from "zod";
 
-import { askerOf, candidates, ChatLog, chatOf, continues, rings, STALE } from "../src/core/chat.ts";
+import { askerOf, candidates, ChatLog, chatOf, continues, mayCome, rings, STALE } from "../src/core/chat.ts";
 import type { Entry, Message } from "../src/core/chat.ts";
 import type { Node } from "../src/core/delegation.ts";
 import { oneshotRunner, runAgent, splitCommand } from "../src/desk/agents/oneshot.ts";
@@ -986,7 +986,11 @@ await test("each kind's content is read by its kind, and anything else is unknow
     ["job.error", { repo: "uploader" }],
     ["job.cancelled", { repo: "uploader" }],
     ["job.withdrawn", { agent: "jacob/uploader" }],
-    ["agent.register", { repo: "uploader", pubkey: "ab".repeat(32) }]
+    ["agent.register", { repo: "uploader", pubkey: "ab".repeat(32) }],
+    ["workflow.define", { name: "ci-failure", yaml: "name: ci-failure\n" }],
+    ["workflow.remove", { name: "ci-failure" }],
+    ["workflow.run", { workflow: "ci-failure", step: 0, status: "done", detail: "" }],
+    ["workflow.run", { workflow: "ci-failure", step: 3, status: "refused", detail: "ci.corp.internal is not in PLAYER_TWO_WEBHOOK_ALLOW" }]
   ];
 
   for (const [kind, content] of known) {
@@ -994,7 +998,14 @@ await test("each kind's content is read by its kind, and anything else is unknow
   }
   assert.equal(read("message", { text: "hi", via: "window", lang: "en" }), `message ${JSON.stringify({ text: "hi", via: "window" })}`); // A field a later version adds is passed over.
   assert.equal(read("job.accepted", { ...accepted, commit: "a".repeat(64) }), `job.accepted ${JSON.stringify({ ...accepted, commit: "a".repeat(64) })}`);
-  assert.equal(read("workflow.run", { workflow: "deploy" }), "unknown"); // A kind from a later phase.
+  assert.equal(read("some.later.kind", { text: "hi" }), "unknown"); // A kind from a later phase.
+  assert.equal(read("workflow.define", { name: "CI", yaml: "name: CI\n" }), "unknown"); // Named as a person is.
+  assert.equal(read("workflow.define", { name: "ci", yaml: "" }), "unknown");
+  assert.equal(read("workflow.run", { workflow: "ci", step: -1, status: "done", detail: "" }), "unknown");
+  assert.equal(read("workflow.run", { workflow: "ci", step: 0, status: "exploded", detail: "" }), "unknown");
+  const run = (author: string): boolean =>
+    mayCome(signEvent(key, { author, to: "#ops", kind: "workflow.run", content: JSON.stringify({ workflow: "ci", step: 0, status: "done", detail: "" }), ts: NOW, refs: [] }));
+  assert.deepEqual(["hub", "jacob", "jacob/uploader"].map(run), [true, false, false]); // Only the hub runs a workflow.
   assert.equal(read("message", { text: "", via: "window" }), "unknown");
   assert.equal(read("message", { text: "hi", via: "email" }), "unknown");
   assert.equal(read("message", "not JSON"), "unknown");

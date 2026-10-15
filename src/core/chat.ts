@@ -420,14 +420,14 @@ function aboutJob(said: ReturnType<typeof readContent>): said is Extract<Content
  * which then counts exactly as its owner's would, a request of another agent as the last agent its chain names, and taking back a request, which counts only from whoever made it. Anything else from one counts for nothing, as the hub refuses it:
  * a message, whose tags would start jobs, among them, and an answer said to be reviewed, which only its owner can send. What shows an event outside the fold (search, notifications,
  * the command, the MCP server) asks this too, so that one a hub let through is shown nowhere, rather than hidden in the chat and credited to another agent everywhere else.
- * From the hub itself, from phase 7, only what a workflow posts counts: a message, whose tags count only as `askerOf` says.
+ * From the hub itself, from phase 7, only what a workflow posts counts: a message, whose tags count only as `askerOf` says, and what a step of its run did, which only the hub's counts.
  */
 export function mayCome(event: Event, said: ReturnType<typeof readContent> = readContent(event)): boolean {
   if (event.author === HUB) {
-    return said.kind === "message";
+    return said.kind === "message" || said.kind === "workflow.run";
   }
   if (!isAgent(event.author)) {
-    return said.kind !== "job.request"; // Only an agent asks another this way: a person tags it.
+    return said.kind !== "job.request" && said.kind !== "workflow.run"; // Only an agent asks another this way: a person tags it. And only the hub runs a workflow.
   }
   if (said.kind === "job.request") {
     return said.content.chain.at(-1) === event.author;
