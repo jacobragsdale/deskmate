@@ -10,6 +10,7 @@ import type { Event } from "./wire.ts";
 const nothing = z.object({}).readonly();
 const text = z.string().min(1);
 const repo = repoNameSchema; // The repo of the agent a job is for. The agent's owner is the event's author.
+const agent = z.string().regex(new RegExp(`^${NAME}/${REPO_NAME}$`)); // "owner/repo": one person's checkout's agent.
 
 /** What an agent at work is doing, in the only words job.progress may carry: never a path, a command or anything the agent wrote. */
 export const SUMMARIES = ["thinking", "reading", "editing files", "running a command", "waiting for approval"] as const;
@@ -36,6 +37,7 @@ export const contentSchema = z
           dirty: z.boolean(), // Whether the checkout had changes nobody had committed.
           delivery: z.enum(["review", "post"]),
           mode: permissionModeSchema, // What the owner let the agent do without asking: a run never goes beyond it.
+          delegate: z.boolean().default(false), // Phase 5: whether the agent may ask other agents in this run. An acceptance from before has none, and is read as no.
           by: z.union([z.literal("owner"), z.object({ grant: hashSchema }).readonly()]) // Who let it run: its owner by hand, or a grant of theirs, by the grant's event id.
         })
         .readonly()
@@ -47,6 +49,9 @@ export const contentSchema = z
     z.object({ kind: z.literal("job.cancelled"), content: z.object({ repo }).readonly() }),
     z.object({ kind: z.literal("job.withdrawn"), content: z.object({ agent: z.string().regex(new RegExp(`^${NAME}/${REPO_NAME}$`)) }).readonly() }),
     z.object({ kind: z.literal("agent.register"), content: z.object({ repo, pubkey: pubKeySchema }).readonly() }), // The key of its author's agent in `repo`, which then signs as "author/repo": the newest wins.
+    // An agent at work asking another, from phase 5, authored by the asking agent. refs[0] is the root request, and refs[1] the request the asker is working on: the root again when the asker is the root's agent.
+    // `chain` is the agents from the root's down to the asker, in order. src/core/delegation.ts says when one may run.
+    z.object({ kind: z.literal("job.request"), content: z.object({ target: agent, text, chain: z.array(agent).min(1).readonly() }).readonly() }),
     // A standing yes from an agent's owner. It is read with its event's time, which bounds how long it may last; src/core/grants.ts says when it applies.
     z
       .object({
@@ -77,8 +82,8 @@ export const PUBLIC_KINDS: ReadonlySet<string> = new Set(["agent.register", "gra
 export type Content = z.infer<typeof contentSchema>;
 export type Summary = (typeof SUMMARIES)[number];
 
-/** What an event of kind K holds. */
-export type ContentOf<K extends Content["kind"]> = Extract<Content, { readonly kind: K }>["content"];
+/** What an event of kind K holds, as its author writes it: a field with a default, such as job.accepted's `delegate`, may be left out. */
+export type ContentOf<K extends Content["kind"]> = Extract<z.input<typeof contentSchema>, { readonly kind: K }>["content"];
 
 function parseJson(text: string): unknown {
   return JSON.parse(text);

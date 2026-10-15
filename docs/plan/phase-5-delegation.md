@@ -38,7 +38,7 @@ The job it creates is identified by the `job.request`'s id and the target, and m
 
 ## A. The pieces
 
-- [ ] **P5-A1** `job.request` in `src/core/kinds.ts`, and `delegate` on `job.accepted` (default `false` when absent, so earlier events still parse). Update the kinds table in [`protocol.md`](protocol.md).
+- [x] **P5-A1** `job.request` in `src/core/kinds.ts`, and `delegate` on `job.accepted` (default `false` when absent, so earlier events still parse). Update the kinds table in [`protocol.md`](protocol.md).
 - [ ] **P5-A2** The hub adds `job.request` to the kinds an agent may author.
 - [ ] **P5-A3** `src/core/delegation.ts`, pure: `checkRequest(log, request)` returning `ok` or a reason, covering each limit and the chain check; `tree(log, root)` returning the jobs under a root as a tree; `peopleInvolved(log, request)`. One test per limit and per way a chain can be false: an agent that was never accepted, a parent that already finished, a parent accepted without `delegate`, a made-up root.
 - [ ] **P5-A4** `src/core/chat.ts` folds `job.request` into a job like a tagged message, with its parent, and exposes the tree for a root.
@@ -70,3 +70,7 @@ The job it creates is identified by the `job.request`'s id and the target, and m
 1. Every task is ticked and the checks are green.
 2. The three-person scenario passes.
 3. A test shows no agent ran on any machine in that scenario without a `job.accepted` from its own owner in the log.
+
+## Notes
+
+- **P5-A1: an acceptance that does not say, what is published meanwhile, and the refs of a first hop.** `delegate` is `z.boolean().default(false)`, so an acceptance from before reads as not letting its agent ask anyone, and an older reader, whose schemas are `z.object`, passes over the field. `ContentOf` is now the schemas' input type, what an author writes, so the session's `job.accepted`, which does not name `delegate`, still compiles; `Client.publish` signs the content as this version reads it, so every acceptance it publishes says `delegate: false` until P5-C1 gives the owner the switch (this was built on a branch that leaves `src/desk` alone). Nothing about signing changed, so the vectors stand. Two constants in `test/core.test.ts` now expect `delegate: false` back. The design gives a `job.request` the refs `[root, parent]`; for an agent asking under the root itself both are the root's id, written twice, which the hub stores as one reference. An agent cannot author anything until phase 4's P4-A4 and P4-A5 let the envelope and the hub accept `owner/repo` as an author, and P5-A2 then adds `job.request` to what an agent may send.

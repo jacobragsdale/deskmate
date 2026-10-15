@@ -107,7 +107,7 @@ await test("a tagged agent's state follows its owner's job events, and one worki
   const log = logOf("jacob", [ask, job("job.accepted", ACCEPTED)]);
   const message = log.message(ask.event.id);
   assert.ok(message !== null);
-  assert.deepEqual(log.requests(message, NOW)[0]?.accepted, { repo: "uploader", ...ACCEPTED });
+  assert.deepEqual(log.requests(message, NOW)[0]?.accepted, { repo: "uploader", ...ACCEPTED, delegate: false }); // Not let ask other agents, as no acceptance from before phase 5 says.
 
   // What its owner's desk says it is doing counts while it works, from its owner, and a run accepted again starts with nothing said.
   const doing = (summary: string, author = "jacob"): Entry => entry(author, author === "jacob" ? "bob" : "jacob", "job.progress", { repo: "uploader", summary }, { refs: [ask.event.id] });
@@ -701,7 +701,7 @@ await test("each kind's content is read by its kind, and anything else is unknow
     const found = readContent(signEvent(key, { author: "jacob", to: "bob", kind, content: typeof content === "string" ? content : JSON.stringify(content), ts: NOW, refs: [] }));
     return found.kind === "unknown" ? "unknown" : `${found.kind} ${JSON.stringify(found.content)}`;
   };
-  const accepted = { repo: "uploader", branch: "main", commit: "a".repeat(40), dirty: false, delivery: "review", mode: "full", by: "owner" };
+  const accepted = { repo: "uploader", branch: "main", commit: "a".repeat(40), dirty: false, delivery: "review", mode: "full", delegate: false, by: "owner" };
   const known: readonly (readonly [string, unknown])[] = [
     ["message", { text: "hi @bob/uploader", via: "window" }],
     ["message.edit", { text: "hello" }],
