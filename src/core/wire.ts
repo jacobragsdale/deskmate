@@ -82,8 +82,13 @@ export const teamRepoSchema = z.object({ name: repoNameSchema, key: repoKeySchem
 /** A repo as the hub reports it: read with z.object like the rest of an answer, so a field a later hub adds to it (phase 6 adds to a pin) is passed over. */
 const reportedRepoSchema = z.object({ name: repoNameSchema, key: repoKeySchema, url: repoUrlSchema }).readonly();
 
-/** `repo` is the repo the channel is about, if one is pinned, and `branch` the branch the pin names, if it names one. */
-export const channelInfoSchema = z.object({ name: channelSchema, members: z.array(nameSchema).readonly(), repo: reportedRepoSchema.nullable(), branch: branchNameSchema.nullable() }).readonly();
+/**
+ * `repo` is the repo the channel is about, if one is pinned, and `branch` the branch the pin names, if it names one. A branch git would not take as one, which a hub should have refused,
+ * is read as none, so that one such pin hides no channel and names nothing git or Azure DevOps is given.
+ */
+export const channelInfoSchema = z
+  .object({ name: channelSchema, members: z.array(nameSchema).readonly(), repo: reportedRepoSchema.nullable(), branch: branchNameSchema.nullable().catch(null) })
+  .readonly();
 
 /** Anything that happens, signed by whoever did it. The hub stores and relays it unchanged, whatever its kind, so every reader can check it too. */
 export const eventSchema = z
