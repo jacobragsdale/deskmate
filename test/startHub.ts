@@ -1,6 +1,7 @@
 /** A hub for one test: the real one, started in the test's own process, on a clock that stands still unless the test brings its own. */
 
 import assert from "node:assert/strict";
+import type { KeyObject } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,8 +10,10 @@ import type { TestContext } from "node:test";
 import { oneshotAgent } from "../src/desk/agents/presets.ts";
 import { http, join as joinHub, loadClient, readConfig } from "../src/desk/client.ts";
 import type { Client } from "../src/desk/client.ts";
+import { signEvent } from "../src/core/sign.ts";
+import type { Delivered, PermissionMode } from "../src/core/wire.ts";
 import { createHub } from "../src/hub/app.ts";
-import type { PermissionMode } from "../src/core/wire.ts";
+import { Database } from "../src/hub/db.ts";
 
 export const NOW = 1_800_000_000;
 export const TOKEN = "a-join-token-for-tests";
@@ -61,4 +64,22 @@ export async function startHub(t: TestContext, now: () => number = () => NOW, do
 /** Set the mode an identity's own requests of its own agents run at, in its config.json. A one-shot command, such as the one every identity here starts with, runs only at "full". */
 export function ownMode(home: string, mode: PermissionMode): void {
   writeFileSync(join(home, "config.json"), JSON.stringify({ ...readConfig(home), ownMode: mode }, null, 1));
+}
+
+/**
+ * Sign an event with `key` and store it as a hub that checked nothing about it would, chained after the rest, for a test of what a client makes of one the hub refuses.
+ * A stream open on the hub hears of it with the next event posted. Content is given as the object it is the JSON text of.
+ */
+export function storedUnchecked(
+  hub: Hub,
+  key: KeyObject,
+  event: { readonly author: string; readonly to: string; readonly kind: string; readonly content: object; readonly ts: number; readonly refs: readonly string[] }
+): Delivered {
+  const signed = signEvent(key, { ...event, content: JSON.stringify(event.content) });
+  const db = new Database(join(hub.dir, "hub.db"));
+  try {
+    return { seq: db.transaction(() => db.addEvent(signed)), event: signed };
+  } finally {
+    db.close();
+  }
 }

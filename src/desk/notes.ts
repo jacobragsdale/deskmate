@@ -3,7 +3,7 @@
  * Everything is folded as the window folds it (src/core/chat.ts), so an edit, a delete or a job's events count here exactly as they count there.
  */
 
-import { ChatLog, chatOf } from "../core/chat.ts";
+import { ChatLog, chatOf, mayCome } from "../core/chat.ts";
 import type { Entry, Message, Request, Row, State } from "../core/chat.ts";
 import { fitText, NAME, ownerOf, REPO_NAME } from "../core/wire.ts";
 import type { Delivered } from "../core/wire.ts";
@@ -68,8 +68,8 @@ export interface Note {
 /** A note by its event's id, with what has happened to it since: null when there is none this user can see. */
 export async function readNote(client: Client, id: string): Promise<Note | null> {
   const found = await client.event(id);
-  if (found === null) {
-    return null;
+  if (found === null || !mayCome(found.event)) {
+    return null; // One the fold counts for nothing from its author is shown nowhere.
   }
   const chat = chatOf(found.event, client.config.name);
   const log = new ChatLog(client.config.name);

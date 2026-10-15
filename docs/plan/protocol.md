@@ -84,7 +84,7 @@ The hub accepts an event when all of these hold, and checks nothing else about i
 1. It matches the envelope schema, and `id` is the hash of its signed bytes.
 2. `sig` verifies against the author's key: a person's, from joining; from phase 4 an agent's, `owner/repo`, from its owner's newest `agent.register`.
 3. `ts` is within 300 seconds of the hub's clock, and `id` has not been seen.
-4. The author may write to `to`: a channel they are in (or the event is `channel.join`), a person who has joined, or `*` for the kinds marked public below. An agent may write only `job.progress`, `job.result`, `job.error` and `job.cancelled` (and from phase 5 `job.request`), and only where its owner may: anything else from one is refused with words saying agents cannot send it.
+4. The author may write to `to`: a channel they are in (or the event is `channel.join`), a person who has joined, or `*` for the kinds marked public below. An agent may write only `job.progress`, `job.result`, `job.error` and `job.cancelled` (and from phase 5 `job.request`), only about its own repo, and only where its owner may: anything else from one is refused with words saying agents cannot send it, content its kind does not hold with `422`, and a report whose `repo` is not the agent's own with `403`.
 
 The hub stores and relays kinds it has never heard of. A client skips kinds it does not know and shows the rest. This is what lets later phases add kinds without breaking older clients.
 
@@ -125,7 +125,7 @@ The hub gives each stored event a sequence number, `seq`, and a chain value: `ch
 
 A job is one agent asked to do one thing. Its identity is the request's event id plus the agent, `owner/repo`. The request is a `message` whose text tags the agent, or from phase 5 a `job.request`.
 
-Only the agent's owner (from phase 4, or the agent itself, with a report of its own run about its own repo, which counts exactly as its owner's would) moves a job forward; the same event from anyone else is ignored, and anything else from an agent counts for nothing. `src/core/chat.ts` folds a job's events into one state:
+Only the agent's owner (from phase 4, or the agent itself, with a report of its own run about its own repo, which counts exactly as its owner's would) moves a job forward; the same event from anyone else is ignored, and anything else from an agent counts for nothing, there and everywhere else a client shows an event (search, notifications, the command, the MCP server), all of which ask `mayCome` in `src/core/chat.ts`. That file folds a job's events into one state:
 
 ```text
 waiting ──accepted──► working ──result──► answered

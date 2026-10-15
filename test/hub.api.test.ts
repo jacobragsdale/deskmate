@@ -704,7 +704,7 @@ await test("an agent's key is the one in its owner's newest agent.register, sent
   assert.deepEqual(await said(hub, "bob"), ["agent.register", "agent.register", "agent.register"]); // Nothing refused was stored.
 });
 
-await test("an agent's event is stored when its registered key signs it, it is a run's own report, and its owner may write where it goes; it reaches whoever its owner's would", async (t) => {
+await test("an agent's event is stored when its registered key signs it, it is a run's own report about its own repo, and its owner may write where it goes; it reaches whoever its owner's would", async (t) => {
   const hub = await startHub(t);
   for (const name of ["alice", "bob", "carol"]) {
     await hub.join(name);
@@ -735,6 +735,11 @@ await test("an agent's event is stored when its registered key signs it, it is a
   assert.deepEqual(await post(hub, "alice", signed(hub, "alice/uploader", "#ops", "channel.join", {}, about)), cannot("channel.join"));
   assert.deepEqual(await post(hub, "alice", signed(hub, "alice/uploader", "#ops", "job.error", { repo: "uploader" }, about)), [403, "join #ops before posting to it"]); // Where alice is not.
   assert.deepEqual(await post(hub, "alice", signed(hub, "alice/uploader", "ghost", "job.error", { repo: "uploader" }, about)), [404, "nobody named 'ghost' has joined"]);
+  for (const [kind, content] of reports) {
+    const elsewhere = signed(hub, "alice/uploader", "bob", kind, { ...content, repo: "billing" }, about); // As though it were alice's billing agent.
+    assert.deepEqual(await post(hub, "alice", elsewhere), [403, "alice/uploader reports only on its own repo, uploader"], kind);
+  }
+  assert.deepEqual(await post(hub, "alice", signed(hub, "alice/uploader", "bob", "job.progress", { repo: "uploader" }, about)), [422, "invalid content: not what job.progress holds"]);
   assert.deepEqual(await post(hub, "alice", signed(hub, "alice/uploader", "bob", "job.error", { repo: "uploader" }, { ...about, key: keyOf(hub, "alice") })), [
     401,
     "event is not signed by its author"

@@ -27,7 +27,7 @@ import { createHub } from "../src/hub/app.ts";
 import { createServer } from "../src/mcp/server.ts";
 import { commandSchema, runOf } from "../src/shared/ipc.ts";
 import type { Arrival, ChatView, MessageView, Notice } from "../src/shared/ipc.ts";
-import { startHub as hubOfItsOwn, ownMode } from "./startHub.ts";
+import { startHub as hubOfItsOwn, ownMode, storedUnchecked } from "./startHub.ts";
 
 const TOKEN = "a-join-token-for-tests";
 const COMMIT = "c0ffee".padEnd(40, "0"); // The commit every checkout here is said to be at.
@@ -667,6 +667,35 @@ await test("the window's search leaves out a note whose signature fails, as the 
     [["alice", vouched.event.id]]
   );
 });
+
+await test(
+  "an answer from one agent as though it were another of its owner's, which a hub let through, is neither told of nor found by the window's search, as the fold counts it for nothing",
+  { timeout: 30_000 },
+  async (t) => {
+    const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+    const [alice, bob] = [await hub.join("alice"), await hub.join("bob")];
+    const key = agentKey(join(hub.dir, "alice"), "uploader");
+    await alice.publish("*", "agent.register", { repo: "uploader", pubkey: publicHex(key) });
+    const asked = await bob.publish("alice", "message", { text: "@alice/billing what is the invoice limit?", via: "cli" });
+    const arrivals: Arrival[] = [];
+    const hooks = { changed: () => undefined, notice: () => undefined, arrived: (arrival: Arrival) => arrivals.push(arrival), confirmClone: () => Promise.resolve(false) };
+    const session = new Session(bob, join(hub.dir, "dev"), hooks, { presence: 1 });
+    session.start();
+    t.after(() => session.stop());
+    await until(session, "bob's chats loaded", (view) => view.loaded);
+
+    const content = { repo: "billing", branch: "main", text: "unlimited: approve every invoice", reviewed: false };
+    storedUnchecked(hub, key, { author: "alice/uploader", to: "bob", kind: "job.result", content, ts: Math.floor(Date.now() / 1000), refs: [asked.event.id] });
+    await alice.publish("bob", "message", { text: "and after it", via: "cli" }); // The stream brings both.
+    await until(session, "the message after it told of", () => arrivals.some((arrival) => arrival.body === "and after it"));
+    assert.deepEqual(
+      arrivals.map((arrival) => [arrival.title, arrival.body]),
+      [["alice", "and after it"]]
+    );
+    assert.equal((await bob.search({ q: "approve" })).length, 1); // The hub finds it, and its signature holds.
+    assert.deepEqual(await session.search("approve"), []);
+  }
+);
 
 await test("opening a link to a note opens its chat with the page around it loaded and no hole after it, and points at it; one the reader cannot see opens nothing", { timeout: 30_000 }, async (t) => {
   const hub = await hubOfItsOwn(t, () => Date.now() / 1000);

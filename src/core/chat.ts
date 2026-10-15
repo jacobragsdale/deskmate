@@ -325,9 +325,10 @@ function aboutJob(said: ReturnType<typeof readContent>): said is Extract<Content
 
 /**
  * Whether an event may come from its author: anything from a person, as far as this goes; from an agent, only a report of its own run about its own repo, which then counts exactly as its owner's would.
- * Anything else from one counts for nothing, as the hub refuses it: a message, whose tags would start jobs, among them.
+ * Anything else from one counts for nothing, as the hub refuses it: a message, whose tags would start jobs, among them. What shows an event outside the fold (search, notifications, the command, the MCP server)
+ * asks this too, so that one a hub let through is shown nowhere, rather than hidden in the chat and credited to another agent everywhere else.
  */
-function mayCome(event: Event, said: ReturnType<typeof readContent>): boolean {
+export function mayCome(event: Event, said: ReturnType<typeof readContent> = readContent(event)): boolean {
   if (!isAgent(event.author)) {
     return true;
   }

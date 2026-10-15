@@ -11,7 +11,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
-import { ChatLog, chatOf, NOT_INSTRUCTIONS, ONLINE } from "../core/chat.ts";
+import { ChatLog, chatOf, mayCome, NOT_INSTRUCTIONS, ONLINE } from "../core/chat.ts";
 import type { Entry, Message } from "../core/chat.ts";
 import { readContent } from "../core/kinds.ts";
 import { noteLink, noteOf } from "../core/links.ts";
@@ -241,7 +241,7 @@ export function createServer(client: Client, allowSend: boolean): McpServer {
       inputSchema: z.strictObject({ q: z.string().min(1), chat: chatArg.optional(), limit: z.int().min(1).max(50).optional() })
     },
     async ({ q, chat, limit = PAGE }) => {
-      const found = await client.search(chat === undefined ? { q, limit } : { q, chat, limit });
+      const found = (await client.search(chat === undefined ? { q, limit } : { q, chat, limit })).filter((hit) => mayCome(hit.event)); // As the fold, which shows one an agent may not send nowhere.
       const entries = await trust(client, found);
       return data(entries.map((entry, index) => ({ ...noted(entry, me), ...(entry.trusted ? { snippet: (found[index]?.snippet ?? []).map((piece) => piece.text).join("") } : {}) })));
     }

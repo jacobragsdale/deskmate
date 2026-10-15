@@ -6,7 +6,7 @@ import { parseArgs } from "node:util";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-import { chatOf } from "../core/chat.ts";
+import { chatOf, mayCome } from "../core/chat.ts";
 import type { Entry, Message } from "../core/chat.ts";
 import { readContent } from "../core/kinds.ts";
 import { noteLink, noteOf } from "../core/links.ts";
@@ -118,9 +118,12 @@ function vouched(entry: Entry): Omit<Entry, "event"> & { readonly event: Omit<Ev
   return entry.trusted ? entry : { ...entry, event: { ...entry.event, content: null } };
 }
 
-/** What a message or an agent's answer says, and which agent's answer it is; null for an event of any other kind, which the inbox passes over. */
+/** What a message or an agent's answer says, and which agent's answer it is; null for an event of any other kind, or one the fold counts for nothing from its author, which the inbox passes over. */
 function saying(event: Event): { readonly text: string; readonly agent: string | null } | null {
   const said = readContent(event);
+  if (!mayCome(event, said)) {
+    return null;
+  }
   if (said.kind === "message") {
     return { text: said.content.text, agent: null };
   }
@@ -247,7 +250,7 @@ async function search(joined: () => Client, args: string[], out: (line: string) 
   }
   const client = joined();
   const q = positionals.join(" ");
-  const found = await client.search(values.in === undefined ? { q } : { q, chat: values.in });
+  const found = (await client.search(values.in === undefined ? { q } : { q, chat: values.in })).filter((match) => mayCome(match.event)); // As the fold, which shows one an agent may not send nowhere.
   const trusted = await trust(client, found);
   const matches = found.map((match, index) => ({ ...match, trusted: trusted[index]?.trusted ?? false, link: noteLink(match.event.id) }));
   const words = matches.map((match) => render(match, match.trusted, { me: client.config.name, text: match.snippet.map((piece) => piece.text).join("") }));

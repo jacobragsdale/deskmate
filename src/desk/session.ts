@@ -9,7 +9,7 @@ import { z } from "zod";
 
 import { runOf } from "../shared/ipc.ts";
 import type { ActivityItem, Arrival, AskView, ChatView, Check, Command, CurrentView, GrantView, Hit, LineView, MessageView, NoteView, Notice, ReplyView, RequestView, RowView } from "../shared/ipc.ts";
-import { agentPrompt, ChatLog, chatOf, continues, mentions, ONLINE, refOf, rings } from "../core/chat.ts";
+import { agentPrompt, ChatLog, chatOf, continues, mayCome, mentions, ONLINE, refOf, rings } from "../core/chat.ts";
 import type { Accepted, Entry, Message, Request } from "../core/chat.ts";
 import { DAY, liveGrant, revoked, standing } from "../core/grants.ts";
 import type { Standing } from "../core/grants.ts";
@@ -838,7 +838,7 @@ export class Session {
     this.keep(entries);
     this.openFirst();
     if (announce) {
-      this.announce(fresh.filter((entry) => (entry.event.kind === "message" || entry.event.kind === "job.result") && ownerOf(entry.event.author) !== this.me));
+      this.announce(fresh.filter((entry) => (entry.event.kind === "message" || entry.event.kind === "job.result") && ownerOf(entry.event.author) !== this.me && mayCome(entry.event)));
     }
     this.markRead();
     this.hooks.changed();
@@ -992,7 +992,7 @@ export class Session {
     this.hooks.changed();
   }
 
-  /** What the hub finds for `q` in every chat the user can see, best match first, for the window's search. One whose signature fails is left out, as its text never reaches the window. */
+  /** What the hub finds for `q` in every chat the user can see, best match first, for the window's search. One whose signature fails is left out, as its text never reaches the window, and so is one the fold counts for nothing (`mayCome`). */
   public async search(q: string): Promise<Hit[]> {
     let found: Found[];
     try {
@@ -1003,7 +1003,7 @@ export class Session {
     const hits: Hit[] = [];
     for (const { seq, event, snippet } of found) {
       const said = readContent(event);
-      if (await this.client.isTrusted({ seq, event })) {
+      if (mayCome(event, said) && (await this.client.isTrusted({ seq, event }))) {
         hits.push({ id: event.id, chat: chatOf(event, this.me), sender: ownerOf(event.author), agent: said.kind === "job.result" ? said.content.repo : null, snippet });
       }
     }
