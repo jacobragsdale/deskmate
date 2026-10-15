@@ -50,7 +50,7 @@ export function runHub(args: readonly string[], env: NodeJS.ProcessEnv): Server 
   return server;
 }
 
-/** `player-two hub verify`: walk the log in the database PLAYER_TWO_DB names and return what to say when its chain holds. Throws, naming the first seq that breaks it, when it does not. */
+/** `player-two hub verify`: walk the log in the database PLAYER_TWO_DB names and return what to say when its chain holds. Throws, naming the first seq that breaks it, when it does not, and the first agent whose key in the agents table the log does not give it. */
 export function verifyHub(env: NodeJS.ProcessEnv): string {
   const setting = dbSchema.safeParse(env);
   if (!setting.success) {
@@ -59,9 +59,12 @@ export function verifyHub(env: NodeJS.ProcessEnv): string {
   if (!existsSync(setting.data.PLAYER_TWO_DB)) {
     throw new Error(`there is no database at ${setting.data.PLAYER_TWO_DB}`); // Rather than SQLite's words, which do not say where it looked.
   }
-  const { events, head, broken } = verifyChain(setting.data.PLAYER_TWO_DB);
+  const { events, head, broken, agents } = verifyChain(setting.data.PLAYER_TWO_DB);
   if (broken !== null) {
     throw new Error(`the chain breaks at seq ${String(broken.seq)}: ${broken.why}`);
+  }
+  if (agents !== null) {
+    throw new Error(`the chain holds, but ${agents}`); // The hub would check that agent's events against a key the log does not give it.
   }
   return `the chain holds: ${String(events)} events, the last chain value ${head}`;
 }

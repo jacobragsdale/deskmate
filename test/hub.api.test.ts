@@ -789,7 +789,7 @@ await test("a request an agent signs reads what its owner sees, may post its eve
   assert.deepEqual(seen, { alice: 0, bob: NOW, carol: 0 });
 });
 
-await test("hub verify checks an agent's events against the key its owner had registered for it then, and names one signed with any other", async (t) => {
+await test("hub verify checks an agent's events against the key its owner had registered for it then, and names one signed with any other, and an agent whose key in the agents table the log does not give it", async (t) => {
   const hub = await startHub(t);
   await hub.join("alice");
   await hub.join("bob");
@@ -809,6 +809,19 @@ await test("hub verify checks an agent's events against the key its owner had re
   }
   const late = progress(first); // The old key, after the new one was registered.
   assert.deepEqual(await post(hub, "alice", late), [401, "event is not signed by its author"]);
+  assert.match(verify()[1], /^the chain holds: 4 events/);
+
+  // The agents table, which the hub checks agents' signatures against, changed by hand: the log holds, and the table does not hold what it says.
+  const table = new DatabaseSync(join(hub.dir, "hub.db"));
+  const holds = "player-two: the chain holds, but";
+  table.prepare("UPDATE agents SET pubkey = ? WHERE owner = 'alice'").run(publicHex(first)); // The key the rotation replaced.
+  assert.deepEqual(verify(), [1, `${holds} alice/uploader's key in the agents table is not the one alice last registered for it in the log\n`]);
+  table.prepare("DELETE FROM agents").run();
+  assert.deepEqual(verify(), [1, `${holds} alice/uploader has no key in the agents table, though alice registered one in the log\n`]);
+  table.prepare("INSERT INTO agents (owner, repo, pubkey, seq) VALUES ('alice', 'uploader', ?, 3), ('bob', 'uploader', ?, 3)").run(publicHex(second), publicHex(first));
+  assert.deepEqual(verify(), [1, `${holds} the agents table gives bob/uploader a key bob never registered in the log\n`]);
+  table.prepare("DELETE FROM agents WHERE owner = 'bob'").run();
+  table.close();
   assert.match(verify()[1], /^the chain holds: 4 events/);
 
   // Put it in the log by hand in place of the fourth, which says the same with the new key, its chain value worked out again: only its signature can tell.

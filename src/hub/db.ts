@@ -7,7 +7,7 @@ import { z } from "zod";
 
 import { readContent } from "../core/kinds.ts";
 import { eventId, eventIsAuthentic } from "../core/sign.ts";
-import { problemOf } from "../core/text.ts";
+import { byCodeUnit, problemOf } from "../core/text.ts";
 import { deliveredSchema, HIT_CLOSE, HIT_OPEN, isAgent, isChannel, ownerOf, personSchema, teamRepoSchema } from "../core/wire.ts";
 import type { Delivered, Event, Person, Repo, RepoRef, TeamRepo } from "../core/wire.ts";
 
@@ -75,6 +75,7 @@ const eventRowSchema = z
 const eventRowsSchema = z.array(eventRowSchema);
 const linkSchema = z.object({ seq: z.int(), chain: z.string() });
 const keysSchema = z.array(z.strictObject({ name: z.string(), pubkey: z.string() }));
+const agentKeysSchema = z.array(z.strictObject({ owner: z.string(), repo: z.string(), pubkey: z.string() }));
 
 /** JSON text as a value; undefined for text that is not JSON, which the schema it goes on to then refuses, as it refuses any other row it cannot read. */
 function parseJson(text: string): unknown {
@@ -125,13 +126,28 @@ function eventIn(row: Record<string, unknown>, chain: string, previous: string, 
   return event;
 }
 
+/** What is wrong with the key the agents table holds for `agent`, `held`, when the log says its owner last registered `registered`; "" when they agree. */
+function disagreement(agent: string, held: string | undefined, registered: string | undefined): string {
+  const owner = ownerOf(agent);
+  if (held === registered) {
+    return "";
+  }
+  if (held === undefined) {
+    return `${agent} has no key in the agents table, though ${owner} registered one in the log`;
+  }
+  return registered === undefined
+    ? `the agents table gives ${agent} a key ${owner} never registered in the log`
+    : `${agent}'s key in the agents table is not the one ${owner} last registered for it in the log`;
+}
+
 /**
  * Walk the event log in the database at `path`, without changing it, and say how far it holds: how many events there are and the newest chain value,
  * or the first seq that breaks it, and how. Each event's id is worked out again from its fields, its chain value from the one before, and its signature checked against the key its author joined with,
  * or for an agent, the key its owner's newest registration of it before then holds, read from the log as the hub read it then;
  * so a row changed by hand, its signature included, breaks the log at that row; a row taken out breaks it at the one after; and a row that cannot be read is named, not passed over.
+ * Once the log holds, the agents table, which the hub checks every agent's signature against, must hold exactly the keys the walk learned: `agents` names the first agent it does not, and how.
  */
-export function verifyChain(path: string): { readonly events: number; readonly head: string; readonly broken: { readonly seq: number; readonly why: string } | null } {
+export function verifyChain(path: string): { readonly events: number; readonly head: string; readonly broken: { readonly seq: number; readonly why: string } | null; readonly agents: string | null } {
   const db = new DatabaseSync(path, { readOnly: true });
   try {
     const keys = new Map(keysSchema.parse(db.prepare("SELECT name, pubkey FROM users").all()).map((user) => [user.name, user.pubkey]));
@@ -141,7 +157,7 @@ export function verifyChain(path: string): { readonly events: number; readonly h
       const { seq, chain } = linkSchema.parse(row);
       const event = eventIn(row, chain, previous, events, keys);
       if (typeof event === "string") {
-        return { events, head: previous, broken: { seq, why: event } };
+        return { events, head: previous, broken: { seq, why: event }, agents: null };
       }
       const said = readContent(event);
       if (said.kind === "agent.register" && event.to === "*" && !isAgent(event.author)) {
@@ -150,7 +166,11 @@ export function verifyChain(path: string): { readonly events: number; readonly h
       previous = chain;
       events += 1;
     }
-    return { events, head: previous, broken: null };
+    const tabled = foundSchema.parse(db.prepare("SELECT 1 AS found FROM sqlite_master WHERE type = 'table' AND name = 'agents'").get()) !== undefined; // Not before schema 7.
+    const table = new Map(agentKeysSchema.parse(tabled ? db.prepare("SELECT owner, repo, pubkey FROM agents").all() : []).map((row) => [`${row.owner}/${row.repo}`, row.pubkey]));
+    const named = [...new Set([...table.keys(), ...[...keys.keys()].filter(isAgent)])].sort(byCodeUnit);
+    const agents = named.map((agent) => disagreement(agent, table.get(agent), keys.get(agent))).find((why) => why !== "") ?? null;
+    return { events, head: previous, broken: null, agents };
   } finally {
     db.close();
   }
