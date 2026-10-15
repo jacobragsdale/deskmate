@@ -3,10 +3,12 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import dns from "node:dns";
+import { mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import type { ServerResponse } from "node:http";
 import { syncBuiltinESMExports } from "node:module";
 import { isIP } from "node:net";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
@@ -17,10 +19,12 @@ import { z } from "zod";
 
 import { mentions } from "../src/core/chat.ts";
 import { readContent } from "../src/core/kinds.ts";
+import { newKey, signEvent } from "../src/core/sign.ts";
 import { fitText } from "../src/core/wire.ts";
 import type { Client } from "../src/desk/client.ts";
 import { Session } from "../src/desk/session.ts";
-import { allowList, refusal } from "../src/hub/workflows.ts";
+import { Database } from "../src/hub/db.ts";
+import { allowList, refusal, runWorkflows } from "../src/hub/workflows.ts";
 import { checkout, NOW, startHub, TEAM_REPOS } from "./startHub.ts";
 import type { Hub } from "./startHub.ts";
 
@@ -160,6 +164,42 @@ await test("a workflow on a schedule is timed by croner in its own time zone, se
   const { event: third } = await alice.publish("#ops", "workflow.define", { name: "nightly", yaml: NIGHTLY });
   await hub.restart(); // The hub that stopped times nothing; the one that started times it again.
   assert.deepEqual(timed(), [`${third.id} 0 2 * * 1-5 Europe/London`]);
+});
+
+await test("the workflows keep parsed only the files of those live, however often one is replaced or removed", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "player-two-workflows-"));
+  const db = new Database(join(dir, "hub.db"));
+  const nothing = (): undefined => undefined;
+  const flows = runWorkflows(db, db.hubKey(), () => NOW, [], nothing, nothing);
+  t.after(() => {
+    flows.stop();
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const alice = newKey();
+  /** Store alice's definition or removal as the hub does, and hand it to the workflows. */
+  const publish = (content: { readonly name: string; readonly yaml?: string }): void => {
+    const kind = content.yaml === undefined ? "workflow.remove" : "workflow.define";
+    const event = signEvent(alice, { author: "alice", to: "#ops", kind, content: JSON.stringify(content), ts: NOW, refs: [] });
+    db.transaction(() => {
+      db.addEvent(event);
+      if (content.yaml === undefined) {
+        db.removeWorkflow("#ops", content.name);
+      } else {
+        db.setWorkflow("#ops", content.name, event.id);
+      }
+    });
+    flows.seen(event);
+  };
+
+  publish({ name: "p1", yaml: P1 });
+  publish({ name: "nightly", yaml: NIGHTLY });
+  for (let n = 0; n < 20; n += 1) {
+    publish({ name: "nightly", yaml: NIGHTLY.replace("starts", `starts ${String(n)}`) });
+  }
+  assert.equal(flows.parsed(), 2);
+  publish({ name: "p1" });
+  assert.equal(flows.parsed(), 1);
 });
 
 const CI = `name: ci-failure

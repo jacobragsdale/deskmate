@@ -32,6 +32,8 @@ export interface Workflows {
   readonly hook: (id: string) => { readonly secret: string | null; readonly start: (body: unknown) => void } | null;
   /** Stop for good, as the hub closes: no schedule fires after, no wait is checked, and a webhook being called is hung up on. */
   readonly stop: () => void;
+  /** How many files are kept parsed, which is how many workflows are live: for a test to count. */
+  readonly parsed: () => number;
 }
 
 /** Which run a step is of: its number, and the channel, name and definition of the workflow it runs, as its row has them. */
@@ -210,7 +212,7 @@ function isJson(text: string): boolean {
  * once something is stored.
  */
 export function runWorkflows(db: Database, key: KeyObject, now: () => number, allow: readonly string[], wake: () => void, log: Log): Workflows {
-  const files = new Map<string, Workflow>(); // Each file as it reads, by the id of its definition, which never changes what it holds.
+  let files = new Map<string, Workflow>(); // Each live workflow's file as it reads, by the id of its definition, which never changes what it holds. `schedule` keeps it to those live.
   const closing = new AbortController(); // Hangs up every webhook being called once the hub stops.
   let crons: Cron[] = [];
 
@@ -443,14 +445,16 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, al
   }
 
   /**
-   * Time each live workflow with a schedule, in place of every timer before. Each is named by its definition's id, which a test sets off by. croner reads the system's clock in the workflow's
-   * time zone, and a time that passed while the hub was down is not made up.
+   * Time each live workflow with a schedule, in place of every timer before, and keep parsed the files of those live and no others, whose definitions nothing asks for again. Each is
+   * named by its definition's id, which a test sets off by. croner reads the system's clock in the workflow's time zone, and a time that passed while the hub was down is not made up.
    */
   function schedule(): void {
     for (const cron of crons) {
       cron.stop();
     }
-    crons = db.liveWorkflows().flatMap((live) => {
+    const lives = db.liveWorkflows();
+    files = new Map(lives.map((live) => [live.event, fileOf(live)])); // Read from those kept before, so a file is parsed once while it is live.
+    crons = lives.flatMap((live) => {
       const { on } = fileOf(live);
       return on.kind === "schedule"
         ? [
@@ -497,6 +501,7 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, al
       for (const cron of crons) {
         cron.stop();
       }
-    }
+    },
+    parsed: () => files.size
   };
 }
