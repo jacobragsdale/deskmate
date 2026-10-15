@@ -15,7 +15,7 @@ import { z } from "zod";
 import { readContent } from "../src/core/kinds.ts";
 import { authHeader, loadKey, publicHex, signEvent } from "../src/core/sign.ts";
 import { VERSION } from "../src/core/version.ts";
-import { deliveredSchema, HUB, MAX_SKEW, PROTOCOL, receiptSchema } from "../src/core/wire.ts";
+import { deliveredSchema, HUB, MAX_SKEW, ownerOf, PROTOCOL, receiptSchema } from "../src/core/wire.ts";
 import type { Delivered, Event, Repo } from "../src/core/wire.ts";
 import { oneshotAgent } from "../src/desk/agents/presets.ts";
 import { http, join as joinHub } from "../src/desk/client.ts";
@@ -722,7 +722,7 @@ await test("the hub refuses to start on a database from another version, such as
   assert.throws(() => createHub({ joinToken: TOKEN, db: old, repos: TEAM_REPOS, downloads: "" }), new RegExp(`another version of Player Two \\(schema 3, this one uses ${String(SCHEMA_VERSION)}\\)`));
 });
 
-await test("a database phase 4 made, schema 7, is brought forward with what it holds, gaining the meta table and the hub's key; not one where someone joined as hub", async (t) => {
+await test("a database phase 4 made, schema 7, is brought forward with what it holds, gaining the meta table with the hub's key and the workflows table; not one where someone joined as hub", async (t) => {
   const BEFORE = 7; // The schema before the hub had a key of its own.
   const hub = await startHub(t);
   await hub.join("alice");
@@ -730,8 +730,8 @@ await test("a database phase 4 made, schema 7, is brought forward with what it h
   await say(hub, "alice", "bob", "words from before");
   const file = join(hub.dir, "hub.db");
   const back = (more = ""): void => {
-    const older = new DatabaseSync(file); // What phase 4 left: the same users and events, and no meta table.
-    older.exec(`DROP TABLE meta; PRAGMA user_version = ${String(BEFORE)}; ${more}`);
+    const older = new DatabaseSync(file); // What phase 4 left: the same users and events, and neither table.
+    older.exec(`DROP TABLE meta; DROP TABLE workflows; PRAGMA user_version = ${String(BEFORE)}; ${more}`);
     older.close();
   };
   const version = (): unknown => {
@@ -746,6 +746,7 @@ await test("a database phase 4 made, schema 7, is brought forward with what it h
   back();
   const db = new Database(file);
   assert.match(publicHex(db.hubKey()), /^[0-9a-f]{64}$/);
+  assert.deepEqual(db.workflowNames("#ops"), []);
   assert.deepEqual(
     db.eventsAfter("alice", 0, 10).map(({ event }) => readContent(event)),
     [{ kind: "message", content: { text: "words from before", via: "cli" } }]
@@ -1080,6 +1081,71 @@ await test("the search index holds each message and answer as its author last ed
   new Database(file).close();
 
   assert.deepEqual(words(), indexed);
+});
+
+await test("a member publishes a workflow to a channel and the hub keeps it live under the name its file gives, the newest of a name in its place, 20 to a channel; what does not read, names another, goes elsewhere or comes from an agent or an outsider is refused and not stored", async (t) => {
+  const hub = await startHub(t);
+  for (const name of ["alice", "bob", "carol"]) {
+    await hub.join(name);
+  }
+  for (const [name, channel] of [
+    ["alice", "#ops"],
+    ["bob", "#ops"],
+    ["alice", "#dev"]
+  ] as const) {
+    await post(hub, name, signed(hub, name, channel, "channel.join"));
+  }
+  const file = (name: string, text = "seen"): string => `name: ${name}\non:\n  message: { contains: "P1" }\nsteps:\n  - post: "${text}"\n`;
+  const define = (author: string, to: string, name: string, yaml = file(name), key?: KeyObject): Promise<readonly [number, number | string]> =>
+    post(hub, ownerOf(author), signed(hub, author, to, "workflow.define", { name, yaml }, key === undefined ? {} : { key }));
+  const remove = (author: string, to: string, name: string): Promise<readonly [number, number | string]> => post(hub, author, signed(hub, author, to, "workflow.remove", { name }));
+  const live = (): string[] => {
+    const db = new DatabaseSync(join(hub.dir, "hub.db"), { readOnly: true });
+    try {
+      return z
+        .array(z.object({ channel: z.string(), name: z.string(), author: z.string() }))
+        .parse(db.prepare("SELECT channel, name, author FROM workflows JOIN events ON events.id = workflows.event ORDER BY channel, name").all())
+        .map((row) => `${row.channel} ${row.name} ${row.author}`);
+    } finally {
+      db.close();
+    }
+  };
+  const agent = loadKey("33".repeat(32));
+  await post(hub, "alice", signed(hub, "alice", "*", "agent.register", { repo: "uploader", pubkey: publicHex(agent) }));
+  const stored = (await read(hub, "alice", "after=0")).length;
+
+  assert.equal((await define("alice", "#ops", "ci-failure"))[0], 201);
+  assert.equal((await define("bob", "#ops", "ci-failure", file("ci-failure", "seen again")))[0], 201); // Bob's in place of alice's.
+  assert.deepEqual(live(), ["#ops ci-failure bob"]);
+  assert.deepEqual(await define("alice", "#ops", "broken", "name: broken\non:\n  message: { contains: P1 }\nsteps:\n  - tag: '@alice/uploader'\n"), [
+    422,
+    "invalid yaml: line 5: steps.0.text: required"
+  ]);
+  assert.deepEqual(await define("alice", "#ops", "ci-failure", "name: [\n"), [422, "invalid yaml: line 2: Flow sequence in block collection must be sufficiently indented and end with a ]"]);
+  assert.deepEqual(await define("alice", "#ops", "nightly", file("ci-failure")), [422, "the file names its workflow ci-failure, not nightly"]);
+  assert.deepEqual(await define("alice", "bob", "nightly"), [422, "workflow.define is sent to the channel it is about"]);
+  assert.deepEqual(await define("alice", "*", "nightly"), [403, "workflow.define cannot be sent to everyone"]);
+  assert.deepEqual(await define("carol", "#ops", "nightly"), [403, "join #ops before posting to it"]);
+  assert.deepEqual(await define("alice/uploader", "#ops", "nightly", file("nightly"), agent), [403, "agents cannot send workflow.define: only a person can"]);
+  assert.deepEqual(await define("alice", "#ops", "Nightly", file("Nightly")), [422, "invalid content: not what workflow.define holds"]);
+  assert.deepEqual(await remove("alice", "#ops", "nightly"), [404, "#ops has no workflow named nightly"]);
+  assert.deepEqual(await remove("carol", "#ops", "ci-failure"), [403, "join #ops before posting to it"]);
+  assert.deepEqual(live(), ["#ops ci-failure bob"]);
+  assert.equal((await read(hub, "alice", "after=0")).length, stored + 2); // Nothing refused was stored.
+
+  for (let n = 1; n < 20; n += 1) {
+    assert.equal((await define("alice", "#ops", `flow-${String(n)}`))[0], 201);
+  }
+  assert.deepEqual(await define("alice", "#ops", "one-more"), [422, "#ops has 20 workflows, the most a channel may have: remove one first"]);
+  assert.equal((await define("alice", "#ops", "flow-1", file("flow-1", "changed")))[0], 201); // Replacing one takes no more room.
+  assert.equal((await define("alice", "#dev", "one-more"))[0], 201); // Each channel has room of its own.
+  assert.equal((await remove("bob", "#ops", "ci-failure"))[0], 201); // Any member may take one away.
+  assert.equal((await define("alice", "#ops", "one-more"))[0], 201);
+  assert.deepEqual(
+    live().filter((row) => !row.includes("flow-")),
+    ["#dev one-more alice", "#ops one-more alice"]
+  );
+  assert.equal(live().length, 21);
 });
 
 await test("a request the hub cannot serve is told why", async (t) => {

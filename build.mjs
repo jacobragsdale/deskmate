@@ -9,7 +9,15 @@ const shared = { bundle: true, sourcemap: true, logLevel: "info" };
 await rm("dist", { recursive: true, force: true });
 await Promise.all([
   // The command is one file that runs wherever Node does: the hub's image, an agent's shell, and the window starting its desk all use it.
-  build({ ...shared, entryPoints: ["src/cli/main.ts"], outfile: "dist/player-two.js", platform: "node", format: "esm", banner: { js: "#!/usr/bin/env node" } }),
+  // `yaml` is CommonJS and requires Node's own modules, which an ES module can only do through a `require` it makes for itself.
+  build({
+    ...shared,
+    entryPoints: ["src/cli/main.ts"],
+    outfile: "dist/player-two.js",
+    platform: "node",
+    format: "esm",
+    banner: { js: '#!/usr/bin/env node\nimport { createRequire as createRequireForBundle } from "node:module";\nconst require = createRequireForBundle(import.meta.url);' }
+  }),
   build({ ...shared, entryPoints: ["src/window/main/main.ts"], outfile: "dist/main.js", platform: "node", format: "esm", external: ["electron"] }),
   // A sandboxed preload script cannot be an ES module.
   build({ ...shared, entryPoints: ["src/window/main/preload.ts"], outfile: "dist/preload.cjs", platform: "node", format: "cjs", external: ["electron"] }),

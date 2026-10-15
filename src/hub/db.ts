@@ -14,7 +14,7 @@ import type { Delivered, Event, Person, Repo, RepoRef, TeamRepo } from "../core/
 
 export const SCHEMA_VERSION = 8; // 3 was the notes alone, from the Python hub to 0.4.
 // The versions a hub brings forward: 5, 0.5's events, lacks the search index, which is added and filled from the events; 6 lacks the agents table, which is added empty,
-// since a hub of schema 6 refused every event to "*", the only agent.register it learns a key from; 7 lacks the meta table, which the hub's own key is then made in.
+// since a hub of schema 6 refused every event to "*", the only agent.register it learns a key from; 7 lacks the meta table, which the hub's own key is then made in, and the workflows table, empty.
 const UPGRADABLE: ReadonlySet<number> = new Set([5, 6, 7]);
 const INDEXED_FROM = 6; // The first version with the search index.
 const HUB_FROM = 8; // The first version in which "hub" is the hub's own name: one made before it is brought forward only when nobody joined under that name.
@@ -58,6 +58,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(text);
 CREATE TABLE IF NOT EXISTS agents (owner TEXT NOT NULL, repo TEXT NOT NULL, pubkey TEXT NOT NULL, seq INTEGER NOT NULL, PRIMARY KEY (owner, repo));
 -- What the hub keeps of its own: 'hub_key', the private half of the key it signs its own events with, in hex.
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+-- Each channel's live workflows by name, each with the id of the workflow.define that made it live, whose content holds its file.
+CREATE TABLE IF NOT EXISTS workflows (channel TEXT NOT NULL, name TEXT NOT NULL, event TEXT NOT NULL, PRIMARY KEY (channel, name));
 `;
 const INDEXED = "('message', 'job.result', 'message.edit', 'message.delete')"; // The kinds that change what the search index holds.
 
@@ -81,6 +83,7 @@ const linkSchema = z.object({ seq: z.int(), chain: z.string() });
 const keysSchema = z.array(z.strictObject({ name: z.string(), pubkey: z.string() }));
 const agentKeysSchema = z.array(z.strictObject({ owner: z.string(), repo: z.string(), pubkey: z.string() }));
 const metaSchema = z.strictObject({ value: z.string() });
+const namesSchema = z.array(z.strictObject({ name: z.string() }));
 
 /** Whether the database has a table of this name: what a version before it lacks. */
 function hasTable(db: DatabaseSync, name: string): boolean {
@@ -328,6 +331,20 @@ export class Database {
 
   public removePin(channel: string): void {
     this.db.prepare("DELETE FROM pins WHERE channel = ?").run(channel);
+  }
+
+  /** The names of a channel's live workflows. */
+  public workflowNames(channel: string): readonly string[] {
+    return namesSchema.parse(this.db.prepare("SELECT name FROM workflows WHERE channel = ? ORDER BY name").all(channel)).map((row) => row.name);
+  }
+
+  /** Make the workflow.define with the id `event` live in `channel` under `name`, in place of any of that name. */
+  public setWorkflow(channel: string, name: string, event: string): void {
+    this.db.prepare("INSERT OR REPLACE INTO workflows (channel, name, event) VALUES (?, ?, ?)").run(channel, name, event);
+  }
+
+  public removeWorkflow(channel: string, name: string): void {
+    this.db.prepare("DELETE FROM workflows WHERE channel = ? AND name = ?").run(channel, name);
   }
 
   /** Whether an event with this id is already kept. */

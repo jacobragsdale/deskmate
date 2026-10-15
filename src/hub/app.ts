@@ -13,7 +13,10 @@ import { digestIn, hubInstallScript } from "../core/install.ts";
 import { AGENT_KINDS, PUBLIC_KINDS, readContent, repoOf } from "../core/kinds.ts";
 import { isUnder, prefixKey } from "../core/remotes.ts";
 import { authClaim, authIsValid, eventId, eventIsAuthentic, isFresh, publicHex } from "../core/sign.ts";
+import { problemOf } from "../core/text.ts";
 import { VERSION } from "../core/version.ts";
+import { parseWorkflow } from "../core/workflow.ts";
+import type { Workflow } from "../core/workflow.ts";
 import { addressSchema, eventSchema, HUB, isAgent, isChannel, joinSchema, ownerOf, PROTOCOL, repoSchema } from "../core/wire.ts";
 import type { ChannelInfo, Event, RepoRef } from "../core/wire.ts";
 import { Database } from "./db.ts";
@@ -32,6 +35,7 @@ const RUNTIME = "wsl-runtime.tar.gz"; // The Linux runtime in the downloads fold
 const INSTALLER = "player-two-setup.exe"; // The Windows installer, as electron-builder names it (`nsis.artifactName` in package.json).
 const PLAIN_FILE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/; // A file in the downloads folder is asked for by this name as it arrived: no slash, no "..", nothing percent-encoded.
 const ADDRESS = /^https?:\/\/[A-Za-z0-9.\-:[\]/_]+$/; // The hub's own address is written into a script and a page, so only plain URL characters pass.
+const MAX_WORKFLOWS = 20; // Most workflows one channel may have live.
 
 export interface HubSettings {
   readonly joinToken: string; // The shared secret that lets a teammate register a name.
@@ -325,13 +329,60 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     log("agent registered", { agent: `${event.author}/${said.content.repo}` });
   }
 
+  /** A workflow's file as it reads, or a refusal saying which line is wrong and why. */
+  function fileOf(yaml: string): Workflow {
+    try {
+      return parseWorkflow(yaml);
+    } catch (error) {
+      throw new Refusal(422, `invalid yaml: ${problemOf(error)}`);
+    }
+  }
+
   /**
-   * Act on a structural kind, stored at `seq`: joining and leaving change who is in the channel, a pin sets or clears the repo it is about, and a registration sets an agent's key. Anything else the hub only stores.
+   * Act on workflow.define and workflow.remove, sent to a channel its author is in, as the fourth check saw to: make a file live under the name it gives, in place of any of that name,
+   * when it reads and the channel has room for another; or take away the one of that name.
+   */
+  function workflow(event: Event): void {
+    const said = readContent(event);
+    if (!isChannel(event.to)) {
+      throw new Refusal(422, `${event.kind} is sent to the channel it is about`);
+    }
+    if (said.kind === "workflow.remove") {
+      if (!db.workflowNames(event.to).includes(said.content.name)) {
+        throw new Refusal(404, `${event.to} has no workflow named ${said.content.name}`);
+      }
+      db.removeWorkflow(event.to, said.content.name);
+      log("workflow removed", { channel: event.to, workflow: said.content.name, user: event.author });
+      return;
+    }
+    if (said.kind !== "workflow.define") {
+      throw new Refusal(422, `invalid content: not what ${event.kind} holds`);
+    }
+    const { name } = said.content;
+    const named = fileOf(said.content.yaml).name;
+    if (named !== name) {
+      throw new Refusal(422, `the file names its workflow ${named}, not ${name}`); // So what the log says was published under a name is what runs under it.
+    }
+    const live = db.workflowNames(event.to);
+    if (!live.includes(name) && live.length >= MAX_WORKFLOWS) {
+      throw new Refusal(422, `${event.to} has ${String(MAX_WORKFLOWS)} workflows, the most a channel may have: remove one first`);
+    }
+    db.setWorkflow(event.to, name, event.id);
+    log("workflow defined", { channel: event.to, workflow: name, user: event.author });
+  }
+
+  /**
+   * Act on a structural kind, stored at `seq`: joining and leaving change who is in the channel, a pin sets or clears the repo it is about, a registration sets an agent's key, and a workflow's
+   * definition or removal changes what is live in its channel. Anything else the hub only stores.
    * Run in the event's transaction, and refuses an event it cannot act on, so that what the hub keeps and what its tables say never disagree.
    */
   function apply(event: Event, seq: number): void {
     if (event.kind === "agent.register") {
       register(event, seq);
+      return;
+    }
+    if (event.kind === "workflow.define" || event.kind === "workflow.remove") {
+      workflow(event);
       return;
     }
     if (event.kind !== "channel.join" && event.kind !== "channel.leave" && event.kind !== "channel.pin") {
