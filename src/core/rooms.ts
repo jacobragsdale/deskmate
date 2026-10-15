@@ -1,5 +1,6 @@
 /** Branch rooms: channels pinned to one branch of a repo. Which are worth starting, and what to call one. No IO. */
 
+import { branchNameSchema } from "./wire.ts";
 import type { ChannelInfo, TeamRepo } from "./wire.ts";
 
 const LONGEST = 32; // Most characters of a channel's name after its "#", as NAME in wire.ts allows.
@@ -16,9 +17,12 @@ export interface Suggestion extends Room {
   readonly others: readonly string[];
 }
 
-/** Whether a checkout's branch, as the desk reads it, is one: a detached head reads "detached at a1b2c3d", and git allows no space in a branch's name. */
+/**
+ * Whether a checkout's branch, as a desk advertises it, is one a room can be about, as a pin takes it: not a detached head, which reads "detached at a1b2c3d", nor ".invalid", which a reftable
+ * repository's .git/HEAD holds and a desk that reads only that file takes for its branch.
+ */
 export function isBranch(branch: string): boolean {
-  return !branch.includes(" ");
+  return branchNameSchema.safeParse(branch).success;
 }
 
 /**

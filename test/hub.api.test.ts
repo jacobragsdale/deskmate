@@ -306,6 +306,10 @@ await test("a pin names the branch a room is about, which GET /channels reports 
     { repo: uploader, branch: "" },
     { repo: uploader, branch: "feature\nretry" },
     { repo: uploader, branch: "x".repeat(201) },
+    // What git would take for an option, a revision or a refspec, or refuses as a branch, and what would turn the name around where it is drawn: section C hands a pin's branch to git.
+    ...[":main", "--force", "-x", "a..b", "feature retry", "feature~1", "a^b", "a:b", "a?b", "a*b", "a[b", "a\\b", "a@{b", "a//b", "a/", "a.", "a.lock", ".a", "a/.b", "@", "HEAD"]
+      .concat(["a\x7fb", "a\x00b", "feature\u202eyrter", "a\u2066b", "a\u2028b"])
+      .map((branch) => ({ repo: uploader, branch })),
     { repo: uploader },
     { repo: null, branch: "feature/retry" }
   ]) {

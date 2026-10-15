@@ -102,7 +102,7 @@ The hub gives each stored event a sequence number, `seq`, and a chain value: `ch
 | `reaction` | 1 | the target | `{ emoji, on }` | `on: false` takes it back. |
 | `channel.join` | 1 | | `{}` | Structural: adds the author to the channel in `to`. Creates the channel. |
 | `channel.leave` | 1 | | `{}` | Structural. |
-| `channel.pin` | 1 | | `{ repo, branch }` | Structural. `repo: null` unpins. `branch` from phase 6, `null` before. |
+| `channel.pin` | 1 | | `{ repo, branch }` | Structural. `repo: null` unpins. `branch` from phase 6, `null` before: a name `git check-ref-format --branch` takes, other than `@`, with no control, formatting character or line separator (`branchNameSchema` in `src/core/wire.ts`). |
 | `job.accepted` | 1 | the request | `{ repo, branch, commit, dirty, delivery, mode, by, delegate }` | The owner let it run. `delivery`: `review` or `post`. `mode`: a permission mode. `by`: `"owner"` or `{ grant: id }`. `delegate`, from phase 5: whether the agent may ask other agents in this run; `false` when absent, as in every acceptance from before it. |
 | `job.declined` | 1 | the request | `{ repo, reason }` | `reason` may be `""`. |
 | `job.progress` | 3 | the request | `{ repo, summary }` | Coarse: no paths, no output. From the owner, or from phase 4 the agent, while the job is working, it is also word that the run goes on (see Jobs). The owner's desk sends it, signed by the agent from phase 4, when the summary changes, at most every ten seconds, and again unchanged every five minutes while the run goes on. |

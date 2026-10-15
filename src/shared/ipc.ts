@@ -3,7 +3,7 @@
 import { z } from "zod";
 
 import { MAX_GRANT } from "../core/kinds.ts";
-import { agentSchema, branchSchema, nameSchema, permissionModeSchema, teamRepoSchema } from "../core/wire.ts";
+import { agentSchema, branchNameSchema, nameSchema, permissionModeSchema, teamRepoSchema } from "../core/wire.ts";
 
 const deliverySchema = z.enum(["review", "post"]); // Whether an answer waits for its owner to review it, or is posted as soon as it is ready.
 const beforeSchema = z.enum(["", "declined", "failed", "stopped", "interrupted"]); // What happened to a request of the user's agent that it could be run again after.
@@ -310,10 +310,10 @@ export const commandSchema = z.discriminatedUnion("do", [
   z.strictObject({ do: z.literal("hold"), repo, held: z.boolean() }), // Hold back the user's agent in `repo`, or with `held` false let it answer again. Kept in config.json.
   z.strictObject({ do: z.literal("joinChannel"), name: z.string().max(40) }),
   z.strictObject({ do: z.literal("leaveChannel"), chat }),
-  z.strictObject({ do: z.literal("pin"), chat, repo, branch: branchSchema.nullable() }), // With a branch, the channel is a room about that branch of the repo; null is about the whole repo.
+  z.strictObject({ do: z.literal("pin"), chat, repo, branch: branchNameSchema.nullable() }), // With a branch, the channel is a room about that branch of the repo; null is about the whole repo.
   z.strictObject({ do: z.literal("unpin"), chat }),
-  z.strictObject({ do: z.literal("startRoom"), repo, branch: branchSchema }), // Start a branch room: a channel named from the repo and branch, joined, pinned to them and opened.
-  z.strictObject({ do: z.literal("dismissRoom"), repo, branch: branchSchema }), // Suggest no room for this branch of this repo again. Kept in app-state.json.
+  z.strictObject({ do: z.literal("startRoom"), repo, branch: branchNameSchema }), // Start a branch room: a channel named from the repo and branch, joined, pinned to them and opened.
+  z.strictObject({ do: z.literal("dismissRoom"), repo, branch: branchNameSchema }), // Suggest no room for this branch of this repo again. Kept in app-state.json.
   z.strictObject({ do: z.literal("clone"), repo }),
   // Apply the patch with this id to the user's checkout of its repo, once its paths are checked, git says it applies, and the user has said yes to a dialog of the system's own:
   // on the branch the checkout is on, or with `newBranch` on a branch of its own, made from the commit the patch was made on, leaving the checkout as it is.

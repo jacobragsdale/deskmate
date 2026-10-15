@@ -25,7 +25,7 @@ import type { Room } from "../src/core/rooms.ts";
 import { loadKey, publicHex, signEvent } from "../src/core/sign.ts";
 import * as repos from "../src/desk/repos.ts";
 import { Session } from "../src/desk/session.ts";
-import { channelSchema, commandLineOf, eventSchema, fitText, MAX_CONTENT, MAX_PATCH, MODES, PROTOCOL } from "../src/core/wire.ts";
+import { branchNameSchema, channelSchema, commandLineOf, eventSchema, fitText, MAX_CONTENT, MAX_PATCH, MODES, PROTOCOL } from "../src/core/wire.ts";
 import { atMost, decide } from "../src/desk/permissions.ts";
 import type { Action, Decision } from "../src/desk/permissions.ts";
 import type { ChannelInfo, Delivered, TeamRepo } from "../src/core/wire.ts";
@@ -545,6 +545,25 @@ await test("a branch room's name is the repo and the branch, cleaned and cut to 
   ]) {
     assert.ok(channelSchema.safeParse(roomName(name, branch, [])).success, `${name} ${branch}`);
   }
+});
+
+await test("a pin's branch is a name git check-ref-format --branch takes, except @ and one holding a control, formatting character or line separator beyond ASCII, which git takes", async (t) => {
+  const outside = mkdtempSync(join(tmpdir(), "player-two-refs-")); // Outside any repository, where git expands no @{-1}.
+  t.after(() => {
+    rmSync(outside, { recursive: true, force: true });
+  });
+  const gitTakes = async (name: string): Promise<boolean> => (await repos.git(["-C", outside, "check-ref-format", "--branch", name], 20)).ok;
+  const taken = ["main", "feature/retry", "release/2026.10", "Users/Jacob/ABC-123_fix", "a-", "a/-b", "a./b", "x.lockx", "lock", "a@b", "@a", "head", "a{b}", "a#b!$%&(;<|=+,'\"", "ÄÖÜ", "😀"];
+  const refused = ["-", "-x", "--force", ":main", "a:b", "a..b", "....", "a/..b", "a b", "a\tb", "a\nb", "a\x7fb", "a~b", "a^b", "a?b", "a*b", "a[b", "a\\b", "a@{b", "@{-1}"];
+  refused.push("/a", "a/", "a//b", "a.", "a/b.", "a.lock", "a.lock/b", "b/a.lock", ".a", "a/.b", ".lock", "HEAD");
+  for (const name of [...taken, ...refused]) {
+    assert.deepEqual([await gitTakes(name), branchNameSchema.safeParse(name).success], [taken.includes(name), taken.includes(name)], JSON.stringify(name));
+  }
+  for (const name of ["@", "a\u202eb", "a\u2066b", "a\u200bb", "a\u2028b", "a\u0085b"]) {
+    assert.deepEqual([await gitTakes(name), branchNameSchema.safeParse(name).success], [true, false], JSON.stringify(name));
+  }
+  assert.ok(branchNameSchema.safeParse("x".repeat(200)).success);
+  assert.ok(!branchNameSchema.safeParse("x".repeat(201)).success); // As every branch here.
 });
 
 /** A client whose hub is a table of answers, by method and path. Nothing is sent anywhere; what was asked is added to `asked`. */

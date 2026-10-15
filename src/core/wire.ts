@@ -37,7 +37,16 @@ const repoKeySchema = sized(0, 300).regex(/^[a-z0-9.-]+(\/[^/\x00-\x20]+)+$/);
 // eslint-disable-next-line no-control-regex -- as above
 const repoUrlSchema = sized(0, 400).regex(/^https:\/\/[^\x00-\x20]+$/);
 // eslint-disable-next-line no-control-regex -- as above
-export const branchSchema = sized(1, 200).regex(/^[^\x00-\x1f]+$/);
+export const branchSchema = sized(1, 200).regex(/^[^\x00-\x1f]+$/); // Where a checkout is, as its desk reads it: a detached head is "detached at a1b2c3d".
+/**
+ * A branch's name as `git check-ref-format --branch` takes one, for what is handed to git and Azure DevOps as it stands, as a pin's branch is: no part starting with "." or ending in ".lock",
+ * no "..", "@{" or "//", not starting with "-" or "/" nor ending in "/" or ".", no space, ~ ^ : ? * [ \ or ASCII control, and not "HEAD". Stricter than git in two ways: not "@",
+ * which git's commands read as HEAD; and no other control, formatting character or line separator, such as a bidi override, which git takes and which would turn the name around
+ * where it is drawn.
+ */
+export const branchNameSchema = sized(1, 200).refine(
+  (name) => name !== "HEAD" && name !== "@" && !/^[-/]|[/.]$|\.\.|@\{|\/\/|(?:^|\/)\.|\.lock(?:\/|$)|[ ~^:?*[\\\p{Cc}\p{Cf}\u2028\u2029]/u.test(name)
+);
 export const pubKeySchema = z.string().regex(/^[0-9a-f]{64}$/);
 const signatureSchema = z.string().regex(/^[0-9a-f]{128}$/);
 export const hashSchema = z.string().regex(/^[0-9a-f]{64}$/); // An event's id, or a link in the hub's chain: a sha256 in hex.
@@ -74,7 +83,7 @@ export const teamRepoSchema = z.object({ name: repoNameSchema, key: repoKeySchem
 const reportedRepoSchema = z.object({ name: repoNameSchema, key: repoKeySchema, url: repoUrlSchema }).readonly();
 
 /** `repo` is the repo the channel is about, if one is pinned, and `branch` the branch the pin names, if it names one. */
-export const channelInfoSchema = z.object({ name: channelSchema, members: z.array(nameSchema).readonly(), repo: reportedRepoSchema.nullable(), branch: branchSchema.nullable() }).readonly();
+export const channelInfoSchema = z.object({ name: channelSchema, members: z.array(nameSchema).readonly(), repo: reportedRepoSchema.nullable(), branch: branchNameSchema.nullable() }).readonly();
 
 /** Anything that happens, signed by whoever did it. The hub stores and relays it unchanged, whatever its kind, so every reader can check it too. */
 export const eventSchema = z

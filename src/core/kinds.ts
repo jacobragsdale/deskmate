@@ -2,7 +2,7 @@
 
 import { z } from "zod";
 
-import { branchSchema, hashSchema, NAME, nameSchema, permissionModeSchema, pubKeySchema, REPO_NAME, repoNameSchema, repoRefSchema } from "./wire.ts";
+import { branchNameSchema, branchSchema, hashSchema, NAME, nameSchema, permissionModeSchema, pubKeySchema, REPO_NAME, repoNameSchema, repoRefSchema } from "./wire.ts";
 import type { Event } from "./wire.ts";
 
 // Content travels as a string and the signature covers the string, so reading it with z.object, which passes over a field it does not know, changes nothing that was signed.
@@ -28,10 +28,11 @@ export const contentSchema = z
     z.object({ kind: z.literal("channel.join"), content: nothing }),
     z.object({ kind: z.literal("channel.leave"), content: nothing }),
     // `repo: null` unpins. `branch` makes the channel a room about that branch, from phase 6; null is about the whole repo, and unpinning. A reader before phase 6 cannot read one with a branch.
+    // It is a name git takes for a branch, as section C hands it to git and Azure DevOps.
     z.object({
       kind: z.literal("channel.pin"),
       content: z
-        .object({ repo: repoRefSchema.nullable(), branch: branchSchema.nullable() })
+        .object({ repo: repoRefSchema.nullable(), branch: branchNameSchema.nullable() })
         .refine((pin) => pin.repo !== null || pin.branch === null, "a branch goes with a repo")
         .readonly()
     }),
