@@ -25,7 +25,7 @@ const vectors = z
     remotes: z.array(z.tuple([z.string(), z.strictObject({ key: z.string(), name: z.string(), url: z.string() }).nullable()])),
     prefixes: z.array(z.tuple([z.string(), z.string()])),
     mentions: z.array(z.tuple([z.string(), z.array(z.tuple([z.string(), z.string()]))])),
-    prompts: z.array(z.strictObject({ review: z.boolean(), mcp: z.boolean().optional(), prompt: z.string() }))
+    prompts: z.array(z.strictObject({ review: z.boolean(), mcp: z.boolean().optional(), grant: z.boolean().optional(), prompt: z.string() }))
   })
   .parse(JSON.parse(readFileSync(join(import.meta.dirname, "fixtures", "signing-vectors.json"), "utf8")));
 
@@ -103,16 +103,21 @@ await test("an agent is told what is on record", () => {
     agentPrompt(shown(3, "bob", "#backend", ask), "jacob", "uploader", earlier, true),
     agentPrompt(shown(3, "bob", "jacob", ask), "jacob", "uploader", [], false),
     agentPrompt(shown(3, "jacob", "bob", ask), "jacob", "uploader", [], false),
-    agentPrompt(shown(3, "bob", "#backend", ask), "jacob", "uploader", earlier, true, true)
+    agentPrompt(shown(3, "bob", "#backend", ask), "jacob", "uploader", earlier, true, "mcp"),
+    agentPrompt(shown(3, "bob", "#backend", ask), "jacob", "uploader", earlier, false, "none")
   ];
   assert.deepEqual(
     prompts,
     vectors.prompts.map((expected) => expected.prompt)
   );
-  // What search and read hand back is data, and may come from chats that whoever the answer goes to cannot see.
-  assert.ok(prompts.every((prompt) => prompt.includes(NOT_INSTRUCTIONS)));
+  // What search and read hand back is data, and may come from chats that whoever the answer goes to cannot see. A run under a grant is not told of them at all.
+  assert.deepEqual(
+    prompts.map((prompt) => prompt.includes(NOT_INSTRUCTIONS)),
+    [true, true, true, true, false]
+  );
   assert.deepEqual(
     prompts.map((prompt) => /some of which (.+) cannot see/.exec(prompt)?.[1]),
-    ["the members of #backend", "bob", "bob", "the members of #backend"]
+    ["the members of #backend", "bob", "bob", "the members of #backend", undefined]
   );
+  assert.ok(!/player-two|note/.test(prompts[4] ?? "player-two"));
 });

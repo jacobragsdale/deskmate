@@ -151,14 +151,14 @@ function recorder(answer: "allow-once" | "allow-run" | "refuse" = "refuse"): { r
 }
 
 await test(
-  "an ACP agent's answer is its messages, a blank line between each, its session has Player Two's MCP server without --allow-send, and nothing it started is left once it has answered",
+  "an ACP agent's answer is its messages, a blank line between each, its session has Player Two's MCP server without --allow-send when it is told who it is and none when not, and nothing it started is left once it has answered",
   { timeout: 20_000 },
   async (t) => {
     const dir = folder(t);
     const { handlers, items } = recorder();
     const answer = await acpRunner(fake()).run("mcp, and read", dir, "full", handlers, never);
-    assert.equal(answer, `turn 1: read; servers ${JSON.stringify([{ name: "player-two", command: "player-two", args: ["mcp"], env: [] }])}`);
-    // In a run for an agent, the agent and its MCP server are both told which agent it is, so both sign as the agent.
+    assert.equal(answer, "turn 1: read; servers []"); // As under a grant: no environment, and no MCP server.
+    // In a run its owner let go, the agent and its MCP server are both told which agent it is, so both sign as the agent.
     const env = agentEnv(dir, "alice", "uploader");
     const server = { name: "player-two", command: "player-two", args: ["mcp"], env: Object.entries(env).map(([name, value]) => ({ name, value })) };
     assert.equal(await acpRunner(fake()).run("mcp, and whoami", dir, "full", handlers, never, undefined, env), `turn 1: servers ${JSON.stringify([server])}; as alice/uploader`);
@@ -987,60 +987,84 @@ await test(
   }
 );
 
+/** What grantedDesk gives a test. */
+interface Granted {
+  readonly bob: Client;
+  readonly session: Session; // Bob's, with a grant to alice of his agent, read-only, posted directly.
+  readonly version: string; // The file whose words the scripted agent says are its version.
+  // Alice asks bob's agent in their direct chat, in the thread of `root` when given. Resolves with the request's id.
+  readonly ask: (text: string, root?: string) => Promise<string>;
+  // The answer bob's agent posted to a request.
+  readonly answered: (id: string) => Promise<string>;
+  // Alice asks, and the request waits for bob, who is told `why` it did not run under his grant. Resolves with the request's id.
+  readonly waits: (text: string, why: string) => Promise<string>;
+}
+
+const UNTESTED = "Fake's permissions have not been tested, so nothing shows it keeps to read-only with nobody watching. Run Test permissions on the Setup page";
+
+/** Alice and bob on a hub of their own, and bob's desk, whose scripted agent has not had its permissions tested, with a grant to alice: read-only, posted directly. */
+async function grantedDesk(t: TestContext): Promise<Granted> {
+  const hub = await startHub(t, () => Date.now() / 1000);
+  const [alice, bob] = [await hub.join("alice"), await hub.join("bob")];
+  const version = join(hub.dir, "version");
+  writeFileSync(version, "1.2.3");
+  bob.saveAgents([fake("--no-pids", `--version-file=${version}`)], "fake"); // No pids file, which the permission test would take for a file it wrote.
+  const dev = join(hub.dir, "dev-bob");
+  mkdirSync(join(dev, "uploader", ".git"), { recursive: true });
+  writeFileSync(join(dev, "uploader", ".git", "config"), `[remote "origin"]\n\turl = ${TEAM_REPOS}Platform/_git/uploader\n`);
+  writeFileSync(join(dev, "uploader", ".git", "HEAD"), "ref: refs/heads/main\n");
+  const notices: Notice[] = [];
+  const hooks = {
+    changed: () => undefined,
+    notice: (notice: Notice) => {
+      notices.push(notice);
+    },
+    arrived: () => undefined,
+    confirmClone: () => Promise.resolve(false)
+  };
+  const session = new Session(bob, dev, hooks, { presence: 1, describe: () => Promise.resolve({ branch: "main", commit: "c0ffee".padEnd(40, "0"), dirty: false }) });
+  session.start();
+  t.after(() => session.stop());
+  await until("bob's checkout shared", () => session.view().loaded && session.view().myRepos.includes("uploader"));
+  await session.handle({ do: "grant", repo: "uploader", askers: ["alice"], mode: "read-only", delivery: "post", lasts: 3600, runsPerDay: 20 });
+  const ask = async (text: string, root?: string): Promise<string> => (await alice.publish("bob", "message", { text: `@bob/uploader ${text}`, via: "cli" }, root === undefined ? [] : [root])).event.id;
+  const status = (id: string): string | undefined => {
+    session.handle({ do: "open", chat: "alice" }).catch(() => undefined);
+    return session
+      .view()
+      .current?.messages.flatMap((message) => [message, ...message.replies])
+      .find((message) => message.id === id)?.requests[0]?.status.kind;
+  };
+  const answered = async (id: string): Promise<string> => {
+    for (let tries = 0; tries < 200; tries += 1) {
+      const result = (await alice.events({ chat: "bob" })).find(({ event }) => event.kind === "job.result" && event.refs[0] === id);
+      const said = result === undefined ? null : readContent(result.event);
+      if (said?.kind === "job.result") {
+        return said.content.text;
+      }
+      await delay(50);
+    }
+    throw new Error(`no answer to ${id}`);
+  };
+  const waits = async (text: string, why: string): Promise<string> => {
+    const told = notices.length;
+    const id = await ask(text);
+    await until("its owner told why it waits", () => notices.length > told && status(id) === "ready");
+    assert.deepEqual(notices.slice(told), [{ title: "your uploader agent did not run alice's request under your grant", body: why, severity: "error" }]);
+    assert.deepEqual(await alice.events({ chat: "bob" }).then((found) => found.filter(({ event }) => event.refs[0] === id)), []);
+    return id;
+  };
+  return { bob, session, version, ask, answered, waits };
+}
+
 await test(
   "a grant lets an agent over ACP run below full only once it has passed the permission test, at the version it says it is now: untested, or updated since, the request waits and its owner is told to test it; a run its owner starts is not held back",
   { timeout: 60_000 },
   async (t) => {
-    const hub = await startHub(t, () => Date.now() / 1000);
-    const [alice, bob] = [await hub.join("alice"), await hub.join("bob")];
-    const version = join(hub.dir, "version");
-    writeFileSync(version, "1.2.3");
-    bob.saveAgents([fake("--no-pids", `--version-file=${version}`)], "fake"); // No pids file, which the permission test would take for a file it wrote.
-    const dev = join(hub.dir, "dev-bob");
-    mkdirSync(join(dev, "uploader", ".git"), { recursive: true });
-    writeFileSync(join(dev, "uploader", ".git", "config"), `[remote "origin"]\n\turl = ${TEAM_REPOS}Platform/_git/uploader\n`);
-    writeFileSync(join(dev, "uploader", ".git", "HEAD"), "ref: refs/heads/main\n");
-    const notices: Notice[] = [];
-    const hooks = {
-      changed: () => undefined,
-      notice: (notice: Notice) => {
-        notices.push(notice);
-      },
-      arrived: () => undefined,
-      confirmClone: () => Promise.resolve(false)
-    };
-    const session = new Session(bob, dev, hooks, { presence: 1, describe: () => Promise.resolve({ branch: "main", commit: "c0ffee".padEnd(40, "0"), dirty: false }) });
-    session.start();
-    t.after(() => session.stop());
-    await until("bob's checkout shared", () => session.view().loaded && session.view().myRepos.includes("uploader"));
-    await session.handle({ do: "grant", repo: "uploader", askers: ["alice"], mode: "read-only", delivery: "post", lasts: 3600, runsPerDay: 20 });
-    const ask = async (text: string): Promise<string> => (await alice.publish("bob", "message", { text: `@bob/uploader ${text}`, via: "cli" })).event.id;
-    const status = (id: string): string | undefined => {
-      session.handle({ do: "open", chat: "alice" }).catch(() => undefined);
-      return session.view().current?.messages.find((message) => message.id === id)?.requests[0]?.status.kind;
-    };
-    const answered = async (id: string): Promise<string> => {
-      for (let tries = 0; tries < 200; tries += 1) {
-        const result = (await alice.events({ chat: "bob" })).find(({ event }) => event.kind === "job.result" && event.refs[0] === id);
-        const said = result === undefined ? null : readContent(result.event);
-        if (said?.kind === "job.result") {
-          return said.content.text;
-        }
-        await delay(50);
-      }
-      throw new Error(`no answer to ${id}`);
-    };
-    const waits = async (text: string, why: string): Promise<string> => {
-      const told = notices.length;
-      const id = await ask(text);
-      await until("its owner told why it waits", () => notices.length > told && status(id) === "ready");
-      assert.deepEqual(notices.slice(told), [{ title: "your uploader agent did not run alice's request under your grant", body: why, severity: "error" }]);
-      assert.deepEqual(await alice.events({ chat: "bob" }).then((found) => found.filter(({ event }) => event.refs[0] === id)), []);
-      return id;
-    };
+    const { session, version, ask, answered, waits } = await grantedDesk(t);
 
     // Never tested: alice's request waits. Bob can still run it himself, at the mode he chooses, as before.
-    const untested = await waits("read", "Fake's permissions have not been tested, so nothing shows it keeps to read-only with nobody watching. Run Test permissions on the Setup page");
+    const untested = await waits("read", UNTESTED);
     await session.handle({ do: "run", id: untested, repo: "uploader", post: true, mode: "read-only", text: "@bob/uploader read" });
     assert.equal(await answered(untested), "turn 1: read");
 
@@ -1052,5 +1076,23 @@ await test(
     // Tested again, it runs.
     assert.equal((await session.testPermissions("fake")).status, "ok");
     assert.equal(await answered(await ask("read once more")), "turn 1: read");
+  }
+);
+
+await test(
+  "a run under a grant is given no Player Two MCP server and is not told which agent it is, nor goes on in a session its owner let go with both: one its owner lets go is given both",
+  { timeout: 60_000 },
+  async (t) => {
+    const { bob, session, ask, answered, waits } = await grantedDesk(t);
+    const server = { name: "player-two", command: "player-two", args: ["mcp"], env: Object.entries(agentEnv(bob.home, "bob", "uploader")).map(([name, value]) => ({ name, value })) };
+
+    // Bob lets alice's request go himself: his agent is given the MCP server and told it is bob/uploader.
+    const first = await waits("mcp whoami", UNTESTED);
+    await session.handle({ do: "run", id: first, repo: "uploader", post: true, mode: "read-only", text: "@bob/uploader mcp whoami" });
+    assert.equal(await answered(first), `turn 1: servers ${JSON.stringify([server])}; as bob/uploader`);
+
+    // Once its permissions are tested, her reply in that thread runs under the grant, at the same mode and delivery: afresh, with neither, not in the session bob's run left open.
+    assert.equal((await session.testPermissions("fake")).status, "ok");
+    assert.equal(await answered(await ask("mcp whoami", first)), "turn 1: servers []; as nobody");
   }
 );

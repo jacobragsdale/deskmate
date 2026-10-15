@@ -104,7 +104,8 @@ const vectors = {
     { review: true, prompt: agentPrompt(shown(3, "bob", "#backend", ask), "jacob", "uploader", earlier, true) },
     { review: false, prompt: agentPrompt(shown(3, "bob", "jacob", ask), "jacob", "uploader", [], false) },
     { review: false, prompt: agentPrompt(shown(3, "jacob", "bob", ask), "jacob", "uploader", [], false) },
-    { review: true, mcp: true, prompt: agentPrompt(shown(3, "bob", "#backend", ask), "jacob", "uploader", earlier, true, true) }
+    { review: true, mcp: true, prompt: agentPrompt(shown(3, "bob", "#backend", ask), "jacob", "uploader", earlier, true, "mcp") },
+    { review: false, grant: true, prompt: agentPrompt(shown(3, "bob", "#backend", ask), "jacob", "uploader", earlier, false, "none") }
   ]
 };
 

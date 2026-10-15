@@ -1426,7 +1426,14 @@ await test(
     const owner = await hub.join("bob");
     const dev = join(hub.dir, "dev-bob");
     checkout(dev, "uploader");
-    const bob = deskOf(t, owner, dev, { describe: () => Promise.resolve({ branch: "main", commit: COMMIT, dirty: false }) });
+    const told: (Readonly<Record<string, string>> | undefined)[] = []; // What each run's agent was told of who it is.
+    const bob = deskOf(t, owner, dev, {
+      describe: () => Promise.resolve({ branch: "main", commit: COMMIT, dirty: false }),
+      runner: (_argv, _cwd, _cancel, env) => {
+        told.push(env);
+        return Promise.resolve("done");
+      }
+    });
     const asker = deskOf(t, alice, join(hub.dir, "dev-alice"));
     await until(bob.session, "the checkout shared", (view) => view.loaded && view.myRepos.includes("uploader"));
     await until(asker.session, "alice's chats loaded", (view) => view.loaded);
@@ -1451,6 +1458,9 @@ await test(
     const answer = await until(asker.session, "the answer", (view) => messages(view).find((message) => message.agent === "uploader"));
     assert.deepEqual(answer.grant, { id: made.id, mode: "full", expires: clock + 3600 });
     await until(bob.session, "its run counted", (view) => view.grants[0]?.runsToday === 1);
+    // Its agent was not told it is bob/uploader, nor that the player-two command looks in bob's chats.
+    assert.deepEqual(told, [{}]);
+    assert.doesNotMatch(bob.ran[0]?.at(-1) ?? "player-two", /player-two/);
 
     // Only his own grant is his to revoke; revoked, or ended, it leaves his list.
     const theirs = (await alice.publish("*", "grant", { agent: "alice/uploader", askers: ["bob"], mode: "read-only", delivery: "review", expires: clock + 60, runsPerDay: 1 })).event.id;

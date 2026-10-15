@@ -1376,10 +1376,14 @@ export class Session {
     if (grant !== null && mode !== "full" && agent.protocol === "acp" && this.tested[commandLineOf(agent)]?.passed !== true) {
       throw new PlayerTwoError(`${agent.label}'s permissions have not been tested, so nothing shows it keeps to ${mode} with nobody watching. Run Test permissions on the Setup page`);
     }
-    const prompt = agentPrompt(message, this.me, repo, this.chats.earlier(message), !post, agent.protocol === "acp");
+    const tools = grant !== null ? "none" : agent.protocol === "acp" ? "mcp" : "command"; // Under a grant nobody reviews what the agent hands its asker from the owner's chats: see `work`.
+    const prompt = agentPrompt(message, this.me, repo, this.chats.earlier(message), !post, tools);
     // A reply in a thread from the same asker to the same agent goes on in the session the thread's last such request left open, if one is and it ran at the same mode and delivery:
-    // an agent may have made its own session more permissive than another mode allows, and was told who reads its reply.
-    const followUp = { key: [message.root ?? message.entry.event.id, message.entry.event.author, repo, mode, post ? "post" : "review"].join(" "), text: message.text };
+    // an agent may have made its own session more permissive than another mode allows, and was told who reads its reply; and one the user let go was given Player Two's tools, which a grant's is not.
+    const followUp = {
+      key: [message.root ?? message.entry.event.id, message.entry.event.author, repo, mode, post ? "post" : "review", grant === null ? "owner" : "grant"].join(" "),
+      text: message.text
+    };
     const run: AgentRun = {
       entry: message.entry,
       repo,
@@ -1533,9 +1537,7 @@ export class Session {
     try {
       head = await this.describe(checkout);
       await this.register([checkout]); // The run is given the file its key is in, which may have been replaced since the last beat.
-      if (run.grant !== null) {
-        await this.testedVersion(run.mode);
-      }
+      await this.testedVersion(run);
       if (stopped()) {
         throw new AgentCancelledError(`Stopped your ${repo} agent before it started.`); // While git was asked where the checkout stands: nothing ran, so the chat hears nothing.
       }
@@ -1554,7 +1556,9 @@ export class Session {
       if (stopped()) {
         throw new AgentCancelledError("stopped"); // While the chat was being told: it ends as stopped, without the agent being started only to be killed.
       }
-      const text = fitText(await runner.run(prompt, checkout.path, run.mode, handlers, run.cancel.signal, followUp, agentEnv(this.client.home, this.me, repo)));
+      // Under a grant the agent is neither told who it is nor given an MCP server: nothing hands it the owner's chats. It runs as their user all the same, the honest edge.
+      const env = run.grant === null ? agentEnv(this.client.home, this.me, repo) : undefined;
+      const text = fitText(await runner.run(prompt, checkout.path, run.mode, handlers, run.cancel.signal, followUp, env));
       if (text === "") {
         ending = "the agent returned nothing";
         ended = endedItem("failed", ending);
@@ -1594,10 +1598,10 @@ export class Session {
    * Under a grant below full, an agent over ACP must be the version that passed its permission test, when the test recorded one, as an update may have changed whether it asks.
    * It is asked by starting it, as the setup check does, which costs no model call; a stopping desk ends it.
    */
-  private async testedVersion(mode: PermissionMode): Promise<void> {
+  private async testedVersion({ grant, mode }: AgentRun): Promise<void> {
     const agent = defaultAgentOf(this.client.config);
     const tested = this.tested[commandLineOf(agent)];
-    if (mode === "full" || agent.protocol !== "acp" || tested === undefined || tested.version === "") {
+    if (grant === null || mode === "full" || agent.protocol !== "acp" || tested === undefined || tested.version === "") {
       return;
     }
     const version = await greet(agent, ACP_TIMEOUT, this.stopping.signal);

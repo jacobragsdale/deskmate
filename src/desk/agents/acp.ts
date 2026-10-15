@@ -187,14 +187,14 @@ class Conversation {
   public exited = false;
   public version = ""; // The agent's own version, as it says when the protocol is agreed; "" when it does not.
   private readonly agent: Agent;
-  private readonly env: Readonly<Record<string, string>>; // Added to the agent's environment, and the MCP server's.
+  private readonly env: Readonly<Record<string, string>> | undefined; // Added to the agent's environment, and the MCP server's; with none, as under a grant, it has no MCP server.
   private readonly child: ChildProcessByStdio<Writable, Readable, Readable>;
   private readonly connection: acp.ClientConnection;
   private readonly failed: Promise<never>; // Rejects, with why, when the process goes or never starts.
   private said = ""; // The end of what the agent has written on standard error.
   private sessionId = "";
 
-  constructor(agent: Agent, cwd: string, env: Readonly<Record<string, string>> = {}) {
+  constructor(agent: Agent, cwd: string, env?: Readonly<Record<string, string>>) {
     this.agent = agent;
     this.env = env;
     this.child = spawn(agent.command, agent.args, { cwd, env: { ...process.env, ...env }, stdio: ["pipe", "pipe", "pipe"], detached: true });
@@ -232,7 +232,7 @@ class Conversation {
   }
 
   /**
-   * Agree a protocol, sign in if the agent says it must, and open a session in `cwd` with Player Two's MCP server attached.
+   * Agree a protocol, sign in if the agent says it must, and open a session in `cwd` with Player Two's MCP server attached, unless the run was given no `env` (see AgentRunner).
    * For the setup check, `looking` opens one with no MCP server and leaves signing in to the user, saying how.
    */
   public async open(cwd: string, looking = false): Promise<void> {
@@ -245,7 +245,7 @@ class Conversation {
       throw new PlayerTwoError(`${this.agent.label} speaks version ${String(initialized.protocolVersion)} of ACP, and Player Two version ${String(acp.PROTOCOL_VERSION)}`);
     }
     this.version = initialized.agentInfo?.version ?? "";
-    const session = { cwd, mcpServers: looking ? [] : [mcpServer(this.env)] };
+    const session = { cwd, mcpServers: looking || this.env === undefined ? [] : [mcpServer(this.env)] };
     let opened: unknown;
     try {
       opened = await this.ask(this.connection.agent.request("session/new", session));
@@ -460,7 +460,7 @@ export function acpRunner(agent: Agent, seconds: { readonly limit: number; reado
   };
   return {
     cannotHonour: () => "",
-    run: async (prompt, cwd, mode, handlers, cancel, followUp, env = {}) => {
+    run: async (prompt, cwd, mode, handlers, cancel, followUp, env) => {
       const reused = take(followUp, cwd); // Its key names the repo, which is what `env` says of the agent, so a session kept is one started with the same.
       const conversation = reused ?? new Conversation(agent, cwd, env);
       const late = new AbortController();
