@@ -3,14 +3,14 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { TestContext } from "node:test";
 
 import { http, loadClient } from "../src/desk/client.ts";
-import { runChecks } from "../src/desk/doctor.ts";
+import { permissionTests, runChecks, testPermissions } from "../src/desk/doctor.ts";
 import type { Check } from "../src/shared/ipc.ts";
 import { startHub, TEAM_REPOS } from "./startHub.ts";
 
@@ -132,6 +132,51 @@ await test("each agent over ACP is started and asked to open a session, and fail
   );
   assert.deepEqual(
     checks.map((check) => check.id),
-    [...IDS, "agent-acp:fake", "agent-acp:signed-out", "agent-acp:broken"]
+    [...IDS, "agent-acp:fake", "agent-permissions:fake", "agent-acp:signed-out", "agent-permissions:signed-out", "agent-acp:broken", "agent-permissions:broken"]
   );
+  assert.deepEqual(
+    checks.find((check) => check.id === "agent-permissions:fake"),
+    {
+      id: "agent-permissions:fake",
+      title: "Fake asks before it writes a file",
+      status: "skip",
+      detail: "not tested yet: Test permissions asks it to write a file and refuses, which costs a model call",
+      fix: ""
+    }
+  ); // The setup check never runs it: it costs a model call.
 });
+
+await test(
+  "the permission test passes an agent that asks before it writes a file and writes none when refused, fails one that writes without asking, and saves each with the agent's version",
+  { timeout: 60_000 },
+  async (t) => {
+    const { home, dev } = await machine(t);
+    const client = loadClient(home, http, () => Date.now() / 1000);
+    assert.ok(client !== null);
+    const script = join(import.meta.dirname, "fixtures", "fake-acp-agent.ts");
+    const asking = { id: "fake", label: "Fake", protocol: "acp", command: process.execPath, args: [script, "--no-pids"] } as const;
+    const careless = { ...asking, id: "careless", label: "Careless", args: [script, "--no-pids", "--no-asking"] };
+    client.saveAgents([...client.config.agents, asking, careless], client.config.defaultAgent);
+
+    assert.deepEqual(await testPermissions(home, asking), {
+      id: "agent-permissions:fake",
+      title: "Fake asks before it writes a file",
+      status: "ok",
+      detail: "it asked before it wrote a file, and wrote none when refused, at version 1.2.3",
+      fix: ""
+    });
+    const refused = "it wrote edited.txt without asking when tested at version 1.2.3, so it is treated as an agent that cannot be limited, and runs only with full access";
+    assert.deepEqual(await testPermissions(home, careless), { id: "agent-permissions:careless", title: "Careless asks before it writes a file", status: "fail", detail: refused, fix: "" });
+    assert.deepEqual(permissionTests(home), {
+      [`${process.execPath} ${script} --no-pids`]: { version: "1.2.3", passed: true, detail: "asked before it wrote a file, and wrote none when refused" },
+      [`${process.execPath} ${script} --no-pids --no-asking`]: { version: "1.2.3", passed: false, detail: "wrote edited.txt without asking" }
+    });
+
+    // The setup check shows what was saved; a version other than the one tested is worth testing again.
+    const statusOf = async (): Promise<string[]> => (await runChecks(home, dev)).filter((check) => check.id.startsWith("agent-permissions:")).map((check) => `${check.id} ${check.status}`);
+    assert.deepEqual(await statusOf(), ["agent-permissions:fake ok", "agent-permissions:careless fail"]);
+    const file = join(home, "agent-permissions.json");
+    writeFileSync(file, readFileSync(file, "utf8").replaceAll('"1.2.3"', '"1.0.0"'));
+    assert.deepEqual(await statusOf(), ["agent-permissions:fake warn", "agent-permissions:careless fail"]);
+  }
+);

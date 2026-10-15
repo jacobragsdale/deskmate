@@ -341,6 +341,42 @@ await test(
   }
 );
 
+await test(
+  "an agent that fails the permission test is held to no mode from then on, in this session and the next: the view says why for every mode but full, and a run at any of them is refused",
+  { timeout: 30_000 },
+  async (t) => {
+    const hub = await startHub(t, () => Date.now() / 1000);
+    const [alice, bob] = [await hub.join("alice"), await hub.join("bob")];
+    bob.saveAgents([fake("--no-pids", "--no-asking")], "fake");
+    const dev = join(hub.dir, "dev-bob");
+    mkdirSync(join(dev, "uploader", ".git"), { recursive: true });
+    writeFileSync(join(dev, "uploader", ".git", "config"), `[remote "origin"]\n\turl = ${TEAM_REPOS}Platform/_git/uploader\n`);
+    writeFileSync(join(dev, "uploader", ".git", "HEAD"), "ref: refs/heads/main\n");
+    const hooks = { changed: () => undefined, notice: () => undefined, arrived: () => undefined, confirmClone: () => Promise.resolve(false) };
+    const session = new Session(bob, dev, hooks, { presence: 1, describe: () => Promise.resolve({ branch: "main", commit: "c0ffee".padEnd(40, "0"), dirty: false }) });
+    session.start();
+    t.after(() => session.stop());
+
+    assert.deepEqual(session.view().cannot, { "read-only": "", supervised: "", "auto-edits": "", full: "" }); // Over ACP, and not tested yet.
+    assert.equal((await session.testPermissions("fake")).status, "fail");
+    const why = "Fake wrote edited.txt without asking when its permissions were tested, at version 1.2.3, so it cannot be limited: it runs only with full access until it passes the test";
+    const cannot = { "read-only": why, supervised: why, "auto-edits": why, full: "" };
+    assert.deepEqual(session.view().cannot, cannot);
+    assert.deepEqual(new Session(bob, dev, hooks).view().cannot, cannot); // Saved, so the next session knows too.
+
+    const text = "@bob/uploader edit the README";
+    const { id } = (await alice.publish("bob", "message", { text, via: "cli" })).event;
+    await session.handle({ do: "open", chat: "alice" }).catch(() => undefined);
+    for (let tries = 0; tries < 200 && session.view().waiting === 0; tries += 1) {
+      await delay(50);
+    }
+    await assert.rejects(session.handle({ do: "run", id, repo: "uploader", post: true, mode: "supervised", text }), {
+      message: `${why}. To run it supervised, make an agent spoken to over ACP, such as Cursor or Copilot, the one that answers on the Setup page, or run it with full access`
+    });
+    await assert.rejects(session.testPermissions("nobody"), { message: "you have no agent nobody" });
+  }
+);
+
 /**
  * The phase's two-session scenario: alice asks bob's agent, the scripted one, from her window, and bob lets it run at a mode. Each step is in a channel of its own, so that no earlier request
  * reaches the agent's prompt as context: the agent acts on every word of the prompt it knows. Bob reviews what it drafts, as a teammate's request is first offered, except where it posts.

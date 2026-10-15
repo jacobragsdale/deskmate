@@ -126,7 +126,16 @@ await test("the desk by lines: the join form, joining, the chats, a message sent
   }
   say({ t: "command", id: 6, command: { do: "open", chat: "bob" } });
   assert.deepEqual(await reply(6), { ok: true });
-  assert.deepEqual(await checked(11), ["node", "identity", "hub", "proxy", "protocol", "clock", "dev", "repos", "git", "git-auth", "agent", "agent-acp:custom"]); // With alice's own agent over ACP.
+  assert.deepEqual(await checked(11), ["node", "identity", "hub", "proxy", "protocol", "clock", "dev", "repos", "git", "git-auth", "agent", "agent-acp:custom", "agent-permissions:custom"]); // With alice's own agent over ACP.
+
+  // The permission test runs only when asked for, on an agent over ACP, and answers with its row.
+  say({ t: "command", id: 12, command: { do: "testPermissions", agent: "custom" } });
+  const tested = await reply(12);
+  assert.deepEqual(tested.ok ? tested.data?.map((check) => [check.id, check.status, check.detail]) : tested.problem, [
+    ["agent-permissions:custom", "fail", 'it could not be asked: could not start mine\'s program "my-agent": spawn my-agent ENOENT. Check it on the Setup page']
+  ]);
+  say({ t: "command", id: 13, command: { do: "testPermissions", agent: DEFAULT_PRESET.id } });
+  assert.deepEqual(await reply(13), { ok: false, problem: "Cursor one-shot runs as a single command and asks nothing: there is nothing to test" });
 
   // The end of its input is the end of the desk.
   input.end();

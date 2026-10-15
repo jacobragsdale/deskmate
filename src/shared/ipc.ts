@@ -187,7 +187,8 @@ export const commandSchema = z.discriminatedUnion("do", [
   z.strictObject({ do: z.literal("older") }), // Load the page before the oldest event shown in the open chat.
   z.strictObject({ do: z.literal("search"), q: z.string().min(1).max(500) }), // Search every chat the user can see. The reply's `found` is what the hub found.
   z.strictObject({ do: z.literal("openNote"), id }), // Open the chat a message or an answer is in, with it loaded, and set the view's `focus` on it.
-  z.strictObject({ do: z.literal("doctor") }) // Run the setup check. The reply's data is the list.
+  z.strictObject({ do: z.literal("doctor") }), // Run the setup check. The reply's data is the list.
+  z.strictObject({ do: z.literal("testPermissions"), agent: z.string() }) // Run the permission test on the user's agent over ACP with this id, which costs a model call. The reply's data is its one row.
 ]);
 
 /** A message or an answer a search found: where it is, who wrote it, and a stretch of its text as last edited, in pieces, the words found marked. All of it is drawn as text. */

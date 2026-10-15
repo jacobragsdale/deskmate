@@ -2,8 +2,9 @@
  * A scripted ACP agent for the tests, built on the SDK's agent side and run with `node`. What it does depends on words in the prompt:
  * `read` reports a read tool call; each `edit` asks to edit and writes edited.txt only if allowed; `run` asks to execute; `slow` waits until cancelled, with a child process of its own;
  * `deaf` does the same but takes no notice of a cancel; `mcp` says which MCP servers its session has. Whatever it did, it says so in a short message streamed in two chunks,
- * after the number of the turn in its session. Started with --signed-out it says it needs signing in, and signing in fails; with --always-only it offers no way to be allowed just once.
- * It adds its pid, and its child's, to `pids` in its folder.
+ * after the number of the turn in its session. Started with --signed-out it says it needs signing in, and signing in fails; with --always-only it offers no way to be allowed just once;
+ * with --no-asking it edits without asking first, as an agent that cannot be limited would.
+ * It adds its pid, and its child's, to `pids` in its folder, unless started with --no-pids, for a test of what it writes there.
  */
 
 import { spawn } from "node:child_process";
@@ -23,7 +24,11 @@ interface Session {
 const sessions = new Map<string, Session>();
 const signedOut = process.argv.includes("--signed-out");
 const alwaysOnly = process.argv.includes("--always-only"); // Offers to be allowed only always, never once.
-appendFileSync("pids", `${String(process.pid)}\n`);
+const noAsking = process.argv.includes("--no-asking");
+const pids = !process.argv.includes("--no-pids");
+if (pids) {
+  appendFileSync("pids", `${String(process.pid)}\n`);
+}
 
 /** Ask to do something, as a tool call that waits for the client's answer, and report how it went. Resolves with whether it was allowed. */
 async function permitted(client: acp.AgentContext, sessionId: string, toolCallId: string, kind: acp.ToolKind, title: string): Promise<boolean> {
@@ -95,7 +100,7 @@ acp
       did.push("read");
     }
     for (const [index] of [...text.matchAll(/\bedit\b/g)].entries()) {
-      const allowed = await permitted(client, sessionId, `edit-${String(session.turns)}-${String(index)}`, "edit", "Edit edited.txt");
+      const allowed = noAsking || (await permitted(client, sessionId, `edit-${String(session.turns)}-${String(index)}`, "edit", "Edit edited.txt"));
       if (allowed) {
         writeFileSync(join(session.cwd, "edited.txt"), "edited\n");
       }
@@ -109,7 +114,9 @@ acp
     }
     if (has("slow") || has("deaf")) {
       const child = spawn("sleep", ["60"], { stdio: "ignore" });
-      appendFileSync(join(session.cwd, "pids"), `${String(child.pid)}\n`);
+      if (pids) {
+        appendFileSync(join(session.cwd, "pids"), `${String(child.pid)}\n`);
+      }
       if (has("slow")) {
         await new Promise<void>((resolve) => {
           session.cancelled = resolve;

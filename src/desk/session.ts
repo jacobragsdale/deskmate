@@ -7,7 +7,7 @@ import { join as joinPath } from "node:path";
 import { z } from "zod";
 
 import { runOf } from "../shared/ipc.ts";
-import type { ActivityItem, Arrival, AskView, ChatView, Command, CurrentView, Hit, LineView, MessageView, NoteView, Notice, ReplyView, RequestView, RowView } from "../shared/ipc.ts";
+import type { ActivityItem, Arrival, AskView, ChatView, Check, Command, CurrentView, Hit, LineView, MessageView, NoteView, Notice, ReplyView, RequestView, RowView } from "../shared/ipc.ts";
 import { agentPrompt, ChatLog, chatOf, continues, mentions, ONLINE, refOf, rings } from "../core/chat.ts";
 import type { Accepted, Entry, Message, Request } from "../core/chat.ts";
 import { readContent } from "../core/kinds.ts";
@@ -20,12 +20,14 @@ import { PRESETS } from "./agents/presets.ts";
 import type { AgentRunner, FollowUp, PermissionAsk, RunHandlers } from "./agents/runner.ts";
 import { AgentCancelledError, AgentTimedOutError, PlayerTwoError, Refused } from "./client.ts";
 import type { Client, Found, Runner } from "./client.ts";
+import { permissionTests, testPermissions } from "./doctor.ts";
+import type { Tested } from "./doctor.ts";
 import { atMost } from "./permissions.ts";
 import * as repos from "./repos.ts";
 import type { Checkout, Head } from "./repos.ts";
 import { cloneFolder } from "../core/remotes.ts";
 import { oneLine, problemOf } from "../core/text.ts";
-import { defaultAgentOf, fitText, isChannel, MODES, nameSchema, PROTOCOL } from "../core/wire.ts";
+import { commandLineOf, defaultAgentOf, fitText, isChannel, MODES, nameSchema, PROTOCOL } from "../core/wire.ts";
 import type { Agent, ChannelInfo, Delivered, PermissionMode, Person, RepoRef, TeamRepo } from "../core/wire.ts";
 
 const PRESENCE = 25; // Seconds between asking the hub who is here, which channels there are and who has which repo. Each is a signed request, which is what says the user is here; the repo scan runs on the same beat.
@@ -88,7 +90,7 @@ interface AgentRun {
   telling: NodeJS.Timeout | undefined; // Set while the chat is to be told, once PROGRESS seconds have passed since it last was.
 }
 
-type ChatCommand = Exclude<Command, { do: "join" | "doctor" | "search" }>;
+type ChatCommand = Exclude<Command, { do: "join" | "doctor" | "search" | "testPermissions" }>;
 type MessageDo = "send" | "reply" | "react" | "edit" | "delete";
 type JobDo = "sendDraft" | "discardDraft" | "run" | "stop" | "stopAll" | "permit" | "decline" | "withdraw";
 
@@ -181,6 +183,7 @@ export class Session {
   private following: Promise<void> = Promise.resolve();
   private streaming: Promise<void> | null = null; // The hub's stream, followed once what was there before it has been loaded.
   private agentRunner: { readonly which: string; readonly runner: AgentRunner } | null = null; // The runner of the agent that answers, by the agent as configured.
+  private tested: Tested; // How each agent did in the permission test, as saved.
 
   constructor(client: Client, dev: string, hooks: Hooks, options: Options = {}) {
     this.client = client;
@@ -196,6 +199,7 @@ export class Session {
     const saved = this.loadSaved();
     this.read = { ...saved.read };
     this.lastChat = saved.chat;
+    this.tested = permissionTests(client.home);
   }
 
   public start(): void {
@@ -1054,7 +1058,24 @@ export class Session {
    * Why the agent that answers cannot be held to `mode`, "" when it can. Where a mode is chosen, only one it can keep is offered, and a run at any other is refused before anything starts.
    */
   private cannotRun(mode: PermissionMode): string {
-    return this.runnerFor(defaultAgentOf(this.client.config)).cannotHonour(mode);
+    const agent = defaultAgentOf(this.client.config);
+    const tested = this.tested[commandLineOf(agent)];
+    if (mode !== "full" && tested?.passed === false) {
+      return `${agent.label} ${tested.detail} when its permissions were tested, at version ${tested.version}, so it cannot be limited: it runs only with full access until it passes the test`;
+    }
+    return this.runnerFor(agent).cannotHonour(mode);
+  }
+
+  /** Run the permission test on one of the user's agents over ACP, and from then on hold it to the modes it passes for. It costs a model call, so it runs only when the user asks. */
+  public async testPermissions(id: string): Promise<Check> {
+    const agent = this.client.config.agents.find((each) => each.id === id);
+    if (agent?.protocol !== "acp") {
+      throw new PlayerTwoError(agent === undefined ? `you have no agent ${id}` : `${agent.label} runs as a single command and asks nothing: there is nothing to test`);
+    }
+    const check = await testPermissions(this.client.home, agent);
+    this.tested = permissionTests(this.client.home);
+    this.hooks.changed();
+    return check;
   }
 
   /**
