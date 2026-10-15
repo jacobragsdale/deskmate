@@ -9,6 +9,7 @@ import { checkRequest } from "../core/delegation.ts";
 import { readContent } from "../core/kinds.ts";
 import { fitText, isChannel, NAME, ownerOf, REPO_NAME } from "../core/wire.ts";
 import type { Delivered } from "../core/wire.ts";
+import { JOB_VAR } from "./agentKeys.ts";
 import type { Client } from "./client.ts";
 
 const PAGE = 200; // The most events the hub gives at once.
@@ -185,11 +186,28 @@ async function unseen(client: Client, chat: string, owner: string): Promise<stri
 }
 
 /**
+ * Why `client` may not ask other agents under the request `job`; null when it may. Only a run its owner let ask them is told a request, in its environment (JOB_VAR), and it asks
+ * under that one alone: another run of the same agent, under a grant or let go without asking, cannot ask under it and so name only the people of the run that may.
+ */
+export function cannotAsk(client: Client, job: string): string | null {
+  if (client.job === job) {
+    return null;
+  }
+  return client.job === null
+    ? `this run may not ask other agents: only a run its owner let ask them is told, in ${JOB_VAR}, the request it may ask under`
+    : `this run may ask other agents only under the request it was asked, which ${JOB_VAR} names`;
+}
+
+/**
  * Ask `target`, another agent, "owner/repo", as the agent this client signs as, in its run on the request `job`: a job.request in that request's chat, naming the root, the request,
- * and the agents it came through, after which this waits as `ask` does. It is refused, with why, before anything is sent, when its target's owner could not see it there, or the log
- * shows it may not go (src/core/delegation.ts), which its target's desk judges again.
+ * and the agents it came through, after which this waits as `ask` does. It is refused, with why, before anything is sent, when the run may not ask under `job` (see `cannotAsk`), its
+ * target's owner could not see it there, or the log shows it may not go (src/core/delegation.ts), which its target's desk judges again.
  */
 export async function askUnder(client: Client, job: string, target: string, text: string, seconds: number): Promise<Asked | { readonly refused: string }> {
+  const barred = cannotAsk(client, job);
+  if (barred !== null) {
+    return { refused: barred };
+  }
   const from = await under(client, job, client.signer);
   const [owner = "", repo = ""] = target.split("/");
   const hidden = typeof from === "string" ? from : await unseen(client, from.chat, owner);

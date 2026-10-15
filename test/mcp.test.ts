@@ -311,7 +311,7 @@ await test("in a run let ask other agents, started with --job, it asks another a
   const accept = (delegate: boolean): Promise<Delivered> =>
     jacob.publish("#team", "job.accepted", { repo: "uploader", branch: "main", commit: COMMIT, dirty: false, delivery: "post", mode: "auto-edits", delegate, by: "owner" }, [root.event.id]);
   await accept(true);
-  const agent = loadClient(home, http, () => NOW, agentEnv(home, "jacob", "uploader")) ?? assert.fail();
+  const agent = loadClient(home, http, () => NOW, agentEnv(home, "jacob", "uploader", undefined, root.event.id)) ?? assert.fail(); // As the run's environment names the request it was asked.
   const mcp = await connect(t, agent, false, root.event.id);
   const asked = async (): Promise<Delivered[]> => (await carol.events({ chat: "#team" })).filter(({ event }) => event.kind === "job.request").reverse();
   /** The next request carol sees, once there are `count`. */

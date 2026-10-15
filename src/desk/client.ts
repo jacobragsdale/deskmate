@@ -33,7 +33,7 @@ import {
   userSchema
 } from "../core/wire.ts";
 import type { Agent, ChannelInfo, Config, Delivered, Event, HubInfo, Person, Repo, TeamRepo } from "../core/wire.ts";
-import { AGENT_KEY_VAR, AGENT_VAR, ONLY_CHAT_VAR } from "./agentKeys.ts";
+import { AGENT_KEY_VAR, AGENT_VAR, JOB_VAR, ONLY_CHAT_VAR } from "./agentKeys.ts";
 import { oneshotAgent } from "./agents/presets.ts";
 
 const CALL_TIMEOUT = 10; // Seconds any one request but the stream may take.
@@ -128,6 +128,7 @@ export class Client {
   private readonly transport: Transport;
   private readonly greets: boolean; // Whether to ask the hub which protocol it speaks before the first request: see `greeting`.
   private readonly only: string | null; // The one chat it reads, in an agent's run under a grant (see ONLY_CHAT_VAR): nothing from any other is handed over. Null for every chat the person sees.
+  public readonly job: string | null; // The one request it may ask other agents under, in an agent's run its owner let ask them (see JOB_VAR); null for any other.
   private greeted: Promise<void> | null = null; // Asking it, or having heard this protocol; null before, and again after a failure, so that the next request asks again.
   private settings: Config;
   private readonly registrations = new Map<string, Entry>(); // Every agent.register read from the hub, by id, with whether it holds under the key pinned for its author.
@@ -143,7 +144,8 @@ export class Client {
     signer: string = config.name,
     greets = false,
     ownKey: string = publicHex(key),
-    only: string | null = null
+    only: string | null = null,
+    job: string | null = null
   ) {
     this.home = home;
     this.settings = config;
@@ -154,11 +156,12 @@ export class Client {
     this.greets = greets;
     this.ownKey = ownKey;
     this.only = only;
+    this.job = job;
   }
 
   /** The same person's client, signing as their agent `agent`, "owner/repo", with the agent's own key: what it publishes, and the requests it makes, are the agent's. */
   public as(agent: string, key: KeyObject): Client {
-    return new Client(this.home, this.settings, key, this.transport, this.now, agent, this.greets, this.ownKey, this.only);
+    return new Client(this.home, this.settings, key, this.transport, this.now, agent, this.greets, this.ownKey, this.only, this.job);
   }
 
   /**
@@ -166,7 +169,7 @@ export class Client {
    * For the command and the MCP server, which would otherwise fail on the first answer they cannot read; the desk asks for itself, and tries again later (see the session's `greet`).
    */
   public greeting(): Client {
-    return new Client(this.home, this.settings, this.key, this.transport, this.now, this.signer, true, this.ownKey, this.only);
+    return new Client(this.home, this.settings, this.key, this.transport, this.now, this.signer, true, this.ownKey, this.only, this.job);
   }
 
   public get config(): Config {
@@ -522,7 +525,8 @@ export async function join(home: string, hub: string, name: string, token: strin
 /**
  * The client for the identity in `home`, or null when nobody has joined from there yet. When `env` names one of that identity's agents and the file its key is in,
  * as an agent's environment does during a run (see `agentEnv`), it signs as that agent: the player-two command and its MCP server pass their own environment, and the desk none.
- * When `env` also names one chat, as a run under a grant's does, it reads that chat and no other.
+ * When `env` also names one chat, as a run under a grant's does, it reads that chat and no other; and when it names a request, as a run let ask other agents' does, it may ask them under
+ * that one, unless it also names a chat: a run under a grant asks no other agent, whatever else its environment says.
  */
 export function loadClient(home: string, transport: Transport, now: () => number, env: Readonly<Record<string, string | undefined>> = {}): Client | null {
   const configFile = joinPath(home, "config.json");
@@ -532,7 +536,8 @@ export function loadClient(home: string, transport: Transport, now: () => number
   }
   const config = readConfig(home);
   const key = loadKey(readFileSync(keyFile, "utf8").trim());
-  const client = new Client(home, config, key, transport, now, config.name, false, publicHex(key), env[ONLY_CHAT_VAR] ?? null);
+  const only = env[ONLY_CHAT_VAR] ?? null;
+  const client = new Client(home, config, key, transport, now, config.name, false, publicHex(key), only, only === null ? (env[JOB_VAR] ?? null) : null);
   const agent = env[AGENT_VAR] ?? "";
   const agentKeyFile = env[AGENT_KEY_VAR] ?? "";
   if (agent === "" || agentKeyFile === "") {

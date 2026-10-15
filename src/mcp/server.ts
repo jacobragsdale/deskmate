@@ -19,7 +19,7 @@ import { VERSION } from "../core/version.ts";
 import { addressSchema, channelSchema, fitText, isAgent, ownerOf } from "../core/wire.ts";
 import { PlayerTwoError } from "../desk/client.ts";
 import type { Client } from "../desk/client.ts";
-import { agentOf, ask, askUnder, chatFrom, glance, readNote, trust } from "../desk/notes.ts";
+import { agentOf, ask, askUnder, cannotAsk, chatFrom, glance, readNote, trust } from "../desk/notes.ts";
 import type { Asked } from "../desk/notes.ts";
 
 const PAGE = 20; // Events `read_chat` and `search` give when not told how many.
@@ -191,13 +191,19 @@ function sendingTools(server: McpServer, client: Client): void {
 
 /**
  * The server for one person: the reading tools, and with `allowSend` the ones that speak for them; or, for one of their agents in a run let ask others, with `job` the request it was asked,
- * the reading tools and asking another agent under it. Its first request of the hub is preceded by asking which protocol the hub speaks.
+ * which its environment must name too (see `cannotAsk`), the reading tools and asking another agent under it. Its first request of the hub is preceded by asking which protocol the hub speaks.
  */
 export function createServer(person: Client, allowSend: boolean, job: string | null = null): McpServer {
-  if (job !== null && (allowSend || !isAgent(person.signer))) {
-    throw new PlayerTwoError(
-      allowSend ? "--job and --allow-send do not go together: a run let ask other agents sends nothing else" : "--job is for an agent's run, which names the agent in PLAYER_TWO_AGENT"
-    );
+  if (job !== null) {
+    let why = cannotAsk(person, job);
+    if (allowSend) {
+      why = "--job and --allow-send do not go together: a run let ask other agents sends nothing else";
+    } else if (!isAgent(person.signer)) {
+      why = "--job is for an agent's run, which names the agent in PLAYER_TWO_AGENT";
+    }
+    if (why !== null) {
+      throw new PlayerTwoError(why);
+    }
   }
   const client = person.greeting();
   const me = client.config.name;

@@ -43,7 +43,7 @@ const USAGE = `usage: player-two COMMAND
   hub verify                            check that no event in the log in PLAYER_TWO_DB was changed or taken out since it was stored
   desk                                  run your side with no window, for the window to start: it speaks JSON lines on standard input and output
   mcp [--allow-send]                    run the MCP server, for an agent's editor to start: the chat as tools, over standard input and output; --allow-send adds sending, asking and withdrawing
-                                        (the desk starts it with --job ID in a run let ask other agents)
+                                        (the desk starts it with --job ID in a run let ask other agents, whose PLAYER_TWO_JOB names the same ID)
   doctor                                check what Player Two needs on this machine, and say how to fix what is missing
 
 send, inbox, who, repos, channel, search, read, ask, status and doctor take --json, and then print one JSON value and nothing else.

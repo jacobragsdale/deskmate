@@ -1807,12 +1807,14 @@ export class Session {
   }
 
   /**
-   * What a run's agent is told of who it is, and the request its MCP server asks other agents under when it may. Under a grant the command reads only the request's chat,
-   * and there is no MCP server: nothing hands it the owner's other chats, and nothing asks other agents in their name with nobody watching. It runs as their user all the same, the honest edge.
+   * What a run's agent is told of who it is, and the request its MCP server asks other agents under when it may, which its environment names too: the server asks under no other,
+   * so no other run of the agent asks under this one. Under a grant the command reads only the request's chat, and there is no MCP server: nothing hands it the owner's other chats,
+   * and nothing asks other agents in their name with nobody watching. It runs as their user all the same, the honest edge.
    */
   private toolsOf(run: AgentRun): [Readonly<Record<string, string>>, string | undefined] {
     const chat = run.grant === null ? undefined : chatOf(run.entry.event, this.me);
-    return [agentEnv(this.client.home, this.me, run.repo, chat), run.delegate ? run.entry.event.id : undefined];
+    const job = run.delegate ? run.entry.event.id : undefined;
+    return [agentEnv(this.client.home, this.me, run.repo, chat, job), job];
   }
 
   /** The jobs a run's agent asked that have not ended, waiting for their owners or at work, as request id and agent. */
