@@ -198,6 +198,7 @@ Who may run what:
 | A teammate's agent | It waits until they run it, from `▶ Run read-only` or the menu beside it, or `Decline` it. |
 | Your agent, asked by another agent | It waits for you, saying who asked first and which agents the question came through, offered at no more than the least any of them was let do. A grant of yours lets it run only when it names everyone involved, and it then never asks further. |
 | A teammate's agent, under a grant of theirs that names you | It runs as soon as your message reaches their desk, with nobody needing to be there, at the grant's mode, its answer posted or kept for their review as the grant says. See [What Player Two protects](#what-player-two-protects-and-what-it-does-not) for when a grant applies. |
+| Your agent, tagged by a workflow | It waits for you, asked by `workflow:ci-failure`, the workflow's name. A grant lets it run only when it names `workflow:ci-failure`: one for anyone on the hub does not cover a workflow. See [Workflows](#workflows). |
 | An agent in a repo its owner does not have | The line under the message says so, and nothing runs. |
 
 Under each message that tags an agent, everyone in the chat sees one line per tag until it is answered:
@@ -267,6 +268,53 @@ A personal access token needs the scopes Code (read and write), to read and open
 
 Everything Azure DevOps says, a title, a name, a build's pipeline, is drawn as text, with no avatars or other images, and a chip or the room's line opens an address in your browser only when it is on `https://dev.azure.com`.
 
+## Workflows
+
+A workflow is a small automation that lives with a channel: when something happens, the hub posts a message, tags an agent, waits for a 👍, or calls an address. The hub runs it, and never runs an agent: a workflow's tag is a request like anyone's, which waits for the agent's owner or runs under a grant of theirs that names the workflow.
+
+```yaml
+name: ci-failure
+on:
+  webhook: { secret: "a long random string" }
+steps:
+  - post: "The build failed on {{body.branch}}: {{body.url}}"
+  - approve: { from: jacob, text: "Ask the uploader agent what broke?", within: 4h }
+  - tag: "@jacob/uploader"
+    text: "The build at {{body.url}} failed. What broke?"
+  - webhook: { url: "https://ci.corp.internal/retry/{{body.id}}", body: '{"build": "{{body.id}}"}' }
+    if: { equals: ["{{body.retry}}", "true"] }
+```
+
+`name` is written like a person's name. `on` is the one thing that sets a run off:
+
+| Trigger | Sets off a run when |
+|---|---|
+| `webhook: {}` | Something posts to the workflow's address, `POST HUB/hooks/ID`, which `player-two workflow publish` and `list` print. With a `secret`, the request must carry it in an `X-Player-Two-Secret` header. Its body is JSON, at most 256 KB, or nothing. The hub answers `202` at once. |
+| `message: { contains: "P1" }` | A person posts a message in the channel that holds those words, exactly as written. The hub's own messages never set anything off. |
+| `reaction: { emoji: "🚀" }` | Someone adds that emoji to a message in the channel. |
+| `schedule: { cron: "0 9 * * 1-5", zone: "Europe/London" }` | The five-field cron line comes round in that time zone. A time that passes while the hub is down is not made up. |
+
+Then 1 to 20 `steps`, taken one at a time:
+
+| Step | Does |
+|---|---|
+| `post: TEXT` | The hub posts the text. |
+| `tag: "@person/repo"` and `text` | The hub posts the text tagging that agent. The step is done once the message is stored; the agent's owner decides, as for any request. |
+| `approve: { from: NAME, text, within }` | The hub posts the text and waits for a 👍 on that message from `NAME`, or from any member with `from: anyone`; anyone else's changes nothing. `within` is written `90m`, `12h` or `2d`, and is a day when left out; past it, the run ends as expired. The wait outlasts the hub stopping and starting. |
+| `webhook: { url, body }` | The hub POSTs `body` to `url`, with the limits below. |
+
+A step may have `if: { equals: [A, B] }` or `if: { contains: [A, B] }`, which compares two texts once they are filled in; when it does not hold, the step is skipped. Text in a step is a template: `{{trigger.text}}` and `{{trigger.author}}` are the message that set the run off and who wrote it (for a reaction, the message reacted to and who reacted), and `{{body.path.to.field}}` is a field of a webhook's JSON, such as `{{body.commits.0.id}}`. A name that is not there is left as written. A message the hub posts tags only the agents the file writes out: a tag that a filled-in value makes, from a webhook's body or from someone's message, is shown with a fullwidth `＠` and tags nobody.
+
+After each step the hub posts how it came out, `done`, `skipped`, `waiting`, `approved`, `expired`, `refused`, `failed`, `throttled` or `cancelled`, as a `workflow.run` event. A step refused or failed ends its run.
+
+Any member of a channel can publish a workflow to it, replace one by publishing another of the same name, or remove one, with the `player-two workflow` commands below; an agent cannot. Each is an event signed by whoever did it, so the channel's log says who installed which automation, and when. A repo can keep its workflows under `.player-two/workflows/` to publish them from. Replacing or removing a workflow cancels its runs waiting for a 👍, and stops one calling an address before its next step; a replaced webhook workflow has a new address.
+
+Limits: 20 workflows in a channel, 20 steps in a workflow, 30 runs of one workflow started in an hour, and 50 of its runs waiting for a 👍 at once. A run past either of the last two is recorded once as `throttled` and does nothing; those after it leave no trace until a run starts again.
+
+Everyone in the channel can read a workflow's file, its `secret` and the addresses its steps call included, since it is an event in the channel, and anyone who has joined the hub can join the channel. So a secret keeps out only those without the channel, and a step's address should hold no token you would not show the channel. A webhook workflow without a `secret` can be set off by anyone who has its address. Whoever sets one off chooses only the values its templates are filled with. A grant that names `workflow:ci-failure` lets go a request from a workflow of that name in any channel you are in, as published by any member of it.
+
+A `webhook` step calls only a host that `PLAYER_TWO_WEBHOOK_ALLOW` lists (see [Configuration](#configuration)), checked on the address once it is filled in. A value is filled into the address percent-encoded, so it cannot add a path, a query or a user name, and into a body that is JSON as written as JSON text, so the body stays the JSON it was. The hub follows no redirect, gives up after ten seconds, reads at most 1 MB of the answer, and puts none of it into the chat: the run records the status, or why the call failed. The list trusts DNS: whoever can add a name under a listed one can point the hub at any address it can reach, other than its own machine and link-local addresses such as a cloud's metadata service, which a name may lead to only when that address is listed itself. Every port of a listed host can be called. Certificates are checked against Node's own list, so an internal certificate authority needs `NODE_EXTRA_CA_CERTS` in the hub's environment.
+
 ## Commands
 
 | Command | Effect |
@@ -283,13 +331,16 @@ Everything Azure DevOps says, a title, a name, a build's pipeline, is drawn as t
 | `player-two channel` | Lists every channel and its members. |
 | `player-two channel join NAME` | Joins the channel `NAME`, creating it if nobody is in it. `NAME` may be given with or without its `#`. Joining is an event: the channel's members see a line for it. |
 | `player-two channel leave NAME` | Leaves the channel. |
+| `player-two workflow publish FILE --in CHANNEL` | Reads a [workflow](#workflows)'s file, failing with the line and why when it does not read, and publishes it to `CHANNEL`, given with or without its `#`, in place of any of the same name. For a webhook workflow, prints the address that sets it off. |
+| `player-two workflow list --in CHANNEL` | Lists the channel's workflows: what sets each off, who published it and when, and a webhook workflow's address. |
+| `player-two workflow remove NAME --in CHANNEL` | Takes the channel's workflow of that name away. |
 | `player-two doctor` | Checks what Player Two needs on this machine, as the window's Setup page does, and prints each check with the command that fixes it. Exits `1` when a check failed. |
 | `player-two mcp [--allow-send]` | Runs the MCP server on standard input and output, as you, for an agent in your editor to start: the chat as tools to read, and with `--allow-send`, to send messages, ask agents and withdraw requests as you. See [Let your own agent ask](#7-let-your-own-agent-ask). |
 | `player-two desk` | Runs the desk with no window, speaking JSON lines on standard input and output. The window starts it; it is not for typing at. |
 | `player-two hub [--host HOST] [--port PORT]` | Runs the hub. Defaults: `127.0.0.1`, `8787`. |
 | `player-two hub verify` | Walks the event log in the database `PLAYER_TWO_DB` names and says whether it holds, or the first `seq` where it breaks and how: an event changed or taken out since it was stored, a signature that does not hold under the key its author joined with, or its agent's key then, or a row that cannot be read as an event; and then any agent whose key in the hub's `agents` table is not the one the log gives it. Exits `1` when either is found. |
 
-`send`, `inbox`, `who`, `repos`, `channel`, `search`, `read`, `ask`, `status` and `doctor` take `--json`, and then print one JSON value and nothing else. `inbox` prints an array of events as the hub delivered them, each `{ "seq", "event", "trusted" }`, where `event` is the signed event, with the text in its `content`, and `trusted` is `false` for one that failed its signature check, whose `content` is then `null`: a script or an agent gets no more of it than its author and when, as a person reading the words does. A message read this way is as it was sent: a later edit or delete is an event of its own, which `inbox` does not print. `send --wait` prints one such event, or `null` when none came; `send` without `--wait` prints `{ "seq", "event" }`, the message as it was sent and its place in the log. `search` prints an array of matches, each as the hub delivered it and with `trusted`, plus `link` and `snippet`, the stretch of text in pieces `{ "text", "hit" }`, `hit` marking a word that was found, and `null` with the `content` of a match that is not trusted. `read` prints the note as `inbox` prints an event, plus `link`, `text` as last edited (`null` when its signature fails), `edited` and `deleted`; `jobs`, each `{ "agent", "state" }`; `answers` in the same form as the note; and with `--thread`, `replies` in that form too. `ask` prints the agent's answer, its `job.result` event, as the hub delivered it with `trusted`, or `null` when there is none. `status` prints `{ "hub", "name", "repos", "waiting" }`, `repos` as `repos` prints them and each of `waiting` in the form of `read`'s `answers`, with the `agent` it is for. `who`, `repos`, `channel` and `doctor` print arrays; `channel join` and `channel leave` print the one channel.
+`send`, `inbox`, `who`, `repos`, `channel`, `search`, `read`, `ask`, `status`, `workflow` and `doctor` take `--json`, and then print one JSON value and nothing else. `inbox` prints an array of events as the hub delivered them, each `{ "seq", "event", "trusted" }`, where `event` is the signed event, with the text in its `content`, and `trusted` is `false` for one that failed its signature check, whose `content` is then `null`: a script or an agent gets no more of it than its author and when, as a person reading the words does. A message read this way is as it was sent: a later edit or delete is an event of its own, which `inbox` does not print. `send --wait` prints one such event, or `null` when none came; `send` without `--wait` prints `{ "seq", "event" }`, the message as it was sent and its place in the log. `search` prints an array of matches, each as the hub delivered it and with `trusted`, plus `link` and `snippet`, the stretch of text in pieces `{ "text", "hit" }`, `hit` marking a word that was found, and `null` with the `content` of a match that is not trusted. `read` prints the note as `inbox` prints an event, plus `link`, `text` as last edited (`null` when its signature fails), `edited` and `deleted`; `jobs`, each `{ "agent", "state" }`; `answers` in the same form as the note; and with `--thread`, `replies` in that form too. `ask` prints the agent's answer, its `job.result` event, as the hub delivered it with `trusted`, or `null` when there is none. `status` prints `{ "hub", "name", "repos", "waiting" }`, `repos` as `repos` prints them and each of `waiting` in the form of `read`'s `answers`, with the `agent` it is for. `who`, `repos`, `channel` and `doctor` print arrays; `channel join` and `channel leave` print the one channel. `workflow publish` prints the workflow it published and `workflow list` an array of them, each as `inbox` prints an event, plus `name`, `on`, what sets it off, and `hook`, a webhook's address or `null`; `workflow remove` prints what it sent, as `send` does.
 
 A command exits with `0` on success, `1` after printing a failure to standard error, and `2` for a usage error, and `ask` also with `3`, `4` or `5` as above; `player-two` with no command prints its usage and exits `2`, as does a `--wait` of more than 86400 seconds, a day. A longer message than an event holds, about 63,000 characters, is cut to fit. Repos are shared by the desk, not by the one-shot commands, so `player-two repos` shows a person's repos as of the last time their window was open.
 
@@ -364,6 +415,8 @@ An agent can sign nothing else, and only where its owner may write: the hub refu
 Letting an agent run leaves a record. Before an agent starts for anyone, its owner's desk publishes a `job.accepted` event, signed by the owner, naming the request, the repo, the branch and commit the checkout is at, whether it had uncommitted changes, whether the answer is reviewed before it is posted, the permission mode the agent may act at, and whether the owner let it run by hand or a grant of theirs did, by the grant's id. The request's author can edit it, and the agent is given its text as last edited, but only if that is the text you were shown when you said to run it: an edit that arrives in between makes your desk refuse the run and ask you to read the request again. If git cannot say which commit the checkout is at or whether it has uncommitted changes, or the record cannot be published, the agent does not start, and the desk tells you why. Then exactly one ending follows: the answer, a failure, a stop, or a decline for a draft its owner threw away or had not sent when their desk quit; a failure says only that it failed, and why stays with the owner. A run stopped before it was recorded is never recorded or started. So the chat's log holds who let which agent run, at whose request, on what code, with how much access, and how it ended, and everyone in the chat sees it.
 
 A grant is a `grant` event you send to everyone from My agents, signed by you: which of your agents, who may ask it (teammates by name, or anyone on the hub), the permission mode, whether its answers are posted directly or kept for your review, when it ends, at most 30 days after it was made, and how many runs a day. Your desk lets a teammate's request run under it when all of these hold: you signed the grant and it names the agent tagged; it names the asker, or anyone; you have not revoked it; it has not ended; and fewer runs than its daily limit were accepted under it in the last 24 hours, which your desk counts from your own `job.accepted` events in the log, so the count holds across a restart. When several grants apply, the one that allows least is used. Only a request that reaches your desk while it is running, and was signed no more than 600 seconds before your desk's clock says it arrived (twice the clock difference the hub allows), is let go this way; one that came while it was not, or that the stream hands over late after a dropped connection, waits for your click, as does every request of your own agent sent any way but from your window. The run is held to the grant's mode as one you start by hand is: when the agent that answers cannot be held to it, nothing runs and you are told why. Below `full`, an agent spoken to over ACP must also have passed `Test permissions` on the Setup page, and when the test recorded its version, still say it is that version as the run is let go, as an update may change whether it asks first; otherwise the request waits for your click and you are told to test it. Revoking a grant stops a run going under it, and a repo you hold back answers nobody, under a grant or not.
+
+The hub has a key of its own, made when it first starts, and signs what a workflow posts with it, as `hub`, a name nobody can join under. Your desk pins that key the first time it checks one of the hub's events, as it pins a teammate's, and counts a tag in the hub's message only when it says it is a workflow's and names it. A workflow runs nothing on anyone's machine; see [Workflows](#workflows) for what one can and cannot do.
 
 The hub does not enforce grants. It stores and relays them as it does any event; your desk alone decides what runs on your machine, and what a teammate's window shows, that a run went ahead under your grant, at which mode and until when, is what your desk recorded.
 

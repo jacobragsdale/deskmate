@@ -81,7 +81,7 @@ interface Firing {
 
 /**
  * `text`, which a workflow's `template` was filled into, with every tag in it but those the template wrote made no tag by writing its "@" as a fullwidth "＠": so a value filled in, from
- * a webhook's body or someone's message, never tags an agent, and what a workflow can tag is in its file. It reads as it did, and is no longer.
+ * a webhook's body or someone's message, never tags an agent, and what a workflow can tag is in its file. It reads as it did, and is as long.
  */
 function untagged(template: string, text: string): string {
   const written = new Set(mentions(template).map(([owner, repo]) => `${owner}/${repo}`));
@@ -352,7 +352,7 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, al
   function sweep(): void {
     for (const run of db.runsIn("waiting")) {
       const gone = changed(run);
-      const end = { step: run.step, state: "ended" } as const;
+      const end: Place = { step: run.step, state: "ended" };
       if (gone !== "") {
         record(run, run.step, "cancelled", gone, end, null, run.approval);
       } else if (now() > run.until) {

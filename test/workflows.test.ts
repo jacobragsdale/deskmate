@@ -17,8 +17,9 @@ import { mentions } from "../src/core/chat.ts";
 import { readContent } from "../src/core/kinds.ts";
 import { fitText } from "../src/core/wire.ts";
 import type { Client } from "../src/desk/client.ts";
+import { Session } from "../src/desk/session.ts";
 import { allowList, refusal } from "../src/hub/workflows.ts";
-import { NOW, startHub, TEAM_REPOS } from "./startHub.ts";
+import { checkout, NOW, startHub, TEAM_REPOS } from "./startHub.ts";
 import type { Hub } from "./startHub.ts";
 
 /** A channel as one member reads it, oldest first: each message as its author and text, each step of a run as the hub reported it, anything else as its kind; `!` before an author whose signature fails. */
@@ -665,3 +666,81 @@ await test("a workflow has at most 50 runs waiting for a 👍; one past that is 
     "hub: gated run 52 step 0 waiting: for a 👍 from anyone in #ops"
   ]);
 });
+
+await test("the hub's own messages set nothing off, though they hold a workflow's words", async (t) => {
+  const hub = await startHub(t);
+  const [alice, bob] = await team(hub, "alice", "bob");
+  assert.ok(alice !== undefined && bob !== undefined);
+  await alice.publish("#ops", "workflow.define", { name: "echo", yaml: 'name: echo\non:\n  message: { contains: "P1" }\nsteps:\n  - post: "P1 again: {{trigger.text}}"\n' });
+
+  await bob.publish("#ops", "message", { text: "a P1", via: "cli" });
+
+  assert.deepEqual((await channel(alice)).slice(-3), ["bob: a P1", "hub: P1 again: a P1", "hub: echo run 1 step 0 done"]);
+  assert.deepEqual(runs(hub), ["echo 1 1 ended"]);
+});
+
+await test(
+  "a workflow's tag of an agent, set off by its hook, waits for the agent's owner, and runs at once under a grant naming the workflow, whose answer is posted",
+  { timeout: 30_000 },
+  async (t) => {
+    const hub = await startHub(t);
+    const [alice, owner] = await team(hub, "alice", "bob");
+    assert.ok(alice !== undefined && owner !== undefined);
+    const dev = join(hub.dir, "dev-bob");
+    checkout(dev, "uploader"); // A real one: a teammate's request above read-only runs on a clean copy of it.
+    const ran: string[] = [];
+    const bob = new Session(
+      owner,
+      dev,
+      { changed: () => undefined, notice: () => undefined, arrived: () => undefined, confirmClone: () => Promise.resolve(false) },
+      {
+        presence: 1,
+        describe: () => Promise.resolve({ branch: "main", commit: "c0ffee".padEnd(40, "0"), dirty: false }),
+        runner: (argv) => {
+          ran.push(argv.at(-1) ?? "");
+          return Promise.resolve("the cache was cold");
+        }
+      }
+    );
+    bob.start();
+    t.after(() => bob.stop());
+    const shown = async <T>(what: string, found: () => T | undefined | false): Promise<T> => {
+      for (let tries = 0; tries < 200; tries += 1) {
+        const value = found();
+        if (value !== undefined && value !== false) {
+          return value;
+        }
+        await new Promise((resolve) => {
+          setTimeout(resolve, 50);
+        });
+      }
+      throw new Error(`never shown: ${what}`);
+    };
+    await shown("bob's checkout", () => bob.view().loaded && bob.view().myRepos.includes("uploader"));
+    await bob.handle({ do: "open", chat: "#ops" });
+    const { event: definition } = await alice.publish("#ops", "workflow.define", {
+      name: "ci-failure",
+      yaml: hooked("ci-failure", 'tag: "@bob/uploader"\n    text: "The build {{body.id}} failed. What broke?"')
+    });
+    const request = async (id: number): Promise<string> => {
+      await setOff(hub, definition.id, { id });
+      return shown(`the request for build ${String(id)}`, () => bob.view().current?.messages.find((message) => message.body.includes(`build ${String(id)} failed`))?.id);
+    };
+    const status = (id: string): string | undefined => bob.view().current?.messages.find((message) => message.id === id)?.requests[0]?.status.kind;
+
+    const first = await request(1);
+    await new Promise((resolve) => {
+      setTimeout(resolve, 300);
+    });
+    assert.deepEqual([status(first), ran], ["ready", []]); // Waiting for bob's click.
+
+    await owner.publish("*", "grant", { agent: "bob/uploader", askers: ["workflow:ci-failure"], mode: "full", delivery: "post", expires: NOW + 3_600, runsPerDay: 10 });
+    await shown("the grant", () => bob.view().grants.length === 1);
+    await request(2);
+    await until(alice, /^bob\/uploader: job\.result$/);
+
+    assert.equal(ran.length, 1);
+    assert.match(ran[0] ?? "", /The build 2 failed\. What broke\?/);
+    assert.equal(status(first), "ready"); // The grant lets go what comes from now on, not what was waiting.
+  }
+);
