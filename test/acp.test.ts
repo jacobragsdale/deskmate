@@ -1081,7 +1081,7 @@ await test(
 );
 
 await test(
-  "a run under a grant is given no Player Two MCP server and is not told which agent it is, nor goes on in a session its owner let go with both: one its owner lets go is given both",
+  "a run under a grant is given no Player Two MCP server and is told which agent it is and the one chat it reads, nor goes on in a session its owner let go: one its owner lets go is given the server and its name alone",
   { timeout: 60_000 },
   async (t) => {
     const { bob, session, ask, answered, waits } = await grantedDesk(t);
@@ -1092,8 +1092,9 @@ await test(
     await session.handle({ do: "run", id: first, repo: "uploader", post: true, mode: "read-only", text: "@bob/uploader mcp whoami" });
     assert.equal(await answered(first), `turn 1: servers ${JSON.stringify([server])}; as bob/uploader`);
 
-    // Once its permissions are tested, her reply in that thread runs under the grant, at the same mode and delivery: afresh, with neither, not in the session bob's run left open.
+    // Once its permissions are tested, her reply in that thread runs under the grant, at the same mode and delivery: afresh, not in the session bob's run left open, with no server,
+    // told it is bob/uploader, so the command signs as the agent, and that it reads her chat with bob alone.
     assert.equal((await session.testPermissions("fake")).status, "ok");
-    assert.equal(await answered(await ask("mcp whoami", first)), "turn 1: servers []; as nobody");
+    assert.equal(await answered(await ask("mcp whoami", first)), "turn 1: servers []; as bob/uploader, reading alice only");
   }
 );

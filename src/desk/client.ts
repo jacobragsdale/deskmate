@@ -8,6 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import { z } from "zod";
 
+import { chatOf } from "../core/chat.ts";
 import type { Entry } from "../core/chat.ts";
 import { contentSchema, readContent } from "../core/kinds.ts";
 import type { Content, ContentOf } from "../core/kinds.ts";
@@ -32,7 +33,7 @@ import {
   userSchema
 } from "../core/wire.ts";
 import type { Agent, ChannelInfo, Config, Delivered, Event, HubInfo, Person, Repo, TeamRepo } from "../core/wire.ts";
-import { AGENT_KEY_VAR, AGENT_VAR } from "./agentKeys.ts";
+import { AGENT_KEY_VAR, AGENT_VAR, ONLY_CHAT_VAR } from "./agentKeys.ts";
 import { oneshotAgent } from "./agents/presets.ts";
 
 const CALL_TIMEOUT = 10; // Seconds any one request but the stream may take.
@@ -126,13 +127,24 @@ export class Client {
   private readonly key: KeyObject;
   private readonly transport: Transport;
   private readonly greets: boolean; // Whether to ask the hub which protocol it speaks before the first request: see `greeting`.
+  private readonly only: string | null; // The one chat it reads, in an agent's run under a grant (see ONLY_CHAT_VAR): nothing from any other is handed over. Null for every chat the person sees.
   private greeted: Promise<void> | null = null; // Asking it, or having heard this protocol; null before, and again after a failure, so that the next request asks again.
   private settings: Config;
   private readonly registrations = new Map<string, Entry>(); // Every agent.register read from the hub, by id, with whether it holds under the key pinned for its author.
   private registeredTo = 0; // The seq of the newest event to everyone read: every agent.register up to it is in `registrations`.
   private learning: Promise<void> | null = null; // Reading the registrations newer than that, while it goes on.
 
-  constructor(home: string, config: Config, key: KeyObject, transport: Transport, now: () => number, signer: string = config.name, greets = false, ownKey: string = publicHex(key)) {
+  constructor(
+    home: string,
+    config: Config,
+    key: KeyObject,
+    transport: Transport,
+    now: () => number,
+    signer: string = config.name,
+    greets = false,
+    ownKey: string = publicHex(key),
+    only: string | null = null
+  ) {
     this.home = home;
     this.settings = config;
     this.key = key;
@@ -141,11 +153,12 @@ export class Client {
     this.signer = signer;
     this.greets = greets;
     this.ownKey = ownKey;
+    this.only = only;
   }
 
   /** The same person's client, signing as their agent `agent`, "owner/repo", with the agent's own key: what it publishes, and the requests it makes, are the agent's. */
   public as(agent: string, key: KeyObject): Client {
-    return new Client(this.home, this.settings, key, this.transport, this.now, agent, this.greets, this.ownKey);
+    return new Client(this.home, this.settings, key, this.transport, this.now, agent, this.greets, this.ownKey, this.only);
   }
 
   /**
@@ -153,11 +166,21 @@ export class Client {
    * For the command and the MCP server, which would otherwise fail on the first answer they cannot read; the desk asks for itself, and tries again later (see the session's `greet`).
    */
   public greeting(): Client {
-    return new Client(this.home, this.settings, this.key, this.transport, this.now, this.signer, true, this.ownKey);
+    return new Client(this.home, this.settings, this.key, this.transport, this.now, this.signer, true, this.ownKey, this.only);
   }
 
   public get config(): Config {
     return this.settings;
+  }
+
+  /** Whether it reads `chat`: every chat, unless it is confined to one; then that one, and the events to everyone, "*", which are registrations and grants. */
+  private reads(chat: string): boolean {
+    return this.only === null || chat === this.only || chat === "*";
+  }
+
+  /** Whether it hands over an event the hub delivered: one in a chat it reads. */
+  private readable({ event }: Delivered): boolean {
+    return this.reads(event.to === "*" ? "*" : chatOf(event, this.settings.name));
   }
 
   /** Replace the agents and which of them answers: in config.json first, then here. */
@@ -209,6 +232,9 @@ export class Client {
 
   /** One chat's events, newest first: the newest `limit` of them (the hub's page when not given), or those older than `before`. A channel is named with its "#". */
   public async events(query: { readonly chat: string; readonly before?: number; readonly limit?: number }): Promise<Delivered[]> {
+    if (!this.reads(query.chat)) {
+      return [];
+    }
     const params = new URLSearchParams({ chat: query.chat });
     if (query.before !== undefined) {
       params.set("before", String(query.before));
@@ -221,6 +247,9 @@ export class Client {
 
   /** One chat's page centred on `around`, a seq, oldest first: up to half of `limit` (the hub's page when not given) from before it, and the rest from it on. A channel is named with its "#". */
   public async around(query: { readonly chat: string; readonly around: number; readonly limit?: number }): Promise<Delivered[]> {
+    if (!this.reads(query.chat)) {
+      return [];
+    }
     const params = new URLSearchParams({ chat: query.chat, around: String(query.around) });
     if (query.limit !== undefined) {
       params.set("limit", String(query.limit));
@@ -231,7 +260,8 @@ export class Client {
   /** One event this user can see, by its id, with its seq; null when there is none they can see. Untrusted until `isTrusted` says otherwise, as is every event the hub hands over. */
   public async event(id: string): Promise<Delivered | null> {
     try {
-      return deliveredSchema.parse(parseJson(await this.call("GET", `/events/${encodeURIComponent(id)}`)));
+      const found = deliveredSchema.parse(parseJson(await this.call("GET", `/events/${encodeURIComponent(id)}`)));
+      return this.readable(found) ? found : null;
     } catch (error) {
       if (error instanceof Refused && error.status === 404) {
         return null; // Never stored, or not for this user: the hub does not say which.
@@ -240,11 +270,18 @@ export class Client {
     }
   }
 
-  /** The messages and answers this user can see that hold every word of `q` (at most 8), in one chat or in all, best match first: at most `limit` (20 when not given, up to 50). */
+  /**
+   * The messages and answers this user can see that hold every word of `q` (at most 8), in one chat or in all, best match first: at most `limit` (20 when not given, up to 50).
+   * Confined to one chat, it searches that one, and finds nothing in any other.
+   */
   public async search(query: { readonly q: string; readonly chat?: string; readonly limit?: number }): Promise<Found[]> {
+    const chat = query.chat ?? this.only ?? undefined;
+    if (chat !== undefined && !this.reads(chat)) {
+      return [];
+    }
     const params = new URLSearchParams({ q: query.q });
-    if (query.chat !== undefined) {
-      params.set("chat", query.chat);
+    if (chat !== undefined) {
+      params.set("chat", chat);
     }
     if (query.limit !== undefined) {
       params.set("limit", String(query.limit));
@@ -264,7 +301,7 @@ export class Client {
       const page = await this.page(found.at(-1)?.seq ?? after, CATCH_UP_PAGE);
       found.push(...page);
       if (page.length < CATCH_UP_PAGE) {
-        return found;
+        return found.filter((each) => this.readable(each));
       }
     }
   }
@@ -316,7 +353,7 @@ export class Client {
           // Each event is one "data:" line; anything else is the comment that keeps proxies from closing an idle stream.
           const batch = lines.filter((line) => line.startsWith("data: ")).map((line) => deliveredSchema.parse(parseJson(line.slice("data: ".length))));
           if (batch.length > 0) {
-            await onEvents(batch);
+            await onEvents(batch.filter((each) => this.readable(each)));
             last = batch.at(-1)?.seq ?? last;
           }
         }
@@ -476,6 +513,7 @@ export async function join(home: string, hub: string, name: string, token: strin
 /**
  * The client for the identity in `home`, or null when nobody has joined from there yet. When `env` names one of that identity's agents and the file its key is in,
  * as an agent's environment does during a run (see `agentEnv`), it signs as that agent: the player-two command and its MCP server pass their own environment, and the desk none.
+ * When `env` also names one chat, as a run under a grant's does, it reads that chat and no other.
  */
 export function loadClient(home: string, transport: Transport, now: () => number, env: Readonly<Record<string, string | undefined>> = {}): Client | null {
   const configFile = joinPath(home, "config.json");
@@ -483,7 +521,9 @@ export function loadClient(home: string, transport: Transport, now: () => number
   if (!existsSync(configFile) || !existsSync(keyFile)) {
     return null;
   }
-  const client = new Client(home, readConfig(home), loadKey(readFileSync(keyFile, "utf8").trim()), transport, now);
+  const config = readConfig(home);
+  const key = loadKey(readFileSync(keyFile, "utf8").trim());
+  const client = new Client(home, config, key, transport, now, config.name, false, publicHex(key), env[ONLY_CHAT_VAR] ?? null);
   const agent = env[AGENT_VAR] ?? "";
   const agentKeyFile = env[AGENT_KEY_VAR] ?? "";
   if (agent === "" || agentKeyFile === "") {

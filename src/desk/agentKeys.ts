@@ -10,6 +10,8 @@ import { repoNameSchema } from "../core/wire.ts";
 // What an agent's process is told during a run: which agent it is, "owner/repo", and the file its key is in. The player-two command, and its MCP server, sign as that agent when both are set.
 export const AGENT_VAR = "PLAYER_TWO_AGENT";
 export const AGENT_KEY_VAR = "PLAYER_TWO_AGENT_KEY_FILE";
+// In a run under a grant, the one chat the command reads, the request's: whoever asked must not be handed, unreviewed, what the owner's other chats hold.
+export const ONLY_CHAT_VAR = "PLAYER_TWO_ONLY_CHAT";
 
 /** The file the key of the agent in my checkout of `repo` is kept in: `agents/<repo>.key` in `home`. */
 export function agentKeyFile(home: string, repo: string): string {
@@ -82,9 +84,10 @@ export function keyIn(home: string, text: string): string | null {
 }
 
 /**
- * What the agent in `owner`'s checkout of `repo` is told of who it is for a run, so that whatever it does through the player-two command or its MCP server is signed as the agent, not as its owner.
- * It runs as its owner's user all the same, and could read their key if it went looking: this makes the honest path the agent's, and is no wall.
+ * What the agent in `owner`'s checkout of `repo` is told of who it is for a run, so that whatever it does through the player-two command or its MCP server is signed as the agent, not as its owner;
+ * and with `onlyChat`, as under a grant, the one chat the command reads. It runs as its owner's user all the same, and could read their key, or any chat, if it went looking:
+ * this makes the honest path the agent's, and is no wall.
  */
-export function agentEnv(home: string, owner: string, repo: string): Readonly<Record<string, string>> {
-  return { [AGENT_VAR]: `${owner}/${repo}`, [AGENT_KEY_VAR]: agentKeyFile(home, repo) };
+export function agentEnv(home: string, owner: string, repo: string, onlyChat?: string): Readonly<Record<string, string>> {
+  return { [AGENT_VAR]: `${owner}/${repo}`, [AGENT_KEY_VAR]: agentKeyFile(home, repo), ...(onlyChat === undefined ? {} : { [ONLY_CHAT_VAR]: onlyChat }) };
 }

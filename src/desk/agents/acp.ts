@@ -21,6 +21,7 @@ import { commandLineOf } from "../../core/wire.ts";
 import type { Agent } from "../../core/wire.ts";
 import type { Summary } from "../../core/kinds.ts";
 import type { ActivityItem } from "../../shared/ipc.ts";
+import { ONLY_CHAT_VAR } from "../agentKeys.ts";
 import { AgentCancelledError, AgentTimedOutError, PlayerTwoError } from "../client.ts";
 import { decide } from "../permissions.ts";
 import type { Action, Decision, PermissionMode } from "../permissions.ts";
@@ -187,7 +188,7 @@ class Conversation {
   public exited = false;
   public version = ""; // The agent's own version, as it says when the protocol is agreed; "" when it does not.
   private readonly agent: Agent;
-  private readonly env: Readonly<Record<string, string>> | undefined; // Added to the agent's environment, and the MCP server's; with none, as under a grant, it has no MCP server.
+  private readonly env: Readonly<Record<string, string>> | undefined; // Added to the agent's environment, and the MCP server's; with none, or one naming the only chat it reads, as under a grant, it has no MCP server.
   private readonly child: ChildProcessByStdio<Writable, Readable, Readable>;
   private readonly connection: acp.ClientConnection;
   private readonly failed: Promise<never>; // Rejects, with why, when the process goes or never starts.
@@ -232,7 +233,7 @@ class Conversation {
   }
 
   /**
-   * Agree a protocol, sign in if the agent says it must, and open a session in `cwd` with Player Two's MCP server attached, unless the run was given no `env` (see AgentRunner).
+   * Agree a protocol, sign in if the agent says it must, and open a session in `cwd` with Player Two's MCP server attached, unless the run was given no `env`, or one confining it to a chat (see AgentRunner).
    * For the setup check, `looking` opens one with no MCP server and leaves signing in to the user, saying how.
    */
   public async open(cwd: string, looking = false): Promise<void> {
@@ -245,7 +246,7 @@ class Conversation {
       throw new PlayerTwoError(`${this.agent.label} speaks version ${String(initialized.protocolVersion)} of ACP, and Player Two version ${String(acp.PROTOCOL_VERSION)}`);
     }
     this.version = initialized.agentInfo?.version ?? "";
-    const session = { cwd, mcpServers: looking || this.env === undefined ? [] : [mcpServer(this.env)] };
+    const session = { cwd, mcpServers: looking || this.env === undefined || ONLY_CHAT_VAR in this.env ? [] : [mcpServer(this.env)] };
     let opened: unknown;
     try {
       opened = await this.ask(this.connection.agent.request("session/new", session));

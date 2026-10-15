@@ -3,7 +3,7 @@
  * `twice` says something in a message of its own first, with a step after it; `read` reports reading README.md in its folder, by its path; `many` reports 600 reads;
  * `switch` asks to switch its session to a mode in which it edits without asking, as ACP lets an agent's modes differ in what they ask; each `edit` asks to edit and writes edited.txt only if allowed;
  * `run` asks to run `npm test` in its folder; `takeback` asks to edit and takes the request back 300 ms later; `leave` asks to edit and ends its turn without waiting for the answer;
- * `stray` asks under another session's id; `long` asks to edit under a title of two lines and over 300 characters; `mcp` says which MCP servers its session has; `whoami` says the agent its environment names in PLAYER_TWO_AGENT;
+ * `stray` asks under another session's id; `long` asks to edit under a title of two lines and over 300 characters; `mcp` says which MCP servers its session has; `whoami` says the agent its environment names in PLAYER_TWO_AGENT, and the one chat PLAYER_TWO_ONLY_CHAT names, if it does;
  * `slow` waits until cancelled, with a child process of its own; `deaf` does the same but takes no notice of a cancel.
  * Whatever it did, it says so in a short message streamed in two chunks, after the number of the turn in its session. Told while it asks that its turn is cancelled, it ends the turn as cancelled, as ACP asks. Started with --signed-out it says it needs signing in, and signing in fails; with --always-only it offers no way to be allowed just once;
  * with --no-asking it edits without asking first, as an agent that cannot be limited would; with --deaf every prompt is also `deaf`. It says it is version 1.2.3, or with --version-file=FILE what FILE holds, as an agent updated in place would.
@@ -161,7 +161,8 @@ async function act(client: acp.AgentContext, sessionId: string, session: Session
     did.push(`servers ${session.servers}`);
   }
   if (has("whoami")) {
-    did.push(`as ${process.env["PLAYER_TWO_AGENT"] ?? "nobody"}`);
+    const only = process.env["PLAYER_TWO_ONLY_CHAT"];
+    did.push(`as ${process.env["PLAYER_TWO_AGENT"] ?? "nobody"}${only === undefined ? "" : `, reading ${only} only`}`);
   }
   return did;
 }

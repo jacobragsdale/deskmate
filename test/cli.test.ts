@@ -603,3 +603,41 @@ await test("in an agent's run the command signs as the agent: it reads what its 
     ["alice", "bob"]
   );
 });
+
+await test("in a run under a grant the command reads only the chat it was asked in: search, read, inbox and status find nothing in another, and it sends nothing as the agent", async (t) => {
+  const hub = await startHub(t);
+  const [alice, bob, carol] = [await hub.join("alice"), await hub.join("bob"), await hub.join("carol")];
+  const home = join(hub.dir, "alice");
+  await alice.publish("*", "agent.register", { repo: "uploader", pubkey: publicHex(agentKey(home, "uploader")) });
+  const asked = await bob.publish("alice", "message", { text: "@alice/uploader where is the retry?", via: "cli" });
+  const secret = await carol.publish("alice", "message", { text: "@alice/uploader the retry secret is 42", via: "cli" });
+  const run = agentEnv(home, "alice", "uploader", "bob"); // Bob asked in his direct chat with alice.
+  assert.deepEqual(run, { PLAYER_TWO_AGENT: "alice/uploader", PLAYER_TWO_AGENT_KEY_FILE: join(home, "agents", "uploader.key"), PLAYER_TWO_ONLY_CHAT: "bob" });
+  const asAgent = (...argv: string[]): Promise<Ran> => playerTwo(hub, "alice", argv, "", run);
+  const ids = (ran: Ran): string[] =>
+    z
+      .array(z.object({ event: z.object({ id: z.string() }) }))
+      .parse(printed(ran))
+      .map((each) => each.event.id);
+
+  // Alice herself finds both; the run finds what is in bob's chat alone, however it asks.
+  assert.deepEqual(new Set(ids(await playerTwo(hub, "alice", ["search", "--json", "retry"]))), new Set([asked.event.id, secret.event.id]));
+  assert.deepEqual(ids(await asAgent("search", "--json", "retry")), [asked.event.id]);
+  assert.deepEqual(ids(await asAgent("search", "--json", "retry", "--in", "carol")), []);
+  assert.deepEqual(await asAgent("read", noteLink(secret.event.id)), { status: 1, out: "", err: "player-two: there is no note with that id that you can see" });
+  assert.equal(z.object({ text: z.string() }).parse(printed(await asAgent("read", "--json", noteLink(asked.event.id)))).text, "@alice/uploader where is the retry?");
+  assert.deepEqual(ids(await asAgent("inbox", "--json")), [asked.event.id]);
+  assert.deepEqual(ids(await asAgent("inbox", "--json", "--after", "0")), [asked.event.id]);
+  const waiting = (ran: Ran): string[] =>
+    z
+      .object({ waiting: z.array(z.object({ event: z.object({ id: z.string() }) })) })
+      .parse(printed(ran))
+      .waiting.map((each) => each.event.id);
+  assert.deepEqual(new Set(waiting(await playerTwo(hub, "alice", ["status", "--json"]))), new Set([asked.event.id, secret.event.id]));
+  assert.deepEqual(waiting(await asAgent("status", "--json")), [asked.event.id]);
+
+  // It signs as the agent, so the hub refuses a message from it, in the chat it reads or any other.
+  for (const to of ["bob", "carol"]) {
+    assert.deepEqual(await asAgent("send", to, "the secret is 42"), { status: 1, out: "", err: "player-two: agents cannot send message: only a person can" });
+  }
+});

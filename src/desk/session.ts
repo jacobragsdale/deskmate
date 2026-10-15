@@ -1561,8 +1561,8 @@ export class Session {
       if (stopped()) {
         throw new AgentCancelledError("stopped"); // While the chat was being told: it ends as stopped, without the agent being started only to be killed.
       }
-      // Under a grant the agent is neither told who it is nor given an MCP server: nothing hands it the owner's chats. It runs as their user all the same, the honest edge.
-      const env = run.grant === null ? agentEnv(this.client.home, this.me, repo) : undefined;
+      // Under a grant the command reads only the request's chat, and there is no MCP server: nothing hands it the owner's other chats. It runs as their user all the same, the honest edge.
+      const env = agentEnv(this.client.home, this.me, repo, run.grant === null ? undefined : chat);
       const text = fitText(await runner.run(prompt, checkout.path, run.mode, handlers, run.cancel.signal, followUp, env));
       if (text === "") {
         ending = "the agent returned nothing";

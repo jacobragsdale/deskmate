@@ -1461,8 +1461,8 @@ await test(
     const answer = await until(asker.session, "the answer", (view) => messages(view).find((message) => message.agent === "uploader"));
     assert.deepEqual(answer.grant, { id: made.id, mode: "full", expires: clock + 3600 });
     await until(bob.session, "its run counted", (view) => view.grants[0]?.runsToday === 1);
-    // Its agent was not told it is bob/uploader, nor that the player-two command looks in bob's chats.
-    assert.deepEqual(told, [{}]);
+    // Its agent was told it is bob/uploader, so the command signs as the agent, and that it reads the chat it was asked in alone; its prompt does not say the command looks in bob's chats.
+    assert.deepEqual(told, [{ PLAYER_TWO_AGENT: "bob/uploader", PLAYER_TWO_AGENT_KEY_FILE: join(owner.home, "agents", "uploader.key"), PLAYER_TWO_ONLY_CHAT: "alice" }]);
     assert.doesNotMatch(bob.ran[0]?.at(-1) ?? "player-two", /player-two/);
 
     // Only his own grant is his to revoke; revoked, or ended, it leaves his list.
