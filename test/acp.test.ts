@@ -19,6 +19,7 @@ import { readContent, SUMMARIES } from "../src/core/kinds.ts";
 import type { Summary } from "../src/core/kinds.ts";
 import type { Agent, PermissionMode } from "../src/core/wire.ts";
 import { acpRunner } from "../src/desk/agents/acp.ts";
+import { permissionTests } from "../src/desk/doctor.ts";
 import { Feed } from "../src/desk/agents/activity.ts";
 import type { FollowUp, PermissionAsk, RunHandlers } from "../src/desk/agents/runner.ts";
 import { AgentCancelledError, AgentTimedOutError } from "../src/desk/client.ts";
@@ -471,6 +472,37 @@ await test(
       message: `${why}. To run it supervised, make an agent spoken to over ACP, such as Cursor or Copilot, the one that answers on the Setup page, or run it with full access`
     });
     await assert.rejects(session.testPermissions("nobody"), { message: "you have no agent nobody" });
+  }
+);
+
+await test(
+  "stopping the desk ends a permission test still going, whether it is greeting the agent or the agent is at work, waits until the agent has gone, and saves nothing",
+  { timeout: 30_000 },
+  async (t) => {
+    const hub = await startHub(t, () => Date.now() / 1000);
+    const bob = await hub.join("bob");
+    const dev = join(hub.dir, "dev-bob");
+    mkdirSync(dev);
+    const dir = folder(t);
+    const pids = join(dir, "pids");
+    const mute: Agent = { id: "mute", label: "Mute", protocol: "acp", command: "sh", args: ["-c", `echo $$ >> '${pids}'; exec sleep 60`] }; // Never says a word of ACP, so greeting it waits.
+    const hooks = { changed: () => undefined, notice: () => undefined, arrived: () => undefined, confirmClone: () => Promise.resolve(false) };
+    // The scripted agent with --deaf is greeted, then works on the test's request with a child of its own, taking no notice of a stop until it is killed two seconds later:
+    // four processes by then, counting the mute one.
+    for (const [agent, count] of [
+      [mute, 1],
+      [fake(`--pids=${pids}`, "--deaf"), 4]
+    ] as const) {
+      bob.saveAgents([agent], agent.id);
+      const session = new Session(bob, dev, hooks, { presence: 1 });
+      session.start();
+      const testing = session.testPermissions(agent.id);
+      await started(dir, count);
+      await session.stop();
+      assert.deepEqual(await left(dir), [], agent.label); // Gone once stop() is done, given a moment for the system to take them away.
+      assert.equal((await testing).status, "fail", agent.label);
+    }
+    assert.deepEqual(permissionTests(bob.home), {});
   }
 );
 

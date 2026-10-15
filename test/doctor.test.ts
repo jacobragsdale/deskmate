@@ -157,8 +157,9 @@ await test(
     const asking = { id: "fake", label: "Fake", protocol: "acp", command: process.execPath, args: [script, "--no-pids"] } as const;
     const careless = { ...asking, id: "careless", label: "Careless", args: [script, "--no-pids", "--no-asking"] };
     client.saveAgents([...client.config.agents, asking, careless], client.config.defaultAgent);
+    const never = new AbortController().signal;
 
-    assert.deepEqual(await testPermissions(home, asking), {
+    assert.deepEqual(await testPermissions(home, asking, never), {
       id: "agent-permissions:fake",
       title: "Fake asks before it writes a file",
       status: "ok",
@@ -166,7 +167,7 @@ await test(
       fix: ""
     });
     const refused = "it wrote edited.txt without asking when tested at version 1.2.3, so it is treated as an agent that cannot be limited, and runs only with full access";
-    assert.deepEqual(await testPermissions(home, careless), { id: "agent-permissions:careless", title: "Careless asks before it writes a file", status: "fail", detail: refused, fix: "" });
+    assert.deepEqual(await testPermissions(home, careless, never), { id: "agent-permissions:careless", title: "Careless asks before it writes a file", status: "fail", detail: refused, fix: "" });
     assert.deepEqual(permissionTests(home), {
       [`${process.execPath} ${script} --no-pids`]: { version: "1.2.3", passed: true, detail: "asked before it wrote a file, and wrote none when refused" },
       [`${process.execPath} ${script} --no-pids --no-asking`]: { version: "1.2.3", passed: false, detail: "wrote edited.txt without asking" }

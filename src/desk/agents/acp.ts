@@ -388,10 +388,18 @@ interface Kept {
 /**
  * For the setup check: start an agent over ACP, agree a protocol, and open a session with no MCP server in an empty folder of its own, all within `seconds`, then end it.
  * Resolves with the agent's version, "" when it does not say; rejects with why not, in the agent's own words where it gave them, and with SignInNeeded when it needs signing in.
+ * Aborting `stop`, as a desk that is stopping does, ends the agent at once.
  */
-export async function greet(agent: Agent, seconds: number): Promise<string> {
+export async function greet(agent: Agent, seconds: number, stop: AbortSignal): Promise<string> {
   const dir = mkdtempSync(join(tmpdir(), "player-two-check-"));
   const conversation = new Conversation(agent, dir);
+  const end = (): void => {
+    conversation.end().catch(() => undefined); // It cannot fail: it waits for the process to go.
+  };
+  stop.addEventListener("abort", end, { once: true });
+  if (stop.aborted) {
+    end();
+  }
   let timer: NodeJS.Timeout | undefined;
   const late = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
@@ -402,6 +410,7 @@ export async function greet(agent: Agent, seconds: number): Promise<string> {
     await Promise.race([conversation.open(dir, true), late]);
     return conversation.version;
   } finally {
+    stop.removeEventListener("abort", end);
     clearTimeout(timer);
     await conversation.end();
     rmSync(dir, { recursive: true, force: true });

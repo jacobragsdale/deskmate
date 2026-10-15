@@ -255,10 +255,10 @@ function agent(home: string, config: Config): Outcome {
     : ok(`${program} is ${where}`);
 }
 
-/** Whether an agent over ACP starts and speaks the protocol, and its version, null when it does not; or why not, with the command that signs in when that is why. */
-async function agentAcp(agent: Agent): Promise<{ readonly outcome: Outcome; readonly version: string | null }> {
+/** Whether an agent over ACP starts and speaks the protocol, and its version, null when it does not; or why not, with the command that signs in when that is why. Aborting `stop` ends the agent at once. */
+async function agentAcp(agent: Agent, stop: AbortSignal): Promise<{ readonly outcome: Outcome; readonly version: string | null }> {
   try {
-    const version = await greet(agent, ACP_TIMEOUT);
+    const version = await greet(agent, ACP_TIMEOUT, stop);
     return { outcome: ok(`${agent.label} answers over ACP${version === "" ? "" : `, version ${version}`}`), version };
   } catch (error) {
     const install = findProgram(agent.command, process.env["PATH"] ?? "") === null ? (INSTALL.get(agent.command) ?? "") : "";
@@ -296,13 +296,14 @@ function permissionsRow(agent: Agent, tested: Tested, now: string | null): Check
 
 /**
  * The permission test, run only when the user asks, since it costs a model call: in a new git folder, ask an agent over ACP for a file under `supervised`, refuse whatever it asks,
- * and pass when it asked and wrote nothing. The result is saved in `home` with the agent's version; an agent that fails is held to no mode from then on. One that could not be asked saves nothing.
+ * and pass when it asked and wrote nothing. The result is saved in `home` with the agent's version; an agent that fails is held to no mode from then on. One that could not be asked saves nothing,
+ * nor does one stopped by aborting `stop`, as a desk that is stopping does, which ends the agent.
  */
-export async function testPermissions(home: string, agent: Agent): Promise<Check> {
+export async function testPermissions(home: string, agent: Agent, stop: AbortSignal): Promise<Check> {
   const unasked = (error: unknown): Check => ({ id: `agent-permissions:${agent.id}`, title: `${agent.label} asks before it writes a file`, ...fail(`it could not be asked: ${problemOf(error)}`) });
   let version: string;
   try {
-    version = await greet(agent, ACP_TIMEOUT);
+    version = await greet(agent, ACP_TIMEOUT, stop);
   } catch (error) {
     return unasked(error);
   }
@@ -319,13 +320,13 @@ export async function testPermissions(home: string, agent: Agent): Promise<Check
     };
     let failed: unknown = null; // Not timed by `attempt`: a model's answer may take longer than any check, and the runner has a limit of its own.
     try {
-      await acpRunner(agent, { limit: PERMISSIONS_TIMEOUT, idle: 0 }).run(PERMISSIONS_PROMPT, dir, "supervised", handlers, new AbortController().signal);
+      await acpRunner(agent, { limit: PERMISSIONS_TIMEOUT, idle: 0 }).run(PERMISSIONS_PROMPT, dir, "supervised", handlers, stop);
     } catch (error) {
       failed = error;
     }
     const wrote = readdirSync(dir).filter((name) => name !== ".git");
-    if (failed !== null && asked === 0 && wrote.length === 0) {
-      return unasked(failed); // It says nothing either way.
+    if (failed !== null && (stop.aborted || (asked === 0 && wrote.length === 0))) {
+      return unasked(failed); // It says nothing either way, or was stopped before it could.
     }
     const passed = asked > 0 && wrote.length === 0;
     const detail = passed
@@ -349,9 +350,9 @@ function either(found: Found<Outcome>): Outcome {
 /**
  * Check what Player Two needs here, in order: Node, the identity in `home`, the hub and the way to it, the clocks, the repos under `dev`, git, the agent, and each agent over ACP and how it did
  * in the permission test, which runs only when asked for.
- * A check that needs what an earlier one could not find is skipped and says why. Nothing here throws, and nothing waits for long.
+ * A check that needs what an earlier one could not find is skipped and says why. Nothing here throws, and nothing waits for long. Aborting `stop` ends every agent it started.
  */
-export async function runChecks(home: string, dev: string): Promise<Check[]> {
+export async function runChecks(home: string, dev: string, stop: AbortSignal = new AbortController().signal): Promise<Check[]> {
   const config = value(await attempt(() => readConfig(home)));
   const client = value(await attempt(() => loadClient(home, http, () => Date.now() / 1000)));
   const reached = await hub(config);
@@ -389,7 +390,7 @@ export async function runChecks(home: string, dev: string): Promise<Check[]> {
         (config?.agents ?? [])
           .filter((each) => each.protocol === "acp")
           .map(async (each): Promise<Check[]> => {
-            const { outcome, version } = await agentAcp(each);
+            const { outcome, version } = await agentAcp(each, stop);
             return [{ id: `agent-acp:${each.id}`, title: `${each.label} starts and speaks ACP`, ...outcome }, permissionsRow(each, permissionTests(home), version)];
           })
       )

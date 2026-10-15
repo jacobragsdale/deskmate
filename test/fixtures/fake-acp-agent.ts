@@ -4,8 +4,8 @@
  * as ACP lets an agent's modes differ in what they ask; `slow` waits until cancelled, with a child process of its own;
  * `deaf` does the same but takes no notice of a cancel; `mcp` says which MCP servers its session has. Whatever it did, it says so in a short message streamed in two chunks,
  * after the number of the turn in its session. Started with --signed-out it says it needs signing in, and signing in fails; with --always-only it offers no way to be allowed just once;
- * with --no-asking it edits without asking first, as an agent that cannot be limited would.
- * It adds its pid, and its child's, to `pids` in its folder, unless started with --no-pids, for a test of what it writes there.
+ * with --no-asking it edits without asking first, as an agent that cannot be limited would; with --deaf every prompt is also `deaf`.
+ * It adds its pid, and its child's, to `pids` in its folder, or to the file --pids=FILE names, unless started with --no-pids, for a test of what it writes there.
  */
 
 import { spawn } from "node:child_process";
@@ -27,9 +27,10 @@ const unasking = new Set<string>(); // Sessions switched to a mode in which they
 const signedOut = process.argv.includes("--signed-out");
 const alwaysOnly = process.argv.includes("--always-only"); // Offers to be allowed only always, never once.
 const noAsking = process.argv.includes("--no-asking");
-const pids = !process.argv.includes("--no-pids");
-if (pids) {
-  appendFileSync("pids", `${String(process.pid)}\n`);
+const deaf = process.argv.includes("--deaf");
+const pids = process.argv.includes("--no-pids") ? null : (process.argv.find((arg) => arg.startsWith("--pids="))?.slice("--pids=".length) ?? "pids"); // From its folder, the session's.
+if (pids !== null) {
+  appendFileSync(pids, `${String(process.pid)}\n`);
 }
 
 /** Ask to do something, as a tool call that waits for the client's answer, and report how it went. Resolves with whether it was allowed. */
@@ -112,7 +113,7 @@ acp
     }
     session.turns += 1;
     const text = params.prompt.map((block) => (block.type === "text" ? block.text : "")).join(" ");
-    const has = (word: string): boolean => new RegExp(`\\b${word}\\b`).test(text);
+    const has = (word: string): boolean => new RegExp(`\\b${word}\\b`).test(text) || (deaf && word === "deaf");
     const did: string[] = [];
     if (has("read")) {
       await client.notify("session/update", { sessionId, update: { sessionUpdate: "tool_call", toolCallId: "read", title: "Read README.md", kind: "read", status: "in_progress" } });
@@ -133,8 +134,8 @@ acp
     }
     if (has("slow") || has("deaf")) {
       const child = spawn("sleep", ["60"], { stdio: "ignore" });
-      if (pids) {
-        appendFileSync(join(session.cwd, "pids"), `${String(child.pid)}\n`);
+      if (pids !== null) {
+        appendFileSync(pids, `${String(child.pid)}\n`);
       }
       if (has("slow")) {
         await new Promise<void>((resolve) => {

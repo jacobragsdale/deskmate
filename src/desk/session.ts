@@ -195,6 +195,7 @@ export class Session {
   private streaming: Promise<void> | null = null; // The hub's stream, followed once what was there before it has been loaded.
   private agentRunner: { readonly which: string; readonly runner: AgentRunner } | null = null; // The runner of the agent that answers, by the agent as configured.
   private tested: Tested; // How each agent did in the permission test, as saved.
+  private readonly testing = new Set<Promise<Check>>(); // Permission tests going on, which stopping ends and waits for.
 
   constructor(client: Client, dev: string, hooks: Hooks, options: Options = {}) {
     this.client = client;
@@ -219,7 +220,7 @@ export class Session {
   }
 
   /**
-   * Stop following the hub, stop every agent still working, end the sessions kept for follow-ups, and throw away every draft not sent, waiting briefly so each agent is gone and the chat has been told how each run ended.
+   * Stop following the hub, stop every agent still working or being tested, end the sessions kept for follow-ups, and throw away every draft not sent, waiting briefly so each agent is gone and the chat has been told how each run ended.
    * A draft is lost with the desk, so its job ends as throwing it away ends it: declined.
    */
   public async stop(): Promise<void> {
@@ -234,7 +235,7 @@ export class Session {
     const settled = new AbortController();
     // Sessions kept for follow-ups are ended now, and a run still going keeps none: its runner is closed.
     const retired = this.retire();
-    await Promise.race([Promise.all([this.following, this.streaming, retired, ...runs.map((run) => run.done), ...declined]), sleep(STOP_WAIT, settled.signal)]);
+    await Promise.race([Promise.all([this.following, this.streaming, retired, ...runs.map((run) => run.done), ...declined, Promise.allSettled(this.testing)]), sleep(STOP_WAIT, settled.signal)]);
     settled.abort(); // Take the timer down with it, so a desk that has stopped is free to exit at once.
   }
 
@@ -1102,16 +1103,21 @@ export class Session {
     return this.runnerFor(agent).cannotHonour(mode);
   }
 
-  /** Run the permission test on one of the user's agents over ACP, and from then on hold it to the modes it passes for. It costs a model call, so it runs only when the user asks. */
+  /** Run the permission test on one of the user's agents over ACP, and from then on hold it to the modes it passes for. It costs a model call, so it runs only when the user asks; stopping the session ends it. */
   public async testPermissions(id: string): Promise<Check> {
     const agent = this.client.config.agents.find((each) => each.id === id);
     if (agent?.protocol !== "acp") {
       throw new PlayerTwoError(agent === undefined ? `you have no agent ${id}` : `${agent.label} runs as a single command and asks nothing: there is nothing to test`);
     }
-    const check = await testPermissions(this.client.home, agent);
-    this.tested = permissionTests(this.client.home);
-    this.hooks.changed();
-    return check;
+    const testing = testPermissions(this.client.home, agent, this.stopping.signal);
+    this.testing.add(testing);
+    try {
+      return await testing;
+    } finally {
+      this.testing.delete(testing);
+      this.tested = permissionTests(this.client.home);
+      this.hooks.changed();
+    }
   }
 
   /**

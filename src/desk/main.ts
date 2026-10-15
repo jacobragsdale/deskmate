@@ -19,6 +19,7 @@ class Desk {
   private readonly asked = new Map<number, (ok: boolean) => void>(); // Questions the user has not answered yet, by id.
   private readonly output: NodeJS.WritableStream;
   private readonly hooks: Hooks;
+  private readonly stopping = new AbortController(); // Aborted once the window has gone, ending the agents a setup check still going has started.
   private session: Session | null = null; // Null until someone has joined a hub from this machine.
   private attentive = true; // What the window last said, kept for a session that starts later.
   private viewQueued = false;
@@ -55,6 +56,7 @@ class Desk {
       this.accept(text);
     }
     this.ended = true;
+    this.stopping.abort();
     await this.session?.stop();
   }
 
@@ -102,7 +104,7 @@ class Desk {
   /** Do what the window asked, and say that it was done. Only three answer with more: the setup check with its list, the permission test with its row, and a search with what it found. */
   private async handle(command: Command): Promise<Extract<Outcome, { readonly ok: true }>> {
     if (command.do === "doctor") {
-      const checks = await runChecks(this.home, defaultDev());
+      const checks = await runChecks(this.home, defaultDev(), this.stopping.signal);
       return { ok: true, data: this.session === null ? checks.filter((check) => WITHOUT_IDENTITY.has(check.id)) : checks }; // Before anyone has joined, nothing that needs an identity is worth showing.
     }
     if (command.do === "join") {
