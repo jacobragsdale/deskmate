@@ -125,6 +125,12 @@ export async function describe(checkout: Checkout): Promise<Head> {
   return { branch: branchOf(checkout.path), commit, dirty: status.stdout.trim() !== "" };
 }
 
+/** The commit a checkout is on, which a run on a clean copy of it starts from; "" when git cannot say, as in a repository with no commits yet. */
+export async function commitOf(path: string): Promise<string> {
+  const head = await git(["-C", path, "rev-parse", "--verify", "--quiet", "HEAD^{commit}"], STATUS_TIMEOUT);
+  return head.ok ? head.stdout.trim() : "";
+}
+
 /** Clone a repo with the user's own git credentials. Rejects with git's last words when it fails. */
 export async function clone(url: string, destination: string): Promise<void> {
   if (!url.startsWith("https://")) {

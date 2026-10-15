@@ -47,6 +47,7 @@ export interface Runs {
   readonly cannot: ChatView["cannot"]; // Why the agent that answers cannot be held to each mode, "" for each it can: the modes a request may be run at.
   readonly untested: boolean; // Whether the agent that answers is spoken to over ACP and its permissions were never tested.
   readonly asking: string; // Why the agent that answers cannot ask other agents in a run, "" when it can.
+  readonly commits: Readonly<Record<string, string>>; // The commit each of the user's checkouts is on, by repo: what a teammate's run above read-only starts a clean copy from.
   readonly show: (run: string, who: string, asked: string) => void; // Open the activity panel on a run, headed with whose agent and what it was asked.
 }
 
@@ -185,6 +186,7 @@ function askingWhy(runs: Runs, delegation: ReplyView["delegation"]): string {
  * One of the user's own agents, ready to run:a button that runs it as the user last ran that asker's requests of that repo, read-only with a review before they ever have,
  * unless the agent that answers cannot be held to that mode; the menu of other ways to run it; a button that declines it; and under them the switch that lets the agent ask others,
  * on at first only for a request of the user's own, as a run of their own tag from the window is let. Another agent's request says before the buttons how it came, in words.
+ * Anyone else's request says where each mode runs: read-only in the checkout, and any other on a clean copy of the commit it is on, `commit`, which leaves out what the user has not committed.
  * A run carries `text`, the request as the user sees it here, so the desk can refuse one edited since.
  */
 function ReadyLine({
@@ -195,6 +197,7 @@ function ReadyLine({
   cannot,
   untested,
   own,
+  commit,
   asking,
   delegation,
   act,
@@ -207,6 +210,7 @@ function ReadyLine({
   readonly cannot: Runs["cannot"];
   readonly untested: boolean;
   readonly own: boolean; // Whether everyone the request runs on the say of is the user.
+  readonly commit: string; // The commit the user's checkout of the repo is on.
   readonly asking: string; // Why the agent cannot ask others in this run, "" when it can.
   readonly delegation: ReplyView["delegation"];
   readonly act: Act;
@@ -258,6 +262,11 @@ function ReadyLine({
         )}
         {children}
       </p>
+      {!own && (
+        <p className="text-xs text-muted-foreground">
+          read-only runs in your checkout; any other mode runs on a clean copy of <Commit commit={commit} />; your uncommitted changes are not included
+        </p>
+      )}
       <AskOthers on={asking === "" && delegate} why={asking} set={setDelegate} />
     </div>
   );
@@ -515,6 +524,7 @@ function RequestLine({
           cannot={runs.cannot}
           untested={runs.untested}
           own={own}
+          commit={runs.commits[repo] ?? ""}
           asking={askingWhy(runs, delegation)}
           delegation={delegation}
           act={act}

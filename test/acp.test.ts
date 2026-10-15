@@ -4,8 +4,9 @@
  */
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
@@ -31,10 +32,11 @@ import { Session } from "../src/desk/session.ts";
 import type { Options } from "../src/desk/session.ts";
 import { runOf } from "../src/shared/ipc.ts";
 import type { ActivityItem, Arrival, Notice, RequestView } from "../src/shared/ipc.ts";
-import { NOW, startHub, TEAM_REPOS } from "./startHub.ts";
+import { checkout as gitCheckout, NOW, ownHome, startHub, TEAM_REPOS } from "./startHub.ts";
 
 const FAKE = join(import.meta.dirname, "fixtures", "fake-acp-agent.ts");
 const never = new AbortController().signal;
+ownHome(); // A teammate's run above read-only goes on a clean copy, under ~/.player-two/worktrees.
 
 function fake(...more: string[]): Agent {
   return { id: "fake", label: "Fake", protocol: "acp", command: process.execPath, args: [FAKE, ...more] };
@@ -403,7 +405,7 @@ await test(
       for (let tries = 0; tries < 200 && session.view().waiting === 0; tries += 1) {
         await delay(50);
       }
-      await session.handle({ do: "run", id, repo: "uploader", post: true, mode: "full", text });
+      await session.handle({ do: "run", id, repo: "uploader", post: true, mode: "read-only", text }); // In the checkout: a run on a clean copy keeps no session.
       for (let tries = 0; tries < 200; tries += 1) {
         const result = (await asker.events({ chat: "#team" })).find((delivered) => delivered.event.kind === "job.result" && delivered.event.refs[0] === id);
         const said = result === undefined ? null : readContent(result.event);
@@ -453,15 +455,12 @@ interface Desk {
 async function bobsDesk(t: TestContext, args: readonly string[] = [], options: Options = {}, now: () => number = () => Date.now() / 1000): Promise<Desk> {
   const hub = await startHub(t, now);
   const [alice, bob] = [await hub.join("alice"), await hub.join("bob")];
-  bob.saveAgents([fake(...args)], "fake");
   for (const person of [alice, bob]) {
     await person.publish("#team", "channel.join", {});
   }
   const dev = join(hub.dir, "dev-bob");
-  const checkout = join(dev, "uploader");
-  mkdirSync(join(checkout, ".git"), { recursive: true });
-  writeFileSync(join(checkout, ".git", "config"), `[remote "origin"]\n\turl = ${TEAM_REPOS}Platform/_git/uploader\n`);
-  writeFileSync(join(checkout, ".git", "HEAD"), "ref: refs/heads/main\n");
+  const checkout = gitCheckout(dev, "uploader");
+  bob.saveAgents([fake(`--pids=${join(checkout, "pids")}`, ...args)], "fake"); // Here, whether it runs in the checkout or on a clean copy.
   const hooks = { changed: () => undefined, notice: () => undefined, arrived: () => undefined, confirmClone: () => Promise.resolve(false) };
   const session = new Session(bob, dev, hooks, { presence: 1, describe: () => Promise.resolve({ branch: "main", commit: "c0ffee".padEnd(40, "0"), dirty: false }), ...options });
   session.start();
@@ -598,14 +597,18 @@ await test("an ask the agent takes back goes from its owner's view while the run
   assert.deepEqual(await left(checkout), []);
 });
 
-await test("a run that ends while its agent still asks takes the ask out of the view, refused", { timeout: 30_000 }, async (t) => {
-  const { session, ask, answer } = await bobsDesk(t);
-  const id = await ask("@bob/uploader leave", "supervised", true);
-  assert.match(await answer(id, true), /left$/);
-  await until("the run is over", () => session.view().current?.running === false);
-  assert.deepEqual(session.view().current?.asks, []);
-  await until("the ask, refused", () => session.view().current?.activity.some((item) => item.kind === "permission" && item.title === "Edit left.txt" && item.outcome === "refused"));
-});
+await test(
+  "a run that ends while its agent still asks takes the ask out of the view; on a clean copy, which keeps no session, its agent ends with it, the ask cancelled",
+  { timeout: 30_000 },
+  async (t) => {
+    const { session, ask, answer } = await bobsDesk(t);
+    const id = await ask("@bob/uploader leave", "supervised", true);
+    assert.match(await answer(id, true), /left$/);
+    await until("the run is over", () => session.view().current?.running === false);
+    assert.deepEqual(session.view().current?.asks, []);
+    await until("the ask, cancelled", () => session.view().current?.activity.some((item) => item.kind === "permission" && item.title === "Edit left.txt" && item.outcome === "cancelled"));
+  }
+);
 
 await test("the chat is told what a run is doing at once, then no sooner than the least time between two tellings, and nothing once the run has ended", { timeout: 30_000 }, async (t) => {
   const { alice, ask, answer } = await bobsDesk(t, [], { progress: 2 });
@@ -618,7 +621,7 @@ await test("the chat is told what a run is doing at once, then no sooner than th
 
 await test("the session keeps the newest 500 items of a run, and the activity of the 20 runs that ended last", { timeout: 60_000 }, async (t) => {
   const { session, ask, answer } = await bobsDesk(t);
-  const first = await ask("@bob/uploader many", "full", true);
+  const first = await ask("@bob/uploader many", "read-only", true); // In the checkout, where a session is kept for the runs that follow.
   assert.match(await answer(first, true), /read many$/);
   const items = await until("the run's end in its feed", () => {
     const kept = session.view().current?.activity ?? [];
@@ -630,7 +633,7 @@ await test("the session keeps the newest 500 items of a run, and the activity of
   const ids = [first];
   for (let index = 0; index < 21; index += 1) {
     await until("the run before is over", () => session.view().current?.running === false);
-    const id = await ask("@bob/uploader read", "full", true, first);
+    const id = await ask("@bob/uploader read", "read-only", true, first);
     await answer(id, true);
     ids.push(id);
   }
@@ -718,7 +721,6 @@ await test(
   async (t) => {
     const hub = await startHub(t, () => Date.now() / 1000);
     const [alice, bob] = [await hub.join("alice"), await hub.join("bob")];
-    bob.saveAgents([fake()], "fake");
     const channels = ["#readonly", "#supervised", "#own", "#stop"];
     for (const person of [alice, bob]) {
       for (const channel of channels) {
@@ -726,10 +728,8 @@ await test(
       }
     }
     const dev = join(hub.dir, "dev-bob");
-    const checkout = join(dev, "uploader");
-    mkdirSync(join(checkout, ".git"), { recursive: true });
-    writeFileSync(join(checkout, ".git", "config"), `[remote "origin"]\n\turl = ${TEAM_REPOS}Platform/_git/uploader\n`);
-    writeFileSync(join(checkout, ".git", "HEAD"), "ref: refs/heads/main\n");
+    const checkout = gitCheckout(dev, "uploader");
+    bob.saveAgents([fake(`--pids=${join(checkout, "pids")}`)], "fake"); // Here, whether it runs in the checkout or on a clean copy.
     const hooks = { changed: () => undefined, notice: () => undefined, arrived: () => undefined, confirmClone: () => Promise.resolve(false) };
     const arrivals: Arrival[] = [];
     const told = {
@@ -789,8 +789,9 @@ await test(
     await owner.handle({ do: "discardDraft", chat: "#readonly", id: readOnly, repo: "uploader" });
 
     // Accepted supervised, the agent's edit waits for bob's answer, in his view and as an arrival for when he is not looking, and the file is written only once he allows it; then so does its command.
-    // Alice sees no ask.
+    // Alice sees no ask. It runs on a clean copy of bob's checkout, which the file is never written to.
     const supervised = await asked("#supervised", "@bob/uploader edit the README, then run the tests", "supervised", true);
+    const copy = join(homedir(), ".player-two", "worktrees", createHash("sha256").update(runOf(supervised, "uploader")).digest("hex").slice(0, 12));
     const ask = await until("bob is asked", () => owner.view().current?.asks[0]);
     /** Bob's view of the supervised run's activity, each item as its kind, title, status and outcome. */
     const steps = (): string[][] =>
@@ -817,11 +818,11 @@ await test(
     const command = await until("bob is asked again", () => owner.view().current?.asks.find((each) => each.id !== ask.id));
     assert.deepEqual(
       { ...command, id: "" },
-      { id: "", run: runOf(supervised, "uploader"), action: "execute", title: "Run npm test", detail: JSON.stringify({ command: "npm test", cwd: checkout }, null, 1) }
+      { id: "", run: runOf(supervised, "uploader"), action: "execute", title: "Run npm test", detail: JSON.stringify({ command: "npm test", cwd: copy }, null, 1) }
     );
     await owner.handle({ do: "permit", ask: command.id, answer: "allow-once" });
     await until("the answer, posted", () => asker.view().current?.messages.some((message) => message.agent === "uploader" && message.body === "turn 1: read; edit allowed; run allowed"));
-    assert.equal(existsSync(edited), true);
+    assert.equal(existsSync(edited), false);
     assert.deepEqual(owner.view().current?.asks, []);
     await until("bob's feed of the run to its end", () => steps().at(-1)?.[1] === "Answered");
     assert.deepEqual(steps(), [
@@ -836,7 +837,6 @@ await test(
     ]);
     const fed = JSON.stringify(owner.view().current?.activity); // Everything the leak check below looks for, bob's own feed has.
     await assert.rejects(owner.handle({ do: "permit", ask: ask.id, answer: "allow-once" }), { message: "your agent is no longer waiting for that answer" });
-    rmSync(edited);
 
     // Bob's own request from his window runs at once, at the mode for his own requests, "auto-edits" when he joined: it edits without asking.
     await owner.handle({ do: "open", chat: "#own" });
@@ -872,7 +872,7 @@ await test(
       progress.every((each, index) => index === 0 || progress[index - 1]?.request !== each.request || progress[index - 1]?.summary !== each.summary),
       said.join(", ")
     ); // Only when it changed.
-    for (const leak of ["README.md", "edited.txt", "npm test", "Started Fake", checkout]) {
+    for (const leak of ["README.md", "edited.txt", "npm test", "Started Fake", copy]) {
       assert.ok(fed.includes(leak), leak);
       assert.deepEqual(
         rows.filter((row) => JSON.stringify(row).includes(leak)),

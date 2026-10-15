@@ -1,7 +1,8 @@
 /** Two people's sessions against the real hub, started in this process: the check that the client and the hub still speak the same protocol, and that each sees what the other does. */
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -28,11 +29,17 @@ import { createHub } from "../src/hub/app.ts";
 import { createServer } from "../src/mcp/server.ts";
 import { commandSchema, runOf } from "../src/shared/ipc.ts";
 import type { Arrival, ChatView, MessageView, Notice } from "../src/shared/ipc.ts";
-import { startHub as hubOfItsOwn, ownMode, storedUnchecked } from "./startHub.ts";
+import { checkout, startHub as hubOfItsOwn, ownHome, ownMode, storedUnchecked } from "./startHub.ts";
 
 const TOKEN = "a-join-token-for-tests";
 const COMMIT = "c0ffee".padEnd(40, "0"); // The commit every checkout here is said to be at.
 const root = mkdtempSync(join(tmpdir(), "player-two-app-"));
+ownHome(); // A teammate's run above read-only goes on a clean copy, under ~/.player-two/worktrees.
+
+/** The commit a checkout is on: what a run on a clean copy of it is accepted as on. */
+function baseOf(path: string): string {
+  return execFileSync("git", ["-C", path, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+}
 
 function pause(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -50,15 +57,6 @@ async function until<T>(session: Session, what: string, find: (view: ChatView) =
     await pause(50);
   }
   throw new Error(`never happened: ${what}\n${JSON.stringify(session.view().current, null, 1)}`);
-}
-
-/** Lay down just enough of a git checkout for the scan to read: its origin and what HEAD points at. */
-function checkout(dev: string, name: string): string {
-  const git = join(dev, name, ".git");
-  mkdirSync(git, { recursive: true });
-  writeFileSync(join(git, "config"), `[remote "origin"]\n\turl = https://dev.azure.com/acme/Platform/_git/${name}\n`);
-  writeFileSync(join(git, "HEAD"), "ref: refs/heads/main\n");
-  return join(dev, name);
 }
 
 interface Person {
@@ -109,7 +107,7 @@ async function person(hub: string, name: string): Promise<Person> {
         if (argv.at(-1)?.endsWith("say nothing") === true) {
           return Promise.resolve(""); // A run that fails: the agent returned nothing.
         }
-        return Promise.resolve(`Retries live in ${cwd.slice(root.length)}/queue.py`);
+        return Promise.resolve(`Retries live in queue.py${cwd.startsWith(root) ? "" : ", on a clean copy"}`); // As the checkout is under the test's folder, and a clean copy under the home folder.
       }
     }
   );
@@ -274,10 +272,10 @@ await test("two people, their agents and a channel, through the real hub", { tim
   jacob.session.attend(true);
   assert.equal(jacob.session.view().unread, 0);
 
-  // Jacob runs it for review: the agent gets the command's own words plus the prompt, in his checkout, and its answer waits as a draft.
+  // Jacob runs it for review: the agent gets the command's own words plus the prompt, on a clean copy of his checkout, and its answer waits as a draft.
   await run(jacob.session, asked.id, false);
   const draft = await until(jacob.session, "the draft is ready", (view) => view.current?.drafts[0]);
-  assert.equal(draft.text, "Retries live in /dev-jacob/uploader/queue.py");
+  assert.equal(draft.text, "Retries live in queue.py, on a clean copy");
   assert.deepEqual(jacob.prompts[0]?.slice(0, 2), ["fake-agent", "--flag"]);
   assert.match(jacob.prompts[0][2] ?? "", /bob, a teammate, tagged you in a direct chat with bob .* jacob will review/);
   await until(bob.session, "bob still sees nothing posted", (view) => messages(view).length === 1);
@@ -294,11 +292,11 @@ await test("two people, their agents and a channel, through the real hub", { tim
       sender: "jacob",
       signer: "jacob", // He reviewed and sent it, so it is his, and the window says nothing of review.
       agent: "uploader",
-      branch: "main ±",
-      commit: COMMIT,
+      branch: "main", // A clean copy has nothing uncommitted.
+      commit: baseOf(join(root, "dev-jacob", "uploader")),
       grant: null,
       trusted: true,
-      body: "Retries live in /dev-jacob/uploader/queue.py (edited)",
+      body: "Retries live in queue.py, on a clean copy (edited)",
       edited: false,
       deleted: false,
       reactions: [],
@@ -355,9 +353,10 @@ await test("two people, their agents and a channel, through the real hub", { tim
   );
   await run(jacob.session, slow.id, false);
   const working = await until(bob.session, "bob sees it working, on the branch it reported", (view) =>
-    messages(view).find((message) => message.requests[0]?.status.kind === "working" && message.requests[0].status.branch === "main ±")
+    messages(view).find((message) => message.requests[0]?.status.kind === "working" && message.requests[0].status.branch === "main")
   );
-  assert.deepEqual(working.requests[0]?.accepted, { branch: "main", commit: COMMIT, dirty: true, mode: "full", delegate: false, grant: null }); // Where its owner let it run, what it may do, and that he let it himself.
+  // Where its owner let it run, what it may do, and that he let it himself: on a clean copy of the commit his checkout is on, without what he has not committed.
+  assert.deepEqual(working.requests[0]?.accepted, { branch: "main", commit: baseOf(join(root, "dev-jacob", "uploader")), dirty: false, mode: "full", delegate: false, grant: null });
   assert.equal(jacob.session.view().busy.working, 1);
   await jacob.session.handle({ do: "stop", id: slow.id, repo: "uploader" });
   await until(bob.session, "bob sees it stopped", (view) => messages(view).some((message) => message.requests[0]?.status.kind === "stopped"));
@@ -858,7 +857,7 @@ await test("a request its asker deletes leaves its owner a run they can still se
   await alice.publish("bob", "message.delete", {}, [slow]);
   await alice.publish("bob", "message.delete", {}, [quick]);
   await until(bob.session, "both deleted", () => shownTo(bob.session, slow)?.deleted === true && shownTo(bob.session, quick)?.deleted === true);
-  assert.deepEqual([kinds(slow), kinds(quick), shownTo(bob.session, slow)?.requests[0]?.accepted?.commit], [["running"], ["drafted"], COMMIT]);
+  assert.deepEqual([kinds(slow), kinds(quick), shownTo(bob.session, slow)?.requests[0]?.accepted?.commit], [["running"], ["drafted"], baseOf(join(dev, "uploader"))]);
   await bob.session.handle({ do: "stop", id: slow, repo: "uploader" });
   await bob.session.handle({ do: "discardDraft", chat: "alice", id: quick, repo: "uploader" });
   await until(bob.session, "nothing left going", (view) => view.busy.working === 0 && view.busy.unsent === 0);
@@ -928,6 +927,11 @@ await test("Esc's stopAll stops every run of the user's in the chat, a request i
     await run(bob.session, id, true);
   }
   await until(bob.session, "all three running", (view) => view.busy.working === 3);
+  // And told to their chats: one stopped before then never started, and its request waits again.
+  const told = async (): Promise<number> => [...(await alice.events({ chat: "bob" })), ...(await carol.events({ chat: "bob" }))].filter(({ event }) => event.kind === "job.accepted").length;
+  for (let tries = 0; tries < 200 && (await told()) < 3; tries += 1) {
+    await pause(50);
+  }
 
   await bob.session.handle({ do: "stopAll", chat: "alice" });
   await until(bob.session, "alice's two stopped", (view) => view.busy.working === 1);
@@ -961,7 +965,7 @@ await test(
 
     const slow = await asked("@bob/uploader take your time");
     await run(bob.session, slow, false);
-    await until(bob.session, "it running", () => shownTo(bob.session, slow)?.requests[0]?.status.kind === "running");
+    await until(bob.session, "it running, as the channel was told", () => shownTo(bob.session, slow)?.requests[0]?.accepted !== null);
     await assert.rejects(leave(), /^Error: your uploader agent is still working in #side: stop it before you leave$/);
     await bob.session.handle({ do: "stopAll", chat: "#side" });
     await until(bob.session, "it stopped", (view) => view.busy.working === 0);

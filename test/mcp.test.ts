@@ -1,7 +1,7 @@
 /** The MCP server, driven over in-memory streams by the SDK's own client, as one person against a hub of the test's own. */
 
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
 import { test } from "node:test";
@@ -23,10 +23,11 @@ import type { Client, Transport } from "../src/desk/client.ts";
 import { Session } from "../src/desk/session.ts";
 import { createServer } from "../src/mcp/server.ts";
 import type { ChatView } from "../src/shared/ipc.ts";
-import { NOW, startHub, storedUnchecked } from "./startHub.ts";
+import { checkout, NOW, ownHome, startHub, storedUnchecked } from "./startHub.ts";
 
 const AT = new Date(NOW * 1000).toISOString();
 const COMMIT = "c0ffee".padEnd(40, "0");
+ownHome(); // A teammate's run above read-only goes on a clean copy, under ~/.player-two/worktrees.
 const resultSchema = z.object({ content: z.array(z.object({ type: z.literal("text"), text: z.string() })), isError: z.boolean().optional() });
 
 function parseJson(text: string): unknown {
@@ -207,14 +208,6 @@ await test("before its first request of the hub the server asks which protocol t
   await call(mcp, "list_agents");
   assert.deepEqual([asked.slice(0, 3), asked.filter((path) => path === "/info").length], [["/info", "/info", "/repos"], 2]);
 });
-
-/** Lay down just enough of a git checkout for the desk's scan to read: its origin and what HEAD points at. */
-function checkout(dev: string, name: string): void {
-  const git = join(dev, name, ".git");
-  mkdirSync(git, { recursive: true });
-  writeFileSync(join(git, "config"), `[remote "origin"]\n\turl = https://dev.azure.com/acme/Platform/_git/${name}\n`);
-  writeFileSync(join(git, "HEAD"), "ref: refs/heads/main\n");
-}
 
 /** Wait until something is true of what a session shows, and return it. */
 async function until<T>(session: Session, what: string, find: (view: ChatView) => T | undefined): Promise<T> {

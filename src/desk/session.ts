@@ -1,5 +1,6 @@
 /** One person's Player Two session: follows the hub, shares their repos, runs their agents when they say so, and keeps what the window shows. No window code. */
 
+import { createHash } from "node:crypto";
 import type { KeyObject } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -32,6 +33,8 @@ import type { Tested } from "./doctor.ts";
 import { atMost } from "./permissions.ts";
 import * as repos from "./repos.ts";
 import type { Checkout, Head } from "./repos.ts";
+import * as worktree from "./worktree.ts";
+import type { Worktree } from "./worktree.ts";
 import { cloneFolder } from "../core/remotes.ts";
 import { oneLine, problemOf } from "../core/text.ts";
 import { commandLineOf, defaultAgentOf, fitText, isAgent, isChannel, MAX_SKEW, MODES, nameSchema, ownerOf, permissionModeSchema, PROTOCOL } from "../core/wire.ts";
@@ -105,6 +108,7 @@ interface AgentRun {
   readonly agent: string; // The label of the agent that runs it.
   readonly grant: string | null; // The id of the grant it runs under; null when its owner let it run themselves.
   readonly delegate: boolean; // Whether its owner let the agent ask other agents in it: never under a grant, and only over ACP.
+  readonly copy: boolean; // Whether it runs on a clean copy of the checkout, a worktree, rather than in it: a teammate's request let do more than read.
   accepting: boolean; // Until the chat is told it runs, or it ends before: a run under a grant counts against its daily limit before the log holds its acceptance.
   readonly cancel: AbortController;
   readonly startedAt: number; // Unix milliseconds.
@@ -234,6 +238,7 @@ export class Session {
   private channels: readonly ChannelInfo[] = [];
   private team: readonly TeamRepo[] = []; // Every repo anyone has checked out.
   private checkouts = new Map<string, Checkout>(); // The user's own, by repo name.
+  private commits = new Map<string, string>(); // The commit each of them is on, by repo name, as of the last scan: what a run on a clean copy starts from.
   private readonly agentKeys = new Map<string, KeyObject>(); // The key of the agent in each of them, by repo name, once everyone has been told it this run.
   private readonly grants = new Map<string, Entry>(); // Every grant to everyone the log holds, by id: one of the user's may let a teammate's request of their agent run without them.
   private readonly revocations = new Map<string, Entry>(); // Every revocation, by id.
@@ -473,7 +478,7 @@ export class Session {
       unread: rows.reduce((sum, row) => sum + row.unread, 0),
       team: this.team,
       myRepos: [...this.checkouts.keys()],
-      checkouts: [...this.checkouts.values()].map(({ remote, branch }) => ({ repo: remote.name, branch, held: this.isHeld(remote.name) })),
+      checkouts: [...this.checkouts.values()].map(({ remote, branch }) => ({ repo: remote.name, branch, held: this.isHeld(remote.name), commit: this.commits.get(remote.name) ?? "" })),
       grants: this.myGrants(now),
       otherChannels: this.channels.filter((channel) => !channel.members.includes(this.me)).map((channel) => ({ name: channel.name, members: channel.members })),
       busy: { working: this.runs.size, unsent: [...this.drafts.values()].reduce((sum, drafts) => sum + drafts.length, 0) },
@@ -867,6 +872,11 @@ export class Session {
     }
     await this.register(shared);
     this.checkouts = new Map(found.map((checkout) => [checkout.remote.name, checkout]));
+    const commits = new Map<string, string>();
+    for (const { remote, path } of found) {
+      commits.set(remote.name, await repos.commitOf(path)); // For the window to say which commit a teammate's run on a clean copy would start from.
+    }
+    this.commits = commits;
     this.hooks.changed();
   }
 
@@ -1566,6 +1576,18 @@ export class Session {
     return checkout;
   }
 
+  /**
+   * Whether everyone a request runs on the say of is the user: a message of theirs, or another agent's request that came from them through agents of theirs alone. Only such a run goes in
+   * the checkout itself at any mode; anyone else's that may do more than read goes on a clean copy of it, so that nobody else's request touches what the user has not committed.
+   */
+  private isOwn(message: Message): boolean {
+    if (message.delegation === null) {
+      return message.entry.event.author === this.me;
+    }
+    const judged = this.judge(message);
+    return judged.ok && judged.people.every((person) => person === this.me);
+  }
+
   /** Refuse a run at `mode` of a request another agent sent, when the log no longer lets it go, or the agents it came through were let do less: whoever lets it run, it never runs above them. */
   private mayGo(message: Message, mode: PermissionMode): void {
     const judged = message.delegation === null ? null : this.judge(message);
@@ -1592,12 +1614,15 @@ export class Session {
     const tools = grant !== null ? "none" : agent.protocol === "acp" ? "mcp" : "command"; // Under a grant nobody reviews what the agent hands its asker from the owner's chats: see `work`.
     const prompt = agentPrompt(message, this.me, repo, this.chats.earlier(message), !post, tools);
     const delegates = delegate && grant === null && agent.protocol === "acp";
+    const copy = mode !== "read-only" && !this.isOwn(message);
     // A reply in a thread from the same asker to the same agent goes on in the session the thread's last such request left open, if one is and it ran at the same mode and delivery:
     // an agent may have made its own session more permissive than another mode allows, and was told who reads its reply; and one the user let go was given Player Two's tools, which a grant's is not.
-    // A run let ask other agents neither goes on in one nor leaves one: its MCP server asks under the request it was started for, which a follow-up is not.
-    const followUp = delegates
-      ? undefined
-      : { key: [message.root ?? message.entry.event.id, message.entry.event.author, repo, mode, post ? "post" : "review", grant === null ? "owner" : "grant"].join(" "), text: message.text };
+    // A run let ask other agents neither goes on in one nor leaves one: its MCP server asks under the request it was started for, which a follow-up is not. Nor does a run on a clean copy,
+    // which is removed when it ends.
+    const followUp =
+      delegates || copy
+        ? undefined
+        : { key: [message.root ?? message.entry.event.id, message.entry.event.author, repo, mode, post ? "post" : "review", grant === null ? "owner" : "grant"].join(" "), text: message.text };
     const run: AgentRun = {
       entry: message.entry,
       repo,
@@ -1606,6 +1631,7 @@ export class Session {
       agent: agent.label,
       grant,
       delegate: delegates,
+      copy,
       accepting: true,
       cancel: new AbortController(),
       startedAt: Date.now(),
@@ -1758,15 +1784,10 @@ export class Session {
     const request = [entry.event.id];
     const stopped = (): boolean => run.cancel.signal.aborted; // Asked afresh each time: the user may stop it while this waits.
     let head: Head;
+    let copy: Worktree | null;
     let hour: NodeJS.Timeout | undefined;
     try {
-      head = await this.describe(checkout);
-      await this.register([checkout]); // The run is given the file its key is in, which may have been replaced since the last beat.
-      await this.testedVersion(run);
-      if (stopped()) {
-        throw new AgentCancelledError(`Stopped your ${repo} agent before it started.`); // While git was asked where the checkout stands: nothing ran, so the chat hears nothing.
-      }
-      await this.accept(key, run, chat, head);
+      ({ head, copy } = await this.begin(key, run, checkout, chat));
       this.noted(key, startedItem(run.agent, run.mode));
       hour = this.hourOf(run);
     } catch (error) {
@@ -1782,7 +1803,7 @@ export class Session {
       if (stopped()) {
         throw new AgentCancelledError("stopped"); // While the chat was being told: it ends as stopped, without the agent being started only to be killed.
       }
-      const text = fitText(await runner.run(prompt, checkout.path, run.mode, handlers, run.cancel.signal, followUp, ...this.toolsOf(run)));
+      const text = fitText(await runner.run(prompt, copy?.path ?? checkout.path, run.mode, handlers, run.cancel.signal, followUp, ...this.toolsOf(run)));
       if (text === "") {
         ending = "the agent returned nothing";
         ended = endedItem("failed", ending);
@@ -1795,6 +1816,7 @@ export class Session {
       ending = error instanceof AgentCancelledError ? "stopped" : problemOf(error);
       ended = endedBy(error);
     }
+    await this.throwAway(copy);
     this.noted(key, ended);
     if (ending === "stopped") {
       await this.agentOf(repo)
@@ -1818,6 +1840,36 @@ export class Session {
     }
     this.runs.delete(key);
     this.hooks.changed();
+  }
+
+  /**
+   * Ask git where the checkout stands, make the clean copy a run on one goes in, and tell the chat the run goes ahead; or reject, leaving no copy behind, when any of that cannot be done,
+   * or the run was stopped meanwhile. A run on a clean copy is accepted as on the commit the copy was made at, with nothing uncommitted.
+   */
+  private async begin(key: string, run: AgentRun, checkout: Checkout, chat: string): Promise<{ readonly head: Head; readonly copy: Worktree | null }> {
+    const found = await this.describe(checkout);
+    // Named for the run, its request and repo, as one request may tag two of the user's agents.
+    const copy = run.copy ? await worktree.open(checkout.path, createHash("sha256").update(key).digest("hex")) : null;
+    const head = copy === null ? found : { branch: found.branch, commit: copy.base, dirty: false };
+    try {
+      await this.register([checkout]); // The run is given the file its key is in, which may have been replaced since the last beat.
+      await this.testedVersion(run);
+      if (run.cancel.signal.aborted) {
+        throw new AgentCancelledError(`Stopped your ${run.repo} agent before it started.`); // While git was asked where the checkout stands: nothing ran, so the chat hears nothing.
+      }
+      await this.accept(key, run, chat, head);
+    } catch (error) {
+      await this.throwAway(copy);
+      throw error;
+    }
+    return { head, copy };
+  }
+
+  /** Remove a run's clean copy once it is done with. Best effort: one left behind is removed when the desk next starts (see `sweep` in worktree.ts). */
+  private async throwAway(copy: Worktree | null): Promise<void> {
+    if (copy !== null) {
+      await worktree.close(copy).catch(() => undefined);
+    }
   }
 
   /**

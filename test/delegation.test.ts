@@ -1,7 +1,7 @@
 /** Delegation: what an agent's request of another agent says, whether an acceptance lets its agent ask others, and whether the log lets a request go to its target. */
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -22,7 +22,7 @@ import type { Client } from "../src/desk/client.ts";
 import { Session } from "../src/desk/session.ts";
 import { createServer } from "../src/mcp/server.ts";
 import type { Notice, ReplyView } from "../src/shared/ipc.ts";
-import { startHub, storedUnchecked, TEAM_REPOS } from "./startHub.ts";
+import { checkout, ownHome, startHub, storedUnchecked } from "./startHub.ts";
 import type { Hub } from "./startHub.ts";
 
 // An agent's MCP server is started as `player-two`, found on the PATH: here, the command from this checkout, in the home of the identity whose agent's key file it is given.
@@ -34,6 +34,7 @@ writeFileSync(
   { mode: 0o755 }
 );
 process.env["PATH"] = `${BIN}:${process.env["PATH"] ?? ""}`;
+ownHome(); // A teammate's run above read-only goes on a clean copy, under ~/.player-two/worktrees.
 process.once("exit", () => {
   rmSync(BIN, { recursive: true, force: true }); // Not in a hook of the tests': one registered among them may run before the next starts.
 });
@@ -303,9 +304,7 @@ async function deskOf(t: TestContext, hub: Hub, name: string, repos: readonly st
   await client.publish("#team", "channel.join", {});
   const dev = join(hub.dir, `dev-${name}`);
   for (const repo of repos) {
-    mkdirSync(join(dev, repo, ".git"), { recursive: true });
-    writeFileSync(join(dev, repo, ".git", "config"), `[remote "origin"]\n\turl = ${TEAM_REPOS}Platform/_git/${repo}\n`);
-    writeFileSync(join(dev, repo, ".git", "HEAD"), "ref: refs/heads/main\n");
+    checkout(dev, repo);
   }
   const notices: Notice[] = [];
   const hooks = {
@@ -626,7 +625,7 @@ await test(
     const fourth = await tree();
     await uploader.publish("#team", "job.withdrawn", { agent: "carol/billing" }, [fourth.child]);
     await stopped(fourth.child, "carol/billing");
-    assert.equal(jacob.session.view().busy.working, 1);
+    assert.equal(jacob.shown(fourth.root)?.requests[0]?.status.kind, "running");
     await jacob.session.handle({ do: "stop", id: fourth.root, repo: "uploader" });
   }
 );

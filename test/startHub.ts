@@ -1,8 +1,9 @@
 /** A hub for one test: the real one, started in the test's own process, on a clock that stands still unless the test brings its own. */
 
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import type { KeyObject } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
@@ -62,6 +63,40 @@ export async function startHub(t: TestContext, now: () => number = () => NOW, do
       server.closeAllConnections();
     }
   };
+}
+
+/**
+ * Give this test process a home folder and a git configuration of its own, before anything reads either: a teammate's run above read-only makes a worktree under ~/.player-two/worktrees,
+ * which must never be the real one, and git commits there as a test identity. Removed as the process exits.
+ */
+export function ownHome(): string {
+  const home = mkdtempSync(join(tmpdir(), "player-two-home-"));
+  const config = join(home, ".gitconfig");
+  writeFileSync(config, "[user]\n\tname = Test\n\temail = test@example.com\n");
+  process.env["HOME"] = home;
+  process.env["GIT_CONFIG_GLOBAL"] = config;
+  process.env["GIT_CONFIG_NOSYSTEM"] = "1";
+  process.once("exit", () => {
+    rmSync(home, { recursive: true, force: true });
+  });
+  return home;
+}
+
+/** A real git checkout of the team's `repo` in `dev`, with one commit and its origin, as a run on a clean copy needs, unless there is one already. Returns its path. */
+export function checkout(dev: string, repo: string): string {
+  const path = join(dev, repo);
+  if (existsSync(join(path, ".git"))) {
+    return path;
+  }
+  mkdirSync(path, { recursive: true });
+  for (const args of [
+    ["init", "-q", "-b", "main"],
+    ["remote", "add", "origin", `${TEAM_REPOS}Platform/_git/${repo}`],
+    ["commit", "-q", "--allow-empty", "-m", "first"]
+  ]) {
+    execFileSync("git", ["-C", path, ...args], { stdio: "ignore" });
+  }
+  return path;
 }
 
 /** Set the mode an identity's own requests of its own agents run at, in its config.json. A one-shot command, such as the one every identity here starts with, runs only at "full". */

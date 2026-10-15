@@ -222,7 +222,8 @@ export const viewSchema = z.discriminatedUnion("kind", [
       team: z.array(teamRepoSchema).readonly(),
       myRepos: z.array(z.string()).readonly(),
       // The user's agents: their checkout of each team repo, with the branch it is on, and whether they hold it back: not shared with the team, and its agent answering nobody.
-      checkouts: z.array(z.strictObject({ repo: z.string(), branch: z.string(), held: z.boolean() }).readonly()).readonly(),
+      // `commit` is the commit it is on, "" when git cannot say: a teammate's request run above read-only runs on a clean copy of it, without what the user has not committed.
+      checkouts: z.array(z.strictObject({ repo: z.string(), branch: z.string(), held: z.boolean(), commit: z.string() }).readonly()).readonly(),
       grants: z.array(grantSchema).readonly(), // The user's grants that stand, first made first.
       otherChannels: z.array(z.strictObject({ name: z.string(), members: z.array(z.string()).readonly() }).readonly()).readonly(), // Channels the user could join.
       busy: z.strictObject({ working: z.int(), unsent: z.int() }).readonly(), // What quitting now would lose: agents at work and drafts not sent. Here so the window can warn without asking first.

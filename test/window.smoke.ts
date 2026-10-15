@@ -676,6 +676,13 @@ await test(
     await page.until("carol in the chat list", `[...document.querySelectorAll("nav button")].some((each) => each.textContent.includes("carol"))`);
     await page.click("nav button", "carol");
     await page.until("carol's request, ready to run", `document.querySelector("main h1")?.textContent === "carol" && ${button("▶ Run read-only")}`);
+    // It says where each mode runs: anything above read-only on a clean copy of the commit her checkout is on.
+    const head = execFileSync("git", ["-C", join(home, "dev", "billing"), "rev-parse", "--short=7", "HEAD"], { encoding: "utf8" }).trim();
+    assert.ok(
+      String(await page.eval(`document.querySelector("main").innerText`)).includes(
+        `read-only runs in your checkout; any other mode runs on a clean copy of ${head}; your uncommitted changes are not included`
+      )
+    );
     await page.click("main button", "▶ Run read-only");
     await page.until("Show activity", button("Show activity"));
     await page.click("main button", "Show activity");
@@ -777,7 +784,7 @@ await test(
     await page.until("what it allows, on focus", `document.querySelector('[role="tooltip"]')?.textContent === "Allow every edit without asking until this run ends"`);
     await page.eval(`${forTheRun}.click()`);
     await page.until("its draft, every edit allowed", `document.querySelector('textarea[aria-label="Draft answer"]')?.value.includes("edit allowed; edit allowed; edit allowed") === true`);
-    rmSync(join(home, "dev", "billing", "edited.txt")); // Written, and taken away for carol's run to write again.
+    assert.ok(!existsSync(join(home, "dev", "billing", "edited.txt"))); // Written on a clean copy of her checkout, never in it.
     await page.click("main button", "Discard");
     await page.until("the draft gone again", `document.querySelector('textarea[aria-label="Draft answer"]') === null`);
 
@@ -812,7 +819,7 @@ await test(
       "plain turn 1: read; edit allowed",
       "plain Answered"
     ]);
-    assert.ok(existsSync(join(home, "dev", "billing", "edited.txt")));
+    assert.ok(!existsSync(join(home, "dev", "billing", "edited.txt")));
     assert.equal(await acceptedAt(carol, "alice"), "supervised");
     const saved = z.object({ choices: z.record(z.string(), z.unknown()) }).parse(JSON.parse(readFileSync(join(home, ".config", "player-two", "app-state.json"), "utf8")));
     assert.deepEqual(saved.choices["carol billing"], { mode: "supervised", post: true, agent: { id: "custom", line: commandLineOf({ command: process.execPath, args: [FAKE, "--no-pids"] }) } });
@@ -985,7 +992,8 @@ await test(
     await carol.publish("alice", "message", { text: "@alice/billing read it under the grant", via: "cli" });
     const answered = `[...document.querySelectorAll("main article")].find((each) => each.innerText.includes("carol: @alice/billing read it under the grant"))`;
     await page.until("carol's request answered", `${answered} !== undefined`);
-    assert.match(String(await page.eval(`${answered}.querySelector("header").innerText`)), /\/billing agent on main ± at [0-9a-f]{7} · ran under your grant, read-only, until .+ · not reviewed\n/);
+    // Her checkout has nothing uncommitted, so no ±: teammates' edits went on clean copies of it.
+    assert.match(String(await page.eval(`${answered}.querySelector("header").innerText`)), /\/billing agent on main at [0-9a-f]{7} · ran under your grant, read-only, until .+ · not reviewed\n/);
     assert.equal(await acceptedAt(carol, "alice"), "read-only");
     // A slow one of hers in #history runs under the grant too: the line under it tells alice, its owner, that it runs under her grant, until she stops it.
     await carol.publish("#history", "message", { text: "@alice/billing slow, under the grant", via: "cli" });
