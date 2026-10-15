@@ -9,6 +9,7 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 
+import { isAgent } from "../../core/wire.ts";
 import { outcomeSchema } from "../../shared/ipc.ts";
 import type { Command as DeskCommand, Hit } from "../../shared/ipc.ts";
 
@@ -190,6 +191,7 @@ export function Search({ chats, onDone }: { readonly chats: readonly string[]; r
                     <span className="block truncate text-xs text-muted-foreground">
                       {hit.sender}
                       {hit.agent === null ? "" : `/${hit.agent} agent`} in {hit.chat}
+                      {isAgent(hit.signer) && <span className="text-warn"> · not reviewed</span>}
                     </span>
                     {/* The pieces of one snippet never reorder, so their position is a stable key. */}
                     <span className="line-clamp-2 wrap-anywhere">

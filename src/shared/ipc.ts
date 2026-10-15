@@ -261,6 +261,7 @@ const hitSchema = z
     id: z.string(),
     chat: z.string(),
     sender: z.string(),
+    signer: z.string(), // Who signed it: for an answer posted with nobody reviewing it, the agent, `owner/repo`, and the window says it was not reviewed.
     agent: z.string().nullable(), // The repo of the agent whose answer it is; null for a message a person typed.
     snippet: z.array(z.strictObject({ text: z.string(), hit: z.boolean() }).readonly()).readonly()
   })

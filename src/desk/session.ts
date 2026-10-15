@@ -32,7 +32,7 @@ import * as repos from "./repos.ts";
 import type { Checkout, Head } from "./repos.ts";
 import { cloneFolder } from "../core/remotes.ts";
 import { oneLine, problemOf } from "../core/text.ts";
-import { commandLineOf, defaultAgentOf, fitText, isChannel, MAX_SKEW, MODES, nameSchema, ownerOf, permissionModeSchema, PROTOCOL } from "../core/wire.ts";
+import { commandLineOf, defaultAgentOf, fitText, isAgent, isChannel, MAX_SKEW, MODES, nameSchema, ownerOf, permissionModeSchema, PROTOCOL } from "../core/wire.ts";
 import type { Agent, ChannelInfo, Delivered, PermissionMode, Person, RepoRef, TeamRepo } from "../core/wire.ts";
 
 const PRESENCE = 25; // Seconds between asking the hub who is here, which channels there are and who has which repo. Each is a signed request, which is what says the user is here; the repo scan runs on the same beat.
@@ -884,7 +884,9 @@ export class Session {
       const text = textOf(entry);
       const tagged = entry.trusted && event.kind === "message" ? mentions(text).filter(([owner]) => owner === this.me) : [];
       const where = isChannel(event.to) ? ` in ${event.to}` : "";
-      const title = tagged[0] === undefined ? `${ownerOf(event.author)}${where}` : `${event.author} tagged your ${tagged[0][1]} agent${where}`;
+      // An answer nobody reviewed says so, as its header does: it is the one its agent signed, `owner/repo`.
+      const unreviewed = isAgent(event.author) ? ` (${event.author.slice(ownerOf(event.author).length + 1)} agent, not reviewed)` : "";
+      const title = tagged[0] === undefined ? `${ownerOf(event.author)}${unreviewed}${where}` : `${event.author} tagged your ${tagged[0][1]} agent${where}`;
       this.hooks.arrived({
         chat: chatOf(event, this.me),
         title,
@@ -1027,7 +1029,7 @@ export class Session {
     for (const { seq, event, snippet } of found) {
       const said = readContent(event);
       if (mayCome(event, said) && (await this.client.isTrusted({ seq, event }))) {
-        hits.push({ id: event.id, chat: chatOf(event, this.me), sender: ownerOf(event.author), agent: said.kind === "job.result" ? said.content.repo : null, snippet });
+        hits.push({ id: event.id, chat: chatOf(event, this.me), sender: ownerOf(event.author), signer: event.author, agent: said.kind === "job.result" ? said.content.repo : null, snippet });
       }
     }
     return hits;

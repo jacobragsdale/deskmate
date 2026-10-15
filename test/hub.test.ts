@@ -316,6 +316,12 @@ await test("two people, their agents and a channel, through the real hub", { tim
   // Jacob tags his own agent from his own window: it runs at once and posts without a draft.
   await jacob.session.handle({ do: "send", chat: "bob", text: "@jacob/uploader and the tests?" });
   await until(bob.session, "the own-tag answer is posted", (view) => messages(view).filter((message) => message.agent === "uploader").length === 2);
+  // Bob is told of both answers, and of this one that nobody reviewed it, as his search says too: its agent signed it.
+  assert.deepEqual(
+    bob.arrivals.flatMap((arrival) => (arrival.body.startsWith("Retries live") ? [arrival.title] : [])),
+    ["jacob", "jacob (uploader agent, not reviewed)"]
+  );
+  assert.deepEqual(new Set((await bob.session.search("retries")).map((hit) => hit.signer)), new Set(["jacob", "jacob/uploader"]));
   assert.match(jacob.prompts[1]?.[2] ?? "", /jacob tagged you in a direct chat with bob .* nobody reviewing it first/);
   assert.match(jacob.prompts[1]?.[2] ?? "", /Earlier messages in this chat/);
 
