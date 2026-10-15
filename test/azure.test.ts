@@ -5,7 +5,7 @@
  */
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -233,6 +233,28 @@ await test("a sign-in page in place of an answer is not being signed in, and a t
     ok: false,
     problem: "no Azure DevOps token: set AZURE_DEVOPS_EXT_PAT, save one on the setup page, or sign in to dev.azure.com with git's credential helper"
   });
+});
+
+await test("calls made together with no credential kept share one search for the token, and a call after it has ended searches again", async (t) => {
+  const dir = isolate(t);
+  const asked = join(dir, "asked"); // A line for each time git's credential helper is asked.
+  const fake = await fakeAzure(t, answer);
+  const azure = new Azure(defaultHome(), fake.base);
+  const uploader = repo("uploader");
+  const twenty = async (): Promise<boolean[]> => (await Promise.all(Array.from({ length: 20 }, () => azure.pullRequest(uploader, 20)))).map((each) => each.ok);
+
+  useHelper(dir, `echo >> '${asked}'\nprintf 'username=jacob@example.com\\npassword=an-expired-token\\n'`);
+  assert.deepEqual(
+    await twenty(),
+    Array.from({ length: 20 }, () => false)
+  );
+  assert.equal(readFileSync(asked, "utf8"), "\n");
+  useHelper(dir, `echo >> '${asked}'\nprintf 'username=jacob@example.com\\npassword=${OAUTH}\\n'`);
+  assert.deepEqual(
+    await twenty(),
+    Array.from({ length: 20 }, () => true)
+  );
+  assert.equal(readFileSync(asked, "utf8"), "\n\n");
 });
 
 await test("a 404 says which repository or pull request was not found, and any other refusal carries Azure's own words", async (t) => {

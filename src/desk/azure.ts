@@ -244,6 +244,7 @@ export class Azure {
   private readonly base: string;
   private readonly limit: number;
   private kept: Credential | null = null; // What got the last call in, used for the rest of the session.
+  private readonly searches = new Map<string, Promise<Token | null>>(); // Each search for a token under way, by the address it is for: calls made meanwhile wait on it.
 
   /** `home` is the identity's folder; `base` is where Azure DevOps is, which only a test changes. */
   constructor(home: string, base = azureBase(), limitSeconds = CALL_LIMIT) {
@@ -313,6 +314,22 @@ export class Azure {
     }
   }
 
+  /**
+   * The token for `url`, from the search for it under way, or from one started now: with no credential kept, a hundred calls at once would otherwise each run `git credential fill`.
+   * Once a search ends it is forgotten, so the next call looks again.
+   */
+  private search(url: string): Promise<Token | null> {
+    const going = this.searches.get(url);
+    if (going !== undefined) {
+      return going;
+    }
+    const started = findToken(this.home, url).finally(() => {
+      this.searches.delete(url);
+    });
+    this.searches.set(url, started);
+    return started;
+  }
+
   /** Make one call with the credential that got in last, or else with the token found, which for one from git is tried once more as a Bearer token. */
   private async call<T>(ref: RepoRef, request: Request, schema: z.ZodType<T>): Promise<Answer<T>> {
     const at = endpointsOf(ref, this.base);
@@ -321,7 +338,7 @@ export class Azure {
     }
     const url = `${request.route(at)}?${new URLSearchParams({ ...request.query, "api-version": API_VERSION }).toString()}`;
     const kept = this.kept;
-    const token = kept === null ? await findToken(this.home, ref.url) : null;
+    const token = kept === null ? await this.search(ref.url) : null;
     const tries = kept === null ? (token === null ? [] : credentials(token)) : [kept];
     for (const credential of tries) {
       const reply = await this.send(url, credential.authorization, request.post);
