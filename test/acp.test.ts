@@ -1098,3 +1098,28 @@ await test(
     assert.equal(await answered(await ask("mcp whoami", first)), "turn 1: servers []; as bob/uploader, reading alice only");
   }
 );
+
+await test(
+  "a run its owner lets ask other agents gives its agent's MCP server --job naming the request it was asked, and its acceptance says so; one not let, as by default, gives the server without it and says not",
+  { timeout: 60_000 },
+  async (t) => {
+    const { alice, session, ask, answer } = await bobsDesk(t);
+    /** The arguments bob's agent's MCP server was started with for the request `id`, and whether its acceptance lets it ask other agents. */
+    const given = async (id: string): Promise<[unknown, boolean | undefined]> => {
+      const [, servers = ""] = /servers (.*)$/.exec(await answer(id, true)) ?? [];
+      const accepted = (await alice.events({ chat: "#team" })).map(({ event }) => (event.refs[0] === id ? readContent(event) : null)).find((said) => said?.kind === "job.accepted");
+      return [z.array(z.object({ args: z.array(z.string()) })).parse(JSON.parse(servers))[0]?.args, accepted?.kind === "job.accepted" ? accepted.content.delegate : undefined];
+    };
+
+    const { id } = (await alice.publish("#team", "message", { text: "@bob/uploader mcp", via: "cli" })).event;
+    await until("bob can run it", () => session.view().current?.messages.some((message) => message.id === id && message.requests[0]?.status.kind === "ready"));
+    await session.handle({ do: "run", id, repo: "uploader", post: true, mode: "read-only", text: "@bob/uploader mcp", delegate: true });
+    assert.deepEqual(await given(id), [["mcp", "--job", id], true]);
+    const plain = await ask("@bob/uploader mcp", "read-only", true);
+    assert.deepEqual(await given(plain), [["mcp"], false]);
+    // Bob's own request, from his window, runs at once and may ask others: each of their owners still decides.
+    await session.handle({ do: "send", chat: "#team", text: "@bob/uploader mcp, mine" });
+    const own = await until("bob's own request", () => session.view().current?.messages.find((message) => message.body === "@bob/uploader mcp, mine"));
+    assert.deepEqual(await given(own.id), [["mcp", "--job", own.id], true]);
+  }
+);

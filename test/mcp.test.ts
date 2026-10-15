@@ -33,10 +33,10 @@ function parseJson(text: string): unknown {
   return JSON.parse(text);
 }
 
-/** An MCP client connected to the server running as `as`, started with --allow-send or without. */
-async function connect(t: TestContext, as: Client, allowSend = false): Promise<McpClient> {
+/** An MCP client connected to the server running as `as`, started with --allow-send or without, and with --job naming `job` when given. */
+async function connect(t: TestContext, as: Client, allowSend = false, job: string | null = null): Promise<McpClient> {
   const [near, far] = InMemoryTransport.createLinkedPair();
-  const server = createServer(as, allowSend);
+  const server = createServer(as, allowSend, job);
   await server.connect(far);
   const client = new McpClient({ name: "test", version: "1" });
   await client.connect(near);
@@ -296,4 +296,70 @@ await test("started in an agent's run, as its MCP server is, it signs as the age
   const refused = resultSchema.parse(await mcp.callTool({ name: "send_message", arguments: { to: "bob", text: "hello from the agent" } }));
   assert.deepEqual([refused.isError, refused.content[0]?.text], [true, "agents cannot send message: only a person can"]);
   assert.equal((await bob.events({ chat: "alice" })).length, 1);
+});
+
+await test("in a run let ask other agents, started with --job, it asks another agent under the request the run was asked, as the agent, first checking what the target's desk will, and waits for the answer", async (t) => {
+  const hub = await startHub(t);
+  const [bob, jacob, carol] = [await hub.join("bob"), await hub.join("jacob"), await hub.join("carol")];
+  await hub.join("dave"); // On the hub, and not in #team.
+  for (const who of [bob, jacob, carol]) {
+    await who.publish("#team", "channel.join", {});
+  }
+  const home = join(hub.dir, "jacob");
+  await jacob.publish("*", "agent.register", { repo: "uploader", pubkey: publicHex(agentKey(home, "uploader")) });
+  const root = await bob.publish("#team", "message", { text: "@jacob/uploader does removing `retries` break anything?", via: "cli" });
+  const accept = (delegate: boolean): Promise<Delivered> =>
+    jacob.publish("#team", "job.accepted", { repo: "uploader", branch: "main", commit: COMMIT, dirty: false, delivery: "post", mode: "auto-edits", delegate, by: "owner" }, [root.event.id]);
+  await accept(true);
+  const agent = loadClient(home, http, () => NOW, agentEnv(home, "jacob", "uploader")) ?? assert.fail();
+  const mcp = await connect(t, agent, false, root.event.id);
+  const asked = async (): Promise<Delivered[]> => (await carol.events({ chat: "#team" })).filter(({ event }) => event.kind === "job.request").reverse();
+  /** The next request carol sees, once there are `count`. */
+  const nth = async (count: number): Promise<Delivered> => {
+    for (let tries = 0; tries < 200; tries += 1) {
+      const found = (await asked())[count - 1];
+      if (found !== undefined) {
+        return found;
+      }
+      await delay(50);
+    }
+    return assert.fail(`no request ${String(count)}`);
+  };
+  const outcomeSchema = z.object({ outcome: z.string(), request: z.string().nullable(), reason: z.string().optional(), answer: z.object({ author: z.string(), text: z.string() }).optional() });
+
+  const tools = (await mcp.listTools()).tools.map((tool) => tool.name);
+  assert.ok(tools.includes("ask_agent") && tools.includes("read_chat"));
+  assert.ok(!tools.includes("send_message") && !tools.includes("withdraw")); // No other sending tool.
+
+  // Answered: carol sees jacob's agent's request, under bob's, and answers it.
+  const answering = call(mcp, "ask_agent", { agent: "carol/billing", text: "does it break your caller?", wait_seconds: 20 });
+  const first = await nth(1);
+  assert.deepEqual(
+    [first.event.author, first.event.to, first.event.refs, readContent(first.event)],
+    ["jacob/uploader", "#team", [root.event.id, root.event.id], { kind: "job.request", content: { target: "carol/billing", text: "does it break your caller?", chain: ["jacob/uploader"] } }]
+  );
+  await carol.publish("#team", "job.accepted", { repo: "billing", branch: "main", commit: COMMIT, dirty: false, delivery: "review", mode: "read-only", by: "owner" }, [first.event.id]);
+  await carol.publish("#team", "job.result", { repo: "billing", branch: "main", text: "no: nothing passes it", reviewed: true }, [first.event.id]);
+  const answered = outcomeSchema.parse(await answering);
+  assert.deepEqual([answered.outcome, answered.request, answered.answer?.author, answered.answer?.text], ["answered", noteLink(first.event.id), "carol", "no: nothing passes it"]);
+
+  // Declined by its owner, saying why; and asked for a second only, it times out.
+  const declining = call(mcp, "ask_agent", { agent: "carol/billing", text: "and the tests?", wait_seconds: 20 });
+  const second = await nth(2);
+  await carol.publish("#team", "job.declined", { repo: "billing", reason: "not today" }, [second.event.id]);
+  assert.deepEqual(outcomeSchema.parse(await declining), { outcome: "declined", request: noteLink(second.event.id), reason: "not today" });
+  const third = outcomeSchema.parse(await call(mcp, "ask_agent", { agent: "carol/billing", text: "anyone?", wait_seconds: 1 }));
+  assert.deepEqual(third, { outcome: "timed out", request: noteLink((await nth(3)).event.id) });
+
+  // Refused, with why, before anything is sent: itself, an agent whose owner cannot see #team, and once jacob's latest acceptance does not let it ask.
+  const refused = async (target: string): Promise<unknown> => call(mcp, "ask_agent", { agent: target, text: "and you?" });
+  assert.deepEqual(await refused("jacob/uploader"), { outcome: "declined", request: null, reason: "jacob/uploader is already in its chain" });
+  assert.deepEqual(await refused("dave/api"), { outcome: "declined", request: null, reason: "dave is not in #team, so their agents cannot be asked there" });
+  await accept(false);
+  assert.deepEqual(await refused("bob/client"), { outcome: "declined", request: null, reason: "jacob/uploader was not let ask other agents" });
+  assert.equal((await asked()).length, 3);
+
+  // Only an agent's run is started with --job, and it sends nothing else.
+  assert.throws(() => createServer(jacob, false, root.event.id), /^Error: --job is for an agent's run/);
+  assert.throws(() => createServer(agent, true, root.event.id), /--job and --allow-send do not go together/);
 });

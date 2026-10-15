@@ -39,9 +39,10 @@ const CANCELLED: acp.RequestPermissionResponse = { outcome: { outcome: "cancelle
 /**
  * Player Two's own MCP server, attached to every session: found on the PATH by name, as the `player-two` an agent is told about in its prompt is,
  * and without --allow-send, so the agent can read and search the chat as the user and send nothing. It is given the run's `env` as the agent is, so it signs as the agent too.
+ * In a run let ask other agents it is started with --job naming the request the run was asked, and then may ask another agent under it, and send nothing else.
  */
-function mcpServer(env: Readonly<Record<string, string>>): acp.McpServerStdio {
-  return { name: "player-two", command: "player-two", args: ["mcp"], env: Object.entries(env).map(([name, value]) => ({ name, value })) };
+function mcpServer(env: Readonly<Record<string, string>>, job: string | undefined): acp.McpServerStdio {
+  return { name: "player-two", command: "player-two", args: job === undefined ? ["mcp"] : ["mcp", "--job", job], env: Object.entries(env).map(([name, value]) => ({ name, value })) };
 }
 
 // What the agent answers is parsed for the parts used here; anything more it says is passed over.
@@ -189,15 +190,17 @@ class Conversation {
   public version = ""; // The agent's own version, as it says when the protocol is agreed; "" when it does not.
   private readonly agent: Agent;
   private readonly env: Readonly<Record<string, string>> | undefined; // Added to the agent's environment, and the MCP server's; with none, or one naming the only chat it reads, as under a grant, it has no MCP server.
+  private readonly job: string | undefined; // The request a run let ask other agents was asked, which its MCP server is started with.
   private readonly child: ChildProcessByStdio<Writable, Readable, Readable>;
   private readonly connection: acp.ClientConnection;
   private readonly failed: Promise<never>; // Rejects, with why, when the process goes or never starts.
   private said = ""; // The end of what the agent has written on standard error.
   private sessionId = "";
 
-  constructor(agent: Agent, cwd: string, env?: Readonly<Record<string, string>>) {
+  constructor(agent: Agent, cwd: string, env?: Readonly<Record<string, string>>, job?: string) {
     this.agent = agent;
     this.env = env;
+    this.job = job;
     this.child = spawn(agent.command, agent.args, { cwd, env: { ...process.env, ...env }, stdio: ["pipe", "pipe", "pipe"], detached: true });
     this.child.stdin.on("error", () => undefined); // Writing to an agent that has gone: the process's own end says why.
     this.child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
@@ -246,7 +249,7 @@ class Conversation {
       throw new PlayerTwoError(`${this.agent.label} speaks version ${String(initialized.protocolVersion)} of ACP, and Player Two version ${String(acp.PROTOCOL_VERSION)}`);
     }
     this.version = initialized.agentInfo?.version ?? "";
-    const session = { cwd, mcpServers: looking || this.env === undefined || ONLY_CHAT_VAR in this.env ? [] : [mcpServer(this.env)] };
+    const session = { cwd, mcpServers: looking || this.env === undefined || ONLY_CHAT_VAR in this.env ? [] : [mcpServer(this.env, this.job)] };
     let opened: unknown;
     try {
       opened = await this.ask(this.connection.agent.request("session/new", session));
@@ -461,9 +464,9 @@ export function acpRunner(agent: Agent, seconds: { readonly limit: number; reado
   };
   return {
     cannotHonour: () => "",
-    run: async (prompt, cwd, mode, handlers, cancel, followUp, env) => {
-      const reused = take(followUp, cwd); // Its key names the repo, which is what `env` says of the agent, so a session kept is one started with the same.
-      const conversation = reused ?? new Conversation(agent, cwd, env);
+    run: async (prompt, cwd, mode, handlers, cancel, followUp, env, job) => {
+      const reused = take(followUp, cwd); // Its key names the repo, which is what `env` says of the agent, so a session kept is one started with the same. A run with a `job` is not followed up.
+      const conversation = reused ?? new Conversation(agent, cwd, env, job);
       const late = new AbortController();
       const clock = new Clock(seconds.limit, () => {
         late.abort();

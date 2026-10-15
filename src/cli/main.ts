@@ -43,6 +43,7 @@ const USAGE = `usage: player-two COMMAND
   hub verify                            check that no event in the log in PLAYER_TWO_DB was changed or taken out since it was stored
   desk                                  run your side with no window, for the window to start: it speaks JSON lines on standard input and output
   mcp [--allow-send]                    run the MCP server, for an agent's editor to start: the chat as tools, over standard input and output; --allow-send adds sending, asking and withdrawing
+                                        (the desk starts it with --job ID in a run let ask other agents)
   doctor                                check what Player Two needs on this machine, and say how to fix what is missing
 
 send, inbox, who, repos, channel, search, read, ask, status and doctor take --json, and then print one JSON value and nothing else.
@@ -449,12 +450,16 @@ async function repos(joined: () => Client, args: string[], out: (line: string) =
   show(out, json, team, lines.length === 0 ? "nobody has shared a repo yet; repos under ~/dev are shared once the window has run" : lines.join("\n"));
 }
 
-/** Serve the chat to an agent's editor over MCP until it closes standard input: to read, and with --allow-send to send and ask as well. */
+/** Serve the chat to an agent's editor over MCP until it closes standard input: to read, and with --allow-send to send and ask as well; or in an agent's run let ask others, with --job, to ask other agents under the request it names. */
 async function mcp(joined: () => Client, args: string[]): Promise<void> {
-  const allowSend = parseArgs({ args, options: { "allow-send": { type: "boolean", default: false } } }).values["allow-send"];
-  const client = joined();
+  const { values } = parseArgs({ args, options: { "allow-send": { type: "boolean", default: false }, job: { type: "string" } } });
+  const job = values.job ?? null;
+  if (job !== null && !/^[0-9a-f]{64}$/.test(job)) {
+    throw new UsageError("--job names a request by its event's id, 64 hex characters");
+  }
+  const server = createServer(joined(), values["allow-send"], job);
   globalThis.console = new console.Console(process.stderr); // Standard output carries the protocol's messages and nothing else, as for the desk.
-  await createServer(client, allowSend).connect(new StdioServerTransport());
+  await server.connect(new StdioServerTransport());
 }
 
 /** The commands that act as the person who joined from here, by name. */

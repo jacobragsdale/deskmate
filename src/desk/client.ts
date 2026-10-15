@@ -223,9 +223,18 @@ export class Client {
 
   /** Sign an event and hand it to the hub. Its id is known once it is signed; resolves with the event and the place the hub gave it. */
   public async publish<K extends Content["kind"]>(to: string, kind: K, content: ContentOf<K>, refs: readonly string[] = []): Promise<Delivered> {
+    return this.post(this.sign(to, kind, content, refs));
+  }
+
+  /** Sign an event without sending it, as `publish` does, for what is to be judged before it goes. */
+  public sign<K extends Content["kind"]>(to: string, kind: K, content: ContentOf<K>, refs: readonly string[] = []): Event {
     const ts = Math.floor(this.now());
     const said = contentSchema.parse({ kind, content, ts }); // What is signed is what this version reads the kind as, at the time it is signed with, so every reader of the kind can read it.
-    const event = signEvent(this.key, { author: this.signer, to, kind, content: JSON.stringify(said.content), ts, refs });
+    return signEvent(this.key, { author: this.signer, to, kind, content: JSON.stringify(said.content), ts, refs });
+  }
+
+  /** Hand an event this client signed to the hub; resolves with it and the place the hub gave it. */
+  public async post(event: Event): Promise<Delivered> {
     const { seq } = receiptSchema.parse(parseJson(await this.call("POST", "/events", JSON.stringify(event))));
     return { seq, event };
   }

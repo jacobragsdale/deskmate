@@ -221,7 +221,8 @@ export const commandSchema = z.discriminatedUnion("do", [
   z.strictObject({ do: z.literal("sendDraft"), chat, id, repo, text: z.string().min(1) }),
   z.strictObject({ do: z.literal("discardDraft"), chat, id, repo }),
   // `mode` is what the agent may do without asking, and the run never goes beyond it. `text` is the request as the user was shown it: an edit since then refuses the run.
-  z.strictObject({ do: z.literal("run"), id, repo, post: z.boolean(), mode: permissionModeSchema, text: z.string() }),
+  // `delegate` lets the agent ask other agents in this run, each of whose owners still decides; absent is no. An agent run as a one-shot command cannot.
+  z.strictObject({ do: z.literal("run"), id, repo, post: z.boolean(), mode: permissionModeSchema, text: z.string(), delegate: z.boolean().optional() }),
   z.strictObject({ do: z.literal("stop"), id, repo }),
   z.strictObject({ do: z.literal("permit"), ask: z.string().max(40), answer: z.enum(["allow-once", "allow-run", "refuse"]) }), // The user's answer to an ask in the view.
   z.strictObject({ do: z.literal("stopAll"), chat }), // Stop every agent of the user's at work on a request in this chat, in a thread or not.

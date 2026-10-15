@@ -100,6 +100,7 @@ interface AgentRun {
   readonly mode: PermissionMode; // What the agent may do without asking, as job.accepted says.
   readonly agent: string; // The label of the agent that runs it.
   readonly grant: string | null; // The id of the grant it runs under; null when its owner let it run themselves.
+  readonly delegate: boolean; // Whether its owner let the agent ask other agents in it: never under a grant, and only over ACP.
   accepting: boolean; // Until the chat is told it runs, or it ends before: a run under a grant counts against its daily limit before the log holds its acceptance.
   readonly cancel: AbortController;
   readonly startedAt: number; // Unix milliseconds.
@@ -352,7 +353,7 @@ export class Session {
         await this.discardDraft(command.chat, command.id, command.repo);
         break;
       case "run":
-        this.runRequest(command.id, command.repo, command.post, command.mode, command.text);
+        this.runRequest(command.id, command.repo, command.post, command.mode, command.text, command.delegate ?? false);
         break;
       case "stop":
         this.runs.get(runOf(command.id, command.repo))?.cancel.abort();
@@ -960,7 +961,7 @@ export class Session {
         const mode = this.ownMode();
         const why = this.cannotRun(mode);
         if (why === "") {
-          this.startRun(message, request.repo, true, mode, null);
+          this.startRun(message, request.repo, true, mode, null, true); // The user's own request may ask other agents, each of whose owners still decides.
         } else {
           const config = joinPath(this.client.home, "config.json");
           const body = `${why}. To let your own requests run it, make an agent spoken to over ACP, such as Cursor or Copilot, the one that answers on the Setup page, or set "ownMode" to "full" in ${config}`;
@@ -1079,13 +1080,13 @@ export class Session {
    * Run the user's agent on a request at `mode`, with its text as it stands now; which must be what the user was shown, `seen`, when they said to run it, or the agent would be given something they never saw.
    * The mode is the user's choice each time: a teammate's request is offered read-only first, and then as the user last ran that asker's requests of that repo (see `offerFor`).
    */
-  private runRequest(request: string, repo: string, post: boolean, mode: PermissionMode, seen: string): void {
+  private runRequest(request: string, repo: string, post: boolean, mode: PermissionMode, seen: string, delegate: boolean): void {
     const message = this.chats.message(request);
     if (message !== null && this.chats.requests(message, this.client.now()).some((each) => each.owner === this.me && each.repo === repo && each.state !== "withdrawn")) {
       if (message.text !== seen) {
         throw new PlayerTwoError(`${message.entry.event.author} edited the request after you saw it: read it again before you run it`);
       }
-      this.startRun(message, repo, post, mode, null);
+      this.startRun(message, repo, post, mode, null, delegate);
       const agent = defaultAgentOf(this.client.config);
       this.choices[`${message.entry.event.author} ${repo}`] = { mode, post, agent: { id: agent.id, line: commandLineOf(agent) } };
       this.save();
@@ -1261,7 +1262,7 @@ export class Session {
           continue;
         }
         try {
-          this.startRun(message, repo, grant.delivery === "post", grant.mode, grant.id);
+          this.startRun(message, repo, grant.delivery === "post", grant.mode, grant.id, false); // Nobody watches a run under a grant ask other agents in the owner's name.
         } catch (error) {
           this.hooks.notice({ title: `your ${repo} agent did not run ${event.author}'s request under your grant`, body: problemOf(error), severity: "error" });
         }
@@ -1359,15 +1360,11 @@ export class Session {
   }
 
   /**
-   * Start a run at `mode`, by the user's own say or under the grant `grant` names, unless the agent that answers cannot be held to it: then refuse it, before anything is told to the chat,
-   * saying which setting would let it run.
+   * The checkout a run of the user's agent in `repo` at `mode` goes in, by their own say or under the grant `grant` names; or why it cannot run: there is none, it is held back,
+   * or the agent that answers cannot be held to the mode, saying which setting would let it run.
    */
-  private startRun(message: Message, repo: string, post: boolean, mode: PermissionMode, grant: string | null): void {
+  private runnable(repo: string, mode: PermissionMode, grant: string | null): Checkout {
     const checkout = this.checkouts.get(repo);
-    const key = runOf(message.entry.event.id, repo);
-    if (this.runs.has(key)) {
-      return;
-    }
     if (checkout === undefined) {
       throw new PlayerTwoError(`there is no checkout of ${repo} under ${this.dev}`);
     }
@@ -1383,14 +1380,29 @@ export class Session {
     if (grant !== null && mode !== "full" && agent.protocol === "acp" && this.tested[commandLineOf(agent)]?.passed !== true) {
       throw new PlayerTwoError(`${agent.label}'s permissions have not been tested, so nothing shows it keeps to ${mode} with nobody watching. Run Test permissions on the Setup page`);
     }
+    return checkout;
+  }
+
+  /**
+   * Start a run at `mode`, by the user's own say or under the grant `grant` names, unless it cannot run (see `runnable`): then refuse it, before anything is told to the chat.
+   * With `delegate` the agent may ask other agents in it, when its owner let it go and it is spoken to over ACP, whose MCP server is the way it asks.
+   */
+  private startRun(message: Message, repo: string, post: boolean, mode: PermissionMode, grant: string | null, delegate: boolean): void {
+    const key = runOf(message.entry.event.id, repo);
+    if (this.runs.has(key)) {
+      return;
+    }
+    const checkout = this.runnable(repo, mode, grant);
+    const agent = defaultAgentOf(this.client.config);
     const tools = grant !== null ? "none" : agent.protocol === "acp" ? "mcp" : "command"; // Under a grant nobody reviews what the agent hands its asker from the owner's chats: see `work`.
     const prompt = agentPrompt(message, this.me, repo, this.chats.earlier(message), !post, tools);
+    const delegates = delegate && grant === null && agent.protocol === "acp";
     // A reply in a thread from the same asker to the same agent goes on in the session the thread's last such request left open, if one is and it ran at the same mode and delivery:
     // an agent may have made its own session more permissive than another mode allows, and was told who reads its reply; and one the user let go was given Player Two's tools, which a grant's is not.
-    const followUp = {
-      key: [message.root ?? message.entry.event.id, message.entry.event.author, repo, mode, post ? "post" : "review", grant === null ? "owner" : "grant"].join(" "),
-      text: message.text
-    };
+    // A run let ask other agents neither goes on in one nor leaves one: its MCP server asks under the request it was started for, which a follow-up is not.
+    const followUp = delegates
+      ? undefined
+      : { key: [message.root ?? message.entry.event.id, message.entry.event.author, repo, mode, post ? "post" : "review", grant === null ? "owner" : "grant"].join(" "), text: message.text };
     const run: AgentRun = {
       entry: message.entry,
       repo,
@@ -1398,6 +1410,7 @@ export class Session {
       mode,
       agent: agent.label,
       grant,
+      delegate: delegates,
       accepting: true,
       cancel: new AbortController(),
       startedAt: Date.now(),
@@ -1529,7 +1542,7 @@ export class Session {
    * Tell the chat the user let the agent run, on which branch and commit, then run it and see its answer to where it belongs. Never rejects: every way a run can end is told to the user.
    * Nothing runs until the chat has been told: when that cannot be published, the agent does not start. Once it has, the chat hears one ending: the answer (now, or when the draft is sent, or a decline when it is thrown away), a failure, or a stop.
    */
-  private async work(key: string, run: AgentRun, checkout: Checkout, runner: AgentRunner, prompt: string, followUp: FollowUp): Promise<void> {
+  private async work(key: string, run: AgentRun, checkout: Checkout, runner: AgentRunner, prompt: string, followUp: FollowUp | undefined): Promise<void> {
     const { entry, repo } = run;
     const chat = chatOf(entry.event, this.me);
     const handlers: RunHandlers = {
@@ -1563,9 +1576,7 @@ export class Session {
       if (stopped()) {
         throw new AgentCancelledError("stopped"); // While the chat was being told: it ends as stopped, without the agent being started only to be killed.
       }
-      // Under a grant the command reads only the request's chat, and there is no MCP server: nothing hands it the owner's other chats. It runs as their user all the same, the honest edge.
-      const env = agentEnv(this.client.home, this.me, repo, run.grant === null ? undefined : chat);
-      const text = fitText(await runner.run(prompt, checkout.path, run.mode, handlers, run.cancel.signal, followUp, env));
+      const text = fitText(await runner.run(prompt, checkout.path, run.mode, handlers, run.cancel.signal, followUp, ...this.toolsOf(run)));
       if (text === "") {
         ending = "the agent returned nothing";
         ended = endedItem("failed", ending);
@@ -1602,6 +1613,15 @@ export class Session {
   }
 
   /**
+   * What a run's agent is told of who it is, and the request its MCP server asks other agents under when it may. Under a grant the command reads only the request's chat,
+   * and there is no MCP server: nothing hands it the owner's other chats, and nothing asks other agents in their name with nobody watching. It runs as their user all the same, the honest edge.
+   */
+  private toolsOf(run: AgentRun): [Readonly<Record<string, string>>, string | undefined] {
+    const chat = run.grant === null ? undefined : chatOf(run.entry.event, this.me);
+    return [agentEnv(this.client.home, this.me, run.repo, chat), run.delegate ? run.entry.event.id : undefined];
+  }
+
+  /**
    * Under a grant below full, an agent over ACP must be the version that passed its permission test, when the test recorded one, as an update may have changed whether it asks.
    * It is asked by starting it, as the setup check does, which costs no model call; a stopping desk ends it.
    */
@@ -1619,10 +1639,14 @@ export class Session {
     }
   }
 
-  /** Tell the chat a run goes ahead: on which branch and commit, at which mode and delivery, and who let it, its owner or a grant of theirs, which then counts it from the log. */
+  /**
+   * Tell the chat a run goes ahead: on which branch and commit, at which mode and delivery, whether its agent may ask other agents, and who let it, its owner or a grant of theirs,
+   * which then counts it from the log.
+   */
   private async accept(key: string, run: AgentRun, chat: string, head: Head): Promise<void> {
     const by = run.grant === null ? "owner" : { grant: run.grant };
-    const accepted = await this.client.publish(chat, "job.accepted", { repo: run.repo, ...head, delivery: run.post ? "post" : "review", mode: run.mode, by }, [run.entry.event.id]);
+    const content: ContentOf<"job.accepted"> = { repo: run.repo, ...head, delivery: run.post ? "post" : "review", mode: run.mode, delegate: run.delegate, by };
+    const accepted = await this.client.publish(chat, "job.accepted", content, [run.entry.event.id]);
     this.keep([{ ...accepted, trusted: true }]);
     const going = this.runs.get(key); // The same run: counted from the log from now on, and no longer as one the log does not hold.
     if (going !== undefined) {

@@ -5,7 +5,9 @@
 
 import { ChatLog, chatOf, mayCome } from "../core/chat.ts";
 import type { Entry, Message, Request, Row, State } from "../core/chat.ts";
-import { fitText, NAME, ownerOf, REPO_NAME } from "../core/wire.ts";
+import { checkRequest } from "../core/delegation.ts";
+import { readContent } from "../core/kinds.ts";
+import { fitText, isChannel, NAME, ownerOf, REPO_NAME } from "../core/wire.ts";
 import type { Delivered } from "../core/wire.ts";
 import type { Client } from "./client.ts";
 
@@ -100,6 +102,7 @@ export interface Asked {
   readonly sent: Delivered; // The request.
   readonly state: State;
   readonly answer: Message | null; // The agent's answer, when it is answered.
+  readonly reason: string; // Why its owner declined it, when they said; "" otherwise.
 }
 
 /**
@@ -107,11 +110,17 @@ export interface Asked {
  * It is a message like any other, so the tag waits for the agent's owner to act on it, or runs under a grant of theirs that names whoever asks; one the owner sends this way waits for them all the same: only a message typed in their own window runs at once.
  */
 export async function ask(client: Client, agent: Agent, chat: string, text: string, via: "cli" | "mcp", seconds: number): Promise<Asked> {
+  const sent = await client.publish(chat, "message", { text: fitText(`@${agent.owner}/${agent.repo} ${text}`), via });
+  return waitFor(client, sent, chat, agent, seconds);
+}
+
+/** Wait up to `seconds` for the job `agent` was asked by `sent`, in `chat`, to end, from what the hub stores after it. */
+async function waitFor(client: Client, sent: Delivered, chat: string, agent: Agent, seconds: number): Promise<Asked> {
   const { owner, repo } = agent;
   const me = client.config.name;
-  const sent = await client.publish(chat, "message", { text: fitText(`@${owner}/${repo} ${text}`), via });
   const log = new ChatLog(me);
-  log.add([{ ...sent, trusted: true }]);
+  const seen: Entry[] = [{ ...sent, trusted: true }];
+  log.add(seen);
   const where = (): State => {
     const request = log.message(sent.event.id);
     return (request === null ? [] : log.requests(request, client.now())).find((job) => job.owner === owner && job.repo === repo)?.state ?? "waiting";
@@ -123,12 +132,12 @@ export async function ask(client: Client, agent: Agent, chat: string, text: stri
   await client.stream(
     sent.seq,
     async (batch) => {
-      log.add(
-        await trust(
-          client,
-          batch.filter((delivered) => chatOf(delivered.event, me) === chat)
-        )
+      const entries = await trust(
+        client,
+        batch.filter((delivered) => chatOf(delivered.event, me) === chat)
       );
+      seen.push(...entries);
+      log.add(entries);
       if (FINAL.has(where())) {
         stop.abort();
       }
@@ -139,5 +148,59 @@ export async function ask(client: Client, agent: Agent, chat: string, text: stri
   const state = where();
   // The answer that settled it: once a job is answered nothing moves it again, so it is the newest from the owner's agent to this request.
   const answer = state === "answered" ? messagesIn(log, chat).findLast((each) => each.answers === sent.event.id && each.agent === repo && ownerOf(each.entry.event.author) === owner) : undefined;
-  return { sent, state, answer: answer ?? null };
+  const declined = seen.findLast(({ trusted, event }) => trusted && event.author === owner && event.kind === "job.declined" && event.refs[0] === sent.event.id);
+  const said = declined === undefined ? null : readContent(declined.event);
+  return { sent, state, answer: answer ?? null, reason: state === "declined" && said?.kind === "job.declined" ? said.content.reason : "" };
+}
+
+/** Where a run's agent may ask another from: the root request, the chat it is in, and the agents its request came through, the asking agent last. */
+interface Under {
+  readonly root: Delivered;
+  readonly chat: string;
+  readonly chain: readonly string[];
+}
+
+/** Where the agent `me` may ask another from in its run on the request `job`: one whose signature holds, a person's message or a request of `me`; or why not. */
+async function under(client: Client, job: string, me: string): Promise<Under | string> {
+  const found = await client.event(job);
+  const said = found === null ? null : readContent(found.event);
+  if (found === null || said === null || !mayCome(found.event, said) || !(await client.isTrusted(found))) {
+    return "the request this run was asked is not one you can see";
+  }
+  const chat = chatOf(found.event, client.config.name);
+  if (said.kind === "message") {
+    return { root: found, chat, chain: [me] };
+  }
+  const root = said.kind === "job.request" && said.content.target === me ? await client.event(found.event.refs[0] ?? "") : null;
+  return said.kind === "job.request" && root !== null ? { root, chat, chain: [...said.content.chain, me] } : `this run was not asked by a message or a request of ${me}`;
+}
+
+/** Why `owner`'s agent cannot be asked in `chat`, as its owner could not see the request there; null when it can. */
+async function unseen(client: Client, chat: string, owner: string): Promise<string | null> {
+  if (!isChannel(chat)) {
+    return owner === chat || owner === client.config.name ? null : `${owner}'s agents cannot be asked in the direct chat between ${client.config.name} and ${chat}, which ${owner} cannot see`;
+  }
+  const members = (await client.channels()).find((channel) => channel.name === chat)?.members ?? [];
+  return members.includes(owner) ? null : `${owner} is not in ${chat}, so their agents cannot be asked there`;
+}
+
+/**
+ * Ask `target`, another agent, "owner/repo", as the agent this client signs as, in its run on the request `job`: a job.request in that request's chat, naming the root, the request,
+ * and the agents it came through, after which this waits as `ask` does. It is refused, with why, before anything is sent, when its target's owner could not see it there, or the log
+ * shows it may not go (src/core/delegation.ts), which its target's desk judges again.
+ */
+export async function askUnder(client: Client, job: string, target: string, text: string, seconds: number): Promise<Asked | { readonly refused: string }> {
+  const from = await under(client, job, client.signer);
+  const [owner = "", repo = ""] = target.split("/");
+  const hidden = typeof from === "string" ? from : await unseen(client, from.chat, owner);
+  if (typeof from === "string" || hidden !== null) {
+    return { refused: hidden ?? "" };
+  }
+  const event = client.sign(from.chat, "job.request", { target, text, chain: from.chain }, [from.root.event.id, job]);
+  const request = { seq: Number.MAX_SAFE_INTEGER, event, trusted: true };
+  const verdict = checkRequest([...(await chatFrom(client, from.chat, from.root.seq)), request], request);
+  if (!verdict.ok) {
+    return { refused: verdict.reason };
+  }
+  return waitFor(client, await client.post(event), from.chat, { owner, repo }, seconds);
 }

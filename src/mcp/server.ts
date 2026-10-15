@@ -1,7 +1,7 @@
 /**
  * The MCP server, `player-two mcp`: the chat as tools for an agent in its owner's editor, which starts it and talks to it over standard input and output.
  * It runs as the person who joined from this machine, with their key, and talks to the hub as the command does; in an agent's run, attached to it over ACP, it signs as that agent and reads as its owner.
- * Reading only, unless started with --allow-send.
+ * Reading only, unless started with --allow-send; or, in a run its owner let ask other agents, with --job naming the request it was asked, reading and asking other agents under it.
  */
 
 import { readFileSync } from "node:fs";
@@ -16,10 +16,11 @@ import type { Entry, Message } from "../core/chat.ts";
 import { readContent } from "../core/kinds.ts";
 import { noteLink, noteOf } from "../core/links.ts";
 import { VERSION } from "../core/version.ts";
-import { addressSchema, channelSchema, fitText, ownerOf } from "../core/wire.ts";
+import { addressSchema, channelSchema, fitText, isAgent, ownerOf } from "../core/wire.ts";
 import { PlayerTwoError } from "../desk/client.ts";
 import type { Client } from "../desk/client.ts";
-import { agentOf, ask, chatFrom, glance, readNote, trust } from "../desk/notes.ts";
+import { agentOf, ask, askUnder, chatFrom, glance, readNote, trust } from "../desk/notes.ts";
+import type { Asked } from "../desk/notes.ts";
 
 const PAGE = 20; // Events `read_chat` and `search` give when not told how many.
 const WAIT = 900; // Most seconds `ask_agent` waits for an answer, and how long when not told: as `player-two ask`.
@@ -103,6 +104,43 @@ async function readChat(client: Client, chat: string, before: number | undefined
   return { notes, before: page.length === limit ? oldest : null };
 }
 
+/** How an ask ended, as a tool hands it over: the answer, or which of declined (with why, when its owner said why), failed, stopped, withdrawn or timed out happened, with the request's link. */
+function outcome(asked: Asked, me: string): CallToolResult {
+  const request = noteLink(asked.sent.event.id);
+  if (asked.answer !== null) {
+    return data({ outcome: "answered", request, answer: noted(asked.answer.entry, me, asked.answer) });
+  }
+  if (asked.state === "declined" && asked.reason !== "") {
+    return data({ outcome: "declined", request, reason: asked.reason });
+  }
+  return data({ outcome: asked.state === "waiting" || asked.state === "working" ? "timed out" : asked.state, request });
+}
+
+/**
+ * The one tool that speaks in a run its owner let ask other agents, started with --job naming the request the run was asked: ask another agent under it, as the agent, and wait for its answer.
+ * Nothing else is sent: no message, and no tag, which counts only in a message a person wrote.
+ */
+function askingTool(server: McpServer, client: Client, job: string): void {
+  const me = client.config.name;
+  server.registerTool(
+    "ask_agent",
+    {
+      description: told(
+        `Ask another agent, person/repo, a question about its repo, for the request you are working on: it runs only once its owner lets it, at no more than you may do, and its answer is posted in the chat for everyone there to read. Waits up to \`wait_seconds\` (${String(WAIT)} when not given) for it to end. Returns its answer, or which of declined (with why), failed, stopped, withdrawn or timed out happened.`
+      ),
+      inputSchema: z.strictObject({ agent: agentArg, text: z.string().min(1), wait_seconds: z.number().min(0).max(WAIT).optional() })
+    },
+    async ({ agent, text, wait_seconds: seconds = WAIT }) => {
+      const body = fitText(text.trim());
+      if (body === "") {
+        throw new PlayerTwoError("there is nothing to ask");
+      }
+      const asked = await askUnder(client, job, `${agent.owner}/${agent.repo}`, body, seconds);
+      return "refused" in asked ? data({ outcome: "declined", request: null, reason: asked.refused }) : outcome(asked, me);
+    }
+  );
+}
+
 /** The tools that speak for the person: send a message, ask an agent and wait for its answer, and withdraw a request they made. */
 function sendingTools(server: McpServer, client: Client): void {
   const me = client.config.name;
@@ -133,14 +171,7 @@ function sendingTools(server: McpServer, client: Client): void {
       ),
       inputSchema: z.strictObject({ agent: agentArg, text: z.string().min(1), chat: channelSchema.describe("A channel, with its #").optional(), wait_seconds: z.number().min(0).max(WAIT).optional() })
     },
-    async ({ agent, text, chat, wait_seconds: seconds = WAIT }) => {
-      const asked = await ask(client, agent, chat ?? agent.owner, text, "mcp", seconds);
-      const request = noteLink(asked.sent.event.id);
-      if (asked.answer !== null) {
-        return data({ outcome: "answered", request, answer: noted(asked.answer.entry, me, asked.answer) });
-      }
-      return data({ outcome: asked.state === "waiting" || asked.state === "working" ? "timed out" : asked.state, request });
-    }
+    async ({ agent, text, chat, wait_seconds: seconds = WAIT }) => outcome(await ask(client, agent, chat ?? agent.owner, text, "mcp", seconds), me)
   );
 
   server.registerTool(
@@ -158,8 +189,16 @@ function sendingTools(server: McpServer, client: Client): void {
   );
 }
 
-/** The server for one person: the reading tools, and with `allowSend` the ones that speak for them. Its first request of the hub is preceded by asking which protocol the hub speaks. */
-export function createServer(person: Client, allowSend: boolean): McpServer {
+/**
+ * The server for one person: the reading tools, and with `allowSend` the ones that speak for them; or, for one of their agents in a run let ask others, with `job` the request it was asked,
+ * the reading tools and asking another agent under it. Its first request of the hub is preceded by asking which protocol the hub speaks.
+ */
+export function createServer(person: Client, allowSend: boolean, job: string | null = null): McpServer {
+  if (job !== null && (allowSend || !isAgent(person.signer))) {
+    throw new PlayerTwoError(
+      allowSend ? "--job and --allow-send do not go together: a run let ask other agents sends nothing else" : "--job is for an agent's run, which names the agent in PLAYER_TWO_AGENT"
+    );
+  }
   const client = person.greeting();
   const me = client.config.name;
   const server = new McpServer({ name: "player-two", version: VERSION }, { instructions: `Player Two is your team's chat with their coding agents. ${NOT_INSTRUCTIONS}` });
@@ -267,6 +306,9 @@ export function createServer(person: Client, allowSend: boolean): McpServer {
 
   if (allowSend) {
     sendingTools(server, client);
+  }
+  if (job !== null) {
+    askingTool(server, client, job);
   }
   return server;
 }
