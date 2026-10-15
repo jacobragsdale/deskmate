@@ -6,6 +6,7 @@ import { MAX_GRANT } from "../core/kinds.ts";
 import { agentSchema, nameSchema, permissionModeSchema, teamRepoSchema } from "../core/wire.ts";
 
 const deliverySchema = z.enum(["review", "post"]); // Whether an answer waits for its owner to review it, or is posted as soon as it is ready.
+const beforeSchema = z.enum(["", "declined", "failed", "stopped", "interrupted"]); // What happened to a request of the user's agent that it could be run again after.
 
 /** Where one tagged agent stands, already worked out for the reader: `mine` says whether it is their own agent. `id` is the request's. */
 const requestSchema = z
@@ -37,11 +38,13 @@ const requestSchema = z
       // `ceiling` is the most it may run at, which no mode above may be offered: full for a person's request, and for another agent's the least any agent it came through was let do.
       z.strictObject({
         kind: z.literal("ready"),
-        before: z.enum(["", "declined", "failed", "stopped", "interrupted"]),
+        before: beforeSchema,
         canDecline: z.boolean(),
         offer: z.strictObject({ mode: permissionModeSchema, post: z.boolean() }),
         ceiling: permissionModeSchema
       }),
+      // Mine: another agent's request that may no longer go, as when the job that asked it has ended or its root's time is up, which nothing offers to run; `reason` says why.
+      z.strictObject({ kind: z.literal("mayNotGo"), before: beforeSchema, reason: z.string() }),
       z.strictObject({ kind: z.literal("working"), branch: z.string(), summary: z.string() }), // A teammate's at work, and what their desk last said it is doing: one of job.progress's few words, "" before it has said.
       z.strictObject({ kind: z.literal("waiting"), away: z.boolean() }),
       z.strictObject({ kind: z.literal("nobody") }), // Nobody of that name has joined.

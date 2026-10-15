@@ -522,6 +522,15 @@ function RequestLine({
           {activity}
         </ReadyLine>
       );
+    case "mayNotGo":
+      // Nothing to run: the desk would refuse it, so the line says why in place of the buttons.
+      return (
+        <p className={LINE}>
+          ◆ {BEFORE[status.before]}
+          {delegation === null ? who : delegation.words} · it may no longer go: {status.reason}
+          {activity}
+        </p>
+      );
     case "working":
       return <WorkingLine request={request} who={who} whose={whose} summary={status.summary} asker={asker} act={act} />;
     case "waiting":

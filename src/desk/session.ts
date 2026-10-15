@@ -731,7 +731,10 @@ export class Session {
     }
     const before = state === "working" ? "interrupted" : state === "waiting" || state === "answered" ? "" : state;
     const judged = request.message.delegation === null ? null : this.judge(request.message);
-    const ceiling = judged === null ? "full" : judged.ok ? judged.mode : "read-only"; // One the log no longer lets go is refused when run, saying why.
+    if (judged?.ok === false) {
+      return { kind: "mayNotGo", before, reason: judged.reason }; // Refused when run all the same, saying why.
+    }
+    const ceiling = judged === null ? "full" : judged.mode;
     const offer = this.offerFor(event.author, repo);
     return { kind: "ready", before, canDecline: event.author !== this.me && state !== "declined", offer: { ...offer, mode: least(offer.mode, ceiling) }, ceiling };
   }

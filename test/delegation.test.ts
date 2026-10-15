@@ -380,11 +380,12 @@ await test(
     const capped = await offered(await ask(await root(true, "read-only")));
     assert.deepEqual(capped.requests[0]?.status, { kind: "ready", before: "", canDecline: true, offer: { mode: "read-only", post: true }, ceiling: "read-only" });
 
-    // Once jacob's agent has answered, what it asked before may not go: a click on it is refused, saying why.
+    // Once jacob's agent has answered, what it asked before may not go: it is no longer offered, saying why, and a click on it is refused, saying so.
     const late = await ask(first, "carol/api");
     await offered(late);
     await uploader.publish("#team", "job.result", { repo: "uploader", branch: "main", text: "no", reviewed: false }, [first]);
     await eventually("carol sees it answered", () => carol.shown(first)?.requests.length === 0);
+    assert.deepEqual(carol.shown(late)?.requests[0]?.status, { kind: "mayNotGo", before: "", reason: "jacob/uploader is not working on what it was asked" });
     await assert.rejects(run(late, "read-only", "api"), /may not go: jacob\/uploader is not working on what it was asked/);
 
     // A grant for bob alone does not cover a request that came through jacob's agent; one for bob and jacob does, at no more than the chain lets, asking nobody, with no MCP server.
