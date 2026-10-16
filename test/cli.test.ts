@@ -7,6 +7,7 @@ import { once } from "node:events";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { test } from "node:test";
+import type { TestContext } from "node:test";
 
 import { z } from "zod";
 
@@ -382,9 +383,24 @@ await test("with --json a reading command prints one value: messages as the hub 
   assert.deepEqual((await bob.events({ chat: "alice", limit: 1 }))[0], sent);
 });
 
+/** Set environment variables for one test, and put them back as they were after it: doctor sets PATH itself, as the desk does. */
+function environment(t: TestContext, set: Readonly<Record<string, string>>): void {
+  const before = Object.fromEntries(["PATH", ...Object.keys(set)].map((name) => [name, process.env[name]]));
+  Object.assign(process.env, set);
+  t.after(() => {
+    for (const [name, value] of Object.entries(before)) {
+      if (value === undefined) {
+        Reflect.deleteProperty(process.env, name);
+      } else {
+        process.env[name] = value;
+      }
+    }
+  });
+}
+
 await test("doctor prints the setup check as aligned text, or as one JSON array with --json, and exits 1 when a check failed", async (t) => {
   const hub = await startHub(t);
-  process.env["PLAYER_TWO_DEV"] = hub.dir;
+  environment(t, { PLAYER_TWO_DEV: hub.dir });
   const home = join(hub.dir, "alice"); // Nobody has joined from here, so the identity check fails.
 
   const json = await playerTwo(hub, "alice", ["doctor", "--json"]);
@@ -663,6 +679,14 @@ await test("status prints the hub, your name, the repos you share and the reques
       ["bob/uploader", noteLink(fromAlice.event.id), true]
     ]
   );
+});
+
+await test("with PLAYER_TWO_DEV set, repos and status name the folder it moves ~/dev to", async (t) => {
+  const hub = await startHub(t);
+  await hub.join("alice");
+  environment(t, { PLAYER_TWO_DEV: "/srv/alice-dev" });
+  assert.equal((await playerTwo(hub, "alice", ["repos"])).out, "nobody has shared a repo yet; repos under /srv/alice-dev are shared once the window has run");
+  assert.match((await playerTwo(hub, "alice", ["status"])).out, /\nrepos: none yet; repos under \/srv\/alice-dev are shared once the window has run\n/);
 });
 
 await test("ask exits 0 answered, 3 declined, 4 failed, stopped or withdrawn, and 5 with the read command that checks later when nothing final came in time", { timeout: 30_000 }, async (t) => {

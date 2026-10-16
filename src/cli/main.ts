@@ -322,6 +322,12 @@ async function read(joined: () => Client, args: string[], out: (line: string) =>
   show(out, values.json, found, words.join("\n"));
 }
 
+/** Where repos are shared from, as the words say it: ~/dev, or the folder PLAYER_TWO_DEV moves it to. */
+function devFolder(): string {
+  const override = process.env["PLAYER_TWO_DEV"] ?? "";
+  return override === "" ? "~/dev" : override;
+}
+
 /** Print the hub, the user's name, the repos they share, and the requests waiting for their agents in what the window would load of each chat. */
 async function status(joined: () => Client, args: string[], out: (line: string) => void): Promise<void> {
   const { json } = parseArgs({ args, options: { json: { type: "boolean", default: false } } }).values;
@@ -334,7 +340,7 @@ async function status(joined: () => Client, args: string[], out: (line: string) 
   const words = [
     `hub: ${client.config.hub}`,
     `name: ${me}`,
-    `repos: ${mine.length === 0 ? "none yet; repos under ~/dev are shared once the window has run" : mine.map((repo) => `${repo.name} (${repo.branch})`).join(", ")}`,
+    `repos: ${mine.length === 0 ? `none yet; repos under ${devFolder()} are shared once the window has run` : mine.map((repo) => `${repo.name} (${repo.branch})`).join(", ")}`,
     `waiting for your agents: ${waiting.length === 0 ? "nothing" : String(waiting.length)}`,
     ...waiting.map((request) => cited(client, request.message.entry, request.message))
   ];
@@ -548,7 +554,7 @@ async function repos(joined: () => Client, args: string[], out: (line: string) =
   const { json } = parseArgs({ args, options: { json: { type: "boolean", default: false } } }).values;
   const team = await joined().repos();
   const lines = team.map((repo) => `@${repo.user}/${repo.name}  ${repo.branch}`);
-  show(out, json, team, lines.length === 0 ? "nobody has shared a repo yet; repos under ~/dev are shared once the window has run" : lines.join("\n"));
+  show(out, json, team, lines.length === 0 ? `nobody has shared a repo yet; repos under ${devFolder()} are shared once the window has run` : lines.join("\n"));
 }
 
 /** Serve the chat to an agent's editor over MCP until it closes standard input: to read, and with --allow-send to send and ask as well; or in an agent's run let ask others, with --job, to ask other agents under the request it names. */
