@@ -36,6 +36,11 @@ export async function check(path: string, diff: string): Promise<{ readonly conf
     if (!done.ok) {
       throw new Error(`it does not apply to ${path}: ${done.timedOut ? `git gave no answer within ${String(LIMIT)} seconds` : lastWords(done.stderr)}`);
     }
+    // One the checkout holds already, as after Apply, applies again three ways as a change of nothing, which the chat would be told of as applied once more: what undoing it
+    // finds there says so.
+    if ((await git(["-C", path, "apply", "--check", "--reverse"], LIMIT, diff)).ok) {
+      throw new Error(`it is in ${path} already: nothing to apply`);
+    }
     return { conflicts: conflicted(done.stderr) };
   } finally {
     rmSync(folder, { recursive: true, force: true });

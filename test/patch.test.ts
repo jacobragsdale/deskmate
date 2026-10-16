@@ -543,6 +543,24 @@ await test(
 );
 
 await test(
+  "Apply of a patch the checkout holds already, which git would take again three ways as a change of nothing, is refused before asking, and the chat is not told it twice",
+  { timeout: 60_000 },
+  async (t) => {
+    const { jacob, asker, mine, theirs, questions, reply } = await two(t);
+    const diff = "diff --git a/again.txt b/again.txt\nnew file mode 100644\n--- /dev/null\n+++ b/again.txt\n@@ -0,0 +1 @@\n+x\n";
+    const { id } = (await jacob.publish("#team", "patch", { repo: UPLOADER, base: git(mine, "rev-parse", "HEAD").trim(), branch: "main", title: "Add again.txt", diff })).event;
+    const applied = (): number | undefined => asker.view().current?.messages.find((message) => message.id === id)?.patch?.applied.length;
+    await until("bob sees the patch", () => applied() === 0);
+    reply.yes = true;
+    await asker.handle({ do: "applyPatch", id });
+    await until("bob sees it applied", () => applied() === 1);
+
+    await assert.rejects(asker.handle({ do: "applyPatch", id }), { message: `it is in ${theirs} already: nothing to apply` });
+    assert.deepEqual([questions.length, applied()], [1, 1]);
+  }
+);
+
+await test(
   "Apply, and Apply to a new branch, refuse before git is called a patch with a file in a folder the recipient has as a symbolic link git does not track, which git apply would write through",
   { timeout: 60_000 },
   async (t) => {
