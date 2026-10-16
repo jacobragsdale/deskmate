@@ -180,7 +180,8 @@ function sendingTools(server: McpServer, client: Client): void {
     async ({ request, agent }) => {
       const found = await readNote(client, request);
       const job = found?.jobs.find((each) => each.owner === agent.owner && each.repo === agent.repo);
-      if (found?.entry.event.author !== me || job?.state !== "waiting") {
+      // Whoever signs the withdrawal must be who asked, as every reader counts it from them alone: in an agent's run that is the agent, which asked nothing its owner did.
+      if (found?.entry.event.author !== client.signer || job?.state !== "waiting") {
         throw new PlayerTwoError("only a request of yours that is still waiting can be taken back");
       }
       await client.publish(found.chat, "job.withdrawn", { agent: `${agent.owner}/${agent.repo}` }, [request]);

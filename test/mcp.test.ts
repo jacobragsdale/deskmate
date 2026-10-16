@@ -289,6 +289,15 @@ await test("started in an agent's run, as its MCP server is, it signs as the age
   const refused = resultSchema.parse(await mcp.callTool({ name: "send_message", arguments: { to: "bob", text: "hello from the agent" } }));
   assert.deepEqual([refused.isError, refused.content[0]?.text], [true, "agents cannot send message: only a person can"]);
   assert.equal((await bob.events({ chat: "alice" })).length, 1);
+
+  // Nor can it take back its owner's request: every reader counts a withdrawal only from whoever asked, so one signed by the agent would change nothing while saying it had.
+  const owners = await alice.publish("bob", "message", { text: "@bob/billing anyone there?", via: "cli" });
+  const kept = resultSchema.parse(await mcp.callTool({ name: "withdraw", arguments: { request: owners.event.id, agent: "bob/billing" } }));
+  assert.deepEqual([kept.isError, kept.content[0]?.text], [true, "only a request of yours that is still waiting can be taken back"]);
+  assert.deepEqual(
+    (await bob.events({ chat: "alice" })).map(({ event }) => event.kind),
+    ["message", "message"]
+  );
 });
 
 await test("in a run let ask other agents, started with --job, it asks another agent under the request the run was asked, as the agent, first checking what the target's desk will, and waits for the answer", async (t) => {
