@@ -28,9 +28,9 @@ export function Modal({ title, onDismiss, className, children }: { readonly titl
         }
       }}
     >
-      {/* The title says it all, so there is no description to point to. */}
+      {/* The title says it all, so there is no description to point to. In a window too short for it, the dialog scrolls rather than run off the top and the bottom. */}
       <DialogContent
-        className={cn("gap-3 sm:max-w-sm", className)}
+        className={cn("max-h-[calc(100vh-2rem)] gap-3 overflow-y-auto sm:max-w-sm", className)}
         aria-describedby={undefined}
         onCloseAutoFocus={(event) => {
           // A dialog opened by a key has no button to give the focus back to, so it goes back where it was, unless something has taken it since, as a chat opened from the dialog does.

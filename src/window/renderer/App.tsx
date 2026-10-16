@@ -210,16 +210,18 @@ function Chat({ view, act, tell, onSetup, onAgents }: ChatProps): JSX.Element {
               <Composer view={view} current={current} act={act} submit={submit} tell={tell} />
             </>
           )}
-          <footer className="flex justify-between gap-4 border-t px-3 py-1 text-xs whitespace-nowrap text-muted-foreground">
-            <span className="truncate">
+          <footer className="flex flex-wrap justify-between gap-x-4 border-t px-3 py-1 text-xs whitespace-nowrap text-muted-foreground">
+            <span className="min-w-0 flex-1 truncate">
               {view.me} on {view.hub} · {view.agents.find((agent) => agent.id === view.defaultAgent)?.label} · {view.myRepos.length} {view.myRepos.length === 1 ? "repo" : "repos"} in {view.dev}
             </span>
-            <span className={cn("max-w-1/2 flex-none truncate", view.link.state === "down" && "text-destructive")}>
-              {linkLine(view.link)} ·{" "}
+            {/* However narrow the chat, the line beside it gives way first, then the connection's state, and My agents and Setup stay whole, to be clicked, on a line of their own if need be. */}
+            <span className={cn("ml-auto flex min-w-0 items-baseline", view.link.state === "down" && "text-destructive")}>
+              <span className="truncate">{linkLine(view.link)}</span>
+              <span className="flex-none">&nbsp;·&nbsp;</span>
               <Button type="button" variant="link" size="xs" className="h-auto p-0" onClick={onAgents}>
                 My agents
-              </Button>{" "}
-              ·{" "}
+              </Button>
+              <span className="flex-none">&nbsp;·&nbsp;</span>
               <Button type="button" variant="link" size="xs" className="h-auto p-0" onClick={onSetup}>
                 Setup
               </Button>

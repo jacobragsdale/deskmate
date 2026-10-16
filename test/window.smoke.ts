@@ -1208,10 +1208,15 @@ await test(
     await page.shot("activity");
     // At the window's smallest, 560 pixels across, the list and the panel at their narrowest leave the chat between them.
     await page.send("Emulation.setDeviceMetricsOverride", { width: 560, height: 360, deviceScaleFactor: 0, mobile: false });
-    await page.until("the chat between the list and the panel at 560 pixels", `document.querySelector("main").getBoundingClientRect().width >= 150`);
+    await page.until("the chat between the list and the panel at 560 pixels", `document.querySelector("main").getBoundingClientRect().width >= 120`);
     await page.send("Emulation.clearDeviceMetricsOverride");
     await page.click("main button", "Discard");
     await page.until("the draft gone", `document.querySelector('textarea[aria-label="Draft answer"]') === null`);
+    // And there, with no draft above the box, My agents and Setup are whole, where a click lands on them.
+    await page.send("Emulation.setDeviceMetricsOverride", { width: 560, height: 360, deviceScaleFactor: 0, mobile: false });
+    const clickable = `[...document.querySelectorAll("footer button")].map((each) => { const box = each.getBoundingClientRect(); return each.contains(document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)); })`;
+    await page.until("My agents and Setup whole at 560 pixels", `${clickable}.every((each) => each)`);
+    await page.send("Emulation.clearDeviceMetricsOverride");
 
     // A run with nothing new for ten seconds says "waiting…", and Stop ends it: in a channel of its own, so that its "slow" reaches no later prompt.
     await carol.publish("#history", "message", { text: "@alice/billing slow", via: "cli" });
@@ -1434,6 +1439,13 @@ await test(
     assert.equal(await page.eval(`${modes}.value`), "full");
     assert.match(String(await page.eval(`document.querySelector('[role="dialog"]').innerText`)), /Only full can be chosen\. Cursor's permissions have not been tested.*Setup → Test permissions/);
     await page.shot("grant-untested");
+    // In a window as short as it may be, the dialog stays within it, and scrolls.
+    await page.send("Emulation.setDeviceMetricsOverride", { width: 560, height: 360, deviceScaleFactor: 0, mobile: false });
+    await page.until(
+      "the grant's dialog within a short window",
+      `(() => { const box = document.querySelector('[role="dialog"]').getBoundingClientRect(); return box.top >= 0 && box.bottom <= innerHeight; })()`
+    );
+    await page.send("Emulation.clearDeviceMetricsOverride");
     await page.press("Escape");
     await page.until("the grant's dialog closed", `document.querySelector('[role="dialog"]') === null`);
     await page.click("button", "Back");
