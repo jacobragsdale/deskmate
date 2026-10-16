@@ -669,6 +669,14 @@ await test("nobody joins as the hub, whose name it is, or as a workflow, and not
     (await (await hub.join("alice")).users()).map((person) => person.name),
     ["alice"]
   );
+
+  // Nor under a row of users named hub, which only a hand in the database makes: its key signs nothing here either.
+  const made = new DatabaseSync(join(hub.dir, "hub.db"));
+  made.prepare("INSERT INTO users (name, pubkey) VALUES (?, ?)").run(HUB, publicHex(key));
+  made.close();
+  assert.deepEqual(await post(hub, "alice", signed(hub, "hub", "#ops", "channel.join", {}, { key })), [401, "event is not signed by its author"]);
+  assert.deepEqual(await post(hub, "alice", signed(hub, "hub", "alice", "message", { text: "@alice/uploader run", via: "workflow" }, { key })), [401, "event is not signed by its author"]);
+  assert.deepEqual((await refusal(hub, "GET", "/users", { headers: { Authorization: authHeader(key, "hub", NOW, "GET", "/users") } }))[0], 401);
 });
 
 await test("everyone sees which repos each person has and a new list replaces the old", async (t) => {

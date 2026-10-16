@@ -287,6 +287,9 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
 
   /** The key `author` signs with: a person's, from joining; an agent's, "owner/repo", from its owner's newest registration of it. Null when there is none. */
   function keyOf(author: string): string | null {
+    if (author === HUB) {
+      return null; // Nothing posted or asked is the hub's own, whatever key signed it: not even under a row of users named hub, which only a hand in the database can make.
+    }
     const owner = ownerOf(author);
     return isAgent(author) ? db.agentKeyOf(owner, author.slice(owner.length + 1)) : db.pubkeyOf(author);
   }
