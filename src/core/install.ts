@@ -66,6 +66,7 @@ set -eu
 hub=${quote(hub)}
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
+trap 'exit 130' HUP INT TERM # dash, Debian's sh, runs the EXIT trap on exit but not when a signal ends it, which would leave the half-fetched archive behind.
 curl -fsSL "$hub/downloads/wsl-runtime.tar.gz" -o "$tmp/wsl-runtime.tar.gz"
 cd "$tmp"
 ${installScript("wsl-runtime.tar.gz", digest)}

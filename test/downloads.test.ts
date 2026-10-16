@@ -1,7 +1,8 @@
 /** What the hub serves a teammate who has nothing installed yet: the page, the files in its downloads folder, and the script that installs the command on Linux, which is run here for real. */
 
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { get } from "node:http";
 import { tmpdir } from "node:os";
@@ -9,6 +10,7 @@ import { join } from "node:path";
 import { text } from "node:stream/consumers";
 import { test } from "node:test";
 import type { TestContext } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { pack } from "../scripts/build-runtime.ts";
 import { NOW, startHub } from "./startHub.ts";
@@ -162,4 +164,23 @@ await test("curl HUB/install.sh | sh installs the command from the hub, and an a
   rmSync(join(folder, "wsl-runtime.tar.gz.sha256"));
   const none = await ask(hub, "/install.sh");
   assert.deepEqual([none.status, none.body], [404, JSON.stringify({ detail: "wsl-runtime.tar.gz.sha256 is not on this hub, so there is no runtime to install" })]);
+});
+
+await test("an install stopped by Ctrl-C while it downloads leaves no half-fetched archive behind", { timeout: 30_000 }, async (t) => {
+  const { dir, folder } = downloads(t);
+  const hub = await startHub(t, () => NOW, folder);
+  const [tools, temporary, home] = [join(dir, "tools"), join(dir, "tmp"), join(dir, "home")];
+  for (const each of [tools, temporary, home]) {
+    mkdirSync(each);
+  }
+  writeFileSync(join(tools, "curl"), '#!/bin/sh\necho partial > "$4"\nexec sleep 20\n', { mode: 0o755 }); // A download that has its first bytes on disk and never ends.
+  const shell = spawn("sh", ["-c", (await ask(hub, "/install.sh")).body], { env: { HOME: home, PATH: `${tools}:/usr/bin:/bin`, TMPDIR: temporary }, detached: true, stdio: "ignore" });
+  const started = (): boolean => readdirSync(temporary).some((each) => existsSync(join(temporary, each, "wsl-runtime.tar.gz")));
+  while (!started()) {
+    await delay(20);
+  }
+  process.kill(-(shell.pid ?? 0), "SIGINT"); // As Ctrl-C does: to the shell and the download it waits for, its process group.
+  await once(shell, "exit");
+  assert.deepEqual(readdirSync(temporary), []);
+  assert.ok(!existsSync(join(home, ".player-two")));
 });
