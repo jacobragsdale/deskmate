@@ -34,8 +34,11 @@ interface Ran {
   readonly err: string;
 }
 
-/** Run the command as a named person, each with their own home folder, and return how it exited and what it printed. `env` is its environment, as in an agent's run; none when not given. */
-async function playerTwo(hub: Hub, who: string, argv: readonly string[], stdin = "", env: Readonly<Record<string, string>> = {}): Promise<Ran> {
+/**
+ * Run the command as a named person, each with their own home folder, and return how it exited and what it printed. `env` is its environment, as in an agent's run; none when not given.
+ * Aborting `interrupt` is pressing Ctrl-C.
+ */
+async function playerTwo(hub: Hub, who: string, argv: readonly string[], stdin = "", env: Readonly<Record<string, string>> = {}, interrupt?: AbortSignal): Promise<Ran> {
   const out: string[] = [];
   const err: string[] = [];
   const status = await main(argv, {
@@ -44,6 +47,7 @@ async function playerTwo(hub: Hub, who: string, argv: readonly string[], stdin =
     now: () => NOW,
     stdin: Readable.from([stdin]),
     env,
+    ...(interrupt === undefined ? {} : { interrupt }),
     out: (line) => {
       out.push(line);
     },
@@ -752,6 +756,17 @@ await test("ask exits 0 answered, 3 declined, 4 failed, stopped or withdrawn, an
   }
   assert.match((await playerTwo(hub, "alice", tooLong[0] ?? [])).err, /^player-two: --wait takes at most 86400 seconds, a day, not 2147484\n/);
   assert.equal((await bob.events({ chat: "alice", limit: 1 }))[0]?.event.kind, "job.accepted"); // A command line that is wrong sends nothing.
+
+  // Ctrl-C: the wait stops, not the request, which was sent, and the last line says how to look again, with the status a shell gives Ctrl-C.
+  const pressed = new AbortController();
+  const leaving = playerTwo(hub, "alice", ["ask", "@bob/uploader", "hold on", "--wait", "20", "--json"], "", {}, pressed.signal);
+  const eighth = await requestTo(bob, "alice", seventh.seq);
+  pressed.abort();
+  assert.deepEqual(await leaving, {
+    status: 130,
+    out: "null",
+    err: `player-two: stopped waiting: it is waiting for bob to let @bob/uploader run. Check later with:\nplayer-two read ${noteLink(eighth.event.id)}`
+  });
 });
 
 await test("in an agent's run the command signs as the agent: it reads what its owner sees, and sends nothing only a person can", async (t) => {

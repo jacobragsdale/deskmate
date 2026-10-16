@@ -82,6 +82,7 @@ export interface Options {
   readonly now?: () => number; // Unix seconds.
   readonly stdin?: NodeJS.ReadableStream; // Where `send TO -` reads the message from.
   readonly env?: Readonly<Record<string, string | undefined>>; // Where an agent's run says which agent it is (see agentEnv); this process's environment when not given.
+  readonly interrupt?: AbortSignal; // Stops `ask` waiting, as Ctrl-C does, which it listens for as well.
   readonly out?: (line: string) => void;
   readonly err?: (line: string) => void;
 }
@@ -353,8 +354,8 @@ function channelNamed(name: string): string | null {
   return channel.success ? channel.data : null;
 }
 
-/** What came of an ask that was not answered, as the exit status that says so and words that say what to do; null when it was answered. */
-function unanswered(asked: Asked, agent: Agent, seconds: number): Ended | null {
+/** What came of an ask that was not answered, as the exit status that says so and words that say what to do; null when it was answered. `interrupted` is that the user stopped the wait. */
+function unanswered(asked: Asked, agent: Agent, seconds: number, interrupted: boolean): Ended | null {
   const tagged = `@${agent.owner}/${agent.repo}`;
   const link = noteLink(asked.sent.event.id);
   switch (asked.state) {
@@ -369,13 +370,17 @@ function unanswered(asked: Asked, agent: Agent, seconds: number): Ended | null {
     case "working":
     case "waiting": {
       const now = asked.state === "working" ? `${tagged} is working on it` : `it is waiting for ${agent.owner} to let ${tagged} run`;
-      return new Ended(5, `nothing final within ${String(seconds)} seconds: ${now}. Check later with:\nplayer-two read ${link}`);
+      const later = `Check later with:\nplayer-two read ${link}`;
+      return interrupted ? new Ended(130, `stopped waiting: ${now}. ${later}`) : new Ended(5, `nothing final within ${String(seconds)} seconds: ${now}. ${later}`); // 130, as a shell says of Ctrl-C.
     }
   }
 }
 
-/** Ask an agent and wait for that one request to end: print the answer, or end with the exit status that says what happened instead. */
-async function askAgent(joined: () => Client, args: string[], out: (line: string) => void): Promise<void> {
+/**
+ * Ask an agent and wait for that one request to end: print the answer, or end with the exit status that says what happened instead.
+ * Ctrl-C stops the wait, not the request, which was sent: it ends saying how to look again, as running out of time does, since the link is otherwise lost.
+ */
+async function askAgent(joined: () => Client, args: string[], out: (line: string) => void, options: Options): Promise<void> {
   const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { in: { type: "string" }, wait: { type: "string", default: "900" }, json: { type: "boolean", default: false } } });
   const [given = "", ...words] = positionals;
   const agent = agentOf(given);
@@ -387,13 +392,24 @@ async function askAgent(joined: () => Client, args: string[], out: (line: string
   if (channel === null || channel === undefined) {
     throw new UsageError(`--in takes a channel, such as '#backend', not ${values.in ?? ""}`);
   }
-  const asked = await ask(joined(), agent, channel, words.join(" "), "cli", seconds);
+  const pressed = new AbortController();
+  const press = (): void => {
+    pressed.abort();
+  };
+  process.once("SIGINT", press);
+  const interrupt = options.interrupt === undefined ? pressed.signal : AbortSignal.any([pressed.signal, options.interrupt]);
+  let asked: Asked;
+  try {
+    asked = await ask(joined(), agent, channel, words.join(" "), "cli", seconds, interrupt);
+  } finally {
+    process.off("SIGINT", press); // A second Ctrl-C, after this, ends the command as it would any other.
+  }
   if (values.json) {
     out(JSON.stringify(asked.answer?.entry ?? null)); // The answer as the hub delivered it, with whether it is trusted; null when there is none.
   } else if (asked.answer !== null) {
     out(asked.answer.text);
   }
-  const ended = unanswered(asked, agent, seconds);
+  const ended = unanswered(asked, agent, seconds, interrupt.aborted);
   if (ended !== null) {
     throw ended;
   }
@@ -570,6 +586,10 @@ async function mcp(joined: () => Client, args: string[]): Promise<void> {
   const server = createServer(joined(), values["allow-send"], job);
   globalThis.console = new console.Console(process.stderr); // Standard output carries the protocol's messages and nothing else, as for the desk.
   await server.connect(new StdioServerTransport());
+  // The SDK's transport does not notice its client closing standard input. Closed here, the server stops every tool still at work, an ask_agent waiting on the hub among them, and the process ends.
+  process.stdin.once("end", () => {
+    server.close().catch(() => undefined);
+  });
 }
 
 /** The commands that act as the person who joined from here, by name. */

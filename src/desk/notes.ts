@@ -107,16 +107,17 @@ export interface Asked {
 }
 
 /**
- * Ask an agent: publish a message in `chat` that tags it, then wait up to `seconds` for that one job to end. Nothing else said in the chat ends the wait.
+ * Ask an agent: publish a message in `chat` that tags it, then wait up to `seconds` for that one job to end. Nothing else said in the chat ends the wait, but `cancel` does:
+ * whoever asked stopped waiting, by Ctrl-C or an MCP client's cancellation, and is told where the request stands then.
  * It is a message like any other, so the tag waits for the agent's owner to act on it, or runs under a grant of theirs that names whoever asks; one the owner sends this way waits for them all the same: only a message typed in their own window runs at once.
  */
-export async function ask(client: Client, agent: Agent, chat: string, text: string, via: "cli" | "mcp", seconds: number): Promise<Asked> {
+export async function ask(client: Client, agent: Agent, chat: string, text: string, via: "cli" | "mcp", seconds: number, cancel?: AbortSignal): Promise<Asked> {
   const sent = await client.publish(chat, "message", { text: fitText(`@${agent.owner}/${agent.repo} ${text}`), via });
-  return waitFor(client, sent, chat, agent, seconds);
+  return waitFor(client, sent, chat, agent, seconds, cancel);
 }
 
-/** Wait up to `seconds` for the job `agent` was asked by `sent`, in `chat`, to end, from what the hub stores after it. */
-async function waitFor(client: Client, sent: Delivered, chat: string, agent: Agent, seconds: number): Promise<Asked> {
+/** Wait up to `seconds` for the job `agent` was asked by `sent`, in `chat`, to end, from what the hub stores after it; or until `cancel`, when whoever asked stops waiting first. */
+async function waitFor(client: Client, sent: Delivered, chat: string, agent: Agent, seconds: number, cancel?: AbortSignal): Promise<Asked> {
   const { owner, repo } = agent;
   const me = client.config.name;
   const log = new ChatLog(me);
@@ -143,7 +144,7 @@ async function waitFor(client: Client, sent: Delivered, chat: string, agent: Age
         stop.abort();
       }
     },
-    stop.signal
+    cancel === undefined ? stop.signal : AbortSignal.any([stop.signal, cancel]) // Its stream is not left open for nobody: a cancelled wait held one to the hub until its time was up.
   );
   clearTimeout(timer);
   const state = where();
@@ -203,7 +204,7 @@ export function cannotAsk(client: Client, job: string): string | null {
  * and the agents it came through, after which this waits as `ask` does. It is refused, with why, before anything is sent, when the run may not ask under `job` (see `cannotAsk`), its
  * target's owner could not see it there, or the log shows it may not go (src/core/delegation.ts), which its target's desk judges again.
  */
-export async function askUnder(client: Client, job: string, target: string, text: string, seconds: number): Promise<Asked | { readonly refused: string }> {
+export async function askUnder(client: Client, job: string, target: string, text: string, seconds: number, cancel?: AbortSignal): Promise<Asked | { readonly refused: string }> {
   const barred = cannotAsk(client, job);
   if (barred !== null) {
     return { refused: barred };
@@ -220,5 +221,5 @@ export async function askUnder(client: Client, job: string, target: string, text
   if (!verdict.ok) {
     return { refused: verdict.reason };
   }
-  return waitFor(client, await client.post(event), from.chat, { owner, repo }, seconds);
+  return waitFor(client, await client.post(event), from.chat, { owner, repo }, seconds, cancel);
 }

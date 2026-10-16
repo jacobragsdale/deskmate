@@ -130,12 +130,12 @@ function askingTool(server: McpServer, client: Client, job: string): void {
       ),
       inputSchema: z.strictObject({ agent: agentArg, text: z.string().min(1), wait_seconds: z.number().min(0).max(WAIT).optional() })
     },
-    async ({ agent, text, wait_seconds: seconds = WAIT }) => {
+    async ({ agent, text, wait_seconds: seconds = WAIT }, { signal }) => {
       const body = fitText(text.trim());
       if (body === "") {
         throw new PlayerTwoError("there is nothing to ask");
       }
-      const asked = await askUnder(client, job, `${agent.owner}/${agent.repo}`, body, seconds);
+      const asked = await askUnder(client, job, `${agent.owner}/${agent.repo}`, body, seconds, signal); // The client's cancellation, or the server closing, ends the wait.
       return "refused" in asked ? data({ outcome: "declined", request: null, reason: asked.refused }) : outcome(asked, me);
     }
   );
@@ -171,7 +171,7 @@ function sendingTools(server: McpServer, client: Client): void {
       ),
       inputSchema: z.strictObject({ agent: agentArg, text: z.string().min(1), chat: channelSchema.describe("A channel, with its #").optional(), wait_seconds: z.number().min(0).max(WAIT).optional() })
     },
-    async ({ agent, text, chat, wait_seconds: seconds = WAIT }) => outcome(await ask(client, agent, chat ?? agent.owner, text, "mcp", seconds), me)
+    async ({ agent, text, chat, wait_seconds: seconds = WAIT }, { signal }) => outcome(await ask(client, agent, chat ?? agent.owner, text, "mcp", seconds, signal), me) // The client's cancellation, or the server closing, ends the wait.
   );
 
   server.registerTool(
