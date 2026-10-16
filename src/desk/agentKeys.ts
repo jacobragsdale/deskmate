@@ -5,6 +5,7 @@ import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "n
 import { join } from "node:path";
 
 import { loadKey, newKey, privateHex } from "../core/sign.ts";
+import { problemOf } from "../core/text.ts";
 import { repoNameSchema } from "../core/wire.ts";
 
 // What an agent's process is told during a run: which agent it is, "owner/repo", and the file its key is in. The player-two command, and its MCP server, sign as that agent when both are set.
@@ -51,7 +52,12 @@ export function agentKey(home: string, repo: string): KeyObject {
     }
   }
   refuseOpen(file, "the agent's key", "chmod 600");
-  return loadKey(readFileSync(file, "utf8").trim());
+  const text = readFileSync(file, "utf8").trim();
+  try {
+    return loadKey(text);
+  } catch (error) {
+    throw new Error(`${file} cannot be read: ${problemOf(error)}`, { cause: error }); // Which of the agents' keys it is.
+  }
 }
 
 /**

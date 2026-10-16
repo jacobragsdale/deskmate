@@ -909,7 +909,11 @@ await test("a config.json that still names one agent command loads as one one-sh
     { ...now, ownMode: "anything" }
   ]) {
     writeFileSync(file, JSON.stringify(wrong));
-    assert.throws(() => readConfig(home), z.ZodError, JSON.stringify(wrong));
+    assert.throws(
+      () => readConfig(home),
+      (error: unknown) => error instanceof Error && error.message.startsWith(`${file} cannot be read: invalid `) && error.cause instanceof z.ZodError, // Naming the file at fault.
+      JSON.stringify(wrong)
+    );
   }
 });
 

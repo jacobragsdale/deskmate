@@ -1,7 +1,7 @@
 /** The player-two command, run in this process as one person or another against a hub of the test's own. */
 
 import assert from "node:assert/strict";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { test } from "node:test";
@@ -166,6 +166,31 @@ await test("main fails with a nonzero exit before joining", async (t) => {
     assert.deepEqual([ran.status, ran.out], [1, ""], argv.join(" "));
     assert.match(ran.err, /^player-two: not joined yet/);
   }
+});
+
+await test("a damaged file of the identity's fails the command with a message that names the file: config.json, the key, known.json and an agent's key", async (t) => {
+  const hub = await startHub(t);
+  await hub.join("alice");
+  const bob = await hub.join("bob");
+  await bob.publish("alice", "message", { text: "a message whose signature alice checks against known.json", via: "cli" });
+  const home = join(hub.dir, "alice");
+  const kept = (file: string): string => readFileSync(join(home, file), "utf8");
+  for (const [file, damaged, said] of [
+    ["config.json", "{not json", "Expected property name or '}' in JSON at position 1 (line 1 column 2)"],
+    ["config.json", JSON.stringify({ ...JSON.parse(kept("config.json")), agents: [] }), "invalid agents: Too small: expected array to have >=1 items"],
+    ["key", "zz", "the key file does not hold a 32-byte key in hex"],
+    ["known.json", "{bad", "Expected property name or '}' in JSON at position 1 (line 1 column 2)"]
+  ] as const) {
+    const before = kept(file);
+    writeFileSync(join(home, file), damaged);
+    assert.deepEqual(await playerTwo(hub, "alice", ["inbox"]), { status: 1, out: "", err: `player-two: ${join(home, file)} cannot be read: ${said}` }, file);
+    writeFileSync(join(home, file), before);
+  }
+  const agentFile = join(home, "agents", "uploader.key");
+  agentKey(home, "uploader");
+  writeFileSync(agentFile, "zz");
+  assert.throws(() => agentKey(home, "uploader"), { message: `${agentFile} cannot be read: the key file does not hold a 32-byte key in hex` });
+  assert.equal((await playerTwo(hub, "alice", ["inbox"])).status, 0); // Put back, each works again.
 });
 
 await test("before its first request the command asks which protocol the hub speaks, and asks nothing more of one that speaks another than to be updated", async (t) => {

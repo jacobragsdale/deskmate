@@ -12,6 +12,7 @@ import { chatOf, mayCome } from "../core/chat.ts";
 import type { Entry } from "../core/chat.ts";
 import { contentSchema, readContent } from "../core/kinds.ts";
 import type { Content, ContentOf } from "../core/kinds.ts";
+import { problemOf } from "../core/text.ts";
 import { authHeader, eventIsAuthentic, loadKey, newKey, privateHex, publicHex, signEvent } from "../core/sign.ts";
 import {
   authorSchema,
@@ -94,6 +95,16 @@ export class AgentTimedOutError extends PlayerTwoError {}
 
 function parseJson(text: string): unknown {
   return JSON.parse(text);
+}
+
+/** What `read` makes of one of the identity's files, such as config.json, known.json or a key: a failure names the file, so the user knows which one to look at. */
+function fromFile<T>(file: string, read: (text: string) => T): T {
+  const text = readFileSync(file, "utf8"); // Node's own failure names the file already.
+  try {
+    return read(text);
+  } catch (error) {
+    throw new PlayerTwoError(`${file} cannot be read: ${problemOf(error)}`, { cause: error });
+  }
 }
 
 function detailOf(raw: string): string {
@@ -466,7 +477,7 @@ export class Client {
       return eventIsAuthentic(event, this.ownKey);
     }
     const pinFile = joinPath(this.home, "known.json");
-    let pins = existsSync(pinFile) ? pinsSchema.parse(parseJson(readFileSync(pinFile, "utf8"))) : {};
+    let pins = existsSync(pinFile) ? fromFile(pinFile, (text) => pinsSchema.parse(parseJson(text))) : {};
     if (pins[author] === undefined) {
       const fromHub = author === HUB ? await this.hubKey() : Object.fromEntries((await this.users()).filter((user) => user.name !== HUB).map((user) => [user.name, user.pubkey]));
       pins = { ...fromHub, ...pins, [this.config.name]: this.ownKey }; // Keys already pinned win over what the hub says now, and the user's own over both.
@@ -530,11 +541,11 @@ export async function join(home: string, hub: string, name: string, token: strin
   if (!existsSync(keyFile)) {
     writeFileSync(keyFile, privateHex(newKey()), { mode: 0o600 });
   }
-  const request = { ...userSchema.parse({ name, pubkey: publicHex(loadKey(readFileSync(keyFile, "utf8").trim())) }), token };
+  const request = { ...userSchema.parse({ name, pubkey: publicHex(fromFile(keyFile, (text) => loadKey(text.trim()))) }), token };
   await transport("POST", `${config.hub}/join`, JSON_BODY, JSON.stringify(request));
   writeFileSync(joinPath(home, "config.json"), JSON.stringify(config, null, 1));
   const pinFile = joinPath(home, "known.json");
-  const pins = existsSync(pinFile) ? pinsSchema.parse(parseJson(readFileSync(pinFile, "utf8"))) : {};
+  const pins = existsSync(pinFile) ? fromFile(pinFile, (text) => pinsSchema.parse(parseJson(text))) : {};
   writeFileSync(pinFile, JSON.stringify({ ...pins, [name]: request.pubkey }, null, 1)); // The user's own key is pinned from the start, as their own file has it.
   return config;
 }
@@ -552,7 +563,7 @@ export function loadClient(home: string, transport: Transport, now: () => number
     return null;
   }
   const config = readConfig(home);
-  const key = loadKey(readFileSync(keyFile, "utf8").trim());
+  const key = fromFile(keyFile, (text) => loadKey(text.trim()));
   const only = env[ONLY_CHAT_VAR] ?? null;
   const client = new Client(home, config, key, transport, now, config.name, false, publicHex(key), only, only === null ? (env[JOB_VAR] ?? null) : null);
   const agent = env[AGENT_VAR] ?? "";
@@ -563,7 +574,10 @@ export function loadClient(home: string, transport: Transport, now: () => number
   if (!isAgent(agent) || !authorSchema.safeParse(agent).success || ownerOf(agent) !== client.config.name) {
     throw new PlayerTwoError(`${AGENT_VAR} is ${JSON.stringify(agent)}, which is not one of ${client.config.name}'s agents, as owner/repo`);
   }
-  return client.as(agent, loadKey(readFileSync(agentKeyFile, "utf8").trim()));
+  return client.as(
+    agent,
+    fromFile(agentKeyFile, (text) => loadKey(text.trim()))
+  );
 }
 
 /**
@@ -572,13 +586,16 @@ export function loadClient(home: string, transport: Transport, now: () => number
  */
 export function readConfig(home: string): Config {
   const file = joinPath(home, "config.json");
-  const raw = parseJson(readFileSync(file, "utf8"));
-  const before = legacyConfigSchema.safeParse(raw);
-  if (!before.success) {
-    return configSchema.parse(raw);
+  const read = fromFile(file, (text) => {
+    const raw = parseJson(text);
+    const before = legacyConfigSchema.safeParse(raw);
+    return before.success ? before.data : configSchema.parse(raw);
+  });
+  if (!("agent" in read)) {
+    return read;
   }
-  const agent = oneshotAgent(before.data.agent);
-  const config = configSchema.parse({ hub: before.data.hub, name: before.data.name, agents: [agent], defaultAgent: agent.id, ownMode: "auto-edits" });
+  const agent = oneshotAgent(read.agent);
+  const config = configSchema.parse({ hub: read.hub, name: read.name, agents: [agent], defaultAgent: agent.id, ownMode: "auto-edits" });
   writeFileSync(file, JSON.stringify(config, null, 1));
   return config;
 }
