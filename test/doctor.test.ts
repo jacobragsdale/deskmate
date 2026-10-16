@@ -19,7 +19,7 @@ import { permissionTests, runChecks, testPermissions } from "../src/desk/doctor.
 import type { Check } from "../src/shared/ipc.ts";
 import { startHub, TEAM_REPOS } from "./startHub.ts";
 
-const IDS = ["node", "identity", "hub", "proxy", "protocol", "clock", "dev", "repos", "agent-keys", "git", "git-auth", "azure", "agent"];
+const IDS = ["node", "identity", "hub", "proxy", "protocol", "clock", "dev", "repos", "agent-keys", "git", "git-auth", "azure", "agent", "command"];
 const PAT = "a-personal-access-token";
 const GIVE_TOKEN =
   "Give Player Two an Azure DevOps token in one of three ways: export AZURE_DEVOPS_EXT_PAT in ~/.profile, inside WSL on Windows; save one below, which keeps it in azure.json, readable only by you; or sign in to dev.azure.com once with git, whose credential helper keeps it. A personal access token needs the scopes Code (read and write) and Build (read)";
@@ -71,6 +71,7 @@ async function machine(t: TestContext, skew = 0): Promise<Machine> {
   const tools = join(hub.dir, "tools");
   mkdirSync(tools);
   writeFileSync(join(tools, "fake-agent"), "#!/bin/sh\n", { mode: 0o755 });
+  writeFileSync(join(tools, "player-two"), "#!/bin/sh\n", { mode: 0o755 }); // Where an agent's run finds it.
   const path = process.env["PATH"];
   process.env["PATH"] = `${tools}:${path ?? ""}`;
   for (const variable of ["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"]) {

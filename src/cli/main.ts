@@ -23,6 +23,7 @@ import { runChecks } from "../desk/doctor.ts";
 import { runDesk } from "../desk/main.ts";
 import { agentOf, ask, glance, readNote, trust } from "../desk/notes.ts";
 import type { Agent, Asked } from "../desk/notes.ts";
+import { shellPath } from "../desk/shellEnv.ts";
 import { runHub, verifyHub } from "../hub/main.ts";
 import { createServer } from "../mcp/server.ts";
 import type { Check } from "../shared/ipc.ts";
@@ -539,6 +540,7 @@ async function register(home: string, transport: Transport, args: string[], out:
 /** Print the setup check, and fail when any of it failed: what is printed is the list, and the exit status says whether it is all right. */
 async function doctor(home: string, args: string[], out: (line: string) => void): Promise<void> {
   const { json } = parseArgs({ args, options: { json: { type: "boolean", default: false } } }).values;
+  process.env["PATH"] = await shellPath(); // Where the desk looks for the agent and git, so that this list says what the Setup page says, whatever this terminal's own PATH holds.
   const checks = await runChecks(home, defaultDev());
   show(out, json, checks, layout(checks));
   const failed = checks.filter((check) => check.status === "fail").length;

@@ -1,7 +1,7 @@
 /** The player-two command, run in this process as one person or another against a hub of the test's own. */
 
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { once } from "node:events";
 import { join } from "node:path";
@@ -431,6 +431,20 @@ await test("doctor prints the setup check as aligned text, or as one JSON array 
   assert.equal(lines[at + 1], "      fix: Join from the window, or run: player-two join HUB NAME TOKEN");
   assert.equal(lines.filter((line) => !line.startsWith("      fix: ")).length, checks.length);
   assert.equal(words.status, 1);
+});
+
+await test("doctor looks for the agent where the desk does, on the PATH a login shell has, and not on the PATH of the terminal it is typed in", async (t) => {
+  const hub = await startHub(t);
+  await hub.join("alice"); // Her agent's command is "fake-agent".
+  const tools = join(hub.dir, "tools");
+  mkdirSync(tools);
+  writeFileSync(join(tools, "fake-agent"), "#!/bin/sh\n", { mode: 0o755 });
+  environment(t, { PLAYER_TWO_DEV: hub.dir, PATH: `${tools}:${process.env["PATH"] ?? ""}` }); // On this terminal's PATH alone, as nvm puts a program on an interactive shell's.
+
+  const checks = z.array(checkSchema).parse(JSON.parse((await playerTwo(hub, "alice", ["doctor", "--json"])).out));
+  const agent = checks.find((check) => check.id === "agent");
+  assert.deepEqual([agent?.status, agent?.detail.startsWith("looked for fake-agent on the PATH and did not find it")], ["fail", true]);
+  assert.ok(checks.some((check) => check.id === "command" && check.title === "Agents find the player-two command"));
 });
 
 await test("search prints each match with its author, chat, time, a stretch of its text and its link, and --in keeps to one chat", async (t) => {

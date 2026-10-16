@@ -305,6 +305,20 @@ function agent(home: string, config: Config): Outcome {
     : ok(`${program} is ${where}`);
 }
 
+/**
+ * Whether the player-two command is on the PATH, where an agent's run looks for it by name: its session's MCP server is `player-two mcp`, and its prompt names
+ * `player-two search` and `read`. Without it an agent still answers, but cannot read the chat, and nothing else says why.
+ */
+function command(config: Config | null): Outcome {
+  const where = findProgram("player-two", process.env["PATH"] ?? "");
+  return where === null
+    ? warn(
+        "looked for player-two on the PATH and did not find it, so an agent cannot read the chat: its session's MCP server does not start, and player-two search and read are not found",
+        `curl -fsSL ${config?.hub ?? "HUB"}/install.sh | sh, which puts it in ~/.local/bin; then open a new terminal, or put ~/.local/bin on the PATH in ~/.profile`
+      )
+    : ok(`player-two is ${where}`);
+}
+
 /** Whether an agent over ACP starts and speaks the protocol, and its version, null when it does not; or why not, with the command that signs in when that is why. Aborting `stop` ends the agent at once. */
 async function agentAcp(agent: Agent, stop: AbortSignal): Promise<{ readonly outcome: Outcome; readonly version: string | null }> {
   try {
@@ -450,6 +464,7 @@ export async function runChecks(home: string, dev: string, stop: AbortSignal = n
     },
     { id: "azure", title: "Azure DevOps answers to your token", ...either(await attempt(() => azure(home, asked.info, checkout, azureBase))) },
     { id: "agent", title: "The agent's command is found", ...(config === null ? skip("not joined, so no agent is chosen yet") : either(await attempt(() => agent(home, config)))) },
+    { id: "command", title: "Agents find the player-two command", ...command(config) },
     ...(
       await Promise.all(
         (config?.agents ?? [])

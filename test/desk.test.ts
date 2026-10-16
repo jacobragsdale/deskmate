@@ -149,6 +149,7 @@ await test("the desk by lines: the join form, joining, the chats, a message sent
     "git-auth",
     "azure",
     "agent",
+    "command",
     "agent-acp:custom",
     "agent-permissions:custom"
   ]); // With alice's own agent over ACP.
