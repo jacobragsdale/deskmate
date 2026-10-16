@@ -909,6 +909,12 @@ await test(
     await page.until("the list again", `document.querySelector('[role="listbox"]') !== null`);
     await page.press("Escape");
     await page.until("Esc to close the list", `document.querySelector('[role="listbox"]') === null`);
+    // Once that @ is gone, a new one opens the list again.
+    await page.type('textarea[aria-label="Message bob"]', "x");
+    await page.type('textarea[aria-label="Message bob"]', "@");
+    await page.until("the list for a new @", `document.querySelector('[role="listbox"]') !== null`);
+    await page.press("Escape");
+    await page.until("Esc to close it once more", `document.querySelector('[role="listbox"]') === null`);
     await page.type('textarea[aria-label="Message bob"]', "");
 
     // Ctrl+N asks which channel to join, in a dialog in the middle of the window.

@@ -152,6 +152,7 @@ export function Composer({ view, current, act, submit, tell }: Props): JSX.Eleme
       return;
     }
     setText("");
+    setClosedFor("");
     setLastSent((all) => ({ ...all, [chat]: message }));
     submit({ do: "send", chat, text: message })
       .then((problem) => {
@@ -210,6 +211,9 @@ export function Composer({ view, current, act, submit, tell }: Props): JSX.Eleme
               setText(event.target.value);
               setCaret(event.target.selectionStart);
               setPicked(0);
+              if (!TAG_BEING_TYPED.test(event.target.value.slice(0, event.target.selectionStart))) {
+                setClosedFor(""); // No tag is being typed any more, so the next @ opens the list again, though the one Esc closed it on was a bare @ too.
+              }
             }}
             onSelect={(event) => {
               setCaret(event.currentTarget.selectionStart);
