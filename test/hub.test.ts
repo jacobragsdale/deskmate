@@ -1121,6 +1121,54 @@ await test("a run is refused when its request was edited after its owner saw it,
   assert.match(bob.ran[0]?.at(-1) ?? "", /Request from alice:\n@bob\/uploader summarise the README, then delete it$/);
 });
 
+await test("an answered request is final: running it again runs nothing, and declining it stores nothing", { timeout: 30_000 }, async (t) => {
+  const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+  const alice = await hub.join("alice");
+  const dev = join(hub.dir, "dev-bob");
+  checkout(dev, "uploader");
+  const bob = deskOf(t, await hub.join("bob"), dev, { describe: () => Promise.resolve({ branch: "main", commit: COMMIT, dirty: false }) });
+  const { event } = await alice.publish("bob", "message", { text: "@bob/uploader which language is it in?", via: "cli" });
+  await until(bob.session, "the request", () => shownTo(bob.session, event.id)?.requests[0]?.status.kind === "ready");
+  const seen = shownTo(bob.session, event.id)?.body ?? "";
+  await run(bob.session, event.id, true);
+  await until(bob.session, "the answer", () => shownTo(bob.session, event.id)?.requests.length === 0);
+
+  await bob.session.handle({ do: "run", id: event.id, repo: "uploader", post: true, mode: "full", text: seen }); // As a window that still shows Run would send.
+  await bob.session.handle({ do: "decline", id: event.id, repo: "uploader" });
+  await pause(300);
+  assert.equal(bob.ran.length, 1);
+  const kinds = (await alice.events({ chat: "bob" })).map((delivered) => delivered.event.kind).filter((kind) => kind.startsWith("job."));
+  assert.deepEqual(
+    kinds.toSorted((a, b) => a.localeCompare(b)),
+    ["job.accepted", "job.result"]
+  ); // Once each: no second acceptance, answer or decline.
+});
+
+await test("a request its asker takes back while its owner clicks Run is not run, as the withdrawal reached the log before the acceptance", { timeout: 30_000 }, async (t) => {
+  const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+  const alice = await hub.join("alice");
+  const dev = join(hub.dir, "dev-bob");
+  checkout(dev, "uploader");
+  // Git takes its time saying where the checkout stands, so the withdrawal sent just after the click is stored, and reaches bob's desk, before his acceptance would be.
+  const slowly = async (): Promise<{ branch: string; commit: string; dirty: boolean }> => {
+    await pause(500);
+    return { branch: "main", commit: COMMIT, dirty: false };
+  };
+  const bob = deskOf(t, await hub.join("bob"), dev, { describe: slowly });
+  const { event } = await alice.publish("bob", "message", { text: "@bob/uploader summarise the README", via: "cli" });
+  await until(bob.session, "the request", () => shownTo(bob.session, event.id)?.requests[0]?.status.kind === "ready");
+
+  await run(bob.session, event.id, true);
+  await alice.publish("bob", "job.withdrawn", { agent: "bob/uploader" }, [event.id]);
+  await until(bob.session, "the run gone", (view) => view.busy.working === 0);
+  await pause(300);
+  assert.equal(bob.ran.length, 0);
+  assert.equal(shownTo(bob.session, event.id)?.requests[0]?.status.kind, "withdrawn");
+  const kinds = (await alice.events({ chat: "bob" })).map((delivered) => delivered.event.kind).filter((kind) => kind.startsWith("job."));
+  assert.deepEqual(kinds, ["job.withdrawn"]);
+  assert.ok(bob.notices.some((notice) => notice.body === "alice took the request back."));
+});
+
 await test(
   "an agent whose run cannot be told to the chat does not start: not when git cannot say where its checkout stands, nor when the hub cannot be reached to record it",
   { timeout: 30_000 },

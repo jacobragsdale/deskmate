@@ -1719,10 +1719,12 @@ export class Session {
   /**
    * Run the user's agent on a request at `mode`, with its text as it stands now; which must be what the user was shown, `seen`, when they said to run it, or the agent would be given something they never saw.
    * The mode is the user's choice each time: a teammate's request is offered read-only first, and then as the user last ran that asker's requests of that repo (see `offerFor`).
+   * A request taken back, or answered, runs nothing: both are final, and the chat would count neither the acceptance nor a second answer.
    */
   private runRequest(request: string, repo: string, post: boolean, mode: PermissionMode, seen: string, delegate: boolean): void {
     const message = this.chats.message(request);
-    if (message !== null && this.chats.requests(message, this.client.now()).some((each) => each.owner === this.me && each.repo === repo && each.state !== "withdrawn")) {
+    const final: readonly string[] = ["withdrawn", "answered"];
+    if (message !== null && this.chats.requests(message, this.client.now()).some((each) => each.owner === this.me && each.repo === repo && !final.includes(each.state))) {
       if (message.text !== seen) {
         throw new PlayerTwoError(`${message.entry.event.author} edited the request after you saw it: read it again before you run it`);
       }
@@ -1733,10 +1735,15 @@ export class Session {
     }
   }
 
-  /** Say no to a request for one of the user's agents. Best effort: the chat misses one line. */
+  /**
+   * Say no to a request for one of the user's agents, while saying so still moves it: waiting, at work, or after a run that failed or was stopped, as src/core/chat.ts's MOVES has it.
+   * One answered, taken back or declined already is final, and a decline of it would be stored for nothing. Best effort: the chat misses one line.
+   */
   private async decline(request: string, repo: string): Promise<void> {
     const message = this.chats.message(request);
-    if (message !== null) {
+    const job = message === null ? undefined : this.chats.requests(message, this.client.now(), true).find((each) => each.owner === this.me && each.repo === repo);
+    const open: readonly string[] = ["waiting", "working", "failed", "stopped"];
+    if (message !== null && job !== undefined && open.includes(job.state)) {
       await this.client.publish(chatOf(message.entry.event, this.me), "job.declined", { repo, reason: "" }, [request]).catch(() => undefined);
     }
   }
@@ -2765,10 +2772,17 @@ export class Session {
   /**
    * Why a run in a tree is no longer wanted: its asker took its request back, as a person may one whose agent is let ask others and an agent does what it asked once its own run ends;
    * or, for an agent's request, the log no longer lets it go, as when the job that asked it has ended or been taken back. Null while it is wanted, and for any other run.
+   * Any run, in a tree or not, whose request the chat shows taken back is not wanted either: its asker withdrew it before the run's acceptance reached the log, as when they took it
+   * back while its owner clicked Run, so the acceptance after it counts for nothing and the run's answer would be another answer to a request nobody is asking any more.
    */
   private unwanted(run: AgentRun): string | null {
     const { event } = run.entry;
     const agent = `${this.me}/${run.repo}`;
+    const asked = this.chats.message(event.id);
+    const withdrawn = asked !== null && this.chats.requests(asked, this.client.now(), true).some((each) => `${each.owner}/${each.repo}` === agent && each.state === "withdrawn");
+    if (withdrawn) {
+      return `${event.kind === "job.request" ? agentWords(event.author, this.me) : event.author} took the request back`;
+    }
     if (!run.delegate && event.kind !== "job.request") {
       return null;
     }
@@ -2779,8 +2793,7 @@ export class Session {
     if (takenBack) {
       return `${event.kind === "job.request" ? agentWords(event.author, this.me) : event.author} took the request back`;
     }
-    const message = event.kind === "job.request" ? this.chats.message(event.id) : null;
-    const judged = message === null ? null : this.judge(message);
+    const judged = event.kind === "job.request" && asked !== null ? this.judge(asked) : null;
     return judged?.ok === false ? `the request may no longer go: ${judged.reason}` : null;
   }
 
