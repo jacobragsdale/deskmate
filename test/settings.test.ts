@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { loadSettings, saveSettings } from "../src/window/main/settings.ts";
+import { loadSettings, saveSettings, windowFolder } from "../src/window/main/settings.ts";
 
 await test("with no distribution saved the default one is used, a saved one is kept, a name WSL would not allow is refused, and saving one setting keeps the others", (t) => {
   const folder = mkdtempSync(join(tmpdir(), "player-two-settings-"));
@@ -56,4 +56,10 @@ await test("a write that fails leaves the settings saved before whole, and a fil
   writeFileSync(file, JSON.stringify({ distro: null, later: true }));
   assert.deepEqual(loadSettings(folder), { distro: null, atLogin: false });
   assert.equal(existsSync(`${file}.new`), false);
+});
+
+await test("the window keeps Electron's own folder unless PLAYER_TWO_HOME moves the identity, and then one beside its files, so a second identity's window has a lock of its own", () => {
+  assert.equal(windowFolder("", "/home/jo/.config/Player Two"), "/home/jo/.config/Player Two");
+  assert.equal(windowFolder("/home/jo/.config/player-two-b", "/home/jo/.config/Player Two"), join("/home/jo/.config/player-two-b", "window"));
+  assert.notEqual(windowFolder("/home/jo/.config/player-two-b", "/home/jo/.config/Player Two"), windowFolder("/home/jo/.config/player-two-c", "/home/jo/.config/Player Two"));
 });

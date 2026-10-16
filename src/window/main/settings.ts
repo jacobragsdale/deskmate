@@ -47,6 +47,15 @@ export function loadSettings(folder: string): Settings {
   return replaced;
 }
 
+/**
+ * The folder the window keeps as its own, Electron's user-data folder, given the PLAYER_TWO_HOME it was started with and Electron's default, `fallback`. A second identity on one machine has its
+ * files moved by PLAYER_TWO_HOME, for the window as for the command, and its window's folder goes beside them: that folder holds the lock that keeps one copy of the app running, so with one
+ * of its own the second identity's window opens, rather than handing its arguments to the first identity's and quitting.
+ */
+export function windowFolder(home: string, fallback: string): string {
+  return home === "" ? fallback : joinPath(home, "window");
+}
+
 /** Change some of the settings, keeping the rest as saved. */
 export function saveSettings(folder: string, changed: Partial<Settings>): void {
   write(folder, settingsSchema.parse({ ...loadSettings(folder), ...changed }));

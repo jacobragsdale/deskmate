@@ -15,7 +15,7 @@ import { problemOf } from "../../core/text.ts";
 import { commandSchema } from "../../shared/ipc.ts";
 import type { Arrival, Check, DistroChoice, Notice, Outcome, Question, View } from "../../shared/ipc.ts";
 import { DeskProcess, localLaunch, windowChecks, wslLaunch } from "./deskProcess.ts";
-import { distroSchema, loadSettings, saveSettings } from "./settings.ts";
+import { distroSchema, loadSettings, saveSettings, windowFolder } from "./settings.ts";
 import type { Settings } from "./settings.ts";
 import { listDistros } from "./wsl.ts";
 
@@ -395,7 +395,9 @@ function createWindow(hidden: boolean): void {
   created.loadFile(joinPath(import.meta.dirname, "renderer", "index.html")).catch(report);
 }
 
-// One copy of the app at a time, so that a link opened while it runs goes to the window already open: a second copy hands the first its arguments and quits.
+// One copy of the app at a time for each identity, so that a link opened while it runs goes to the window already open: a second copy hands the first its arguments and quits.
+// Another identity, moved by PLAYER_TWO_HOME, has a folder and so a lock of its own, and its window opens beside the first.
+app.setPath("userData", windowFolder(process.env["PLAYER_TWO_HOME"] ?? "", app.getPath("userData")));
 const primary = app.requestSingleInstanceLock();
 if (!primary) {
   app.quit();
