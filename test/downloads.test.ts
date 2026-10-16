@@ -113,6 +113,7 @@ await test("the page and the script carry the address the hub was reached by, an
   assert.match(String(page.headers["content-type"]), /^text\/html/);
   assert.equal(page.headers["content-security-policy"], "default-src 'none'; style-src 'unsafe-inline'");
   assert.ok(page.body.includes('<a href="/downloads/player-two-setup.exe">'));
+  assert.ok(page.body.includes(":root { color-scheme: light dark; }")); // On the root, or a dark system shows a white page with a pale link.
   assert.ok(page.body.includes("<code>https://player-two.acme.internal</code>"));
   assert.ok(page.body.includes("<code>curl -fsSL https://player-two.acme.internal/install.sh | sh</code>"));
   const script = await ask(hub, "/install.sh", { Host: "hub.acme.internal:8787" });

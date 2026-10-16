@@ -192,7 +192,9 @@ function installPage(hub: string): string {
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Player Two</title>
     <style>
-      body { font: 15px/1.5 system-ui, sans-serif; max-width: 42em; margin: 3em auto; padding: 0 1em; color-scheme: light dark; }
+      /* On the root, where the browser takes the page's colours from: on the body alone, a dark system kept the page white and gave its link the pale colour meant for a dark page. */
+      :root { color-scheme: light dark; }
+      body { font: 15px/1.5 system-ui, sans-serif; max-width: 42em; margin: 3em auto; padding: 0 1em; }
       code { background: #8882; padding: 0 0.25em; border-radius: 3px; }
     </style>
   </head>
