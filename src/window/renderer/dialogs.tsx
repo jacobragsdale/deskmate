@@ -139,12 +139,14 @@ export function PickRepo({ title, choices, onDone }: { readonly title: string; r
  */
 export function Search({ chats, onDone }: { readonly chats: readonly string[]; readonly onDone: (command: DeskCommand | null) => void }): JSX.Element {
   const [query, setQuery] = useState("");
-  const [found, setFound] = useState<{ readonly hits: readonly Hit[]; readonly problem: string }>({ hits: [], problem: "" });
+  // What the desk found, and for which words: while they are not the words typed now, the search for those is still to answer, and nothing found for other words is shown.
+  const [found, setFound] = useState<{ readonly words: string; readonly hits: readonly Hit[]; readonly problem: string }>({ words: "", hits: [], problem: "" });
   const words = query.trim();
+  const pending = found.words !== words;
 
   useEffect(() => {
     if (words === "") {
-      setFound({ hits: [], problem: "" });
+      setFound({ words, hits: [], problem: "" });
       return undefined;
     }
     let wanted = true; // Until more is typed: what is found for words since changed is dropped.
@@ -154,7 +156,7 @@ export function Search({ chats, onDone }: { readonly chats: readonly string[]; r
         .then((raw) => {
           const outcome = outcomeSchema.parse(raw);
           if (wanted) {
-            setFound(outcome.ok ? { hits: outcome.found ?? [], problem: "" } : { hits: [], problem: outcome.problem });
+            setFound(outcome.ok ? { words, hits: outcome.found ?? [], problem: "" } : { words, hits: [], problem: outcome.problem });
           }
         })
         .catch(console.error);
@@ -178,8 +180,9 @@ export function Search({ chats, onDone }: { readonly chats: readonly string[]; r
       <Command shouldFilter={false} className="p-0">
         <CommandInput aria-label="Search" placeholder="A chat's name, or words its messages hold" value={query} onValueChange={setQuery} autoFocus />
         <CommandList className="mt-1 max-h-96">
-          <CommandEmpty>Nothing found.</CommandEmpty>
-          {found.problem !== "" && <p className="px-2 py-1.5 text-destructive">{found.problem}</p>}
+          {pending && <p className="px-2 py-1.5 text-muted-foreground">Searching…</p>}
+          {!pending && found.problem === "" && <CommandEmpty>Nothing found.</CommandEmpty>}
+          {!pending && found.problem !== "" && <p className="px-2 py-1.5 text-destructive">{found.problem}</p>}
           {named.length > 0 && (
             <CommandGroup heading="Chats">
               {named.map((chat) => (
@@ -195,7 +198,7 @@ export function Search({ chats, onDone }: { readonly chats: readonly string[]; r
               ))}
             </CommandGroup>
           )}
-          {found.hits.length > 0 && (
+          {!pending && found.hits.length > 0 && (
             <CommandGroup heading="Messages">
               {found.hits.map((hit) => (
                 <CommandItem

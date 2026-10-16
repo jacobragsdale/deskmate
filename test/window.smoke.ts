@@ -1072,6 +1072,8 @@ await test(
     await page.type(search, "his");
     await page.until("#history found by its name", `document.querySelector('[role="dialog"] [cmdk-item]')?.textContent === "#history"`);
     await page.type(search, "the first");
+    // Until the desk has answered for these words, the dialog says it is searching, rather than that nothing was found.
+    assert.deepEqual(await page.eval(`[document.querySelector('[role="dialog"]').innerText.includes("Searching…"), document.querySelector('[role="dialog"] [cmdk-empty]') === null]`), [true, true]);
     const chosen = `document.querySelector('[role="dialog"] [cmdk-item][data-selected="true"]')`;
     await page.until("carol's message found and chosen", `${chosen}?.textContent.includes("carol in #history") === true`);
     assert.deepEqual(await page.eval(`[...${chosen}.querySelectorAll("span.text-tag")].map((each) => each.textContent)`), ["the", "first"]);
