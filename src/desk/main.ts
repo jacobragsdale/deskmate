@@ -14,6 +14,7 @@ import type { Command, DeskLine, Outcome, Question, View } from "../shared/ipc.t
 import { PRESETS } from "./agents/presets.ts";
 import { saveToken } from "./azure.ts";
 import { defaultDev, defaultHome, http, join, loadClient, PlayerTwoError } from "./client.ts";
+import type { Transport } from "./client.ts";
 import { runChecks, WITHOUT_IDENTITY } from "./doctor.ts";
 import { Session } from "./session.ts";
 import type { Hooks } from "./session.ts";
@@ -31,6 +32,10 @@ class Desk {
   private readonly output: Writable;
   private readonly hooks: Hooks;
   private readonly stopping = new AbortController(); // Aborted once the window has gone, ending the agents a setup check still going has started.
+  // Aborted once the session has stopped, ending every request to the hub still going, such as one telling the chat a run was stopped while the hub does not answer: otherwise each kept
+  // the process alive for as long as it may take, ten seconds, after the session had given up waiting on it.
+  private readonly gone = new AbortController();
+  private readonly transport: Transport = (method, url, headers, body) => http(method, url, headers, body, this.gone.signal);
   private session: Session | null = null; // Null until someone has joined a hub from this machine.
   private joining: Promise<void> | null = null; // A join with the hub not yet answered, which a second join waits on rather than starting a session of its own.
   private attentive = true; // What the window last said, kept for a session that starts later.
@@ -100,6 +105,7 @@ class Desk {
     this.ended = true;
     this.stopping.abort();
     await this.session?.stop();
+    this.gone.abort();
   }
 
   private write(line: DeskLine): void {
@@ -149,7 +155,7 @@ class Desk {
 
   /** Start following the hub as whoever has joined from this machine, if anyone has. */
   private start(): void {
-    const client = loadClient(this.home, http, () => Date.now() / 1000);
+    const client = loadClient(this.home, this.transport, () => Date.now() / 1000);
     if (client !== null) {
       this.session = new Session(client, defaultDev(), this.hooks);
       this.session.attend(this.attentive);
@@ -173,7 +179,7 @@ class Desk {
     if (command.do === "join") {
       if (this.session === null) {
         // Set before anything is awaited, so that a join sent twice in one write starts one session, and the desk's end stops the only one there is.
-        this.joining ??= join(this.home, command.hub.trim(), command.name.trim(), command.token.trim(), command.agent, http)
+        this.joining ??= join(this.home, command.hub.trim(), command.name.trim(), command.token.trim(), command.agent, this.transport)
           .then(() => {
             this.start();
             this.changed();

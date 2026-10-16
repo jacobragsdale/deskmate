@@ -5,11 +5,14 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer } from "node:net";
+import type { Socket } from "node:net";
 import { createInterface } from "node:readline";
 import { PassThrough, Writable } from "node:stream";
 import { text } from "node:stream/consumers";
 import { test } from "node:test";
 
+import { newKey, privateHex } from "../src/core/sign.ts";
 import { VERSION } from "../src/core/version.ts";
 import { configSchema, PROTOCOL } from "../src/core/wire.ts";
 import { DEFAULT_PRESET, PRESETS } from "../src/desk/agents/presets.ts";
@@ -224,6 +227,50 @@ await test("the built command run as `player-two desk` says hello, shows the joi
     { t: "hello", version: VERSION, protocol: PROTOCOL },
     { t: "view", view: { kind: "setup", presets: PRESETS } }
   ]);
+});
+
+await test("the built desk whose hub takes requests and never answers them still exits within the few seconds it gives its agents to stop, once its input ends", { timeout: 30_000 }, async (t) => {
+  const home = mkdtempSync(join(tmpdir(), "player-two-desk-"));
+  const held: Socket[] = [];
+  const silent = createServer((socket) => {
+    held.push(socket); // Taken, as by a hub that is paused, and never answered.
+  });
+  await new Promise<void>((resolve) => {
+    silent.listen(0, "127.0.0.1", resolve);
+  });
+  t.after(() => {
+    for (const socket of held) {
+      socket.destroy();
+    }
+    silent.close();
+    rmSync(home, { recursive: true, force: true });
+  });
+  const address = silent.address();
+  assert.ok(address !== null && typeof address === "object");
+  const config = configSchema.parse({ hub: `http://127.0.0.1:${String(address.port)}`, name: "alice", agents: [DEFAULT_PRESET], defaultAgent: DEFAULT_PRESET.id, ownMode: "auto-edits" });
+  writeFileSync(join(home, "config.json"), JSON.stringify(config));
+  writeFileSync(join(home, "key"), privateHex(newKey()));
+  const desk = spawn(process.execPath, [BUILT, "desk"], { env: { ...process.env, PLAYER_TWO_HOME: home, PLAYER_TWO_DEV: join(home, "dev") }, stdio: ["pipe", "pipe", "pipe"] });
+  t.after(() => {
+    desk.kill("SIGKILL");
+  });
+  const exited = new Promise<number | null>((resolve) => {
+    desk.once("close", resolve);
+  });
+  const errors = text(desk.stderr);
+  let told = 0;
+  let lines = 0;
+  createInterface({ input: desk.stdout }).on("line", () => {
+    lines += 1;
+    if (lines === 2) {
+      told = Date.now();
+      desk.stdin.end(); // Its first view is up and it is asking the hub, which does not answer.
+    }
+  });
+
+  assert.equal(await exited, 0, await errors);
+  assert.ok(held.length > 0); // It did ask.
+  assert.ok(Date.now() - told < 6000, `took ${String(Date.now() - told)} ms to exit`); // Its three seconds for stopping, and not the ten a request may take.
 });
 
 await test("the built desk ends on SIGTERM, SIGINT or SIGHUP as it does at the end of its input, rather than at once with its agents left running", { timeout: 30_000 }, async (t) => {

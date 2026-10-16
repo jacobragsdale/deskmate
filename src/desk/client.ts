@@ -43,8 +43,8 @@ const CATCH_UP_PAGE = 200; // Events one catching-up request asks for: the most 
 const STREAM_RETRY = 30; // Most seconds between two tries at opening the stream again.
 const JSON_BODY = { "Content-Type": "application/json" };
 
-/** Makes one HTTP request and resolves with the response body. Rejects with a PlayerTwoError the user can act on. */
-export type Transport = (method: string, url: string, headers: Readonly<Record<string, string>>, body: string | null) => Promise<string>;
+/** Makes one HTTP request and resolves with the response body. Rejects with a PlayerTwoError the user can act on. Aborting `signal`, when one is given, ends the request at once. */
+export type Transport = (method: string, url: string, headers: Readonly<Record<string, string>>, body: string | null, signal?: AbortSignal) => Promise<string>;
 /** Runs the agent command in a folder, with `env` added to the desk's environment, and resolves with what it printed. Aborting `cancel` stops it. */
 export type Runner = (argv: readonly string[], cwd: string, cancel: AbortSignal, env?: Readonly<Record<string, string>>) => Promise<string>;
 
@@ -126,11 +126,12 @@ function unreached(error: unknown): string {
   return why === "" || error.message.includes(why) ? error.message : `${error.message} (${why})`;
 }
 
-export const http: Transport = async (method, url, headers, body) => {
+export const http: Transport = async (method, url, headers, body, signal) => {
   let response: Response;
   let text: string;
+  const timeout = AbortSignal.timeout(CALL_TIMEOUT * 1000);
   try {
-    response = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(CALL_TIMEOUT * 1000) });
+    response = await fetch(url, { method, headers, body, signal: signal === undefined ? timeout : AbortSignal.any([timeout, signal]) });
     text = await response.text();
   } catch (error) {
     throw new PlayerTwoError(`cannot reach the hub at ${url}: ${unreached(error)}`, { cause: error });
