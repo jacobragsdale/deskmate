@@ -683,7 +683,7 @@ await test("a client that has never seen an agent's owner, or any registration o
 });
 
 await test("the client reads past a field a newer hub adds, but refuses one inside a signed event", async () => {
-  const event = signEvent(key, { author: "bob", to: "jacob", kind: "message", content: JSON.stringify({ text: "hello", via: "cli" }), ts: NOW, refs: [] });
+  const event = signEvent(key, { author: "bob", to: "jacob", kind: "message", content: JSON.stringify({ text: "say hello to everyone", via: "cli" }), ts: NOW, refs: [] });
   const info = { version: "9.0.0", protocol: PROTOCOL, repos: "dev.azure.com/acme", now: NOW };
   const bob = { name: "bob", pubkey: publicHex(key), seen: NOW };
   const backend = { name: "#backend", members: ["bob"], repo: null, branch: null };

@@ -9,7 +9,7 @@ import { z } from "zod";
 import { readContent } from "../core/kinds.ts";
 import { eventId, eventIsAuthentic, loadKey, newKey, privateHex, publicHex } from "../core/sign.ts";
 import { byCodeUnit, problemOf } from "../core/text.ts";
-import { deliveredSchema, HIT_CLOSE, HIT_OPEN, HUB, isAgent, isChannel, ownerOf, personSchema, teamRepoSchema } from "../core/wire.ts";
+import { deliveredSchema, HIT_CLOSE, HIT_OPEN, HUB, isAgent, isChannel, ownerOf, personSchema, searchable, teamRepoSchema } from "../core/wire.ts";
 import type { Delivered, Event, Person, Repo, RepoRef, TeamRepo } from "../core/wire.ts";
 
 export const SCHEMA_VERSION = 8; // 3 was the notes alone, from the Python hub to 0.4.
@@ -176,11 +176,6 @@ const headSchema = z.strictObject({ seq: z.int(), chain: z.string() }).optional(
 /** Which events are in one chat: a channel's, those to everyone when it is "*", or those between `:me` and one other person, either way, each of them or their agents. */
 function inChat(chat: string): string {
   return isChannel(chat) || chat === "*" ? "recipient = :chat" : `((${byPerson(":me")} AND recipient = :chat) OR (${byPerson(":chat")} AND recipient = :me))`;
-}
-
-/** The text of a message or an answer as the index keeps it: without the characters that mark what a search found, so that every one in a snippet is a mark. */
-function searchable(text: string): string {
-  return text.replaceAll(HIT_OPEN, " ").replaceAll(HIT_CLOSE, " ");
 }
 
 /** The chain value of an event: the sha256 of the one before it and the event's id, written one after the other in hex. Each depends on every event before it, so none can be changed or taken out without changing every value after it. */

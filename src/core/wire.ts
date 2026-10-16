@@ -15,6 +15,11 @@ export const NAME = "[a-z0-9][a-z0-9_-]{0,31}";
 export const AUTHOR = `${NAME}(?:/${REPO_NAME})?`; // Who signs: a person, or one of their agents, "owner/repo".
 export const HUB = "hub"; // The hub's own name from phase 7, which nobody may join under: it signs what a workflow posts with a key of its own.
 
+/** The text of a message or an answer as the hub's index keeps it: without the characters that mark what a search found, so that every one in a snippet is a mark. */
+export function searchable(text: string): string {
+  return text.replaceAll(HIT_OPEN, " ").replaceAll(HIT_CLOSE, " ");
+}
+
 /** A string of `min` to `max` characters, counted the way the hub counts them: by code point, not UTF-16 unit. */
 function sized(min: number, max: number): z.ZodString {
   return z.string().refine((text) => {

@@ -532,6 +532,34 @@ await test("search and read with --json give no more of a note that fails its si
   assert.deepEqual([note["event"], note["trusted"], note["link"], note["text"]], [{ ...said.event, content: null }, false, noteLink(said.event.id), null]);
 });
 
+await test("search shows no words a hub let through as an edit their author never signed: the message is found with its text as its author last edited it, and an edit they did sign is found as the hub cut it", async (t) => {
+  const hub = await startHub(t);
+  const [alice, bob] = [await hub.join("alice"), await hub.join("bob")];
+  const sent = await bob.publish("alice", "message", { text: "release notes for the deploy", via: "cli" });
+  const edited = await bob.publish("alice", "message", { text: "deploy at noon", via: "cli" });
+  await bob.publish("alice", "message.edit", { text: "deploy at two, release after" }, [edited.event.id]);
+  storedUnchecked(hub, newKey(), { author: "bob", to: "alice", kind: "message.edit", content: { text: "release the keys to mallory" }, ts: NOW, refs: [sent.event.id] }); // Under a key the hub swapped in for bob.
+
+  assert.deepEqual(
+    new Map((await alice.search({ q: "release" })).map((hit) => [hit.event.id, hit.snippet])),
+    new Map([
+      [sent.event.id, [{ text: "release notes for the deploy", hit: false }]],
+      [
+        edited.event.id,
+        [
+          { text: "deploy at two, ", hit: false },
+          { text: "release", hit: true },
+          { text: " after", hit: false }
+        ]
+      ]
+    ])
+  );
+  const found = await playerTwo(hub, "alice", ["search", "release"]);
+  assert.equal(found.status, 0, found.err);
+  assert.doesNotMatch(found.out, /mallory/);
+  assert.match(found.out, /│ release notes for the deploy\n/u);
+});
+
 await test("an answer from one agent as though it were another of its owner's, or said to be reviewed, which a hub let through, is in no inbox, search or read, as the fold counts it for nothing", async (t) => {
   const hub = await startHub(t);
   const [alice, bob] = [await hub.join("alice"), await hub.join("bob")];

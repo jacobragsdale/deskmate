@@ -8,7 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import { z } from "zod";
 
-import { chatOf, mayCome } from "../core/chat.ts";
+import { ChatLog, chatOf, mayCome } from "../core/chat.ts";
 import type { Entry } from "../core/chat.ts";
 import { contentSchema, readContent } from "../core/kinds.ts";
 import type { Content, ContentOf } from "../core/kinds.ts";
@@ -31,12 +31,14 @@ import {
   PROTOCOL,
   receiptSchema,
   repoSchema,
+  searchable,
   teamRepoSchema,
   userSchema
 } from "../core/wire.ts";
 import type { Agent, ChannelInfo, Config, Delivered, Event, HubInfo, Person, Repo, TeamRepo } from "../core/wire.ts";
 import { AGENT_KEY_VAR, AGENT_VAR, JOB_VAR, ONLY_CHAT_VAR } from "./agentKeys.ts";
 import { DEFAULT_PRESET, oneshotAgent } from "./agents/presets.ts";
+import { chatFrom } from "./notes.ts";
 
 const CALL_TIMEOUT = 10; // Seconds any one request but the stream may take.
 const CATCH_UP_PAGE = 200; // Events one catching-up request asks for: the most the hub gives at once.
@@ -74,6 +76,16 @@ const foundSchema = z.object({ seq: z.int(), event: eventSchema, snippet: z.stri
 const foundListSchema = z.array(foundSchema);
 
 export type Found = z.infer<typeof foundSchema>;
+
+/** Whether a snippet, its marks and the "…" the hub puts where it cut aside, is a stretch of `text` as the hub indexes it. */
+function stretchOf(snippet: Found["snippet"], text: string): boolean {
+  const words = snippet
+    .map((piece) => piece.text)
+    .join("")
+    .replace(/^…/u, "")
+    .replace(/…$/u, "");
+  return searchable(text).includes(words);
+}
 
 /** A failure the user can act on; shown as it is. */
 export class PlayerTwoError extends Error {}
@@ -349,7 +361,29 @@ export class Client {
     if (query.limit !== undefined) {
       params.set("limit", String(query.limit));
     }
-    return foundListSchema.parse(parseJson(await this.call("GET", `/search?${params.toString()}`)));
+    const found = foundListSchema.parse(parseJson(await this.call("GET", `/search?${params.toString()}`)));
+    const vouched: Found[] = [];
+    for (const hit of found) {
+      vouched.push({ ...hit, snippet: await this.ownSnippet(hit) }); // One at a time, as the first look at a new author writes known.json.
+    }
+    return vouched;
+  }
+
+  /**
+   * A result's snippet as this client can stand behind it. The hub cuts it from the text it indexed, which it takes from the newest edit it stored by the message's author, so a hub that lists
+   * another key for them could show words they never wrote as theirs, beside a message whose own signature holds. The hub's is kept when it is a stretch of the message as sent, or as last
+   * edited by edits whose signatures hold, which the chat from the message on is folded for, as `read` folds it; otherwise the result is that text itself, with nothing marked.
+   */
+  private async ownSnippet({ seq, event, snippet }: Found): Promise<Found["snippet"]> {
+    const said = readContent(event);
+    const sent = said.kind === "message" || said.kind === "job.result" ? said.content.text : "";
+    if (stretchOf(snippet, sent)) {
+      return snippet;
+    }
+    const log = new ChatLog(this.config.name);
+    log.add(await chatFrom(this, chatOf(event, this.config.name), seq));
+    const text = log.message(event.id)?.text ?? sent;
+    return stretchOf(snippet, text) ? snippet : [{ text, hit: false }];
   }
 
   /** A channel's live workflows, each as the workflow.define that made it live, oldest first. Untrusted until `isTrusted` says otherwise; none of a chat it does not read. */
