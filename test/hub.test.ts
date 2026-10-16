@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import type { KeyObject } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -753,6 +753,40 @@ await test("a repo list the hub gave before the desk told it of a change does no
   await until(session, "the first beat's list taken in", (view) => view.loaded);
   assert.deepEqual([session.view().team, await bob.repos()], [[], []]);
 });
+
+await test(
+  "a checkout on a branch the hub cannot take, or whose agent's key cannot be used, stops only that one: the rest are shared, the chats load, and the user is told why once",
+  { timeout: 30_000 },
+  async (t) => {
+    const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+    const bob = await hub.join("bob");
+    const dev = join(hub.dir, "dev");
+    const long = checkout(dev, "uploader");
+    execFileSync("git", ["-C", long, "checkout", "-q", "-b", `feature/${"x".repeat(193)}`]); // 201 characters, one more than the hub takes.
+    checkout(dev, "worker");
+    checkout(dev, "api");
+    const opened = join(hub.dir, "bob", "agents", "api.key");
+    agentKey(join(hub.dir, "bob"), "api");
+    chmodSync(opened, 0o644);
+    const { session, notices } = deskOf(t, bob, dev);
+
+    await until(session, "the chats loaded", (view) => view.loaded && view.link.state === "connected");
+    await pause(2500); // Two more beats, which tell nothing new.
+    assert.deepEqual(
+      (await bob.repos()).map((repo) => repo.name),
+      ["api", "worker"]
+    );
+    assert.deepEqual([await bob.registeredKey("bob/api"), (await bob.registeredKey("bob/worker")) !== null], [null, true]);
+    assert.deepEqual(
+      notices.map((notice) => notice.title),
+      ["some of your repos are not shared as they should be"]
+    );
+    assert.match(
+      notices[0]?.body ?? "",
+      new RegExp(`^${long} is not shared: the hub cannot take the name of the branch it is on, feature/x+…\n\n${opened} is open to other users of this machine \\(mode 644\\)`)
+    );
+  }
+);
 
 await test(
   "against a hub that refuses a pin naming a branch, as one before phase 6 does, Start a room leaves the channel it made and says why, so another click leaves none behind either",

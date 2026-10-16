@@ -71,7 +71,7 @@ import * as worktree from "./worktree.ts";
 import type { Worktree } from "./worktree.ts";
 import { cloneFolder } from "../core/remotes.ts";
 import { byCodeUnit, oneLine, problemOf } from "../core/text.ts";
-import { commandLineOf, defaultAgentOf, fitText, HUB, isAgent, isChannel, MAX_PATCH, MAX_SKEW, MODES, nameSchema, ownerOf, permissionModeSchema, PROTOCOL } from "../core/wire.ts";
+import { commandLineOf, defaultAgentOf, fitText, HUB, isAgent, isChannel, MAX_PATCH, MAX_SKEW, MODES, nameSchema, ownerOf, permissionModeSchema, PROTOCOL, repoSchema } from "../core/wire.ts";
 import type { Agent, ChannelInfo, Delivered, Event, PermissionMode, Person, RepoRef, TeamRepo } from "../core/wire.ts";
 
 const PRESENCE = 25; // Seconds between asking the hub who is here, which channels there are and who has which repo. Each is a signed request, which is what says the user is here; the repo scan runs on the same beat.
@@ -401,6 +401,7 @@ export class Session {
   private connected = false;
   private problem = "";
   private toldKey = false; // Whether the user has been told the hub lists another key for them.
+  private unshared = ""; // Why some of the user's repos were last not shared, told once and again only when it changes; "" when all were.
   private loaded = false;
   private attentive = true; // Whether the user is looking at the window. Messages that arrive while they are not stay unread.
   private following: Promise<void> = Promise.resolve();
@@ -1342,18 +1343,62 @@ export class Session {
     this.prefix = info.repos;
   }
 
-  /** Look under ~/dev for the team's repos, tell the hub when the list or a branch has changed, and tell everyone the key of each one's agent; of those the user holds back, nothing. */
+  /**
+   * Look under ~/dev for the team's repos, tell the hub when the list or a branch has changed, and tell everyone the key of each one's agent; of those the user holds back, nothing.
+   * What one checkout makes impossible stops only that one, and the user is told why: a checkout on a branch the hub cannot take, as one of more than 200 characters, is not shared, as
+   * one whose name it cannot take is not; an agent whose key cannot be used is not registered, and its runs say why; a list the hub refuses, as one of more than it takes, is not sent.
+   * None of them keeps the desk from following the hub, which this comes first in.
+   */
   private async share(): Promise<void> {
     const found = await repos.scan(this.dev, this.prefix);
-    const shared = found.filter((checkout) => !this.isHeld(checkout.remote.name));
+    const problems = new Set<string>();
+    const shared = found.filter((checkout) => {
+      if (this.isHeld(checkout.remote.name)) {
+        return false;
+      }
+      if (!repoSchema.safeParse({ ...checkout.remote, branch: checkout.branch }).success) {
+        problems.add(`${checkout.path} is not shared: the hub cannot take the name of the branch it is on, ${oneLine(checkout.branch)}`);
+        return false;
+      }
+      return true;
+    });
     const adverts = shared.map((checkout) => ({ ...checkout.remote, branch: checkout.branch }));
     const mine = adverts.map((advert) => ({ ...advert, user: this.me }));
+    let refused = false; // Then none is shared, and no agent of them is registered either.
     if (JSON.stringify(mine) !== JSON.stringify(this.advertised)) {
-      await this.client.advertise(adverts);
-      this.advertised = mine;
-      this.team = this.withMine(this.team);
+      try {
+        await this.client.advertise(adverts);
+        this.advertised = mine;
+        this.team = this.withMine(this.team);
+      } catch (error) {
+        if (!(error instanceof Refused)) {
+          throw error; // The hub cannot be reached: the rest of the beat fails as well, and says so.
+        }
+        refused = true;
+        problems.add(`The hub refused the list of your ${String(adverts.length)} repos, so none of them is shared: ${error.message}`);
+      }
     }
-    await this.register(shared);
+    await this.register(
+      shared.filter((checkout) => {
+        if (refused) {
+          return false;
+        }
+        try {
+          agentKey(this.client.home, checkout.remote.name);
+          return true;
+        } catch (error) {
+          problems.add(problemOf(error));
+          return false;
+        }
+      })
+    );
+    const said = [...problems].join("\n\n");
+    if (said !== this.unshared) {
+      this.unshared = said;
+      if (said !== "") {
+        this.hooks.notice({ title: "some of your repos are not shared as they should be", body: said, severity: "error" });
+      }
+    }
     this.checkouts = new Map(found.map((checkout) => [checkout.remote.name, checkout]));
     const commits = new Map<string, string>();
     for (const { remote, path } of found) {
