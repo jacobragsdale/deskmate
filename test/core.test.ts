@@ -1032,6 +1032,9 @@ await test("a text is cut so the event carrying it fits what the hub accepts, ho
     assert.ok(eventSchema.safeParse(signEvent(key, { author: "jacob", to: "bob", kind: "job.result", content, ts: NOW, refs: [] })).success);
   }
   assert.equal(fitText("plain"), "plain");
+  // As much as fits, no less: 63,000 characters written as JSON, quotes and all.
+  assert.equal(JSON.stringify(fitText("a".repeat(70_000))).length, MAX_CONTENT - 1_000);
+  assert.equal(fitText(`${"a".repeat(62_997)}🎉`), "a".repeat(62_997)); // Not half of the last one, which would take one more.
 });
 
 await test("a checkout's default branch is the one its origin names, as git clone notes it, and none after git init", async (t) => {

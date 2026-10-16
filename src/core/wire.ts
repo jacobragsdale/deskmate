@@ -188,13 +188,19 @@ export function defaultAgentOf(config: Config): Agent {
   return agent;
 }
 
-/** Cut text so that, written as JSON in an event's content, it leaves room for the rest of the content, without leaving half a character at the end. Escaping can make text several times longer, so it is measured as written. */
+/**
+ * Cut text so that, written as JSON in an event's content, it leaves room for the rest of the content, without leaving half a character at the end. Escaping can make text several times
+ * longer, so it is measured as written; and what a start of it takes written so only grows with it, so the most characters that fit are found by halving, keeping all that fit.
+ */
 export function fitText(text: string): string {
-  let fitted = text.toWellFormed();
-  for (let room = MAX_TEXT; JSON.stringify(fitted).length > MAX_TEXT; room = Math.floor(room * 0.9)) {
-    fitted = Array.from(fitted).slice(0, room).join("");
+  const characters = Array.from(text.toWellFormed());
+  const fits = (count: number): boolean => JSON.stringify(characters.slice(0, count).join("")).length <= MAX_TEXT;
+  let [low, high] = [0, characters.length + 1]; // As many as `low` fit, as many as `high` do not.
+  while (high - low > 1) {
+    const middle = Math.floor((low + high) / 2);
+    [low, high] = fits(middle) ? [middle, high] : [low, middle];
   }
-  return fitted;
+  return characters.slice(0, low).join("");
 }
 
 /**
