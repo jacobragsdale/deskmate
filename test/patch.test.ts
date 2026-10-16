@@ -431,7 +431,7 @@ await test(
     // One whose lines are not what the checkout has: git says so, and nothing is asked.
     const stale = await sends("diff --git a/notes.txt b/notes.txt\n--- a/notes.txt\n+++ b/notes.txt\n@@ -1,3 +1,3 @@\n one\n-zwei\n+TWO\n three\n");
     await assert.rejects(asker.handle({ do: "applyPatch", id: stale }), new RegExp(`^Error: it does not apply to ${theirs}: error: .*notes\\.txt`));
-    assert.deepEqual([applies().length, questions], [1, []]);
+    assert.deepEqual([applies().length, questions], [2, []]); // Asked whether it applies, and whether the checkout holds it already.
 
     // One that applies: bob is asked, in words that name the repo, its folder and branch, the files, his uncommitted work and the instructions file. No leaves all as it was.
     const diff = [
@@ -564,6 +564,16 @@ await test(
 
     await assert.rejects(asker.handle({ do: "applyPatch", id }), { message: `it is in ${theirs} already: nothing to apply` });
     assert.deepEqual([questions.length, applied()], [1, 1]);
+
+    // One in the checkout that the chat was never told of, as when Apply's word to it did not reach the hub: Apply tells it now, without asking, and changes nothing.
+    const lost = diff.replaceAll("again.txt", "lost.txt");
+    const { id: other } = (await jacob.publish("#team", "patch", { repo: UPLOADER, base: git(mine, "rev-parse", "HEAD").trim(), branch: "main", title: "Add lost.txt", diff: lost })).event;
+    const told = (): number | undefined => asker.view().current?.messages.find((message) => message.id === other)?.patch?.applied.length;
+    await until("bob sees the second patch", () => told() === 0);
+    execFileSync("git", ["-C", theirs, "apply", "--index"], { input: lost });
+    await asker.handle({ do: "applyPatch", id: other });
+    await until("bob sees it told", () => told() === 1);
+    assert.deepEqual([questions.length, readFileSync(join(theirs, "lost.txt"), "utf8")], [1, "x\n"]);
   }
 );
 

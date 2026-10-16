@@ -28,20 +28,18 @@ function conflicted(stderr: string): boolean {
  * store, even to check: so git writes them in a folder of their own, removed afterwards, and reads the repository's own objects beside it, and nothing of someone else's patch is kept
  * before the user has said yes.
  */
-export async function check(path: string, diff: string): Promise<{ readonly conflicts: boolean }> {
+export async function check(path: string, diff: string): Promise<{ readonly conflicts: boolean; readonly present: boolean }> {
   const objects = (await run(["-C", path, "rev-parse", "--path-format=absolute", "--git-path", "objects"], `git rev-parse in ${path}`)).trim();
   const folder = mkdtempSync(join(tmpdir(), "player-two-objects-"));
   try {
     const done = await git(["-C", path, "apply", "--check", "--3way"], LIMIT, diff, { GIT_OBJECT_DIRECTORY: folder, GIT_ALTERNATE_OBJECT_DIRECTORIES: objects });
-    if (!done.ok) {
+    // `present` when the checkout holds it already, as after Apply, or after an Apply whose word to the chat did not reach the hub: git takes it again three ways as a change of
+    // nothing, or refuses it as not applying, and what undoing it finds there tells which.
+    const present = (await git(["-C", path, "apply", "--check", "--reverse"], LIMIT, diff)).ok;
+    if (!done.ok && !present) {
       throw new Error(`it does not apply to ${path}: ${done.timedOut ? `git gave no answer within ${String(LIMIT)} seconds` : lastWords(done.stderr)}`);
     }
-    // One the checkout holds already, as after Apply, applies again three ways as a change of nothing, which the chat would be told of as applied once more: what undoing it
-    // finds there says so.
-    if ((await git(["-C", path, "apply", "--check", "--reverse"], LIMIT, diff)).ok) {
-      throw new Error(`it is in ${path} already: nothing to apply`);
-    }
-    return { conflicts: conflicted(done.stderr) };
+    return { conflicts: !present && conflicted(done.stderr), present };
   } finally {
     rmSync(folder, { recursive: true, force: true });
   }

@@ -2053,8 +2053,17 @@ export class Session {
   private async applyPatch(id: string): Promise<void> {
     const target = this.toApply(id);
     const { message, patch, checkout } = target;
-    const { conflicts } = await patches.check(checkout.path, patch.diff);
+    const { conflicts, present } = await patches.check(checkout.path, patch.diff);
     const head = await this.describe(checkout);
+    if (present) {
+      // Nothing to apply. Told to the chat once, without asking, as when an Apply changed the checkout but its word to the chat did not reach the hub; refused after that.
+      if (message.patch?.applied.some((each) => each.who === this.me && each.branch === head.branch) === true) {
+        throw new PlayerTwoError(`it is in ${checkout.path} already: nothing to apply`);
+      }
+      await this.publish(chatOf(message.entry.event, this.me), "patch.applied", { branch: head.branch }, [id]);
+      this.hooks.notice({ title: "", body: `It was in ${checkout.path} already, so nothing was applied; the chat is told it is applied on ${head.branch}.`, severity: "info" });
+      return;
+    }
     const warnings = [
       ...(head.dirty ? ["⚠ Your checkout has changes you have not committed. The patch goes in beside them, and is added to the index."] : []),
       ...(conflicts ? ["⚠ It does not apply cleanly: git will leave conflict markers in what it cannot merge, for you to resolve."] : [])
