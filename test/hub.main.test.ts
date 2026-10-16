@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -25,6 +26,27 @@ await test("the hub refuses to start without its settings and names each one", (
     [listed.status, listed.stderr],
     [1, "player-two: PLAYER_TWO_WEBHOOK_ALLOW *.corp.internal is not a host name or an IP address; a name lets the hub call every name under it, so example.com rather than *.example.com\n"]
   );
+});
+
+await test("a hub that cannot listen says where in one line and exits, its database closed", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "player-two-hub-main-"));
+  const holder = createServer();
+  await new Promise<void>((resolve) => {
+    holder.listen(0, "127.0.0.1", resolve);
+  });
+  t.after(() => {
+    holder.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const address = holder.address();
+  const port = address !== null && typeof address === "object" ? String(address.port) : "";
+  const env = { PLAYER_TWO_JOIN_TOKEN: TOKEN, PLAYER_TWO_DB: join(dir, "hub.db"), PLAYER_TWO_REPOS: "https://dev.azure.com/acme/" };
+
+  const run = spawnSync(process.execPath, [COMMAND, "hub", "--port", port], { env, encoding: "utf8", timeout: 10_000 });
+
+  assert.equal(run.status, 1);
+  assert.equal(run.stderr.split("\n").at(-2), `player-two: the hub cannot listen on 127.0.0.1 port ${port}: listen EADDRINUSE: address already in use 127.0.0.1:${port}`);
+  assert.doesNotMatch(run.stderr, /Unhandled 'error' event|\n {4}at /);
 });
 
 await test("the hub stops at once when told to, even with a reader waiting", { timeout: 20_000 }, async (t) => {

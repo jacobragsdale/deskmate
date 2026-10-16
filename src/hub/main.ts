@@ -39,8 +39,11 @@ const log: Log = (event, facts) => {
   console.error([event, ...Object.entries(facts).map(([key, value]) => `${key}=${String(value)}`)].join(" "));
 };
 
-/** Start the hub and return its server. Throws, with words for whoever started it, when a setting is missing or wrong. */
-export function runHub(args: readonly string[], env: NodeJS.ProcessEnv): Server {
+/**
+ * Start the hub and resolve with its server once it is listening. Rejects, with words for whoever started it, when a setting is missing or wrong, or when it cannot listen where it was
+ * told to, as when another program holds the port, and then closes its database first.
+ */
+export async function runHub(args: readonly string[], env: NodeJS.ProcessEnv): Promise<Server> {
   const { values } = parseArgs({ args: [...args], options: { host: { type: "string", default: "127.0.0.1" }, port: { type: "string", default: "8787" } } });
   const settings = settingsSchema.safeParse(env);
   const port = portSchema.safeParse(values.port);
@@ -51,10 +54,20 @@ export function runHub(args: readonly string[], env: NodeJS.ProcessEnv): Server 
     throw new Error(`--port ${values.port} is not a port number`);
   }
   const server = createHub(settings.data, undefined, log);
-  server.listen(port.data, values.host, () => {
-    const address = server.address();
-    log("hub listening", { host: values.host, port: address !== null && typeof address === "object" ? address.port : port.data });
+  await new Promise<void>((resolve, reject) => {
+    // Only while it starts: an error then is the port or the host, said in one line rather than as Node's unhandled 'error' with its stack.
+    const failed = (error: Error): void => {
+      server.close(); // Which closes the database.
+      reject(new Error(`the hub cannot listen on ${values.host} port ${values.port}: ${problemOf(error)}`));
+    };
+    server.once("error", failed);
+    server.listen(port.data, values.host, () => {
+      server.off("error", failed);
+      resolve();
+    });
   });
+  const address = server.address();
+  log("hub listening", { host: values.host, port: address !== null && typeof address === "object" ? address.port : port.data });
   process.once("SIGTERM", () => {
     log("hub stopping", {});
     // Nothing in flight is worth waiting for: a request is answered in one turn of the loop once it has arrived, and a reader holding the stream open opens it again from where it was.

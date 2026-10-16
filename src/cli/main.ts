@@ -514,11 +514,11 @@ async function doctor(home: string, args: string[], out: (line: string) => void)
 }
 
 /** Run the hub, or with `verify`, check the chain of its log and say that it holds. */
-function hub(args: string[], out: (line: string) => void): void {
+async function hub(args: string[], out: (line: string) => void): Promise<void> {
   if (args[0] === "verify") {
     out(verifyHub(process.env));
   } else {
-    runHub(args, process.env); // It keeps the program alive from here, until it is told to stop.
+    await runHub(args, process.env); // Once it listens, it keeps the program alive from here, until it is told to stop.
   }
 }
 
@@ -578,7 +578,7 @@ async function run(argv: readonly string[], options: Options, out: (line: string
   const asUser = AS_USER.get(command);
   switch (command) {
     case "hub":
-      hub(args, out);
+      await hub(args, out);
       break;
     case "desk":
       globalThis.console = new console.Console(process.stderr); // Standard output carries the protocol's lines and nothing else, so whatever anything logs goes to standard error.
