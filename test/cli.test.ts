@@ -445,6 +445,11 @@ await test("workflow publish reads a file and publishes it to a channel, list sh
   // A file that does not read says where, and sends nothing; the hub's refusals are said as it says them.
   const head = await alice.head();
   assert.deepEqual(await playerTwo(hub, "alice", ["workflow", "publish", broken, "--in", "ops"]), { status: 1, out: "", err: `player-two: ${broken}: line 5: steps.0.text: required` });
+  assert.deepEqual(await playerTwo(hub, "alice", ["workflow", "publish", hub.dir, "--in", "ops"]), {
+    status: 1,
+    out: "",
+    err: `player-two: ${hub.dir}: EISDIR: illegal operation on a directory, read`
+  });
   assert.deepEqual(await playerTwo(hub, "carol", ["workflow", "publish", ci, "--in", "ops"]), { status: 1, out: "", err: "player-two: join #ops before posting to it" });
   assert.deepEqual(await alice.head(), head);
 

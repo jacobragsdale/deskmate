@@ -465,8 +465,9 @@ function workflowAsked(args: string[]): { readonly action: "publish" | "list" | 
 
 /** The workflow in a file, with the file's text; or a failure naming the file, the line that is wrong and why. */
 function workflowIn(path: string): { readonly yaml: string; readonly file: Workflow } {
-  const yaml = readFileSync(path, "utf8");
   try {
+    // Reading is inside too: Node names the file in most of its errors, but reading a directory says only "EISDIR: illegal operation on a directory, read".
+    const yaml = readFileSync(path, "utf8");
     return { yaml, file: parseWorkflow(yaml) };
   } catch (error) {
     throw new PlayerTwoError(`${path}: ${problemOf(error)}`, { cause: error });
