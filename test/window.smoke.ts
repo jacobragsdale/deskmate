@@ -927,6 +927,7 @@ await test(
     );
     await page.press("Escape");
     await page.until("the dialog to close", `document.querySelector('[role="dialog"]') === null`);
+    await page.until("the focus back in the message box", `document.activeElement?.getAttribute("aria-label") === "Message bob"`);
 
     // What a teammate writes is drawn as text, in plain messages and in Markdown alike: nothing in it runs or loads.
     await bob.publish("alice", "message", { text: `<script>window.pwned = 1</script><img src="x" onerror="window.pwned = 2"> plain`, via: "cli" });

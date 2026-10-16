@@ -18,6 +18,7 @@ const PAUSE = 250; // Milliseconds without typing before the words are searched 
 
 /** A modal dialog, open for as long as it is drawn, that reports "" when it is dismissed with Esc, its close button or a click outside it. */
 export function Modal({ title, onDismiss, className, children }: { readonly title: string; readonly onDismiss: () => void; readonly className?: string; readonly children: ReactNode }): JSX.Element {
+  const [before] = useState(() => document.activeElement); // Where the focus was as the dialog opened: the message box, after Ctrl+N or Ctrl+K, or the button that opened it.
   return (
     <Dialog
       open
@@ -28,7 +29,17 @@ export function Modal({ title, onDismiss, className, children }: { readonly titl
       }}
     >
       {/* The title says it all, so there is no description to point to. */}
-      <DialogContent className={cn("gap-3 sm:max-w-sm", className)} aria-describedby={undefined}>
+      <DialogContent
+        className={cn("gap-3 sm:max-w-sm", className)}
+        aria-describedby={undefined}
+        onCloseAutoFocus={(event) => {
+          // A dialog opened by a key has no button to give the focus back to, so it goes back where it was, unless something has taken it since, as a chat opened from the dialog does.
+          event.preventDefault();
+          if (document.activeElement === document.body && before instanceof HTMLElement) {
+            before.focus();
+          }
+        }}
+      >
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
         </DialogHeader>
