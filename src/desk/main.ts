@@ -18,6 +18,8 @@ import type { Hooks } from "./session.ts";
 import { shellPath } from "./shellEnv.ts";
 import { sweep } from "./worktree.ts";
 
+const SIGNALS = ["SIGTERM", "SIGINT", "SIGHUP"] as const; // What asks a process to end: a terminal's Ctrl-C, its closing, and kill.
+
 // A command line whose command the desk cannot read, as one from a newer window's would be: enough of it to give the one reply it is owed.
 const unreadCommandSchema = z.object({ t: z.literal("command"), id: z.int(), command: z.unknown().optional() });
 
@@ -62,8 +64,23 @@ class Desk {
     await sweep(defaultDev()); // Before any run can make a worktree of its own.
     this.start();
     this.changed();
-    for await (const text of createInterface({ input })) {
-      this.accept(text);
+    const lines = createInterface({ input });
+    // A signal ends the desk as the end of its input does, its agents stopped and the chat told, where Node's own handling of one ends the process at once and leaves the agents,
+    // each in a process group of its own, running on. Before this nothing has started an agent.
+    const end = (): void => {
+      lines.close();
+    };
+    for (const signal of SIGNALS) {
+      process.once(signal, end);
+    }
+    try {
+      for await (const text of lines) {
+        this.accept(text);
+      }
+    } finally {
+      for (const signal of SIGNALS) {
+        process.off(signal, end);
+      }
     }
     this.ended = true;
     this.stopping.abort();

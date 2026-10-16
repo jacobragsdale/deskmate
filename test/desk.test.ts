@@ -198,3 +198,30 @@ await test("the built command run as `player-two desk` says hello, shows the joi
     { t: "view", view: { kind: "setup", presets: PRESETS } }
   ]);
 });
+
+await test("the built desk ends on SIGTERM, SIGINT or SIGHUP as it does at the end of its input, rather than at once with its agents left running", { timeout: 30_000 }, async (t) => {
+  for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) {
+    const home = mkdtempSync(join(tmpdir(), "player-two-desk-"));
+    t.after(() => {
+      rmSync(home, { recursive: true, force: true });
+    });
+    const desk = spawn(process.execPath, [BUILT, "desk"], { env: { ...process.env, PLAYER_TWO_HOME: home }, stdio: ["pipe", "pipe", "pipe"] });
+    t.after(() => {
+      desk.kill("SIGKILL");
+    });
+    const exited = new Promise<readonly [number | null, string | null]>((resolve) => {
+      desk.once("close", (code, by) => {
+        resolve([code, by]);
+      });
+    });
+    let lines = 0;
+    createInterface({ input: desk.stdout }).on("line", () => {
+      lines += 1;
+      if (lines === 2) {
+        desk.kill(signal); // The join form is up, so it is listening.
+      }
+    });
+
+    assert.deepEqual(await exited, [0, null], signal); // It ended itself, having stopped what it runs, rather than being ended by the signal.
+  }
+});
