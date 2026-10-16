@@ -478,6 +478,15 @@ await test("two people, their agents and a channel, through the real hub", { tim
       ["bob", "joined", ""]
     ]
   );
+  await bob.session.handle({ do: "joinChannel", name: " backend " }); // Already in it: nothing is sent, as the command's join sends nothing, so nobody sees a second line.
+  assert.deepEqual(
+    bob.session.view().current?.lines.map((line) => [line.who, line.did]),
+    [
+      ["jacob", "joined"],
+      ["jacob", "pinned"],
+      ["bob", "joined"]
+    ]
+  );
   await bob.session.handle({ do: "leaveChannel", chat: "#backend" });
   assert.ok(!bob.session.view().rows.some((row) => row.chat === "#backend"));
 
