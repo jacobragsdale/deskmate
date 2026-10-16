@@ -19,6 +19,7 @@ import { loadKey, newKey, privateHex, publicHex, signEvent } from "../src/core/s
 import { eventSchema, PROTOCOL } from "../src/core/wire.ts";
 import type { Delivered } from "../src/core/wire.ts";
 import { agentEnv, agentKey } from "../src/desk/agentKeys.ts";
+import { PRESETS } from "../src/desk/agents/presets.ts";
 import { http, loadClient } from "../src/desk/client.ts";
 import type { Client, Transport } from "../src/desk/client.ts";
 import { checkSchema } from "../src/shared/ipc.ts";
@@ -122,6 +123,13 @@ await test("main joins sends and lists messages", async (t) => {
     `joined ${hub.url} as bob; your agent is agent -p 'two words', \`agent -p 'two words'\``
   );
   assert.equal((await playerTwo(hub, "bob", ["join", hub.url, "bob", TOKEN, "--agent", "copilot"])).out, `joined ${hub.url} as bob; your agent is Copilot, \`copilot --acp --stdio\``); // A preset, by its id.
+  const config = join(hub.dir, "bob", "config.json");
+  const kept = { ...z.record(z.string(), z.unknown()).parse(JSON.parse(readFileSync(config, "utf8"))), ownMode: "full", held: ["uploader"] };
+  writeFileSync(config, JSON.stringify(kept));
+  assert.equal((await playerTwo(hub, "bob", ["join", hub.url, "bob", TOKEN])).out, `joined ${hub.url} as bob; your agent is Copilot, \`copilot --acp --stdio\``); // Joining again keeps the rest.
+  assert.deepEqual(JSON.parse(readFileSync(config, "utf8")), kept);
+  await playerTwo(hub, "bob", ["join", hub.url, "bob", TOKEN, "--agent", "cursor"]);
+  assert.deepEqual(JSON.parse(readFileSync(config, "utf8")), { ...kept, agents: [PRESETS[1]], defaultAgent: "cursor" }); // Only the agents are replaced.
   assert.deepEqual(await playerTwo(hub, "alice", ["send", "bob", "lunch", "at", "noon?"]), { status: 0, out: "→ sent 1 to bob", err: "" });
 
   const inbox = await playerTwo(hub, "bob", ["inbox"]);

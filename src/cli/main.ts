@@ -16,7 +16,7 @@ import { hookAddress, parseWorkflow, setOff } from "../core/workflow.ts";
 import type { Trigger, Workflow } from "../core/workflow.ts";
 import { channelSchema, commandLineOf, defaultAgentOf, fitText, isAgent, isChannel, nameSchema, ownerOf } from "../core/wire.ts";
 import type { ChannelInfo, Delivered, Event } from "../core/wire.ts";
-import { DEFAULT_PRESET, oneshotAgent, PRESETS } from "../desk/agents/presets.ts";
+import { oneshotAgent, PRESETS } from "../desk/agents/presets.ts";
 import { defaultDev, defaultHome, http, join, loadClient, PlayerTwoError } from "../desk/client.ts";
 import type { Client, Transport } from "../desk/client.ts";
 import { runChecks } from "../desk/doctor.ts";
@@ -526,13 +526,14 @@ async function workflow(joined: () => Client, args: string[], out: (line: string
 }
 
 async function register(home: string, transport: Transport, args: string[], out: (line: string) => void): Promise<void> {
-  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { agent: { type: "string", default: DEFAULT_PRESET.id } } });
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { agent: { type: "string" } } });
   const [hub, name, token] = positionals;
   if (hub === undefined || name === undefined || token === undefined || positionals.length > 3) {
     throw new UsageError("join takes the hub's address, your name and the join token");
   }
-  // A preset by its id, or else a one-shot command typed as one line.
-  const config = await join(home, hub, name, token, PRESETS.find((preset) => preset.id === values.agent) ?? oneshotAgent(values.agent), transport);
+  // A preset by its id, or else a one-shot command typed as one line; without one, the agents config.json has, or for a first join, the default preset.
+  const given = values.agent === undefined ? null : (PRESETS.find((preset) => preset.id === values.agent) ?? oneshotAgent(values.agent));
+  const config = await join(home, hub, name, token, given, transport);
   const agent = defaultAgentOf(config);
   out(`joined ${config.hub} as ${config.name}; your agent is ${agent.label}, \`${commandLineOf(agent)}\``);
 }

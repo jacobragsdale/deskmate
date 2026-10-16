@@ -36,7 +36,7 @@ import {
 } from "../core/wire.ts";
 import type { Agent, ChannelInfo, Config, Delivered, Event, HubInfo, Person, Repo, TeamRepo } from "../core/wire.ts";
 import { AGENT_KEY_VAR, AGENT_VAR, JOB_VAR, ONLY_CHAT_VAR } from "./agentKeys.ts";
-import { oneshotAgent } from "./agents/presets.ts";
+import { DEFAULT_PRESET, oneshotAgent } from "./agents/presets.ts";
 
 const CALL_TIMEOUT = 10; // Seconds any one request but the stream may take.
 const CATCH_UP_PAGE = 200; // Events one catching-up request asks for: the most the hub gives at once.
@@ -595,9 +595,14 @@ export function defaultDev(): string {
   return override === "" ? joinPath(homedir(), "dev") : override;
 }
 
-/** Register a name with a hub, creating a key first if this machine has none. `agent` is the one agent it starts with. */
-export async function join(home: string, hub: string, name: string, token: string, agent: Agent, transport: Transport): Promise<Config> {
-  const config = configSchema.parse({ hub: hub.replace(/\/+$/, ""), name, agents: [agent], defaultAgent: agent.id, ownMode: "auto-edits" });
+/**
+ * Register a name with a hub, creating a key first if this machine has none. `agent`, when given, is the one agent it starts with, replacing any there were. Joining again keeps what config.json
+ * held otherwise: the agents, which of them answers, the mode the user's own requests run at and the repos held back, so that a repo held back is not shared again by joining.
+ */
+export async function join(home: string, hub: string, name: string, token: string, agent: Agent | null, transport: Transport): Promise<Config> {
+  const before = existsSync(joinPath(home, "config.json")) ? readConfig(home) : null;
+  const agents = agent === null ? null : { agents: [agent], defaultAgent: agent.id };
+  const config = configSchema.parse({ ...(before ?? { agents: [DEFAULT_PRESET], defaultAgent: DEFAULT_PRESET.id, ownMode: "auto-edits" }), ...agents, hub: hub.replace(/\/+$/, ""), name });
   mkdirSync(home, { mode: 0o700, recursive: true });
   const keyFile = joinPath(home, "key");
   if (!existsSync(keyFile)) {
