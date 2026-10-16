@@ -26,7 +26,7 @@ import { AgentCancelledError, AgentTimedOutError, PlayerTwoError } from "../clie
 import { decide } from "../permissions.ts";
 import type { Action, Decision, PermissionMode } from "../permissions.ts";
 import { actionOf, Feed, LINE, summaryOf } from "./activity.ts";
-import { AGENT_TIMEOUT } from "./oneshot.ts";
+import { AGENT_TIMEOUT, killAgent } from "./oneshot.ts";
 import { signInFor } from "./presets.ts";
 import type { AgentRunner, FollowUp, Pausable, RunHandlers } from "./runner.ts";
 
@@ -360,11 +360,7 @@ class Conversation {
   public async end(): Promise<void> {
     this.connection.close();
     if (this.child.pid !== undefined) {
-      try {
-        process.kill(-this.child.pid, "SIGKILL");
-      } catch {
-        // No such group: the agent has already gone.
-      }
+      killAgent(this.child.pid);
     }
     await this.gone;
   }

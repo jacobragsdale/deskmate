@@ -1,6 +1,7 @@
 /** An agent as a one-shot command: run its program and arguments with the prompt as the last argument, and take what it prints as the answer. */
 
 import { spawn } from "node:child_process";
+import { readdirSync, readFileSync } from "node:fs";
 import { join as joinPath } from "node:path";
 
 import type { Agent, PermissionMode } from "../../core/wire.ts";
@@ -32,6 +33,60 @@ export function splitCommand(command: string): string[] {
   return word === null ? words : [...words, word];
 }
 
+/** Every process under `pid`, its children's children too, as /proc has them now; none where there is no /proc to read. */
+function descendants(pid: number): number[] {
+  let names: string[];
+  try {
+    names = readdirSync("/proc").filter((name) => /^\d+$/.test(name));
+  } catch {
+    return [];
+  }
+  const children = new Map<number, number[]>();
+  for (const name of names) {
+    let stat: string;
+    try {
+      stat = readFileSync(`/proc/${name}/stat`, "utf8");
+    } catch {
+      continue; // Gone since the folder was listed.
+    }
+    // The parent's pid follows the state, after the command's name in parentheses, which may itself hold spaces and parentheses.
+    const parent = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
+    children.set(parent, [...(children.get(parent) ?? []), Number(name)]);
+  }
+  const found: number[] = [];
+  const walk = (parent: number): void => {
+    for (const child of children.get(parent) ?? []) {
+      found.push(child);
+      walk(child);
+    }
+  };
+  walk(pid);
+  return found;
+}
+
+/**
+ * Kill an agent started in a process group of its own, and everything it started: the group, and each process under it with the group it leads, as a command the agent ran in the
+ * background in a session of its own has left the agent's group, and would otherwise outlive the run once the agent has gone. Those under it are found before anything is killed.
+ * ponytail: where there is no /proc, as on macOS, only the group is killed; walk `ps` there if agents run there.
+ */
+export function killAgent(pid: number): void {
+  const under = descendants(pid);
+  for (const each of [pid, ...under]) {
+    try {
+      process.kill(-each, "SIGKILL");
+    } catch {
+      // Not a group's leader, or gone: its own group goes with its leader.
+    }
+  }
+  for (const each of under) {
+    try {
+      process.kill(each, "SIGKILL");
+    } catch {
+      // Already gone.
+    }
+  }
+}
+
 /** Run the agent command, with `env` added to this process's environment, and resolve with what it printed. Aborting `cancel` stops it and everything it started. */
 export const runAgent: Runner = (argv, cwd, cancel, env = {}) =>
   new Promise((resolve, reject) => {
@@ -51,11 +106,7 @@ export const runAgent: Runner = (argv, cwd, cancel, env = {}) =>
       if (child.pid === undefined) {
         return; // It never started; the "error" event reports why.
       }
-      try {
-        process.kill(-child.pid, "SIGKILL");
-      } catch {
-        // No such group: the agent has already gone.
-      }
+      killAgent(child.pid);
     };
     const onCancel = (): void => {
       stop("cancelled");

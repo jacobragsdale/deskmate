@@ -1114,6 +1114,39 @@ await test("running an agent returns what it printed, in the environment it is g
   }, 100);
   await assert.rejects(run, AgentCancelledError);
   assert.ok(Date.now() - started < 5000);
+  // What it started in a session of its own, as an agent's command run in the background may be, which has left the agent's process group, is stopped with it.
+  const pidFile = join(mkdtempSync(join(tmpdir(), "player-two-agent-")), "pid");
+  const escaping = new AbortController();
+  const detached = runAgent(["sh", "-c", `setsid sleep 30 & echo $! > ${pidFile}; wait`], process.cwd(), escaping.signal);
+  const written = async (): Promise<number> => {
+    for (let tries = 0; tries < 50; tries += 1) {
+      await delay(50);
+      const found = Number(readFileSync(pidFile, { encoding: "utf8", flag: "a+" }).trim());
+      if (found > 0) {
+        return found;
+      }
+    }
+    return 0;
+  };
+  const pid = await written();
+  const stopped = Date.now();
+  escaping.abort();
+  await assert.rejects(detached, AgentCancelledError);
+  assert.ok(Date.now() - stopped < 5000); // Not once the command has ended on its own: it held the agent's output open until then.
+  const alive = (): boolean =>
+    readFileSync(`/proc/${String(pid)}/stat`, { encoding: "utf8", flag: "r" })
+      .split(") ")[1]
+      ?.startsWith("Z") === false;
+  let left = true;
+  for (let tries = 0; tries < 40 && left; tries += 1) {
+    await delay(50);
+    try {
+      left = alive();
+    } catch {
+      left = false; // Gone, and reaped.
+    }
+  }
+  assert.ok(pid > 0 && !left, `the command the agent started in its own session, pid ${String(pid)}, outlived the agent`);
 });
 
 await test("a one-shot agent runs only at a mode its command can keep to: Cursor's read-only as it is or at full with --force, any other only at full, and nothing starts at another", async () => {
