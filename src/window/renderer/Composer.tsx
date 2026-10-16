@@ -16,6 +16,14 @@ import { PatchCard } from "./Patch.tsx";
 
 const TAG_BEING_TYPED = /(?:^|\s)@([\w./-]*)$/;
 
+type Boxes = Readonly<Record<string, string>>;
+
+/**
+ * What is in each chat's message box, by chat, kept beside the box rather than in it, so that it outlives the box: while the window shows "Loading…" as a desk started again loads the chats,
+ * and while the My agents or Setup page is open. A message that could not be sent is put back here even when the box has gone by then, and is in the box when it comes back.
+ */
+let boxes: Boxes = {};
+
 /** What names one row of the list of agents, for React and for the list's own idea of which row is highlighted. */
 function rowOf(pick: Candidate): string {
   return `${pick.owner}/${pick.repo}/${String(pick.clone)}`;
@@ -98,14 +106,19 @@ function Review({ current, submit, tell, act }: Omit<Props, "view">): JSX.Elemen
 export function Composer({ view, current, act, submit, tell }: Props): JSX.Element {
   const chat = current.chat;
   const box = useRef<HTMLTextAreaElement>(null);
-  const [typed, setTyped] = useState<Readonly<Record<string, string>>>({}); // Per chat, what is in its message box.
+  const [typed, setTyped] = useState<Boxes>(boxes); // Per chat, what is in its message box.
   const [lastSent, setLastSent] = useState<Readonly<Record<string, string>>>({}); // Per chat, for ↑ to bring back.
   const [caret, setCaret] = useState(0);
   const [picked, setPicked] = useState(0);
   const [closedFor, setClosedFor] = useState(""); // The tag being typed when Esc closed the list; typing on opens it again.
   const text = typed[chat] ?? "";
+  /** Change what is in the message boxes, here and in `boxes`, which the box starts from when it is shown again. */
+  const keep = (change: (all: Boxes) => Boxes): void => {
+    boxes = change(boxes);
+    setTyped(boxes);
+  };
   const setText = (value: string): void => {
-    setTyped((all) => ({ ...all, [chat]: value }));
+    keep((all) => ({ ...all, [chat]: value }));
   };
 
   useEffect(() => {
@@ -144,7 +157,7 @@ export function Composer({ view, current, act, submit, tell }: Props): JSX.Eleme
       .then((problem) => {
         if (problem !== "") {
           // Put an unsent message back where it was, unless something newer has been typed there since.
-          setTyped((all) => ((all[chat] ?? "") === "" ? { ...all, [chat]: message } : all));
+          keep((all) => ((all[chat] ?? "") === "" ? { ...all, [chat]: message } : all));
           tell({ title: `not sent to ${chat}`, body: problem, severity: "error" });
         }
       })

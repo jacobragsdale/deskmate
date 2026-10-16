@@ -26,6 +26,7 @@ const ROOT = join(import.meta.dirname, "..");
 const FAKE = join(import.meta.dirname, "fixtures", "fake-acp-agent.ts"); // The scripted ACP agent, which acts on words in its prompt.
 const NO_DISPLAY = process.platform === "linux" && (process.env["DISPLAY"] ?? "") === "" && (process.env["WAYLAND_DISPLAY"] ?? "") === "";
 const KEYS = {
+  Backspace: { code: "Backspace", keyCode: 8 },
   Enter: { code: "Enter", keyCode: 13 },
   Escape: { code: "Escape", keyCode: 27 },
   ArrowUp: { code: "ArrowUp", keyCode: 38 },
@@ -1402,6 +1403,8 @@ await test(
     await page.press("Escape");
     await page.until("the menu closed once more", `document.querySelector('[role="menu"]') === null`);
 
+    // What she has typed and not sent outlives the message box while My agents is open in its place: it is there again when she comes back.
+    await page.type('textarea[aria-label^="Message "]', "typed and not sent");
     // On My agents, a grant on it below full would never run with nobody watching, so the dialog offers full alone, and says where to test it.
     await page.click("footer button", "My agents");
     const newGrant = `[...document.querySelectorAll('li[data-repo="billing"] button')].find((each) => each.textContent === "New grant")`;
@@ -1421,6 +1424,10 @@ await test(
     await page.press("Escape");
     await page.until("the grant's dialog closed", `document.querySelector('[role="dialog"]') === null`);
     await page.click("button", "Back");
+    await page.until("what she typed, back in the box", `document.querySelector('textarea[aria-label^="Message "]')?.value === "typed and not sent"`);
+    await page.eval(`document.querySelector('textarea[aria-label^="Message "]').select()`);
+    await page.press("Backspace");
+    await page.until("the box empty again", `document.querySelector('textarea[aria-label^="Message "]')?.value === ""`);
 
     // My agents, with the scripted agent answering again: a row for her billing agent, on its branch, and who answers for it. From its dialog, which offers the modes that agent can keep, she
     // grants full access posted directly for anyone, which asks a second yes first, and carol read-only, posted directly, three times a day, double-clicking each time: each makes one grant.
