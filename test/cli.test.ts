@@ -15,11 +15,11 @@ import { z } from "zod";
 import { main, render } from "../src/cli/main.ts";
 import { readContent } from "../src/core/kinds.ts";
 import { noteLink } from "../src/core/links.ts";
-import { loadKey, publicHex, signEvent } from "../src/core/sign.ts";
+import { loadKey, newKey, privateHex, publicHex, signEvent } from "../src/core/sign.ts";
 import { eventSchema, PROTOCOL } from "../src/core/wire.ts";
 import type { Delivered } from "../src/core/wire.ts";
 import { agentEnv, agentKey } from "../src/desk/agentKeys.ts";
-import { http } from "../src/desk/client.ts";
+import { http, loadClient } from "../src/desk/client.ts";
 import type { Client, Transport } from "../src/desk/client.ts";
 import { checkSchema } from "../src/shared/ipc.ts";
 import { NOW, startHub, storedUnchecked, TOKEN } from "./startHub.ts";
@@ -254,6 +254,17 @@ await test("an address that answers but not as a hub does, with a web page or a 
       err: `player-two: ${url}/info did not answer as a Player Two hub does (${String(status)} text/html): is the hub's address right?`
     });
   }
+});
+
+await test("a hub that refuses this machine's key, its clock agreeing, is said to list another key for the user, and only clocks apart are said to be", async (t) => {
+  const hub = await startHub(t);
+  await hub.join("bob");
+  const home = join(hub.dir, "bob");
+  writeFileSync(join(home, "key"), privateHex(newKey())); // Another key here than the one the hub lists for bob, as when the hub's is swapped.
+  const swapped = "the hub refuses this machine's key for bob though the clocks agree, so it lists another key for bob, or none: tell whoever runs it";
+  assert.deepEqual(await playerTwo(hub, "bob", ["who"]), { status: 1, out: "", err: `player-two: ${swapped}` });
+  await assert.rejects(loadClient(home, http, () => NOW)?.users() ?? Promise.resolve(), { message: swapped }); // As the desk and the MCP server are told: they go through the same client.
+  await assert.rejects(loadClient(home, http, () => NOW + 301)?.users() ?? Promise.resolve(), { message: "not signed by a known user, or your clock is more than 5 minutes off" });
 });
 
 await test("before its first request the command asks which protocol the hub speaks, and asks nothing more of one that speaks another than to be updated", async (t) => {

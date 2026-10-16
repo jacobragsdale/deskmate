@@ -57,6 +57,7 @@ const auditHeadSchema = z.object({ seq: z.int(), chain: z.string() }).readonly()
 const pinsSchema = z.record(z.string(), z.string());
 const hubErrorSchema = z.object({ detail: z.string() });
 const protocolSchema = z.object({ protocol: z.int() }); // All of /info a client of any protocol can count on.
+const healthSchema = z.object({ now: z.number() }); // The hub's clock, which /healthz gives to anyone.
 const legacyConfigSchema = z.strictObject({ hub: z.string(), name: z.string(), agent: z.string() }); // config.json before phase 3.
 
 /** A search result's snippet cut at the hub's marks into plain stretches and the words the search found. */
@@ -546,12 +547,35 @@ export class Client {
       });
       await this.greeted;
     }
-    return this.transport(method, this.config.hub + path, this.headers(method, path, body), body);
+    return this.signed(method, path, body);
+  }
+
+  /**
+   * Send a request signed by this client. The hub refuses a signature with the same words whether it does not take the signer's key or the clocks are more than MAX_SKEW apart, as it cannot
+   * tell which; its clock, which /healthz gives without a signature, can. When the two agree, the hub lists another key for the signer than the one this machine holds, or none, as when it was
+   * started again on an empty database, and the refusal says so, so that the user is not sent to set a clock that is right.
+   */
+  private async signed(method: string, path: string, body: string | null = null): Promise<string> {
+    try {
+      return await this.transport(method, this.config.hub + path, this.headers(method, path, body), body);
+    } catch (error) {
+      if (!(error instanceof Refused) || error.status !== 401) {
+        throw error;
+      }
+      const hubNow = await this.transport("GET", `${this.config.hub}/healthz`, {}, null).then(
+        (answer) => healthSchema.parse(parseJson(answer)).now,
+        () => null
+      );
+      if (hubNow === null || Math.abs(this.now() - hubNow) >= MAX_SKEW) {
+        throw error;
+      }
+      throw new Refused(401, `the hub refuses this machine's key for ${this.signer} though the clocks agree, so it lists another key for ${this.signer}, or none: tell whoever runs it`);
+    }
   }
 
   /** Fail, with words that say which side to update, when the hub speaks another protocol than this one. */
   private async askProtocol(): Promise<void> {
-    const { protocol } = protocolSchema.parse(parseJson(await this.transport("GET", `${this.config.hub}/info`, this.headers("GET", "/info", null), null)));
+    const { protocol } = protocolSchema.parse(parseJson(await this.signed("GET", "/info")));
     if (protocol !== PROTOCOL) {
       const update = protocol > PROTOCOL ? "Player Two on this machine" : "the hub";
       throw new PlayerTwoError(`this hub speaks protocol ${String(protocol)}; this command speaks protocol ${String(PROTOCOL)}: update ${update}`);
