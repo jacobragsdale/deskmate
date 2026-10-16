@@ -68,12 +68,15 @@ export async function runHub(args: readonly string[], env: NodeJS.ProcessEnv): P
   });
   const address = server.address();
   log("hub listening", { host: values.host, port: address !== null && typeof address === "object" ? address.port : port.data });
-  process.once("SIGTERM", () => {
+  const stop = (): void => {
     log("hub stopping", {});
     // Nothing in flight is worth waiting for: a request is answered in one turn of the loop once it has arrived, and a reader holding the stream open opens it again from where it was.
     server.close();
     server.closeAllConnections();
-  });
+  };
+  process.once("SIGTERM", stop);
+  // Ctrl-C too, which the hub as a container's first process, with no handler, would never hear: `docker run -it` could not be stopped from its terminal, nor `docker kill -s INT` stop it.
+  process.once("SIGINT", stop);
   return server;
 }
 
