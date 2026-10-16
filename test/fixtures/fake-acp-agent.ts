@@ -10,7 +10,7 @@
  * `stray` asks under another session's id; `long` asks to edit under a title of two lines and over 300 characters; `mcp` says which MCP servers its session has; `whoami` says the agent its environment names in PLAYER_TWO_AGENT, the one chat PLAYER_TWO_ONLY_CHAT names, and the request PLAYER_TWO_JOB names, if they do;
  * `slow` waits until cancelled, with a child process of its own; `deaf` does the same but takes no notice of a cancel. Each `ask:OWNER/REPO` asks that agent "read" with the `ask_agent` tool of the
  * MCP server its session was given started with --job, all at once, and `ask:OWNER/REPO:TEXT` asks it TEXT, which may itself be an `ask:`; it says what each answered, or how each ended, and that it could not ask without such a server.
- * Whatever it did, it says so in a short message streamed in two chunks, after the number of the turn in its session. Told while it asks that its turn is cancelled, it ends the turn as cancelled, as ACP asks. Started with --signed-out it says it needs signing in, and signing in fails; with --always-only it offers no way to be allowed just once;
+ * Whatever it did, it says so in a short message streamed in two chunks, after the number of the turn in its session. Told while it asks that its turn is cancelled, it ends the turn as cancelled, as ACP asks. Started with --signed-out it says it needs signing in, and signing in fails; with --signed-out-at-prompt it opens a session but refuses every turn so, as Claude over ACP does once its credentials are gone; with --always-only it offers no way to be allowed just once;
  * with --no-asking it edits without asking first, as an agent that cannot be limited would; with --deaf every prompt is also `deaf`. It says it is version 1.2.3, or with --version-file=FILE what FILE holds, as an agent updated in place would.
  * It adds its pid, and its child's, to `pids` in its folder, or to the file --pids=FILE names, unless started with --no-pids, for a test of what it writes there.
  */
@@ -43,6 +43,7 @@ const OPTIONS: acp.PermissionOption[] = [
 /** The client answered a request to act as cancelled: its turn is over. */
 class Cancelled extends Error {}
 const signedOut = process.argv.includes("--signed-out");
+const signedOutAtPrompt = process.argv.includes("--signed-out-at-prompt");
 const alwaysOnly = process.argv.includes("--always-only"); // Offers to be allowed only always, never once.
 const noAsking = process.argv.includes("--no-asking");
 const deaf = process.argv.includes("--deaf");
@@ -349,6 +350,9 @@ acp
     const session = sessions.get(sessionId);
     if (session === undefined) {
       throw acp.RequestError.resourceNotFound(sessionId);
+    }
+    if (signedOutAtPrompt) {
+      throw acp.RequestError.authRequired();
     }
     session.turns += 1;
     const text = params.prompt.map((block) => (block.type === "text" ? block.text : "")).join(" ");

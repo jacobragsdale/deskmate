@@ -249,6 +249,7 @@ class Conversation {
   private readonly failed: Promise<never>; // Rejects, with why, when the process goes or never starts.
   private said = ""; // The end of what the agent has written on standard error.
   private sessionId = "";
+  private signInHow = ""; // How the user signs in to the agent, as it said when the protocol was agreed: for a turn it refuses because it needs signing in.
 
   constructor(agent: Agent, cwd: string, env?: Readonly<Record<string, string>>, job?: string) {
     this.agent = agent;
@@ -302,6 +303,7 @@ class Conversation {
       throw new PlayerTwoError(`${this.agent.label} speaks version ${String(initialized.protocolVersion)} of ACP, and Player Two version ${String(acp.PROTOCOL_VERSION)}`);
     }
     this.version = initialized.agentInfo?.version ?? "";
+    this.signInHow = this.howToSignIn(initialized);
     const session = { cwd, mcpServers: looking || this.env === undefined || ONLY_CHAT_VAR in this.env ? [] : [mcpServer(this.env, this.job)] };
     let opened: unknown;
     try {
@@ -322,7 +324,17 @@ class Conversation {
   public async prompt(text: string, turn: Turn): Promise<string> {
     this.turn = turn;
     try {
-      const { stopReason } = promptedSchema.parse(await this.ask(this.connection.agent.request("session/prompt", { sessionId: this.sessionId, prompt: [{ type: "text", text }] })));
+      let prompted: unknown;
+      try {
+        prompted = await this.ask(this.connection.agent.request("session/prompt", { sessionId: this.sessionId, prompt: [{ type: "text", text }] }));
+      } catch (error) {
+        // An agent may say it needs signing in only once a turn starts, as Claude over ACP does once its credentials are gone: the user is told how, as for a session it would not open.
+        if (error instanceof acp.RequestError && error.code === AUTH_REQUIRED) {
+          throw new SignInNeeded(this.agent, this.signInHow, { cause: error });
+        }
+        throw error;
+      }
+      const { stopReason } = promptedSchema.parse(prompted);
       if (stopReason === "cancelled") {
         throw new AgentCancelledError("the agent was stopped");
       }

@@ -194,6 +194,11 @@ await test("an agent that needs signing in ends saying how, and one whose progra
     message: "Fake is not signed in. Sign in once in a terminal where your repos are, inside WSL on Windows, with Fake's own sign-in, then try again"
   });
   assert.deepEqual(await left(dir), []);
+  // One that opens a session and refuses the turn itself for want of signing in is told of in the same words.
+  await assert.rejects(acpRunner(fake("--signed-out-at-prompt")).run("hello", dir, "full", recorder().handlers, never), {
+    message: "Fake is not signed in. Sign in once in a terminal where your repos are, inside WSL on Windows, with Fake's own sign-in, then try again"
+  });
+  assert.deepEqual(await left(dir), []);
   await assert.rejects(acpRunner({ ...fake(), command: "no-such-agent-program" }).run("hello", dir, "full", recorder().handlers, never), {
     message: `could not start Fake's program "no-such-agent-program": spawn no-such-agent-program ENOENT. Check it on the Setup page`
   });
