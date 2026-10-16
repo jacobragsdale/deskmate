@@ -194,6 +194,9 @@ async function reactingEditingAndReplying(jacob: Person, bob: Person, id: string
   await bob.session.handle({ do: "edit", id, text: "never mind this one, sorry" });
   await until(jacob.session, "jacob sees bob's edit", () => shownTo(jacob.session, id)?.edited === true);
   assert.equal(shownTo(jacob.session, id)?.body, "never mind this one, sorry");
+  await until(bob.session, "bob sees his own edit", () => shownTo(bob.session, id)?.edited === true);
+  await bob.session.handle({ do: "edit", id, text: "  never mind this one, sorry  " }); // The same words: nothing is sent.
+  assert.equal((await bob.client.catchUp(0)).filter((delivered) => delivered.event.kind === "message.edit").length, 1);
   await assert.rejects(jacob.session.handle({ do: "edit", id, text: "forged" }), /only your own messages/);
   await jacob.session.handle({ do: "react", id, emoji: "👍", on: false });
   await until(bob.session, "the reaction taken back", () => shownTo(bob.session, id)?.reactions.length === 0);

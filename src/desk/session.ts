@@ -565,7 +565,11 @@ export class Session {
         if (text === "") {
           throw new PlayerTwoError("a message cannot be edited down to nothing: delete it instead");
         }
-        await this.publish(chatOf(this.mine(command.id).entry.event, this.me), "message.edit", { text }, [command.id]); // Its tags stay as they were sent: an edit starts nothing.
+        const message = this.mine(command.id);
+        if (text !== message.text) {
+          // An edit that changes nothing, as the same words with spaces around them, is not sent: it would mark the message edited for everyone.
+          await this.publish(chatOf(message.entry.event, this.me), "message.edit", { text }, [command.id]); // Its tags stay as they were sent: an edit starts nothing.
+        }
         break;
       }
       case "delete":
