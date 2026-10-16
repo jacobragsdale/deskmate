@@ -1505,14 +1505,23 @@ export class Session {
     }
   }
 
-  /** What the stream has just delivered. Should this fail, the stream delivers it again. Someone joining, leaving or pinning changes what the window says about the channel, so its members and pin are asked for again. */
+  /**
+   * What the stream has just delivered. Should this fail, the stream delivers it again. Someone joining, leaving or pinning changes what the window says about the channel, so its members and pin are asked for again.
+   * The user leaving a channel from elsewhere, as with the command, has it forgotten here as leaving it here does, and joining one from elsewhere has its newest page loaded at once: what was
+   * said there while they were out, which the stream never brought them, is then shown.
+   */
   private async arrive(batch: readonly Delivered[]): Promise<void> {
     const entries = await this.trust(batch);
     const fresh = this.take(entries, true);
     this.underGrants(entries);
     await this.delegated(fresh);
+    for (const { event } of entries.filter((entry) => entry.trusted && entry.event.kind === "channel.leave" && entry.event.author === this.me)) {
+      this.unload(event.to);
+    }
     if (batch.some((delivered) => delivered.event.kind.startsWith("channel."))) {
-      await this.refreshChannels().catch(() => undefined); // Best effort: the next presence check asks again.
+      await this.refreshChannels()
+        .then(() => this.pageNew())
+        .catch(() => undefined); // Best effort: the next presence check asks again.
     }
   }
 
@@ -1842,11 +1851,25 @@ export class Session {
       throw new PlayerTwoError(`your ${draft.repo} agent's draft is waiting in ${chat}: send or discard it before you leave`);
     }
     await this.client.publish(chat, "channel.leave", {}); // Not folded: what was said in the channel is forgotten here.
-    // Out of it on the hub now: forgotten here at once, the user taken out of its members too, whether or not asking for the channels again works; the next beat asks again.
-    this.channels = this.channels.map((each) => (each.name === chat ? { ...each, members: each.members.filter((member) => member !== this.me) } : each));
-    this.chats.forget(chat);
+    this.unload(chat); // Out of it on the hub now: forgotten here at once, whether or not asking for the channels again works; the next beat asks again.
+    this.hooks.notice({ title: "", body: `You left ${chat}.`, severity: "info" });
+    this.hooks.changed();
+    await this.refreshChannels().catch(() => undefined);
+  }
+
+  /**
+   * Forget a channel the user has left: they are taken out of its members, and what was said there, that its newest page was loaded, and its workflows are forgotten, so that joining it again,
+   * here or elsewhere, loads it afresh, with what was said while they were out. A chat where one of their agents is at work, or its draft waits, as when they left from elsewhere, keeps what
+   * Stop and the draft need, and is only loaded again: its page once they are back in it, and its workflows.
+   */
+  private unload(chat: string): void {
     this.paged.delete(chat);
     this.live.delete(chat);
+    if ([...this.runs.values()].some((run) => chatOf(run.entry.event, this.me) === chat) || (this.drafts.get(chat) ?? []).length > 0) {
+      return;
+    }
+    this.channels = this.channels.map((each) => (each.name === chat ? { ...each, members: each.members.filter((member) => member !== this.me) } : each));
+    this.chats.forget(chat);
     if (this.current === chat) {
       this.current = "";
       const first = this.rows()[0];
@@ -1854,9 +1877,6 @@ export class Session {
         this.open(first.chat);
       }
     }
-    this.hooks.notice({ title: "", body: `You left ${chat}.`, severity: "info" });
-    this.hooks.changed();
-    await this.refreshChannels().catch(() => undefined);
   }
 
   /** Say which repo a channel is about, one the user has a checkout of, and with a branch, which branch of it: a branch room. */

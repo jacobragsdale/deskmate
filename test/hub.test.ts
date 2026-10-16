@@ -867,6 +867,44 @@ await test("joining a channel the user is in already sends no second join, so no
 });
 
 await test(
+  "a channel the user leaves and joins again from elsewhere shows what was said there meanwhile, and one where their agent's draft waits keeps the draft, which can still be sent",
+  { timeout: 30_000 },
+  async (t) => {
+    const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+    const alice = await hub.join("alice");
+    const dev = join(hub.dir, "dev-bob");
+    checkout(dev, "uploader");
+    const { session } = deskOf(t, await hub.join("bob"), dev, { describe: () => Promise.resolve({ branch: "main", commit: COMMIT, dirty: false }) });
+    const elsewhere = loadClient(join(hub.dir, "bob"), http, () => Date.now() / 1000); // The same person, as with the command.
+    assert.ok(elsewhere !== null);
+    await until(session, "the chats loaded", (view) => view.loaded);
+    for (const channel of ["#ops", "#dev"]) {
+      await alice.publish(channel, "channel.join", {});
+      await session.handle({ do: "joinChannel", name: channel });
+    }
+    const request = (await alice.publish("#dev", "message", { text: "@bob/uploader a quick one", via: "cli" })).event.id;
+    await until(session, "the request", () => shownTo(session, request)?.requests[0]?.status.kind === "ready");
+    await run(session, request, false);
+    await until(session, "the draft", () => shownTo(session, request)?.requests[0]?.status.kind === "drafted");
+
+    const said = new Map<string, string>();
+    for (const channel of ["#ops", "#dev"]) {
+      await elsewhere.publish(channel, "channel.leave", {});
+      said.set(channel, (await alice.publish(channel, "message", { text: `said in ${channel} while bob was out`, via: "cli" })).event.id);
+      await elsewhere.publish(channel, "channel.join", {});
+    }
+    for (const channel of ["#ops", "#dev"]) {
+      await until(session, `${channel} listed again`, (view) => view.rows.some((row) => row.chat === channel));
+      await session.handle({ do: "open", chat: channel });
+      await until(session, `what was said in ${channel} meanwhile`, () => shownTo(session, said.get(channel) ?? "") !== undefined);
+    }
+    assert.equal(shownTo(session, request)?.requests[0]?.status.kind, "drafted");
+    await session.handle({ do: "sendDraft", chat: "#dev", id: request, repo: "uploader", text: "done" });
+    assert.ok((await alice.events({ chat: "#dev" })).some((delivered) => delivered.event.kind === "job.result" && delivered.event.refs.includes(request)));
+  }
+);
+
+await test(
   "a checkout on a branch the hub cannot take, or whose agent's key cannot be used, stops only that one: the rest are shared, the chats load, and the user is told why once",
   { timeout: 30_000 },
   async (t) => {
