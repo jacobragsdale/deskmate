@@ -931,24 +931,30 @@ await test("an answer quotes its request, and says where it ran, only from a req
   await bob.publish("#side", "channel.join", {});
   const elsewhere = (await bob.publish("#side", "message", { text: "@alice/uploader asked in the channel", via: "cli" })).event.id;
   const here = (await bob.publish("alice", "message", { text: "@alice/uploader asked here", via: "cli" })).event.id;
+  const gone = (await bob.publish("alice", "message", { text: "@alice/uploader asked, then deleted", via: "cli" })).event.id;
   const accepted = { repo: "uploader", branch: "main", commit: COMMIT, dirty: false, delivery: "post", mode: "full", by: "owner" } as const;
   await alice.publish("#side", "job.accepted", accepted, [elsewhere]);
   await alice.publish("bob", "job.accepted", accepted, [here]);
   // Both answers are sent to bob; the first names a request in another chat.
   await alice.publish("bob", "job.result", { repo: "uploader", branch: "main", text: "answer to #side", reviewed: false }, [elsewhere]);
   await alice.publish("bob", "job.result", { repo: "uploader", branch: "main", text: "answer to alice", reviewed: false }, [here]);
+  // A request its asker deleted while the agent worked on it: its answer still comes, and quotes it as deleted.
+  await alice.publish("bob", "job.accepted", accepted, [gone]);
+  await bob.publish("alice", "message.delete", {}, [gone]);
+  await alice.publish("bob", "job.result", { repo: "uploader", branch: "main", text: "answer to a deleted one", reviewed: false }, [gone]);
   const { session } = deskOf(t, bob, join(hub.dir, "dev"));
   await until(session, "everything loaded", (view) => view.loaded);
   await session.handle({ do: "open", chat: "alice" });
   const answers = await until(session, "both answers", (view) => {
     const found = messages(view).filter((message) => message.agent === "uploader");
-    return found.length === 2 && found;
+    return found.length === 3 && found;
   });
   assert.deepEqual(
     answers.map((answer) => [answer.body, answer.quote, answer.commit]),
     [
       ["answer to #side", "", ""],
-      ["answer to alice", "bob: @alice/uploader asked here", COMMIT]
+      ["answer to alice", "bob: @alice/uploader asked here", COMMIT],
+      ["answer to a deleted one", "bob: message deleted", COMMIT]
     ]
   );
 });

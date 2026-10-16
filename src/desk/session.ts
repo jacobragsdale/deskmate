@@ -787,7 +787,8 @@ export class Session {
       reactions: [...message.reactions].map(([emoji, people]) => ({ emoji, people: [...people] })),
       notes: this.notesOf(message.text),
       pulls: this.pullsOf(message.text, chatOf(event, this.me)),
-      quote: answered === null ? "" : `${answered.entry.trusted ? writerWords(answered.entry.event) : answered.entry.event.author}: ${oneLine(answered.text)}`, // A workflow's by its name.
+      // A workflow's by its name; one its asker deleted as everywhere else a deleted message is shown.
+      quote: answered === null ? "" : `${answered.entry.trusted ? writerWords(answered.entry.event) : answered.entry.event.author}: ${answered.deleted ? "message deleted" : oneLine(answered.text)}`,
       header: !continues(previous, message) || (previous !== null && workflowOf(previous.entry.event) !== workflowOf(event)), // Two workflows' messages are the hub's alike.
       workflow: workflowOf(event),
       requests: (message.deleted ? this.stillMine(message, now) : this.chats.requests(message, now)).flatMap((request) => this.requestView(request)),
@@ -1126,10 +1127,10 @@ export class Session {
     return this.chats.items(chat).flatMap((item) => (item.kind === "line" ? [{ seq: item.entry.seq, ts: item.entry.event.ts, who: item.entry.event.author, did: item.did, repo: item.repo }] : []));
   }
 
-  /** What an answer's run was let go ahead with: from the job it answers, when its request is loaded in the answer's own chat. */
+  /** What an answer's run was let go ahead with: from the job it answers, when its request is loaded in the answer's own chat, deleted since or not, as the answer still stands. */
   private acceptedFor(message: Message, now: number): Accepted | null {
     const request = this.chats.answered(message);
-    const job = request === null ? undefined : this.chats.requests(request, now).find((each) => each.owner === ownerOf(message.entry.event.author) && each.repo === message.agent);
+    const job = request === null ? undefined : this.chats.requests(request, now, true).find((each) => each.owner === ownerOf(message.entry.event.author) && each.repo === message.agent);
     return job?.accepted ?? null;
   }
 
