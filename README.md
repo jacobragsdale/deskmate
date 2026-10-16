@@ -292,7 +292,7 @@ steps:
 | `webhook: {}` | Something posts to the workflow's address, `POST HUB/hooks/ID`, which `player-two workflow publish` and `list` print. With a `secret`, the request must carry it in an `X-Player-Two-Secret` header. Its body is JSON, at most 256 KB, or nothing. The hub answers `202` at once. |
 | `message: { contains: "P1" }` | A person posts a message in the channel that holds those words, exactly as written. The hub's own messages never set anything off. |
 | `reaction: { emoji: "🚀" }` | Someone adds that emoji to a message in the channel. |
-| `schedule: { cron: "0 9 * * 1-5", zone: "Europe/London" }` | The five-field cron line comes round in that time zone. A time that passes while the hub is down is not made up. |
+| `schedule: { cron: "0 9 * * 1-5", zone: "Europe/London" }` | The five-field cron line comes round in that time zone, by the hub's clock, at the start of the minute. A time that passes while the hub is down is not made up. Where the clocks go back and an hour comes round twice, a line naming a time of day, such as `30 1 * * *`, runs the first time only, and one with `*` in its minute or hour, such as `* * * * *` or `30 * * * *`, runs both times. A time the clocks skip, such as 01:30 in London on the day they go forward, does not come round, so a line naming only that time does not run that day. |
 
 Then 1 to 20 `steps`, taken one at a time:
 

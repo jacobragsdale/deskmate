@@ -16,7 +16,7 @@ import type { Duplex } from "node:stream";
 import { test } from "node:test";
 import type { TestContext } from "node:test";
 
-import { scheduledJobs } from "croner";
+import { Cron } from "croner";
 import { z } from "zod";
 
 import { mentions } from "../src/core/chat.ts";
@@ -26,7 +26,7 @@ import { fitText } from "../src/core/wire.ts";
 import type { Client } from "../src/desk/client.ts";
 import { Session } from "../src/desk/session.ts";
 import { Database } from "../src/hub/db.ts";
-import { allowList, lookupWithin, refusal, runWorkflows } from "../src/hub/workflows.ts";
+import { allowList, comesRound, lookupWithin, refusal, runWorkflows } from "../src/hub/workflows.ts";
 import { checkout, NOW, ownHome, startHub, TEAM_REPOS } from "./startHub.ts";
 import type { Hub } from "./startHub.ts";
 
@@ -150,24 +150,55 @@ steps:
   - post: "the nightly build starts"
 `;
 
-await test("a workflow on a schedule is timed by croner in its own time zone, sets off a run when its time comes, and is timed no more once it is replaced or removed, or by a hub that has stopped", async (t) => {
-  const hub = await startHub(t);
+await test("a workflow on a schedule sets off a run as its line comes round in its own time zone, the hub looking at each minute as it begins by its clock, and no longer once it is replaced or removed", async (t) => {
+  let clock = NOW;
+  const hub = await startHub(t, () => clock);
   const [alice] = await team(hub, "alice");
   assert.ok(alice !== undefined);
-  const timed = (): string[] => scheduledJobs.filter((job) => job.isRunning()).map((job) => `${job.name ?? ""} ${job.getPattern() ?? ""} ${job.options.timezone ?? ""}`);
+  /** Bring the hub's clock to a moment before `iso` and start the hub again, which looks at the schedules as that minute begins; then give it time to. */
+  const comeTo = async (iso: string): Promise<void> => {
+    clock = Date.parse(iso) / 1000 - 0.02;
+    await hub.restart();
+    await new Promise((resolve) => {
+      setTimeout(resolve, 300);
+    });
+  };
 
-  const { event: first } = await alice.publish("#ops", "workflow.define", { name: "nightly", yaml: NIGHTLY });
-  assert.deepEqual(timed(), [`${first.id} 0 2 * * 1-5 Europe/London`]);
-  const { event: second } = await alice.publish("#ops", "workflow.define", { name: "nightly", yaml: NIGHTLY.replace("0 2", "30 3").replace("Europe/London", "UTC") });
-  assert.deepEqual(timed(), [`${second.id} 30 3 * * 1-5 UTC`]);
-  await scheduledJobs.find((job) => job.name === second.id)?.trigger(); // Its time come, without waiting for it.
+  await alice.publish("#ops", "workflow.define", { name: "nightly", yaml: NIGHTLY });
+  await alice.publish("#ops", "workflow.define", { name: "nightly", yaml: NIGHTLY.replace("0 2", "30 3").replace("Europe/London", "UTC") });
+  await comeTo("2027-01-18T02:00:00Z"); // A Monday, at 02:00 in London: the line replaced comes round no more.
+  await comeTo("2027-01-18T03:30:00Z");
   assert.deepEqual((await channel(alice)).slice(-2), ["hub: the nightly build starts", "hub: nightly run 1 step 0 done"]);
 
   await alice.publish("#ops", "workflow.remove", { name: "nightly" });
-  assert.deepEqual(timed(), []);
-  const { event: third } = await alice.publish("#ops", "workflow.define", { name: "nightly", yaml: NIGHTLY });
-  await hub.restart(); // The hub that stopped times nothing; the one that started times it again.
-  assert.deepEqual(timed(), [`${third.id} 0 2 * * 1-5 Europe/London`]);
+  await comeTo("2027-01-19T03:30:00Z");
+  await alice.publish("#ops", "workflow.define", { name: "nightly", yaml: NIGHTLY });
+  await comeTo("2027-01-20T02:00:00Z");
+  assert.deepEqual(runs(hub, "name, run, started"), [`nightly 1 ${String(Date.parse("2027-01-18T03:29:59Z") / 1000)}`, `nightly 2 ${String(Date.parse("2027-01-20T01:59:59Z") / 1000)}`]); // Started by the clock standing just before.
+});
+
+await test("where the clocks go back, a line naming a time of day comes round at the first of the two and one with a * in its minute or hour at both; a time the clocks skip never comes round", () => {
+  /** The UTC times, as HH:MM, from `from` up to `to`, at which `line` comes round in `zone`. */
+  const comes = (line: string, zone: string, from: string, to: string): string[] => {
+    const cron = new Cron(line, { timezone: zone, mode: "5-part" });
+    const times: string[] = [];
+    for (let at = Date.parse(from) / 1000; at < Date.parse(to) / 1000; at += 60) {
+      if (comesRound(cron, zone, at)) {
+        times.push(new Date(at * 1000).toISOString().slice(11, 16));
+      }
+    }
+    return times;
+  };
+  // On 25 October 2026 London's clocks go back from 02:00 BST to 01:00 GMT, so 01:00 to 01:59 comes round from 00:00 UTC and again from 01:00 UTC; New York's do on 1 November.
+  assert.deepEqual(comes("30 1 * * *", "Europe/London", "2026-10-24T23:00Z", "2026-10-25T03:00Z"), ["00:30"]);
+  assert.deepEqual(comes("@daily", "Europe/London", "2026-10-24T22:00Z", "2026-10-25T03:00Z"), ["23:00"]);
+  assert.deepEqual(comes("30 1 * * *", "America/New_York", "2026-11-01T04:00Z", "2026-11-01T08:00Z"), ["05:30"]);
+  assert.deepEqual(comes("45 1 * * *", "Australia/Lord_Howe", "2027-04-03T14:00Z", "2027-04-03T16:00Z"), ["14:45"]); // Half an hour back, from 02:00 to 01:30.
+  assert.equal(comes("* * * * *", "Europe/London", "2026-10-25T00:00Z", "2026-10-25T02:00Z").length, 120);
+  assert.deepEqual(comes("30 * * * *", "Europe/London", "2026-10-24T23:00Z", "2026-10-25T03:00Z"), ["23:30", "00:30", "01:30", "02:30"]);
+  assert.deepEqual(comes("0,30 1 * * *", "Europe/London", "2026-10-24T23:00Z", "2026-10-25T03:00Z"), ["00:00", "00:30"]);
+  // On 28 March 2027 they go forward from 01:00 GMT to 02:00 BST: 01:30 is never the time in London that day.
+  assert.deepEqual(comes("30 1 * * *", "Europe/London", "2027-03-27T23:00Z", "2027-03-28T04:00Z"), []);
 });
 
 await test("the workflows keep parsed only the files of those live, however often one is replaced or removed", (t) => {

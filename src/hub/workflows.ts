@@ -223,6 +223,22 @@ function isJson(text: string): boolean {
 }
 
 /**
+ * Whether a schedule's line, as croner reads it, comes round in `zone` at the minute that begins at `at`, in Unix seconds: croner's `match` reads the local time there that minute, under
+ * whichever offset it has. Where the clocks go back, an hour of local times comes round twice. A line that names a time of day, its minute and hour both set (`30 1 * * *`), runs at the
+ * first of the two and not again; one with `*` in its minute or hour (`* * * * *`, `* 1 * * *`, `30 * * * *`) runs every so often, and runs at both, as cron always has. A time the
+ * clocks skip in spring never comes round, so a line naming only that time does not run that day.
+ */
+export function comesRound(cron: Cron, zone: string, at: number): boolean {
+  if (!cron.match(new Date(at * 1000))) {
+    return false;
+  }
+  const [minute = "", hour = ""] = (cron.getPattern() ?? "").trim().split(/\s+/); // A nickname, such as @daily, written out.
+  const local = (ts: number): string => new Date(ts * 1000).toLocaleString("en-GB", { timeZone: zone });
+  // The clocks go back an hour; half an hour on Lord Howe Island, two at Troll in Antarctica.
+  return /^[*?]/.test(minute) || /^[*?]/.test(hour) || ![30, 60, 120].some((back) => local(at - back * 60) === local(at));
+}
+
+/**
  * Run the workflows live in the hub's database, signing what they do with `key` as the hub, calling only the hosts `allow` lists from a webhook step (see `allowList`), and calling `wake`
  * once something is stored.
  */
@@ -230,7 +246,9 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, al
   let files = new Map<string, Workflow | null>(); // Each live workflow's file as it reads, null for one that does not, by its definition's id, which never changes. `schedule` keeps it to those live.
   let hooks = new Map<string, Live>(); // The live webhook workflows by hook, the first 32 hex of their definition's id, so a call to one looks no further. `schedule` keeps it.
   const closing = new AbortController(); // Hangs up every webhook being called once the hub stops.
-  let crons: Cron[] = [];
+  let timed: { readonly live: Live; readonly cron: Cron; readonly zone: string }[] = []; // The live workflows on a schedule, each with its line as croner reads it. `schedule` keeps it.
+  let ticking: NodeJS.Timeout | undefined; // Goes off as the next minute begins, for `tick`.
+  let looked = 0; // The minute the schedules were last looked at, so that none is looked at twice.
 
   function failed(error: unknown): void {
     log("workflow failed", { error: problemOf(error) });
@@ -255,18 +273,41 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, al
     return file;
   }
 
-  /** A croner job for a workflow on a schedule, which sets off a run each time its line comes round; none, logged, for a line croner will not time. */
-  function timed(live: Live, { cron, zone }: Extract<Trigger, { readonly kind: "schedule" }>["schedule"]): Cron[] {
+  /** A workflow on a schedule with its line as croner reads it, given nothing to call, so that croner times nothing itself; none, logged, for a line croner will not read. */
+  function timing(live: Live, { cron, zone }: Extract<Trigger, { readonly kind: "schedule" }>["schedule"]): (typeof timed)[number][] {
     try {
-      return [
-        new Cron(cron, { name: live.event, timezone: zone, mode: "5-part", unref: true }, () => {
-          start(live, {});
-        })
-      ];
+      return [{ live, cron: new Cron(cron, { timezone: zone, mode: "5-part" }), zone }];
     } catch (error) {
       log("workflow not timed", { channel: live.channel, workflow: live.name, error: problemOf(error) });
       return [];
     }
+  }
+
+  /**
+   * Look at the schedules as the next minute begins by the hub's clock, and as each one after it does: a workflow whose line comes round then starts a run. The hub times them itself rather
+   * than leaving each to croner's own timer, as croner 10 puts the next time in the hour the clocks go back an hour in the past: its timer then went off at once, again and again, until
+   * that hour was over, and ran nothing in it. A timer can go off a moment early by the clock, so the minute just looked at is never looked at again.
+   */
+  function tick(): void {
+    const at = now();
+    const next = Math.ceil(at / 60) * 60;
+    const minute = next === looked ? next + 60 : next;
+    ticking = setTimeout(
+      () => {
+        looked = minute;
+        tick();
+        for (const { live, cron, zone } of timed) {
+          try {
+            if (comesRound(cron, zone, minute)) {
+              start(live, {});
+            }
+          } catch (error) {
+            log("workflow failed", { channel: live.channel, workflow: live.name, error: problemOf(error) });
+          }
+        }
+      },
+      (minute - at) * 1000
+    ).unref();
   }
 
   /** An event of the hub's own, to a channel, at `ts`. */
@@ -530,19 +571,16 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, al
   }
 
   /**
-   * Time each live workflow with a schedule, in place of every timer before, and keep parsed the files of those live and no others, whose definitions nothing asks for again. Each is
-   * named by its definition's id, which a test sets off by. croner reads the system's clock in the workflow's time zone, and a time that passed while the hub was down is not made up.
+   * Keep for `tick` each live workflow with a schedule, in place of those before, and keep parsed the files of those live and no others, whose definitions nothing asks for again. A time
+   * that passed while the hub was down is not made up.
    */
   function schedule(): void {
-    for (const cron of crons) {
-      cron.stop();
-    }
     const lives = db.liveWorkflows();
     files = new Map(lives.map((live) => [live.event, fileOf(live)])); // Read from those kept before, so a file is parsed once while it is live.
     hooks = new Map(lives.filter((live) => fileOf(live)?.on.kind === "webhook").map((live) => [live.event.slice(0, 32), live]));
-    crons = lives.flatMap((live) => {
+    timed = lives.flatMap((live) => {
       const on = fileOf(live)?.on;
-      return on?.kind === "schedule" ? timed(live, on.schedule) : [];
+      return on?.kind === "schedule" ? timing(live, on.schedule) : [];
     });
   }
 
@@ -553,6 +591,7 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, al
     });
   }
   schedule();
+  tick();
   sweep();
   const sweeping = setInterval(() => {
     try {
@@ -580,9 +619,7 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, al
     stop: () => {
       closing.abort();
       clearInterval(sweeping);
-      for (const cron of crons) {
-        cron.stop();
-      }
+      clearTimeout(ticking);
     },
     parsed: () => files.size
   };
