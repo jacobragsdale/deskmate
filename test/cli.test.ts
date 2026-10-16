@@ -317,6 +317,7 @@ await test("send reads a message from standard input, and --wait prints the next
   assert.equal(printed(await playerTwo(hub, "alice", ["send", "bob", "no?", "--wait", "0.2", "--json"])), null);
   assert.equal((await playerTwo(hub, "bob", ["inbox", "--after", "99", "--wait", "0.2"])).out, "no messages");
   assert.deepEqual(await playerTwo(hub, "alice", ["send", "bob", "-"], " \n"), { status: 1, out: "", err: "player-two: there is nothing to send" });
+  assert.deepEqual(await playerTwo(hub, "alice", ["send", "bob", " ", "\u00a0"]), { status: 1, out: "", err: "player-two: there is nothing to send" }); // Typed, as piped.
 });
 
 await test("inbox --after prints what came after a seq, and with --wait waits for the next", async (t) => {

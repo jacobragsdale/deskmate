@@ -228,7 +228,7 @@ async function send(joined: () => Client, args: string[], out: (line: string) =>
     throw new UsageError("send takes who it is to and the message");
   }
   const client = joined();
-  const message = fitText(words.length === 1 && words[0] === "-" ? (await text(stdin)).trim() : words.join(" "));
+  const message = fitText((words.length === 1 && words[0] === "-" ? await text(stdin) : words.join(" ")).trim()); // Typed or piped, a message of nothing but spaces is nothing.
   if (message === "") {
     throw new PlayerTwoError("there is nothing to send");
   }
