@@ -28,6 +28,15 @@ await test("the hub refuses to start without its settings and names each one", (
   );
 });
 
+await test("hub verify takes no arguments, and anything after it is a usage error rather than passed over", () => {
+  for (const extra of [["--json"], ["extra"]]) {
+    const run = spawnSync(process.execPath, [COMMAND, "hub", "verify", ...extra], { env: { PLAYER_TWO_DB: "unused.db" }, encoding: "utf8" });
+
+    assert.equal(run.status, 2);
+    assert.match(run.stderr, /^player-two: hub verify takes nothing more: it checks the database PLAYER_TWO_DB names\n\nusage: player-two COMMAND/);
+  }
+});
+
 await test("the hub and hub verify name the file when SQLite cannot read it as a database", (t) => {
   const dir = mkdtempSync(join(tmpdir(), "player-two-hub-main-"));
   t.after(() => {

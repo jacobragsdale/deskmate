@@ -516,6 +516,9 @@ async function doctor(home: string, args: string[], out: (line: string) => void)
 /** Run the hub, or with `verify`, check the chain of its log and say that it holds. */
 async function hub(args: string[], out: (line: string) => void): Promise<void> {
   if (args[0] === "verify") {
+    if (args.length > 1) {
+      throw new UsageError("hub verify takes nothing more: it checks the database PLAYER_TWO_DB names");
+    }
     out(verifyHub(process.env));
   } else {
     await runHub(args, process.env); // Once it listens, it keeps the program alive from here, until it is told to stop.
