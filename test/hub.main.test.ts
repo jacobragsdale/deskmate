@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,6 +26,22 @@ await test("the hub refuses to start without its settings and names each one", (
     [listed.status, listed.stderr],
     [1, "player-two: PLAYER_TWO_WEBHOOK_ALLOW *.corp.internal is not a host name or an IP address; a name lets the hub call every name under it, so example.com rather than *.example.com\n"]
   );
+});
+
+await test("the hub and hub verify name the file when SQLite cannot read it as a database", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "player-two-hub-main-"));
+  t.after(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const file = join(dir, "notes.txt");
+  writeFileSync(file, "a text file, not a database\n");
+  const env = { PLAYER_TWO_JOIN_TOKEN: TOKEN, PLAYER_TWO_DB: file, PLAYER_TWO_REPOS: "https://dev.azure.com/acme/" };
+
+  const verified = spawnSync(process.execPath, [COMMAND, "hub", "verify"], { env, encoding: "utf8" });
+  const started = spawnSync(process.execPath, [COMMAND, "hub", "--port", "0"], { env, encoding: "utf8", timeout: 10_000 });
+
+  assert.deepEqual([verified.status, verified.stderr], [1, `player-two: ${file}: file is not a database\n`]);
+  assert.deepEqual([started.status, started.stderr], [1, `player-two: ${file}: file is not a database\n`]);
 });
 
 await test("a hub that cannot listen says where in one line and exits, its database closed", async (t) => {

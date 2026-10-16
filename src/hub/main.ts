@@ -40,6 +40,18 @@ const log: Log = (event, facts) => {
 };
 
 /**
+ * Do `work` on the database at `path`, and when SQLite refuses the file, as with "unable to open database file" for a folder the hub cannot write in, "file is not a database" or
+ * "attempt to write a readonly database", say which file: SQLite's own words do not. The hub's own refusals of a database name it already.
+ */
+function onDatabase<T>(path: string, work: () => T): T {
+  try {
+    return work();
+  } catch (error) {
+    throw error instanceof Error && "code" in error && error.code === "ERR_SQLITE_ERROR" ? new Error(`${path}: ${error.message}`) : error;
+  }
+}
+
+/**
  * Start the hub and resolve with its server once it is listening. Rejects, with words for whoever started it, when a setting is missing or wrong, or when it cannot listen where it was
  * told to, as when another program holds the port, and then closes its database first.
  */
@@ -53,7 +65,7 @@ export async function runHub(args: readonly string[], env: NodeJS.ProcessEnv): P
   if (!port.success) {
     throw new Error(`--port ${values.port} is not a port number`);
   }
-  const server = createHub(settings.data, undefined, log);
+  const server = onDatabase(settings.data.db, () => createHub(settings.data, undefined, log));
   await new Promise<void>((resolve, reject) => {
     // Only while it starts: an error then is the port or the host, said in one line rather than as Node's unhandled 'error' with its stack.
     const failed = (error: Error): void => {
@@ -89,7 +101,7 @@ export function verifyHub(env: NodeJS.ProcessEnv): string {
   if (!existsSync(setting.data.PLAYER_TWO_DB)) {
     throw new Error(`there is no database at ${setting.data.PLAYER_TWO_DB}`); // Rather than SQLite's words, which do not say where it looked.
   }
-  const { events, head, broken, agents } = verifyChain(setting.data.PLAYER_TWO_DB);
+  const { events, head, broken, agents } = onDatabase(setting.data.PLAYER_TWO_DB, () => verifyChain(setting.data.PLAYER_TWO_DB));
   if (broken !== null) {
     throw new Error(`the chain breaks at seq ${String(broken.seq)}: ${broken.why}`);
   }
