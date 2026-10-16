@@ -91,6 +91,19 @@ await test("an answer the agent signed itself is shown as not reviewed, one its 
   assert.doesNotMatch(answer("alice/uploader", true), /in queue\.py|uploader agent/);
 });
 
+await test("what others wrote reaches the terminal with its control characters written out, never obeyed, and --json prints the same JSON as ever", async (t) => {
+  const hub = await startHub(t);
+  const [, bob] = [await hub.join("alice"), await hub.join("bob")];
+  const text = "x\u001b]0;PWNED\u0007\u001b[2J\u001b]52;c;aGk=\u0007\u009b31mRED\r\nnext\tline"; // A title, a clear screen, the clipboard and a colour; the last as a C1 control.
+  await bob.publish("alice", "message", { text, via: "cli" });
+
+  const words = await playerTwo(hub, "alice", ["inbox"]);
+  assert.match(words.out, /\n│ x\\u001b\]0;PWNED\\u0007\\u001b\[2J\\u001b\]52;c;aGk=\\u0007\\u009b31mRED\n│ next\tline\n└$/);
+  assert.doesNotMatch(words.out, /[^\P{Cc}\n\t]/u); // No control character reaches the terminal but a line break and a tab.
+  const [delivered] = printedSchema.array().parse(printed(await playerTwo(hub, "alice", ["inbox", "--json"])));
+  assert.equal(delivered === undefined ? "" : textOf(delivered), text);
+});
+
 await test("main joins sends and lists messages", async (t) => {
   const hub = await startHub(t);
   assert.deepEqual(await playerTwo(hub, "alice", ["join", hub.url, "alice", TOKEN]), {

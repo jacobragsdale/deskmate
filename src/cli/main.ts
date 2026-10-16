@@ -112,6 +112,14 @@ function waitOf(given: string): number {
   return seconds;
 }
 
+/**
+ * A line as a terminal may be given it. Others' text can hold control characters that a terminal obeys rather than shows: setting its title, clearing the screen, writing to the
+ * clipboard, changing the colours. Every one but a line break and a tab is written out as `\u001b` and the like, which is also how JSON escapes one, so a line of JSON stays the same JSON.
+ */
+export function visible(line: string): string {
+  return line.replaceAll("\r\n", "\n").replace(/\p{Cc}/gu, (control) => (control === "\n" || control === "\t" ? control : `\\u${control.charCodeAt(0).toString(16).padStart(4, "0")}`));
+}
+
 /** Print what a command found: the thing itself as one line of JSON when --json was given, and otherwise in words. */
 function show(out: (line: string) => void, json: boolean, found: unknown, words: string): void {
   out(json ? JSON.stringify(found) : words);
@@ -609,8 +617,15 @@ async function run(argv: readonly string[], options: Options, out: (line: string
 
 /** Run one command and resolve with its exit status: 0 when it worked, 1 after saying on standard error what went wrong, 2 when the command line itself was wrong. */
 export async function main(argv: readonly string[], options: Options = {}): Promise<number> {
-  const out = options.out ?? console.log;
-  const err = options.err ?? console.error;
+  // Everything printed goes through visible(): a message, an answer, a workflow's emoji, a hub's words, whoever wrote them.
+  const print = options.out ?? console.log;
+  const complain = options.err ?? console.error;
+  const out = (line: string): void => {
+    print(visible(line));
+  };
+  const err = (line: string): void => {
+    complain(visible(line));
+  };
   if (argv[0] === "--help" || argv[0] === "-h") {
     out(USAGE);
     return 0;
