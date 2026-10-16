@@ -205,7 +205,19 @@ await test("before its first request the command asks which protocol the hub spe
 await test("a command line that is wrong exits with 2 and the usage, a command that fails with 1 and why, and neither sends anything", async (t) => {
   const hub = await startHub(t);
   const alice = await hub.join("alice");
-  const wrong = [[], ["dance"], ["join", hub.url], ["send", "alice"], ["send", "alice", "hi", "--wait", "soon"], ["inbox", "--after", "x"], ["who", "--loudly"], ["who", "else"], ["channel", "dance"]];
+  const wrong = [
+    [],
+    ["dance"],
+    ["join", hub.url],
+    ["send", "alice"],
+    ["send", "alice", "hi", "--wait", "soon"],
+    ["inbox", "--after", "x"],
+    ["who", "--loudly"],
+    ["who", "else"],
+    ["channel", "dance"],
+    ["desk", "--help"],
+    ["desk", "extra"]
+  ];
   for (const argv of wrong) {
     const ran = await playerTwo(hub, "alice", argv);
 

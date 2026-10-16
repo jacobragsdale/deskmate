@@ -585,6 +585,11 @@ async function run(argv: readonly string[], options: Options, out: (line: string
       await hub(args, out);
       break;
     case "desk":
+      // Nothing after it, so that `desk --help` typed at a terminal prints the usage rather than starting a second desk, whose start-up sweep would take the worktree of a run
+      // the first one has going.
+      if (args.length > 0) {
+        throw new UsageError("desk takes nothing more: the window starts it");
+      }
       globalThis.console = new console.Console(process.stderr); // Standard output carries the protocol's lines and nothing else, so whatever anything logs goes to standard error.
       await runDesk(process.stdin, process.stdout);
       break;
