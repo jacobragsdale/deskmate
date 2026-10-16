@@ -772,6 +772,45 @@ await test("cloning a repo whose folder holds a clone cut short, with no commit,
   });
 });
 
+await test(
+  "a room whose pin and whose leaving both fail, as when the hub stops answering, says why the pin failed and that the room is left over; a leave whose list of channels then fails forgets the channel all the same",
+  { timeout: 30_000 },
+  async (t) => {
+    const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+    await hub.join("bob");
+    const dev = join(hub.dir, "dev");
+    checkout(dev, "uploader");
+    type Failing = (method: string, url: string, body: string | null) => boolean;
+    const never: Failing = () => false;
+    let failing = never;
+    const flaky: Transport = (method, url, headers, body) =>
+      failing(method, url, body) ? Promise.reject(new PlayerTwoError(`cannot reach the hub at ${url}: fetch failed (other side closed)`)) : http(method, url, headers, body);
+    const bob = loadClient(join(hub.dir, "bob"), flaky, () => Date.now() / 1000);
+    assert.ok(bob !== null);
+    const { session } = deskOf(t, bob, dev);
+    await until(session, "uploader shared", (view) => view.loaded && view.myRepos.includes("uploader"));
+
+    const kindOf = (body: string | null): string => (body === null ? "" : readContent(eventSchema.parse(JSON.parse(body))).kind);
+    failing = (method, _url, body) => method === "POST" && ["channel.pin", "channel.leave"].includes(kindOf(body));
+    const unreachable = "cannot reach the hub at http://";
+    await assert.rejects(session.handle({ do: "startRoom", repo: "uploader", branch: "feature/retry" }), (error: unknown) => {
+      const said = error instanceof Error ? error.message : "";
+      return (
+        said.startsWith(`#uploader-feature-retry could not be pinned to uploader on feature/retry (${unreachable}`) &&
+        said.includes(`, and leaving it failed too (${unreachable}`) &&
+        said.endsWith(": leave it yourself")
+      );
+    });
+
+    failing = () => false;
+    await session.handle({ do: "joinChannel", name: "ops" });
+    failing = (method, url) => method === "GET" && new URL(url).pathname === "/channels";
+    await session.handle({ do: "leaveChannel", chat: "#ops" });
+    failing = () => false;
+    assert.deepEqual([session.view().rows.some((row) => row.chat === "#ops"), session.view().current?.chat === "#ops"], [false, false]);
+  }
+);
+
 await test("joining a channel the user is in already sends no second join, so nobody sees them join twice", { timeout: 30_000 }, async (t) => {
   const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
   const bob = await hub.join("bob");

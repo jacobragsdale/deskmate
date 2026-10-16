@@ -1841,7 +1841,8 @@ export class Session {
       throw new PlayerTwoError(`your ${draft.repo} agent's draft is waiting in ${chat}: send or discard it before you leave`);
     }
     await this.client.publish(chat, "channel.leave", {}); // Not folded: what was said in the channel is forgotten here.
-    await this.refreshChannels();
+    // Out of it on the hub now: forgotten here at once, the user taken out of its members too, whether or not asking for the channels again works; the next beat asks again.
+    this.channels = this.channels.map((each) => (each.name === chat ? { ...each, members: each.members.filter((member) => member !== this.me) } : each));
     this.chats.forget(chat);
     this.paged.delete(chat);
     this.live.delete(chat);
@@ -1854,6 +1855,7 @@ export class Session {
     }
     this.hooks.notice({ title: "", body: `You left ${chat}.`, severity: "info" });
     this.hooks.changed();
+    await this.refreshChannels().catch(() => undefined);
   }
 
   /** Say which repo a channel is about, one the user has a checkout of, and with a branch, which branch of it: a branch room. */
@@ -1891,9 +1893,15 @@ export class Session {
     try {
       await this.pin(name, repo, branch);
     } catch (error) {
-      // As a hub before phase 6 refuses a pin that names a branch: the channel made for it is left again, which ends it, so that each click does not leave one more behind.
-      await this.leaveChannel(name);
-      throw new PlayerTwoError(`the hub would not pin ${name} to ${repo} on ${branch} (${problemOf(error)}), so you left it again: it may be older than this app`, { cause: error });
+      // As a hub before phase 6 refuses a pin that names a branch, or one that stopped answering: the channel made for it is left again, which ends it, so that each click does not
+      // leave one more behind; and should leaving fail too, the user is told so, with why the pin failed, which is what they asked about.
+      const refused = error instanceof Refused;
+      const why = refused ? `the hub would not pin ${name} to ${repo} on ${branch}` : `${name} could not be pinned to ${repo} on ${branch}`;
+      const left = await this.leaveChannel(name).then(
+        () => "so you left it again",
+        (failed: unknown) => `and leaving it failed too (${problemOf(failed)}): leave it yourself`
+      );
+      throw new PlayerTwoError(`${why} (${problemOf(error)}), ${left}${refused ? ": it may be older than this app" : ""}`, { cause: error });
     }
   }
 
