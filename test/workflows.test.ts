@@ -928,6 +928,31 @@ await test("a workflow has at most 50 runs waiting for a 👍; one past that is 
   ]);
 });
 
+await test("a waiting run the hub cannot record, as one whose row the database holds damaged, holds up no other: each sweep, and the hub starting, still end the rest", async (t) => {
+  let clock = NOW;
+  const hub = await startHub(t, () => clock);
+  const [alice] = await team(hub, "alice");
+  assert.ok(alice !== undefined);
+  const gate = 'approve: { from: anyone, text: "go?", within: 1h }';
+  for (const name of ["damaged", "b", "c"]) {
+    const { event } = await alice.publish("#ops", "workflow.define", { name, yaml: hooked(name, gate) });
+    await setOff(hub, event.id);
+  }
+  const db = new DatabaseSync(join(hub.dir, "hub.db"));
+  db.prepare("UPDATE workflow_runs SET approval = 'not an event id' WHERE run = 1").run(); // No event can refer to it, so recording how run 1 ends throws.
+  db.close();
+
+  await alice.publish("#ops", "workflow.remove", { name: "b" }); // Sweeps at once, run 1 first.
+  clock += 3_600 + 1;
+  await hub.restart(); // Sweeps as it starts.
+
+  assert.deepEqual(
+    (await channel(alice)).filter((line) => / run \d step 0 (cancelled|expired)/.test(line)),
+    ["hub: b run 2 step 0 cancelled: b was removed", "hub: c run 3 step 0 expired: no 👍 came in time"]
+  );
+  assert.deepEqual(runs(hub), ["damaged 1 0 waiting", "b 2 0 ended", "c 3 0 ended"]);
+});
+
 await test("the hub's own messages set nothing off, though they hold a workflow's words", async (t) => {
   const hub = await startHub(t);
   const [alice, bob] = await team(hub, "alice", "bob");

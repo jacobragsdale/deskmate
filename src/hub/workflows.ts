@@ -426,13 +426,27 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, al
    */
   function sweep(): void {
     for (const run of db.runsIn("waiting")) {
-      const gone = changed(run);
-      const end: Place = { step: run.step, state: "ended" };
-      if (gone !== "") {
-        record(run, run.step, "cancelled", gone, end, null, run.approval);
-      } else if (now() > run.until) {
-        record(run, run.step, "expired", "no 👍 came in time", end, null, run.approval);
-      }
+      kept(run, () => {
+        const gone = changed(run);
+        const end: Place = { step: run.step, state: "ended" };
+        if (gone !== "") {
+          record(run, run.step, "cancelled", gone, end, null, run.approval);
+        } else if (now() > run.until) {
+          record(run, run.step, "expired", "no 👍 came in time", end, null, run.approval);
+        }
+      });
+    }
+  }
+
+  /**
+   * Act on a run kept in workflow_runs, as a sweep or the hub starting does for each in turn; should that fail, as for a row the database holds damaged, which no event can refer to,
+   * the hub's log says which, and the runs after it are acted on all the same, rather than one run holding up every other wait in every channel at each sweep.
+   */
+  function kept(run: Ref, act: () => void): void {
+    try {
+      act();
+    } catch (error) {
+      log("workflow failed", { channel: run.channel, workflow: run.name, run: run.run, error: problemOf(error) });
     }
   }
 
@@ -534,7 +548,9 @@ export function runWorkflows(db: Database, key: KeyObject, now: () => number, al
 
   // A run the hub stopped in the middle of a step, a webhook being called, is not taken up again: whether the call did what it does is not known, so the run ends there.
   for (const run of db.runsIn("running")) {
-    record(run, run.step, "failed", "the hub stopped during this step", { step: run.step, state: "ended" });
+    kept(run, () => {
+      record(run, run.step, "failed", "the hub stopped during this step", { step: run.step, state: "ended" });
+    });
   }
   schedule();
   sweep();
