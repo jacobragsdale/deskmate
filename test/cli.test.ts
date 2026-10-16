@@ -273,7 +273,10 @@ await test("a command line that is wrong exits with 2 and the usage, a command t
     ["who", "else"],
     ["channel", "dance"],
     ["desk", "--help"],
-    ["desk", "extra"]
+    ["desk", "extra"],
+    ["inbox", "--wait", "1"],
+    ["hub", "verify", "--help"],
+    ["mcp", "--job", "ab".repeat(32), "--allow-send"]
   ];
   for (const argv of wrong) {
     const ran = await playerTwo(hub, "alice", argv);

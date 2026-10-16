@@ -247,9 +247,12 @@ async function send(joined: () => Client, args: string[], out: (line: string) =>
 }
 
 async function inbox(joined: () => Client, args: string[], out: (line: string) => void): Promise<void> {
-  const { values } = parseArgs({ args, options: { after: { type: "string" }, wait: { type: "string", default: "0" }, json: { type: "boolean", default: false } } });
-  const wait = waitOf(values.wait);
+  const { values } = parseArgs({ args, options: { after: { type: "string" }, wait: { type: "string" }, json: { type: "boolean", default: false } } });
+  const wait = values.wait === undefined ? 0 : waitOf(values.wait);
   const after = values.after === undefined ? null : numberOf(seqSchema, values.after, "after");
+  if (after === null && values.wait !== undefined) {
+    throw new UsageError("inbox --wait holds on only for what comes after --after SEQ"); // Without it there is no place to wait from, and it would print at once.
+  }
   const client = joined();
   let found: Entry[];
   if (after === null) {
@@ -554,6 +557,9 @@ async function mcp(joined: () => Client, args: string[]): Promise<void> {
   const job = values.job ?? null;
   if (job !== null && !/^[0-9a-f]{64}$/.test(job)) {
     throw new UsageError("--job names a request by its event's id, 64 hex characters");
+  }
+  if (job !== null && values["allow-send"]) {
+    throw new UsageError("--job and --allow-send do not go together: a run let ask other agents sends nothing else");
   }
   const server = createServer(joined(), values["allow-send"], job);
   globalThis.console = new console.Console(process.stderr); // Standard output carries the protocol's messages and nothing else, as for the desk.
