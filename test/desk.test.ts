@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { PassThrough } from "node:stream";
+import { PassThrough, Writable } from "node:stream";
 import { text } from "node:stream/consumers";
 import { test } from "node:test";
 
@@ -224,4 +224,41 @@ await test("the built desk ends on SIGTERM, SIGINT or SIGHUP as it does at the e
 
     assert.deepEqual(await exited, [0, null], signal); // It ended itself, having stopped what it runs, rather than being ended by the signal.
   }
+});
+
+await test("the desk writes a view only once the window has read the last, and ends as at the end of its input when its output breaks", { timeout: 30_000 }, async (t) => {
+  const home = mkdtempSync(join(tmpdir(), "player-two-desk-"));
+  t.after(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+  process.env["PLAYER_TWO_HOME"] = home;
+  const written: string[] = [];
+  const held: (() => void)[] = [];
+  // A window that has not read what it was sent yet: nothing written is taken until it is let go.
+  const output = new Writable({
+    highWaterMark: 1,
+    write(chunk: Buffer, _encoding, taken) {
+      written.push(chunk.toString());
+      held.push(() => {
+        taken();
+      });
+    }
+  });
+  const done = runDesk(new PassThrough(), output);
+  await pause(1500);
+  assert.deepEqual(
+    written.map((line) => parse(line).t),
+    ["hello"]
+  ); // The view waits for the hello to be read.
+  for (const take of held.splice(0)) {
+    take();
+  }
+  await pause(200);
+  assert.deepEqual(
+    written.map((line) => parse(line).t),
+    ["hello", "view"]
+  );
+
+  output.destroy(new Error("write EPIPE")); // As when the window has gone: no error is left unhandled, and the desk ends.
+  await done;
 });

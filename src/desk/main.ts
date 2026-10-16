@@ -1,6 +1,8 @@
 /** The desk as a program: one person's session with no window. It reads the window's lines on one stream, writes its own on another, and opens nothing else. */
 
 import { createInterface } from "node:readline";
+import type { Interface } from "node:readline";
+import type { Writable } from "node:stream";
 
 import { z } from "zod";
 
@@ -26,7 +28,7 @@ const unreadCommandSchema = z.object({ t: z.literal("command"), id: z.int(), com
 class Desk {
   private readonly home = defaultHome();
   private readonly asked = new Map<number, (ok: boolean) => void>(); // Questions the user has not answered yet, by id.
-  private readonly output: NodeJS.WritableStream;
+  private readonly output: Writable;
   private readonly hooks: Hooks;
   private readonly stopping = new AbortController(); // Aborted once the window has gone, ending the agents a setup check still going has started.
   private session: Session | null = null; // Null until someone has joined a hub from this machine.
@@ -35,9 +37,16 @@ class Desk {
   private viewQueued = false;
   private asks = 0;
   private ended = false;
+  private lines: Interface | null = null; // The window's lines, once the desk reads them; closing it ends the desk as the end of its input does.
 
-  constructor(output: NodeJS.WritableStream) {
+  constructor(output: Writable) {
     this.output = output;
+    // Its output broken, as by a window gone or a write the system cannot take, the desk ends as at the end of its input, its agents stopped, rather than at once on an error nothing
+    // handles, which left them running. Nothing more is written: there is nobody to read it.
+    output.on("error", () => {
+      this.ended = true;
+      this.lines?.close();
+    });
     this.hooks = {
       changed: () => {
         this.changed();
@@ -65,6 +74,10 @@ class Desk {
     this.start();
     this.changed();
     const lines = createInterface({ input });
+    this.lines = lines;
+    if (this.ended) {
+      lines.close(); // The output broke before the desk began to read.
+    }
     // A signal ends the desk as the end of its input does, its agents stopped and the chat told, where Node's own handling of one ends the process at once and leaves the agents,
     // each in a process group of its own, running on. Before this nothing has started an agent.
     const end = (): void => {
@@ -103,10 +116,24 @@ class Desk {
     if (!this.viewQueued) {
       this.viewQueued = true;
       setImmediate(() => {
-        this.viewQueued = false;
-        this.write({ t: "view", view: this.view() });
+        this.draw();
       });
     }
+  }
+
+  /**
+   * Write the view once the window has read the last: one is the whole picture, so those a busy chat changes to meanwhile are drawn as one, as it is then, where each was queued
+   * behind the others, a few megabytes apiece in a chat with long messages, until the desk ran out of memory or the system refused the write.
+   */
+  private draw(): void {
+    if (this.output.writableNeedDrain && !this.ended) {
+      this.output.once("drain", () => {
+        this.draw();
+      });
+      return;
+    }
+    this.viewQueued = false;
+    this.write({ t: "view", view: this.view() });
   }
 
   /** Put a question to the user and wait for the window's answer. */
@@ -213,6 +240,6 @@ class Desk {
 }
 
 /** Run the desk until `input` ends: say hello, show the join form or the chats, do what the window's lines ask, and at the end stop the agents and tell the chat. */
-export async function runDesk(input: NodeJS.ReadableStream, output: NodeJS.WritableStream): Promise<void> {
+export async function runDesk(input: NodeJS.ReadableStream, output: Writable): Promise<void> {
   await new Desk(output).run(input);
 }
