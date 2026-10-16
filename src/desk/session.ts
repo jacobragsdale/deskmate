@@ -2087,7 +2087,15 @@ export class Session {
     const target = this.toApply(id);
     const { message, patch, checkout } = target;
     const branch = `player-two/${id.slice(0, 8)}`;
-    await patches.checkBranch(checkout.path, patch.base, branch, patch.diff);
+    if ((await patches.checkBranch(checkout.path, patch.base, branch, patch.diff)).present) {
+      // Made already: told to the chat once, without asking, as when its word to the chat did not reach the hub; refused after that.
+      if (message.patch?.applied.some((each) => each.who === this.me && each.branch === branch) === true) {
+        throw new PlayerTwoError(`${checkout.path} has a branch ${branch} already`);
+      }
+      await this.publish(chatOf(message.entry.event, this.me), "patch.applied", { branch }, [id]);
+      this.hooks.notice({ title: "", body: `${branch} in ${checkout.path} holds it already, so nothing was made; the chat is told it is applied there.`, severity: "info" });
+      return;
+    }
     const head = await this.describe(checkout);
     const where = `New branch: ${branch}, from ${patch.base.slice(0, 7)}, the commit it was made on. ${head.branch}, which your checkout is on, and your working tree are left as they are.`;
     if (!(await this.mayApply(target, { onto: `a new branch of your ${checkout.remote.name} checkout`, where, warnings: [], confirm: "Create the branch" }))) {

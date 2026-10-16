@@ -79,14 +79,28 @@ async function onIndex<T>(path: string, base: string, use: (own: Readonly<Record
  * Whether the patch applies to `base`, as a new branch `branch` would hold it: rejects when the checkout's repository lacks that commit, as when it has not been fetched, when it has a
  * branch of that name already, or when the patch does not apply to it as it is. Nothing is written but a scratch index.
  */
-export async function checkBranch(path: string, base: string, branch: string, diff: string): Promise<void> {
+export async function checkBranch(path: string, base: string, branch: string, diff: string): Promise<{ readonly present: boolean }> {
   if (!(await git(["-C", path, "cat-file", "-e", `${base}^{commit}`], LIMIT)).ok) {
     throw new Error(`the commit it was made on, ${base.slice(0, 7)}, is not in ${path}: fetch it, or apply the patch to your branch`);
   }
   if ((await git(["-C", path, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`], LIMIT)).ok) {
+    // `present` when the branch is the one commit on `base` holding the patch, as an Apply to a new branch whose word to the chat did not reach the hub leaves it; any other is in the way.
+    const made = await git(["-C", path, "rev-parse", `refs/heads/${branch}^{tree}`, `refs/heads/${branch}^1`], LIMIT);
+    if (made.ok && made.stdout.trim() === `${await treeOf(path, base, diff)}\n${base}`) {
+      return { present: true };
+    }
     throw new Error(`${path} has a branch ${branch} already`);
   }
   await onIndex(path, base, (own) => run(["-C", path, "apply", "--cached", "--check"], `it does not apply to ${base.slice(0, 7)}`, diff, own));
+  return { present: false };
+}
+
+/** The tree `base` becomes with the patch applied, written in the checkout's repository from an index of its own. */
+async function treeOf(path: string, base: string, diff: string): Promise<string> {
+  return onIndex(path, base, async (own) => {
+    await run(["-C", path, "apply", "--cached"], `git apply failed in ${path}`, diff, own);
+    return (await run(["-C", path, "write-tree"], `git write-tree in ${path}`, "", own)).trim();
+  });
 }
 
 /**
@@ -94,10 +108,7 @@ export async function checkBranch(path: string, base: string, branch: string, di
  * the checkout is on, nor its working tree, nor its index is touched, and nothing the patch wrote is ever checked out. The title, someone else's, goes to git on standard input too.
  */
 export async function commitBranch(path: string, base: string, branch: string, diff: string, title: string): Promise<void> {
-  const tree = await onIndex(path, base, async (own) => {
-    await run(["-C", path, "apply", "--cached"], `git apply failed in ${path}`, diff, own);
-    return (await run(["-C", path, "write-tree"], `git write-tree in ${path}`, "", own)).trim();
-  });
+  const tree = await treeOf(path, base, diff);
   const commit = (await run(["-C", path, "commit-tree", tree, "-p", base], `git commit-tree in ${path}`, `${title}\n`)).trim();
   await run(["-C", path, "update-ref", `refs/heads/${branch}`, commit, ""], `git update-ref in ${path}`); // "" as the old value: only while there is no such branch.
 }

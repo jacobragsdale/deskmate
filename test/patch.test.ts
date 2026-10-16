@@ -574,6 +574,22 @@ await test(
     await asker.handle({ do: "applyPatch", id: other });
     await until("bob sees it told", () => told() === 1);
     assert.deepEqual([questions.length, readFileSync(join(theirs, "lost.txt"), "utf8")], [1, "x\n"]);
+
+    // And a branch Apply to a new branch made, its word to the chat lost the same way: Apply to a new branch tells it now, without asking.
+    const base = git(mine, "rev-parse", "HEAD").trim();
+    const branched = diff.replaceAll("again.txt", "branched.txt");
+    const { id: third } = (await jacob.publish("#team", "patch", { repo: UPLOADER, base, branch: "main", title: "Add branched.txt", diff: branched })).event;
+    const toldOf = (): readonly { readonly who: string; readonly branch: string }[] | undefined => asker.view().current?.messages.find((message) => message.id === third)?.patch?.applied;
+    await until("bob sees the third patch", () => toldOf()?.length === 0);
+    const index = { ...process.env, GIT_INDEX_FILE: join(theirs, ".git", "e2e-index") }; // As commitBranch makes it, in an index of its own.
+    execFileSync("git", ["-C", theirs, "read-tree", base], { env: index });
+    execFileSync("git", ["-C", theirs, "apply", "--cached"], { input: branched, env: index });
+    const tree = execFileSync("git", ["-C", theirs, "write-tree"], { env: index, encoding: "utf8" }).trim();
+    const commit = execFileSync("git", ["-C", theirs, "commit-tree", tree, "-p", base, "-m", "Add branched.txt"], { encoding: "utf8" }).trim();
+    git(theirs, "update-ref", `refs/heads/player-two/${third.slice(0, 8)}`, commit);
+    await asker.handle({ do: "applyPatch", id: third, newBranch: true });
+    await until("bob sees it told", () => toldOf()?.length === 1);
+    assert.deepEqual([questions.length, toldOf()], [1, [{ who: "bob", branch: `player-two/${third.slice(0, 8)}` }]]);
   }
 );
 
