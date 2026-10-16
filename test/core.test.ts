@@ -1085,7 +1085,7 @@ await test("a checkout's head is its branch, the commit it is at and whether any
   const checkout = { remote: { name: "uploader", key: "dev.azure.com/acme/platform/uploader", url: "https://dev.azure.com/acme/Platform/_git/uploader" }, path, branch: "main", defaultBranch: null };
   const git = (...args: string[]): Promise<unknown> => repos.git(["-C", path, "-c", "user.name=t", "-c", "user.email=t@example.com", ...args], 20);
   await git("init", "-q", "-b", "main");
-  await assert.rejects(repos.describe(checkout), /git cannot say which commit/);
+  await assert.rejects(repos.describe(checkout), /^Error: git cannot say which commit .* is at: fatal: ambiguous argument 'HEAD'/); // Git's reason, not the hint of usage after it.
   await git("commit", "-q", "--allow-empty", "-m", "first");
   const head = await repos.describe(checkout);
   assert.deepEqual([head.branch, /^[0-9a-f]{40}$/.test(head.commit), head.dirty], ["main", true, false]);

@@ -194,9 +194,19 @@ export function git(args: readonly string[], timeoutSeconds: number, input = "",
   });
 }
 
-/** Git's last words on a failed run. */
+/**
+ * Git's last words on a failed run: its last line saying what failed, "fatal:" or "error:", where a hint of usage follows it, as in a repository with no commit yet; else its last line;
+ * and that it said nothing, when it did not.
+ */
 function lastWords(result: GitResult): string {
-  return result.timedOut ? `no answer within ${String(STATUS_TIMEOUT)} seconds` : (result.stderr.trim().split("\n").at(-1) ?? "");
+  if (result.timedOut) {
+    return `no answer within ${String(STATUS_TIMEOUT)} seconds`;
+  }
+  const lines = result.stderr
+    .trim()
+    .split("\n")
+    .filter((line) => line !== "");
+  return lines.findLast((line) => /^(?:fatal|error):/.test(line)) ?? lines.at(-1) ?? "git failed and said nothing of why";
 }
 
 /**
