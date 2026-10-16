@@ -587,3 +587,22 @@ await test("the user is told, on their desk alone, once each time the latest bui
   });
   assert.equal((await bob.events({ chat: "#room" })).filter(({ event }) => event.author === "jacob" && event.kind !== "channel.join").length, 0);
 });
+
+await test("a branch room left as the last chat open is looked at no more, and a build that fails then is not told", async (t) => {
+  const { calls, project } = await azure(t);
+  const hub = await startHub(t, () => Date.now() / 1000);
+  const jacob = await hub.join("jacob"); // Alone on the hub, so no chat is left open once he leaves the room.
+  await jacob.publish("#room", "channel.join", {});
+  await jacob.publish("#room", "channel.pin", { repo: UPLOADER, branch: "npaulk/my_work" });
+  project.result = "succeeded";
+  const { session, notices } = await deskOf(t, jacob, join(hub.dir, "dev-jacob"), "#room", { rooms: 0.1 });
+  await until("the room looked at", () => session.view().current?.pinned?.azure?.build.ok);
+  await session.handle({ do: "leaveChannel", chat: "#room" });
+  assert.equal(session.view().current, null);
+  project.result = "failed";
+  const builds = (): number => calls.filter((call) => call.path.endsWith("/build/builds")).length;
+  await until("no look under way", () => builds() === calls.filter((call) => call.path.endsWith("/pullrequests")).length);
+  const left = builds();
+  await delay(500); // Five times the room's 0.1 seconds.
+  assert.deepEqual([builds(), notices.filter((notice) => notice.severity === "error")], [left, []]);
+});

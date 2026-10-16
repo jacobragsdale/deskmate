@@ -650,6 +650,7 @@ export class Session {
       return { chat: row.chat, unread: row.unread, mark, here: isChannel(row.chat) ? null : this.here(row.chat) };
     });
     const answering = defaultAgentOf(this.client.config);
+    const azure = this.watchRoom(); // With no chat open too, so a room left last is no longer looked at.
     let link: ChatView["link"] = { state: "connecting" };
     if (this.connected) {
       link = { state: "connected" };
@@ -678,12 +679,11 @@ export class Session {
       otherChannels: this.channels.filter((channel) => !channel.members.includes(this.me)).map((channel) => ({ name: channel.name, members: channel.members })),
       rooms: suggestions(this.team, this.me, this.channels, new Map([...this.checkouts.values()].map((checkout) => [checkout.remote.name, checkout.defaultBranch])), this.dismissed),
       busy: { working: this.runs.size, unsent: [...this.drafts.values()].reduce((sum, drafts) => sum + drafts.length, 0) },
-      current: this.current === "" ? null : this.currentView(now)
+      current: this.current === "" ? null : this.currentView(now, azure)
     };
   }
 
-  private currentView(now: number): CurrentView {
-    const azure = this.watchRoom();
+  private currentView(now: number, azure: Watched["found"]): CurrentView {
     const chat = this.current;
     this.askPulls(chat);
     const info = this.channels.find((channel) => channel.name === chat);
