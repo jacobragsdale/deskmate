@@ -20,6 +20,10 @@ const DIFF = ["diff", "--cached", "--binary", "--no-color", "--no-ext-diff", "--
 // runs no fsmonitor, which git add and git diff would start, and no hook, as git add runs post-index-change. A filter it names for a file still runs: see the phase 6 Notes.
 const UNHOOKED = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"];
 
+// A worktree is locked from the moment it is made, with this and the desk's process id as the reason, until its run is over: so a second desk started meanwhile, as `player-two desk`
+// typed in a terminal beside the window's, does not take it from under the run when it sweeps. `sweep` removes one only once that process has gone.
+const IN_USE = "in use by a run of Player Two's desk, process ";
+
 /**
  * A worktree made for a run: where it is, the commit it was made at, and its folder inside the checkout's .git. git is pointed at that folder by name, never through the worktree's
  * own .git file, which the run could have replaced with a repository whose configuration runs a command.
@@ -51,7 +55,7 @@ export async function open(checkout: string, jobId: string): Promise<Worktree> {
   mkdirSync(root(), { recursive: true, mode: 0o700 });
   const path = join(root(), jobId.slice(0, 12));
   const base = (await run(["-C", checkout, "rev-parse", "--verify", "HEAD^{commit}"], `git rev-parse in ${checkout}`)).trim();
-  await run(["-C", checkout, "worktree", "add", "--detach", path, base], `git worktree add ${path}`);
+  await run(["-C", checkout, "worktree", "add", "--detach", "--lock", "--reason", `${IN_USE}${String(process.pid)}`, path, base], `git worktree add ${path}`);
   const gitDir = (await run(["-C", path, "rev-parse", "--absolute-git-dir"], `git rev-parse in ${path}`)).trim(); // Read before the run has had the worktree.
   return { path, base, gitDir };
 }
@@ -85,7 +89,7 @@ function restore(worktree: Worktree): void {
 /** Remove the worktree, its files and git's record of it. */
 export async function close(worktree: Worktree): Promise<void> {
   restore(worktree); // git removes no worktree whose .git file is not the one it wrote, and the run may have replaced it.
-  await run([`--git-dir=${worktree.gitDir}`, ...UNHOOKED, "worktree", "remove", "--force", worktree.path], `git worktree remove ${worktree.path}`);
+  await run([`--git-dir=${worktree.gitDir}`, ...UNHOOKED, "worktree", "remove", "--force", "--force", worktree.path], `git worktree remove ${worktree.path}`); // Twice: it is locked while in use.
 }
 
 /**
@@ -94,13 +98,25 @@ export async function close(worktree: Worktree): Promise<void> {
  */
 export async function lock(worktree: Worktree): Promise<void> {
   restore(worktree);
+  await run([`--git-dir=${worktree.gitDir}`, ...UNHOOKED, "worktree", "unlock", worktree.path], `git worktree unlock ${worktree.path}`); // Locked while in use, for another reason.
   await run([`--git-dir=${worktree.gitDir}`, ...UNHOOKED, "worktree", "lock", "--reason", "kept by Player Two for its owner to look at", worktree.path], `git worktree lock ${worktree.path}`);
+}
+
+/** Whether the process with this id is still there; one of another user's is, as far as this can tell. */
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error instanceof Error && "code" in error && error.code === "EPERM";
+  }
 }
 
 /**
  * Remove the worktrees a desk that stopped without closing them left behind, in the checkouts under `dev`, and git's record of one whose folder is gone already, which
- * `git worktree remove` forgets as well. One its owner locked (`git worktree lock`) is kept, as one --force leaves it. The checkouts' other worktrees, and git's records of them, are
- * left alone: git worktree prune would forget every one whose folder is gone, the user's own among them. Nothing here throws.
+ * `git worktree remove` forgets as well: one not locked, and one locked as in use by a desk whose process has gone. One a desk still running uses is kept, and so is one its owner locked
+ * (`git worktree lock`), as one --force leaves it. The checkouts' other worktrees, and git's records of them, are left alone: git worktree prune would forget every one whose folder is
+ * gone, the user's own among them. Nothing here throws.
  */
 export async function sweep(dev: string): Promise<void> {
   const ours = `${existsSync(root()) ? realpathSync(root()) : root()}/`; // git writes a worktree's path with every link in it followed.
@@ -112,8 +128,15 @@ export async function sweep(dev: string): Promise<void> {
   }
   for (const repo of folders.map((folder) => join(dev, folder)).filter((path) => existsSync(join(path, ".git", "worktrees")))) {
     const listed = await git(["-C", repo, "worktree", "list", "--porcelain", "-z"], LIMIT);
-    for (const path of listed.stdout.split("\0").flatMap((field) => (field.startsWith(`worktree ${ours}`) ? [field.slice("worktree ".length)] : []))) {
-      await git(["-C", repo, "worktree", "remove", "--force", path], LIMIT);
+    // One record per worktree, its fields ended by NUL and the record by one more: its path first, then "locked" with the reason, when it is.
+    for (const fields of listed.stdout.split("\0\0").map((record) => record.split("\0"))) {
+      const path = fields[0]?.startsWith(`worktree ${ours}`) === true ? fields[0].slice("worktree ".length) : null;
+      const reason = fields.find((field) => field === "locked" || field.startsWith("locked "))?.slice("locked ".length);
+      // ponytail: a process id the system has given again keeps a dead desk's worktree until a later start; a start time beside the id would tell them apart.
+      const pid = reason?.startsWith(IN_USE) === true ? Number(reason.slice(IN_USE.length)) : null;
+      if (path !== null && (reason === undefined || (pid !== null && Number.isInteger(pid) && !alive(pid)))) {
+        await git(["-C", repo, "worktree", "remove", "--force", "--force", path], LIMIT);
+      }
     }
   }
 }

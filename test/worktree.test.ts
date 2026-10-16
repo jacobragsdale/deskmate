@@ -1,7 +1,7 @@
 /** Throwaway worktrees against real repositories in a folder of the test's own, which stands in for the home folder, with a git configuration of its own. */
 
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -214,10 +214,15 @@ await test("a change that records another repository's commit, a new submodule o
   await close(worktree);
 });
 
-await test("on start, the worktrees left in ~/.player-two/worktrees are removed and git forgets one whose folder is gone; one kept, locked with its .git git's own again, and the checkout's own stay, git's record of one whose folder is gone too", async () => {
+await test("on start, the worktrees a desk that has gone left in ~/.player-two/worktrees are removed and git forgets one whose folder is gone; one a running desk uses, one kept, locked with its .git git's own again, and the checkout's own stay, git's record of one whose folder is gone too", async () => {
   const { dev, repo } = checkout();
   const left = await open(repo, jobId());
   const deleted = await open(repo, jobId());
+  const gone = spawnSync("true").pid; // A desk's process that has ended.
+  for (const worktree of [left, deleted]) {
+    writeFileSync(join(worktree.gitDir, "locked"), `in use by a run of Player Two's desk, process ${String(gone)}`); // As a desk that was killed during their runs left them.
+  }
+  const running = await open(repo, jobId()); // In use by this process, a desk still running, as a second desk started beside it would find it.
   const kept = await open(repo, jobId());
   rmSync(deleted.path, { recursive: true });
   rmSync(join(kept.path, ".git"));
@@ -233,6 +238,8 @@ await test("on start, the worktrees left in ~/.player-two/worktrees are removed 
 
   await sweep(dev);
   assert.equal(existsSync(left.path), false);
+  assert.deepEqual(worktrees(repo), [repo, running.path, kept.path, own, ownGone].sort(byCodeUnit));
+  await close(running); // Its run over, it goes, locked as it is.
   assert.deepEqual(worktrees(repo), [repo, kept.path, own, ownGone].sort(byCodeUnit));
   await sweep(join(dir, "no-such-folder"));
 });
