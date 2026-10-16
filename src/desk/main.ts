@@ -17,7 +17,7 @@ import { defaultDev, defaultHome, http, join, loadClient, PlayerTwoError } from 
 import { runChecks, WITHOUT_IDENTITY } from "./doctor.ts";
 import { Session } from "./session.ts";
 import type { Hooks } from "./session.ts";
-import { shellPath } from "./shellEnv.ts";
+import { joinPaths, shellPath } from "./shellEnv.ts";
 import { sweep } from "./worktree.ts";
 
 const SIGNALS = ["SIGTERM", "SIGINT", "SIGHUP"] as const; // What asks a process to end: a terminal's Ctrl-C, its closing, and kill.
@@ -69,7 +69,9 @@ class Desk {
 
   public async run(input: NodeJS.ReadableStream): Promise<void> {
     this.write({ t: "hello", version: VERSION, protocol: PROTOCOL });
-    process.env["PATH"] = await shellPath(); // Agents and git are started with this process's environment, so from here on they are looked for where the user's own shell would find them.
+    // Agents and git are started with this process's environment, so from here on they are looked for where the user's own shell would find them, and then where the window that started
+    // the desk would: a login shell may set PATH afresh, as Debian's /etc/profile does, and the player-two command an agent's MCP server is started as can be on the window's alone.
+    process.env["PATH"] = joinPaths(await shellPath(), process.env["PATH"] ?? "");
     await sweep(defaultDev()); // Before any run can make a worktree of its own.
     this.start();
     this.changed();

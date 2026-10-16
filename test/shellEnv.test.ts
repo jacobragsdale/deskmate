@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { pathIn, shellPath } from "../src/desk/shellEnv.ts";
+import { joinPaths, pathIn, shellPath } from "../src/desk/shellEnv.ts";
 
 await test("the PATH is taken from between the markers, whatever a start-up file printed around them", () => {
   const printed = "Welcome to Ubuntu 24.04\n\x1b[32mnvm\x1b[0m is ready\n__PLAYER_TWO_PATH__/home/jacob/.nvm/versions/node/v26.1.0/bin:/usr/local/bin:/usr/bin__PLAYER_TWO_END__\nlogout\n";
@@ -14,6 +14,12 @@ await test("the PATH is taken from between the markers, whatever a start-up file
   assert.equal(pathIn(printed), "/home/jacob/.nvm/versions/node/v26.1.0/bin:/usr/local/bin:/usr/bin");
   assert.equal(pathIn("Welcome to Ubuntu 24.04\n"), null);
   assert.equal(pathIn("__PLAYER_TWO_PATH____PLAYER_TWO_END__"), null);
+});
+
+await test("the folders of this process's own PATH that the shell's leaves out come after the shell's, once each", () => {
+  // Debian's /etc/profile sets PATH afresh, so a folder only the desk was started with, as the window's, is not in what the shell says.
+  assert.equal(joinPaths("/usr/local/bin:/usr/bin:/bin", "/home/e/bin:/usr/bin::/opt/x/bin"), "/usr/local/bin:/usr/bin:/bin:/home/e/bin:/opt/x/bin");
+  assert.equal(joinPaths("/usr/bin", ""), "/usr/bin");
 });
 
 await test("a real bash is asked as an interactive login shell, and one that does not answer in time is ended and this process's own PATH used", { timeout: 30_000 }, async (t) => {

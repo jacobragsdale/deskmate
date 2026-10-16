@@ -12,6 +12,12 @@ export function pathIn(output: string): string | null {
   return found ?? null;
 }
 
+/** The shell's PATH, then each folder of this process's own PATH it left out, in their order: a login shell that sets PATH afresh, as Debian's /etc/profile does, would otherwise lose what this process was started with. */
+export function joinPaths(shell: string, own: string): string {
+  const folders = shell.split(":");
+  return [...folders, ...own.split(":").filter((each) => each !== "" && !folders.includes(each))].join(":");
+}
+
 /** The PATH an interactive login shell has, asked of one once; this process's own PATH when the shell does not say in time. */
 export function shellPath(limitSeconds = LIMIT): Promise<string> {
   return new Promise((resolve) => {
