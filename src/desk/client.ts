@@ -136,6 +136,11 @@ export const http: Transport = async (method, url, headers, body, signal) => {
   } catch (error) {
     throw new PlayerTwoError(`cannot reach the hub at ${url}: ${unreached(error)}`, { cause: error });
   }
+  // The hub answers everything asked here in JSON, its refusals too; a web page, or a proxy's word that what is behind it is down, is not the hub's, and its body would only fail to parse.
+  const type = response.headers.get("content-type") ?? "no content type";
+  if (!type.startsWith("application/json")) {
+    throw new PlayerTwoError(`${url} did not answer as a Player Two hub does (${String(response.status)} ${type}): is the hub's address right?`);
+  }
   if (!response.ok) {
     const detail = detailOf(text);
     throw new Refused(response.status, detail === "" ? `the hub answered ${String(response.status)} for ${url}` : detail);

@@ -2,6 +2,7 @@
 
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
 import { once } from "node:events";
 import { join } from "node:path";
@@ -228,6 +229,31 @@ await test("a hub nothing answers at fails the command with why: the refused con
     out: "",
     err: `player-two: cannot reach the hub at http://127.0.0.1:${String(address.port)}/info: fetch failed (connect ECONNREFUSED 127.0.0.1:${String(address.port)})`
   });
+});
+
+await test("an address that answers but not as a hub does, with a web page or a proxy's word that what is behind it is down, fails the command saying so, not with what its page fails to parse as", async (t) => {
+  const hub = await startHub(t);
+  await hub.join("alice");
+  const config = join(hub.dir, "alice", "config.json");
+  for (const [status, page] of [
+    [200, "<html><body>a team wiki</body></html>"],
+    [502, "<html><body>502 Bad Gateway</body></html>"]
+  ] as const) {
+    const server = createHttpServer((_, response) => {
+      response.writeHead(status, { "Content-Type": "text/html" }).end(page);
+    }).listen(0, "127.0.0.1");
+    await once(server, "listening");
+    t.after(() => server.close());
+    const address = server.address();
+    assert.ok(address !== null && typeof address === "object");
+    const url = `http://127.0.0.1:${String(address.port)}`;
+    writeFileSync(config, JSON.stringify({ ...JSON.parse(readFileSync(config, "utf8")), hub: url }));
+    assert.deepEqual(await playerTwo(hub, "alice", ["who"]), {
+      status: 1,
+      out: "",
+      err: `player-two: ${url}/info did not answer as a Player Two hub does (${String(status)} text/html): is the hub's address right?`
+    });
+  }
 });
 
 await test("before its first request the command asks which protocol the hub speaks, and asks nothing more of one that speaks another than to be updated", async (t) => {
