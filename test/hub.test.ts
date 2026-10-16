@@ -757,6 +757,21 @@ await test("a repo list the hub gave before the desk told it of a change does no
   assert.deepEqual([session.view().team, await bob.repos()], [[], []]);
 });
 
+await test("cloning a repo whose folder holds a clone cut short, with no commit, says where it is and that deleting it lets the clone run again", { timeout: 30_000 }, async (t) => {
+  const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+  const bob = await hub.join("bob");
+  const dev = join(hub.dir, "dev");
+  const cut = join(dev, "uploader");
+  mkdirSync(cut, { recursive: true });
+  execFileSync("git", ["-C", cut, "init", "-q", "-b", "main"]);
+  execFileSync("git", ["-C", cut, "remote", "add", "origin", "https://dev.azure.com/acme/Platform/_git/uploader"]); // As git clone leaves it before anything is fetched.
+  const { session } = deskOf(t, bob, dev);
+  await until(session, "the checkout found", (view) => view.loaded && view.myRepos.includes("uploader"));
+  await assert.rejects(session.handle({ do: "clone", repo: "uploader" }), {
+    message: `you have uploader already, in ${cut}, but with no commit, as a clone cut short leaves one: delete that folder and clone again`
+  });
+});
+
 await test("joining a channel the user is in already sends no second join, so nobody sees them join twice", { timeout: 30_000 }, async (t) => {
   const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
   const bob = await hub.join("bob");

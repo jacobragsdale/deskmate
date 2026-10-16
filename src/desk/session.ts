@@ -1961,8 +1961,14 @@ export class Session {
     const pinned = this.channels.find((channel) => channel.name === this.current)?.repo ?? null;
     const known: readonly RepoRef[] = [...this.team.map(refOf), ...(pinned === null ? [] : [pinned])];
     const ref = known.find((candidate) => candidate.name === repo);
-    if (this.checkouts.has(repo)) {
-      throw new PlayerTwoError(`you already have ${repo}`);
+    const have = this.checkouts.get(repo);
+    if (have !== undefined) {
+      // One with no commit is most likely a clone cut short, as by a desk killed while cloning: where it is, and what clears it.
+      throw new PlayerTwoError(
+        this.commits.get(repo) === ""
+          ? `you have ${repo} already, in ${have.path}, but with no commit, as a clone cut short leaves one: delete that folder and clone again`
+          : `you already have ${repo}`
+      );
     }
     if (ref === undefined) {
       throw new PlayerTwoError(`nobody on this hub has ${repo}, so there is nowhere to clone it from`);
