@@ -1804,7 +1804,10 @@ export class Session {
       throw new PlayerTwoError("a channel's name is lowercase letters, digits, - and _, at most 32 characters");
     }
     const channel = `#${bare.data}`;
-    await this.publish(channel, "channel.join", {});
+    // Joining one the user is in already sends nothing, as the command's join does not: a second join would be a second "joined" line in it for everyone.
+    if (this.channels.find((each) => each.name === channel)?.members.includes(this.me) !== true) {
+      await this.publish(channel, "channel.join", {});
+    }
     this.linked.clear(); // A note in the channel that the hub would not show before, it shows now.
     await this.refreshChannels();
     if (this.streaming !== null) {

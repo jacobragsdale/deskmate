@@ -754,6 +754,16 @@ await test("a repo list the hub gave before the desk told it of a change does no
   assert.deepEqual([session.view().team, await bob.repos()], [[], []]);
 });
 
+await test("joining a channel the user is in already sends no second join, so nobody sees them join twice", { timeout: 30_000 }, async (t) => {
+  const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+  const bob = await hub.join("bob");
+  const { session } = deskOf(t, bob, join(hub.dir, "dev"));
+  await until(session, "the chats loaded", (view) => view.loaded);
+  await session.handle({ do: "joinChannel", name: "ops" });
+  await session.handle({ do: "joinChannel", name: "#ops" });
+  assert.equal((await bob.catchUp(0)).filter((delivered) => delivered.event.kind === "channel.join").length, 1);
+});
+
 await test(
   "a checkout on a branch the hub cannot take, or whose agent's key cannot be used, stops only that one: the rest are shared, the chats load, and the user is told why once",
   { timeout: 30_000 },
