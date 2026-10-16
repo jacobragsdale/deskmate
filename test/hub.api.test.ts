@@ -586,6 +586,33 @@ await test("a stream whose reader hangs up is closed, leaving no timer behind", 
   assert.equal(await say(hub, "alice", "alice", "nobody is listening"), 1); // And the hub goes on.
 });
 
+await test("a row changed by hand so that it cannot be read is passed over by every read, and a stream that fails once it has begun is cut off rather than stopping the hub", async (t) => {
+  const hub = await startHub(t);
+  await hub.join("alice");
+  await hub.join("bob");
+  for (const text of ["one", "two", "three"]) {
+    await say(hub, "alice", "bob", text);
+  }
+  const kept = new DatabaseSync(join(hub.dir, "hub.db"));
+  t.after(() => {
+    kept.close();
+  });
+
+  kept.exec("UPDATE events SET refs = 'x' WHERE seq = 2");
+  assert.deepEqual(await said(hub, "bob"), ["one", "three"]);
+  assert.deepEqual(await said(hub, "bob", "after=0&limit=2"), ["one", "three"]); // The page is filled from beyond the row passed over, so a short page still means the end.
+  assert.deepEqual(await said(hub, "bob", "chat=alice"), ["three", "one"]);
+  kept.exec("UPDATE events SET refs = '[]', ts = 'abc' WHERE seq = 2");
+  const stream = await openStream(hub, "bob", 0);
+  assert.deepEqual([await stream.next(), await stream.next()], ["one", "three"]);
+  stream.hangUp();
+
+  kept.exec("DROP TABLE members"); // Every read of events fails from here, a stream's after it has sent its headers.
+  const cut = await openStream(hub, "bob", 0);
+  assert.ok(["(closed)", "(cut off)"].includes(await cut.next().catch(() => "(cut off)")));
+  assert.equal((await fetch(`${hub.url}/healthz`)).status, 200); // Still here.
+});
+
 await test("the audit head is the newest seq and chain value, and hub verify passes a clean log and names the first row changed by hand, its signature too, or that cannot be read", async (t) => {
   const hub = await startHub(t);
   await hub.join("alice");

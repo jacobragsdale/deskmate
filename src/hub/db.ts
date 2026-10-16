@@ -96,7 +96,17 @@ const eventRowSchema = z
   .strictObject({ seq: z.int(), id: z.string(), author: z.string(), to: z.string(), kind: z.string(), content: z.string(), ts: z.int(), refs: z.string(), nonce: z.string(), sig: z.string() })
   .transform(({ seq, refs, ...event }) => ({ seq, event: { ...event, refs: parseJson(refs) } }))
   .pipe(deliveredSchema);
-const eventRowsSchema = z.array(eventRowSchema);
+
+/**
+ * The rows that read as events, in the order given. One that does not, as a row changed by hand, is passed over, so that everything else a reader may see still reaches them rather than
+ * every read that would hold it failing, and a stream that reaches it ending; `hub verify` names it.
+ */
+function readable(rows: readonly unknown[]): Delivered[] {
+  return rows.flatMap((row) => {
+    const read = eventRowSchema.safeParse(row);
+    return read.success ? [read.data] : [];
+  });
+}
 const linkSchema = z.object({ seq: z.int(), chain: z.string() });
 const keysSchema = z.array(z.strictObject({ name: z.string(), pubkey: z.string() }));
 const agentKeysSchema = z.array(z.strictObject({ owner: z.string(), repo: z.string(), pubkey: z.string() }));
@@ -408,7 +418,7 @@ export class Database {
     const rows = this.db
       .prepare(`SELECT ${EVENT_COLUMNS} FROM workflows JOIN events ON events.id = workflows.event WHERE workflows.channel = :chat AND ${VISIBLE} ORDER BY seq`)
       .all({ me, chat: channel });
-    return eventRowsSchema.parse(rows);
+    return readable(rows);
   }
 
   /** The id of the workflow.define live in `channel` under `name`; null when none is. */
@@ -507,16 +517,23 @@ export class Database {
     }
   }
 
-  /** Everything `me` can see after `after`, oldest first, at most `limit` of it. */
+  /**
+   * Everything `me` can see after `after`, oldest first, at most `limit` of it. A row that cannot be read is passed over and the page filled from beyond it, so that a page shorter than
+   * `limit` still means there is no more, as the stream and every reader catching up take it.
+   */
   public eventsAfter(me: string, after: number, limit: number): readonly Delivered[] {
-    return eventRowsSchema.parse(this.db.prepare(`SELECT ${EVENT_COLUMNS} FROM events WHERE seq > :after AND ${VISIBLE} ORDER BY seq LIMIT :limit`).all({ me, after, limit }));
+    const rows = this.db.prepare(`SELECT ${EVENT_COLUMNS} FROM events WHERE seq > :after AND ${VISIBLE} ORDER BY seq LIMIT :limit`).all({ me, after, limit });
+    const read = readable(rows);
+    const last = z.object({ seq: z.int() }).optional().parse(rows.at(-1))?.seq;
+    return read.length === rows.length || last === undefined ? read : [...read, ...this.eventsAfter(me, last, limit - read.length)];
   }
 
-  /** One chat's events before `before`, newest first, at most `limit` of them: a channel's, or those between `me` and one other person, either way. */
+  /**
+   * One chat's events before `before`, newest first, at most `limit` of them: a channel's, or those between `me` and one other person, either way.
+   * ponytail: a row that cannot be read is passed over without filling the page, so a reader paging back may stop there; fill as eventsAfter does if that is ever more than a hand-edited row.
+   */
   public chatEvents(me: string, chat: string, before: number, limit: number): readonly Delivered[] {
-    return eventRowsSchema.parse(
-      this.db.prepare(`SELECT ${EVENT_COLUMNS} FROM events WHERE seq < :before AND ${inChat(chat)} AND ${VISIBLE} ORDER BY seq DESC LIMIT :limit`).all({ me, chat, before, limit })
-    );
+    return readable(this.db.prepare(`SELECT ${EVENT_COLUMNS} FROM events WHERE seq < :before AND ${inChat(chat)} AND ${VISIBLE} ORDER BY seq DESC LIMIT :limit`).all({ me, chat, before, limit }));
   }
 
   /** One chat's events around `around`, oldest first: up to half of `limit` from before it, and the rest from it on, so that a page opened at one event shows what came either side of it. */
@@ -525,13 +542,13 @@ export class Database {
     const these = `${inChat(chat)} AND ${VISIBLE}`;
     const before = `SELECT * FROM (SELECT ${EVENT_COLUMNS} FROM events WHERE seq < :around AND ${these} ORDER BY seq DESC LIMIT :older)`;
     const from = `SELECT * FROM (SELECT ${EVENT_COLUMNS} FROM events WHERE seq >= :around AND ${these} ORDER BY seq LIMIT :newer)`;
-    return eventRowsSchema.parse(this.db.prepare(`${before} UNION ALL ${from} ORDER BY seq`).all({ me, chat, around, older, newer: limit - older }));
+    return readable(this.db.prepare(`${before} UNION ALL ${from} ORDER BY seq`).all({ me, chat, around, older, newer: limit - older }));
   }
 
   /** One event `me` can see, by its id; null when there is none, or none they can see, which the caller cannot tell apart. */
   public event(me: string, id: string): Delivered | null {
     const row = this.db.prepare(`SELECT ${EVENT_COLUMNS} FROM events WHERE id = :id AND ${VISIBLE}`).get({ me, id });
-    return row === undefined ? null : eventRowSchema.parse(row);
+    return readable(row === undefined ? [] : [row])[0] ?? null;
   }
 
   /**
@@ -547,6 +564,6 @@ export class Database {
         `SELECT ${EVENT_COLUMNS}, snippet(search, 0, :open, :close, '…', 16) AS snippet FROM search JOIN events ON events.seq = search.rowid WHERE search MATCH :terms AND ${VISIBLE}${where} ORDER BY search.rank LIMIT :limit`
       )
       .all({ me, terms, limit, open: HIT_OPEN, close: HIT_CLOSE, ...(chat === null ? {} : { chat }) });
-    return rows.map(({ snippet, ...event }) => ({ ...eventRowSchema.parse(event), ...hitRowSchema.parse({ snippet }) }));
+    return rows.flatMap(({ snippet, ...event }) => readable([event]).map((delivered) => ({ ...delivered, ...hitRowSchema.parse({ snippet }) })));
   }
 }

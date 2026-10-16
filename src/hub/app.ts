@@ -650,11 +650,13 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
         }
       },
       (error: unknown) => {
-        if (error instanceof Refusal) {
-          send(response, [error.status, { detail: error.message }]);
-        } else {
+        if (!(error instanceof Refusal)) {
           log("request failed", { path: request.url ?? "", error: error instanceof Error ? error.message : String(error) });
-          send(response, [500, { detail: "Internal Server Error" }]);
+        }
+        if (response.headersSent) {
+          response.destroy(); // A stream that had begun has nowhere to say it: its reader opens it again. Writing a status now would throw, outside anything that catches it, and stop the hub.
+        } else {
+          send(response, error instanceof Refusal ? [error.status, { detail: error.message }] : [500, { detail: "Internal Server Error" }]);
         }
       }
     );
