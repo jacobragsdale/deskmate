@@ -2,10 +2,12 @@
 
 import { createInterface } from "node:readline";
 
+import { z } from "zod";
+
 import { problemOf } from "../core/text.ts";
 import { VERSION } from "../core/version.ts";
 import { PROTOCOL } from "../core/wire.ts";
-import { readLine, windowLineSchema } from "../shared/ipc.ts";
+import { commandSchema, readLine, windowLineSchema } from "../shared/ipc.ts";
 import type { Command, DeskLine, Outcome, Question, View } from "../shared/ipc.ts";
 import { PRESETS } from "./agents/presets.ts";
 import { saveToken } from "./azure.ts";
@@ -16,6 +18,9 @@ import type { Hooks } from "./session.ts";
 import { shellPath } from "./shellEnv.ts";
 import { sweep } from "./worktree.ts";
 
+// A command line whose command the desk cannot read, as one from a newer window's would be: enough of it to give the one reply it is owed.
+const unreadCommandSchema = z.object({ t: z.literal("command"), id: z.int(), command: z.unknown().optional() });
+
 class Desk {
   private readonly home = defaultHome();
   private readonly asked = new Map<number, (ok: boolean) => void>(); // Questions the user has not answered yet, by id.
@@ -23,6 +28,7 @@ class Desk {
   private readonly hooks: Hooks;
   private readonly stopping = new AbortController(); // Aborted once the window has gone, ending the agents a setup check still going has started.
   private session: Session | null = null; // Null until someone has joined a hub from this machine.
+  private joining: Promise<void> | null = null; // A join with the hub not yet answered, which a second join waits on rather than starting a session of its own.
   private attentive = true; // What the window last said, kept for a session that starts later.
   private viewQueued = false;
   private asks = 0;
@@ -120,9 +126,16 @@ class Desk {
     }
     if (command.do === "join") {
       if (this.session === null) {
-        await join(this.home, command.hub.trim(), command.name.trim(), command.token.trim(), command.agent, http);
-        this.start();
-        this.changed();
+        // Set before anything is awaited, so that a join sent twice in one write starts one session, and the desk's end stops the only one there is.
+        this.joining ??= join(this.home, command.hub.trim(), command.name.trim(), command.token.trim(), command.agent, http)
+          .then(() => {
+            this.start();
+            this.changed();
+          })
+          .finally(() => {
+            this.joining = null;
+          });
+        await this.joining;
       }
       return { ok: true };
     }
@@ -148,6 +161,13 @@ class Desk {
   private accept(text: string): void {
     const line = readLine(windowLineSchema, text);
     if (line === null) {
+      // Every command gets exactly one reply, one the desk cannot read too, so that the window is not left waiting for it.
+      const unread = readLine(unreadCommandSchema, text);
+      if (unread !== null) {
+        const read = commandSchema.safeParse(unread.command);
+        this.write({ t: "reply", id: unread.id, outcome: { ok: false, problem: `the desk cannot do that: ${read.success ? "the line holds more than a command" : problemOf(read.error)}` } });
+        return;
+      }
       this.write({ t: "notice", notice: { title: "the desk ignored a line it could not read", body: text.slice(0, 200), severity: "error" } });
       return;
     }

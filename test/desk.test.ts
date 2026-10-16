@@ -88,9 +88,11 @@ await test("the desk by lines: the join form, joining, the chats, a message sent
   assert.deepEqual(await reply(9), { ok: true });
   assert.deepEqual(JSON.parse(readFileSync(join(hub.dir, "desk", "azure.json"), "utf8")), { token: "a-token" });
 
-  // Joining starts the session: the chats arrive as a view, with bob's open.
-  say({ t: "command", id: 2, command: { do: "join", hub: hub.url, name: "alice", token: TOKEN, agent: DEFAULT_PRESET } });
+  // Joining starts the session: the chats arrive as a view, with bob's open. The same join sent twice in one write, as a double click might, starts one session, not two.
+  const joinLine = { t: "command", id: 2, command: { do: "join", hub: hub.url, name: "alice", token: TOKEN, agent: DEFAULT_PRESET } } as const;
+  input.write(`${JSON.stringify(joinLine)}\n${JSON.stringify({ ...joinLine, id: 14 })}\n`);
   assert.deepEqual(await reply(2), { ok: true });
+  assert.deepEqual(await reply(14), { ok: true });
   const joined = await chat("the chat with bob", (view) => view.current?.chat === "bob" && view.team.length === 1);
   assert.deepEqual([joined.me, joined.agents, joined.defaultAgent, joined.link, joined.busy], ["alice", [DEFAULT_PRESET], DEFAULT_PRESET.id, { state: "connected" }, { working: 0, unsent: 0 }]);
 
@@ -114,6 +116,7 @@ await test("the desk by lines: the join form, joining, the chats, a message sent
   await chat("bob's message unread while alice looks away", (view) => view.unread === 1);
   say({ t: "attend", attentive: true });
   await chat("bob's message read once she is back", (view) => view.unread === 0 && view.current?.messages.at(-1)?.body === "yes");
+  assert.equal(lines.filter((line) => line.t === "arrival").length, 1); // Announced once: one session follows the hub.
 
   // A clone is put to the user first, and a no means nothing is fetched.
   say({ t: "command", id: 4, command: { do: "clone", repo: "uploader" } });
@@ -124,11 +127,12 @@ await test("the desk by lines: the join form, joining, the chats, a message sent
   assert.deepEqual(await reply(4), { ok: true });
   assert.ok(!existsSync(dev));
 
-  // A line that is not one of the protocol's is said to be ignored, and the desk carries on.
-  for (const bad of ["not json", JSON.stringify({ t: "command", id: 5, command: { do: "dance" } })]) {
-    input.write(`${bad}\n`);
-    assert.deepEqual(await next("a notice about a bad line", (line) => line.t === "notice" && line.notice), { title: "the desk ignored a line it could not read", body: bad, severity: "error" });
-  }
+  // A line that is not one of the protocol's is said to be ignored, and the desk carries on. A command it cannot read still gets its one reply, so the window is not left waiting.
+  input.write("not json\n");
+  assert.deepEqual(await next("a notice about a bad line", (line) => line.t === "notice" && line.notice), { title: "the desk ignored a line it could not read", body: "not json", severity: "error" });
+  input.write(`${JSON.stringify({ t: "command", id: 5, command: { do: "search", q: "" } })}\n${JSON.stringify({ t: "command", id: 15 })}\n`);
+  assert.deepEqual(await reply(5), { ok: false, problem: "the desk cannot do that: invalid q: Too small: expected string to have >=1 characters" });
+  assert.deepEqual(await reply(15), { ok: false, problem: "the desk cannot do that: invalid input: Invalid input: expected object, received undefined" });
   say({ t: "command", id: 6, command: { do: "open", chat: "bob" } });
   assert.deepEqual(await reply(6), { ok: true });
   assert.deepEqual(await checked(11), [
