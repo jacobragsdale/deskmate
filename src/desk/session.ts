@@ -1323,6 +1323,7 @@ export class Session {
           await this.loadGrants();
           this.loaded = true;
           this.openFirst();
+          this.hooks.changed(); // Said at once even with no chat to open, as when the user is alone on the hub: the window stops saying Loading… now, not at the next beat.
           this.streaming = this.client.stream(from, (batch) => this.arrive(batch), this.stopping.signal);
         }
       } catch (error) {

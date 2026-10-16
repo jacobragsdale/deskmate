@@ -168,6 +168,32 @@ await test("the desk by lines: the join form, joining, the chats, a message sent
   await done;
 });
 
+await test("a desk alone on its hub, with no chat to open, says its chats are loaded at once rather than at the next beat", { timeout: 30_000 }, async (t) => {
+  const hub = await startHub(t, () => Date.now() / 1000);
+  process.env["PLAYER_TWO_HOME"] = join(hub.dir, "desk");
+  process.env["PLAYER_TWO_DEV"] = join(hub.dir, "dev");
+  process.env["HOME"] = hub.dir;
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const lines: DeskLine[] = [];
+  createInterface({ input: output }).on("line", (line) => {
+    lines.push(parse(line));
+  });
+  const done = runDesk(input, output);
+  t.after(() => {
+    input.end(); // So that the desk ends, and the test with it, should an assertion below fail.
+  });
+  const loaded = (): boolean => lines.some((line) => line.t === "view" && line.view.kind === "chat" && line.view.loaded);
+  input.write(`${JSON.stringify({ t: "command", id: 1, command: { do: "join", hub: hub.url, name: "alice", token: TOKEN, agent: DEFAULT_PRESET } })}\n`);
+  // Well within the beat of 25 seconds on which the desk asks the hub again.
+  for (let tries = 0; tries < 400 && !loaded(); tries += 1) {
+    await pause(25);
+  }
+  assert.ok(loaded(), "the chats were not said to be loaded within 10 seconds");
+  input.end();
+  await done;
+});
+
 await test("the built command run as `player-two desk` says hello, shows the join form, writes nothing but protocol lines, and exits when its input ends", { timeout: 30_000 }, async (t) => {
   const home = mkdtempSync(join(tmpdir(), "player-two-desk-"));
   t.after(() => {
