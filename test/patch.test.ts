@@ -285,6 +285,13 @@ await test(
     const draft = await until("jacob's draft", () => owner.view().current?.drafts.find((each) => each.id === reviewed));
     assert.match(draft.patch?.diff ?? "", /^\+edited$/m);
     assert.deepEqual(await kinds(reviewed), ["job.accepted by jacob"]);
+    // Sent with nothing but spaces, it is refused before anything goes, and the draft keeps its words and its patch.
+    await assert.rejects(owner.handle({ do: "sendDraft", chat: "#team", id: reviewed, repo: "uploader", text: "   " }), { message: "an answer cannot be sent empty: write one, or discard the draft" });
+    assert.deepEqual(await kinds(reviewed), ["job.accepted by jacob"]);
+    assert.deepEqual(
+      owner.view().current?.drafts.find((each) => each.id === reviewed),
+      draft
+    );
     await owner.handle({ do: "sendDraft", chat: "#team", id: reviewed, repo: "uploader", text: "Done, see the patch." });
     await until("the answer", async () => (await said(bob, reviewed, "job.result")).length > 0);
     assert.deepEqual(await kinds(reviewed), ["job.accepted by jacob", "patch by jacob", "job.result by jacob"]);

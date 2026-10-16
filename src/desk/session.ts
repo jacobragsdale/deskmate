@@ -1741,8 +1741,12 @@ export class Session {
 
   /** Send a draft as the user edited it, and before it the patch that goes with it, unchanged: both signed by the user, who reviewed them. */
   private async sendDraft(chat: string, request: string, repo: string, text: string): Promise<void> {
-    const draft = this.takeDraft(chat, request, repo);
     const edited = fitText(text.trim());
+    if (edited === "") {
+      // Before anything goes: the patch would be sent and the answer refused, and the draft put back with neither the patch nor its agent's words.
+      throw new PlayerTwoError("an answer cannot be sent empty: write one, or discard the draft");
+    }
+    const draft = this.takeDraft(chat, request, repo);
     let patch = draft.patch;
     try {
       if (patch !== null) {
