@@ -273,6 +273,18 @@ await test("a hub that refuses this machine's key, its clock agreeing, is said t
   assert.deepEqual(await playerTwo(hub, "bob", ["who"]), { status: 1, out: "", err: `player-two: ${swapped}` });
   await assert.rejects(loadClient(home, http, () => NOW)?.users() ?? Promise.resolve(), { message: swapped }); // As the desk and the MCP server are told: they go through the same client.
   await assert.rejects(loadClient(home, http, () => NOW + 301)?.users() ?? Promise.resolve(), { message: "not signed by a known user, or your clock is more than 5 minutes off" });
+  const unsigned = { detail: "not signed by a known user, or your clock is more than 5 minutes off" };
+  const other = createHttpServer((request, response) => {
+    const [status, body] = request.url === "/healthz" ? [200, { ok: true }] : [401, unsigned]; // Something else at the address that answers as the hub does, but has no clock to give.
+    response.writeHead(status, { "Content-Type": "application/json" }).end(JSON.stringify(body));
+  }).listen(0, "127.0.0.1");
+  await once(other, "listening");
+  t.after(() => other.close());
+  const address = other.address();
+  assert.ok(address !== null && typeof address === "object");
+  const config = join(home, "config.json");
+  writeFileSync(config, JSON.stringify({ ...JSON.parse(readFileSync(config, "utf8")), hub: `http://127.0.0.1:${String(address.port)}` }));
+  assert.deepEqual(await playerTwo(hub, "bob", ["who"]), { status: 1, out: "", err: `player-two: ${unsigned.detail}` });
 });
 
 await test("before its first request the command asks which protocol the hub speaks, and asks nothing more of one that speaks another than to be updated", async (t) => {

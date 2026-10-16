@@ -596,10 +596,10 @@ export class Client {
       if (!(error instanceof Refused) || error.status !== 401) {
         throw error;
       }
-      const hubNow = await this.transport("GET", `${this.config.hub}/healthz`, {}, null).then(
-        (answer) => healthSchema.parse(parseJson(answer)).now,
-        () => null
-      );
+      // Null when it cannot be read, from what answers at the address as a hub's /info would but is not one: then the hub's own words, which name both causes.
+      const hubNow = await this.transport("GET", `${this.config.hub}/healthz`, {}, null)
+        .then((answer) => healthSchema.parse(parseJson(answer)).now)
+        .catch(() => null);
       if (hubNow === null || Math.abs(this.now() - hubNow) >= MAX_SKEW) {
         throw error;
       }
