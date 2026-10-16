@@ -11,7 +11,7 @@ import { z } from "zod";
 
 import { digestIn, hubInstallScript } from "../core/install.ts";
 import { AGENT_KINDS, PUBLIC_KINDS, readContent, repoOf } from "../core/kinds.ts";
-import { isUnder, prefixKey } from "../core/remotes.ts";
+import { isUnder, parseRemote, prefixKey } from "../core/remotes.ts";
 import { authClaim, authIsValid, eventId, eventIsAuthentic, isFresh, publicHex } from "../core/sign.ts";
 import { problemOf } from "../core/text.ts";
 import { VERSION } from "../core/version.ts";
@@ -244,6 +244,12 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
   function shareable(repo: RepoRef): void {
     if (!isUnder(repo.key, prefix)) {
       throw new Refusal(422, `${repo.name} is not under ${prefix}, so this hub does not share it`);
+    }
+    // Its name, key and clone address must be what a desk makes of one remote, so that a teammate offered it to clone, or a room pinned to it, gets the repo its key names, under that key's prefix:
+    // a desk finds a checkout by its key, and an agent is held to its own repo by name.
+    const remote = parseRemote(repo.url);
+    if (remote?.key !== repo.key || remote.name !== repo.name) {
+      throw new Refusal(422, `${repo.name}'s name, key and url do not name one repo, so this hub does not share it`);
     }
   }
 

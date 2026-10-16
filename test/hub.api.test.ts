@@ -685,9 +685,12 @@ await test("everyone sees which repos each person has and a new list replaces th
   ]);
 });
 
-await test("a list with a repo from elsewhere or a repeated name is refused whole", async (t) => {
+await test("a list with a repo from elsewhere, one whose name, key and url do not name one repo, or a repeated name is refused whole", async (t) => {
   const cases: readonly (readonly [readonly Repo[], RegExp])[] = [
-    [[UPLOADER, ELSEWHERE], /does not share it/],
+    [[UPLOADER, ELSEWHERE], /is not under dev.azure.com\/acme/],
+    [[UPLOADER, { ...BILLING, url: UPLOADER.url }], /billing's name, key and url do not name one repo/], // A clone offered from another repo than its key names.
+    [[{ ...UPLOADER, name: "billing" }], /billing's name, key and url do not name one repo/], // An agent tagged by one name while its key means another repo.
+    [[{ ...UPLOADER, url: "https://example.invalid/uploader" }], /uploader's name, key and url do not name one repo/], // A clone offered from outside the hub's repos.
     [[UPLOADER, UPLOADER], /share a name/]
   ];
   for (const [repos, problem] of cases) {
