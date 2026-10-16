@@ -984,7 +984,10 @@ function Reactions({ message, me, react }: { readonly message: ReplyView; readon
                   react(emoji);
                 }}
               >
-                {emoji} {people.length}
+                {/* The emoji isolated, as it can be any text at all: a right-to-left override in it would otherwise run on over the count beside it. One span, so the two stay one line of text. */}
+                <span>
+                  <bdi>{emoji}</bdi> {people.length}
+                </span>
               </Button>
             </TooltipTrigger>
             <TooltipContent>{names}</TooltipContent>

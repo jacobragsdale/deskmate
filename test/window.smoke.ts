@@ -943,6 +943,9 @@ await test(
     // Bob's reaction, an "emoji" that tries to be HTML, is drawn as text with its count; alice adds 👍 from the message's bar and takes it back from its count.
     await bob.publish("alice", "reaction", { emoji: "<img src=x onerror=pwned=6>", on: true }, [root.event.id]);
     await page.until("bob's reaction", `document.querySelector("main").innerText.includes("<img src=x onerror=pwned=6> 1")`);
+    // One that holds a right-to-left override is drawn apart from its count, which the override would otherwise turn round: "1 cba" for "abc 1".
+    await bob.publish("alice", "reaction", { emoji: "\u202Eabc", on: true }, [root.event.id]);
+    await page.until("bob's reversed reaction, isolated from its count", `[...document.querySelectorAll("main bdi")].some((each) => each.textContent === "\\u202Eabc")`);
     const hello = `[...document.querySelectorAll("main article")].find((each) => each.innerText.includes("hello from the window"))`;
     await page.eval(`${hello}.querySelector('button[aria-label="React with 👍"]').click()`);
     await page.until("alice's 👍", `${hello}.querySelector('button[aria-pressed="true"]')?.innerText === "👍 1"`);
