@@ -187,7 +187,8 @@ function Chat({ view, act, tell, onSetup, onAgents }: ChatProps): JSX.Element {
           <ResizableHandle />
         </>
       )}
-      <ResizablePanel id="chat">
+      {/* Never narrower than the list at its narrowest, so that at the window's smallest, 560 pixels, with the list and the activity panel at theirs, the chat is still there to use. */}
+      <ResizablePanel id="chat" minSize={160}>
         <main className="flex h-full min-w-0 flex-col">
           {current === null ? (
             <p className="m-auto p-8 text-center text-muted-foreground">

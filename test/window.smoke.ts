@@ -1206,6 +1206,10 @@ await test(
     await page.eval(`${panel}.querySelector('li[data-tone="failed"] summary').click()`);
     await page.until("the edit's detail", `${panel}.querySelector("details[open] pre")?.textContent === ${JSON.stringify(JSON.stringify({ title: "Edit edited.txt" }, null, 1))}`);
     await page.shot("activity");
+    // At the window's smallest, 560 pixels across, the list and the panel at their narrowest leave the chat between them.
+    await page.send("Emulation.setDeviceMetricsOverride", { width: 560, height: 360, deviceScaleFactor: 0, mobile: false });
+    await page.until("the chat between the list and the panel at 560 pixels", `document.querySelector("main").getBoundingClientRect().width >= 150`);
+    await page.send("Emulation.clearDeviceMetricsOverride");
     await page.click("main button", "Discard");
     await page.until("the draft gone", `document.querySelector('textarea[aria-label="Draft answer"]') === null`);
 
