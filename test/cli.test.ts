@@ -2,6 +2,8 @@
 
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
+import { once } from "node:events";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { test } from "node:test";
@@ -191,6 +193,23 @@ await test("a damaged file of the identity's fails the command with a message th
   writeFileSync(agentFile, "zz");
   assert.throws(() => agentKey(home, "uploader"), { message: `${agentFile} cannot be read: the key file does not hold a 32-byte key in hex` });
   assert.equal((await playerTwo(hub, "alice", ["inbox"])).status, 0); // Put back, each works again.
+});
+
+await test("a hub nothing answers at fails the command with why: the refused connection, not only that fetch failed", async (t) => {
+  const hub = await startHub(t);
+  await hub.join("alice");
+  const config = join(hub.dir, "alice", "config.json");
+  const closed = createServer().listen(0, "127.0.0.1"); // A port nothing listens on once this has let it go.
+  await once(closed, "listening");
+  const address = closed.address();
+  assert.ok(address !== null && typeof address === "object");
+  closed.close();
+  writeFileSync(config, JSON.stringify({ ...JSON.parse(readFileSync(config, "utf8")), hub: `http://127.0.0.1:${String(address.port)}` }));
+  assert.deepEqual(await playerTwo(hub, "alice", ["who"]), {
+    status: 1,
+    out: "",
+    err: `player-two: cannot reach the hub at http://127.0.0.1:${String(address.port)}/info: fetch failed (connect ECONNREFUSED 127.0.0.1:${String(address.port)})`
+  });
 });
 
 await test("before its first request the command asks which protocol the hub speaks, and asks nothing more of one that speaks another than to be updated", async (t) => {

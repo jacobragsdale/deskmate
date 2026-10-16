@@ -115,6 +115,17 @@ function detailOf(raw: string): string {
   }
 }
 
+/** Why an address could not be reached: fetch says only "fetch failed", and why, a connection refused or a name not found, is in its cause, by its words or by its code. */
+function unreached(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return String(error);
+  }
+  const { cause } = error;
+  const words = cause instanceof Error ? cause.message : "";
+  const why = words === "" && cause instanceof Error && "code" in cause && typeof cause.code === "string" ? cause.code : words;
+  return why === "" || error.message.includes(why) ? error.message : `${error.message} (${why})`;
+}
+
 export const http: Transport = async (method, url, headers, body) => {
   let response: Response;
   let text: string;
@@ -122,7 +133,7 @@ export const http: Transport = async (method, url, headers, body) => {
     response = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(CALL_TIMEOUT * 1000) });
     text = await response.text();
   } catch (error) {
-    throw new PlayerTwoError(`cannot reach the hub at ${url}: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+    throw new PlayerTwoError(`cannot reach the hub at ${url}: ${unreached(error)}`, { cause: error });
   }
   if (!response.ok) {
     const detail = detailOf(text);
