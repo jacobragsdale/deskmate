@@ -18,7 +18,7 @@ import { MAX_GRANT, readContent } from "../src/core/kinds.ts";
 import { noteLink, notesIn } from "../src/core/links.ts";
 import { authHeader, eventIsAuthentic, loadKey, newKey, publicHex, signEvent } from "../src/core/sign.ts";
 import { deliveredSchema, eventSchema, MAX_SKEW, personSchema } from "../src/core/wire.ts";
-import type { Event, PermissionMode } from "../src/core/wire.ts";
+import type { Delivered, Event, PermissionMode } from "../src/core/wire.ts";
 import { AGENT_KEY_VAR, agentKey } from "../src/desk/agentKeys.ts";
 import { CURSOR_ONESHOT, oneshotAgent } from "../src/desk/agents/presets.ts";
 import { runAgent } from "../src/desk/agents/oneshot.ts";
@@ -817,6 +817,42 @@ await test(
     await session.handle({ do: "leaveChannel", chat: "#ops" });
     failing = () => false;
     assert.deepEqual([session.view().rows.some((row) => row.chat === "#ops"), session.view().current?.chat === "#ops"], [false, false]);
+  }
+);
+
+await test(
+  "an event whose answer never came, as from a hub too slow to answer in time, is sent once more, the same, and is sent once the hub has it, whether the first got there or not",
+  { timeout: 30_000 },
+  async (t) => {
+    const hub = await hubOfItsOwn(t, () => Date.now() / 1000);
+    await hub.join("alice");
+    await hub.join("bob");
+    let losing: "answer" | "request" | null = null; // What the next request loses: the hub's answer to it, or the request itself.
+    const lossy: Transport = async (method, url, headers, body) => {
+      const lost = losing;
+      losing = null;
+      if (lost === "request") {
+        throw new PlayerTwoError(`cannot reach the hub at ${url}: fetch failed (other side closed)`);
+      }
+      const answer = await http(method, url, headers, body);
+      if (lost === "answer") {
+        throw new PlayerTwoError(`cannot reach the hub at ${url}: The operation was aborted due to timeout`);
+      }
+      return answer;
+    };
+    const bob = loadClient(join(hub.dir, "bob"), lossy, () => Date.now() / 1000);
+    assert.ok(bob !== null);
+    for (const lost of ["answer", "request"] as const) {
+      losing = lost;
+      const sent: Delivered = await bob.publish("alice", "message", { text: `its ${lost} lost once`, via: "cli" });
+      const stored: Delivered[] = (await bob.events({ chat: "alice" })).filter((delivered) => delivered.event.id === sent.event.id);
+      assert.deepEqual(
+        stored.map((delivered) => delivered.seq),
+        [sent.seq],
+        lost
+      );
+    }
+    assert.equal((await bob.events({ chat: "alice" })).length, 2);
   }
 );
 

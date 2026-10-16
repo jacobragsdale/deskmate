@@ -259,9 +259,30 @@ export class Client {
     return signEvent(this.key, { author: this.signer, to, kind, content: JSON.stringify(said.content), ts, refs });
   }
 
-  /** Hand an event this client signed to the hub; resolves with it and the place the hub gave it. */
+  /**
+   * Hand an event this client signed to the hub; resolves with it and the place the hub gave it.
+   * A request with no answer, as when the hub is too slow and the time runs out, may have been stored all the same, and the user told it failed would send it again and have it twice:
+   * so it is sent once more, the same event, which the hub, keeping each id once, stores now or says it has already, and then is asked where. What the user is told is what the hub holds.
+   * ponytail: one more try; a hub silent for longer than two requests' time still leaves the user told it failed when it may yet store it. Try until the event is too old to store, if that is seen.
+   */
   public async post(event: Event): Promise<Delivered> {
-    const { seq } = receiptSchema.parse(parseJson(await this.call("POST", "/events", JSON.stringify(event))));
+    const body = JSON.stringify(event);
+    const send = async (): Promise<Delivered> => ({ seq: receiptSchema.parse(parseJson(await this.call("POST", "/events", body))).seq, event });
+    try {
+      return await send();
+    } catch (error) {
+      if (error instanceof Refused || !(error instanceof PlayerTwoError)) {
+        throw error; // Refused, or answered with what this cannot read: either way the hub did answer.
+      }
+    }
+    try {
+      return await send();
+    } catch (error) {
+      if (!(error instanceof Refused && error.status === 409)) {
+        throw error;
+      }
+    }
+    const { seq } = deliveredSchema.parse(parseJson(await this.call("GET", `/events/${encodeURIComponent(event.id)}`))); // Its author's own: theirs to see wherever it went.
     return { seq, event };
   }
 
