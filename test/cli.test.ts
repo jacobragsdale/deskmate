@@ -496,7 +496,8 @@ await test("doctor looks for the agent where the desk does, on the PATH a login 
   const tools = join(hub.dir, "tools");
   mkdirSync(tools);
   writeFileSync(join(tools, "fake-agent"), "#!/bin/sh\n", { mode: 0o755 });
-  environment(t, { PLAYER_TWO_DEV: hub.dir, PATH: `${tools}:${process.env["PATH"] ?? ""}` }); // On this terminal's PATH alone, as nvm puts a program on an interactive shell's.
+  environment(t, { PLAYER_TWO_DEV: hub.dir, HOME: hub.dir, PATH: `${tools}:${process.env["PATH"] ?? ""}` }); // On this terminal's PATH alone, as nvm puts a program on an interactive shell's.
+  writeFileSync(join(hub.dir, ".profile"), "PATH=/usr/bin:/bin\n"); // The login shell sets PATH afresh, as Debian's /etc/profile does and Ubuntu's does not, so the test holds on either.
 
   const checks = z.array(checkSchema).parse(JSON.parse((await playerTwo(hub, "alice", ["doctor", "--json"])).out));
   const agent = checks.find((check) => check.id === "agent");
