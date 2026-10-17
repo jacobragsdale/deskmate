@@ -58,7 +58,8 @@ function downloads(t: TestContext): { readonly dir: string; readonly folder: str
   mkdirSync(join(folder, "sub"), { recursive: true });
   writeFileSync(join(dir, "node"), `#!/bin/sh\necho "node $*"\n`, { mode: 0o755 });
   writeFileSync(join(dir, "command.js"), "");
-  pack(join(dir, "node"), join(dir, "command.js"), join(folder, "wsl-runtime.tar.gz"));
+  writeFileSync(join(dir, "libatomic.so.1"), "");
+  pack(join(dir, "node"), join(dir, "libatomic.so.1"), join(dir, "command.js"), join(folder, "wsl-runtime.tar.gz"));
   writeFileSync(join(folder, "player-two-setup.exe"), "the installer");
   writeFileSync(join(folder, "sub", "inner.txt"), "secret");
   writeFileSync(join(folder, ".hidden"), "secret");

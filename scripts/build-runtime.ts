@@ -1,5 +1,5 @@
 /**
- * Builds the Linux runtime the window installs into WSL: Node 26 for x64, the command, and the two scripts that start it, packed as dist/wsl-runtime.tar.gz with its SHA-256 beside it.
+ * Builds the Linux runtime the window installs into WSL: Node 26 for x64, the libatomic it needs, the command, and the two scripts that start it, packed as dist/wsl-runtime.tar.gz with its SHA-256 beside it.
  * Run it after `npm run build`, on Linux, where the scripts keep the mode that lets them run: `node scripts/build-runtime.ts`. Node's tarball is kept in .cache/node, so a second run downloads nothing.
  */
 
@@ -14,8 +14,10 @@ const CACHE = join(ROOT, ".cache", "node");
 
 // The command. It is reached through ~/.local/bin/player-two and ~/.player-two/current, both links, so it finds its own folder from where they lead.
 // --use-env-proxy makes requests honour HTTPS_PROXY and NO_PROXY, and --use-system-ca has them trust what Ubuntu trusts, a company's own CA included.
+// lib/native holds libatomic.so.1, which Node links against and Ubuntu's WSL images do not have; what the desk starts inherits the path, which only adds that one library.
 export const WRAPPER = `#!/bin/sh
 here=$(dirname "$(readlink -f "$0")")
+export LD_LIBRARY_PATH="$here/../lib/native\${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 exec "$here/node" --use-env-proxy --use-system-ca "$here/../lib/player-two.js" "$@"
 `;
 
@@ -41,13 +43,19 @@ export function tarballIn(sums: string): { readonly name: string; readonly diges
   return digest === undefined || name === undefined ? null : { name, digest };
 }
 
-/** Pack `node` and the built `command` as the runtime, with `bin/` and `lib/` at the top of the archive as the install script expects, and write its digest beside it. Returns the digest. */
-export function pack(node: string, command: string, archive: string): string {
+/** Where `ldd` says Node finds libatomic.so.1 on this machine. Null when it does not find it. */
+export function libatomicIn(ldd: string): string | null {
+  return /^\s*libatomic\.so\.1 => (\/\S+)/m.exec(ldd)?.[1] ?? null;
+}
+
+/** Pack `node`, the `libatomic` it links against and the built `command` as the runtime, with `bin/` and `lib/` at the top of the archive as the install script expects, and write its digest beside it. Returns the digest. */
+export function pack(node: string, libatomic: string, command: string, archive: string): string {
   const stage = mkdtempSync(join(dirname(archive), "runtime-"));
   try {
     mkdirSync(join(stage, "bin"));
-    mkdirSync(join(stage, "lib"));
+    mkdirSync(join(stage, "lib", "native"), { recursive: true });
     copyFileSync(node, join(stage, "bin", "node"));
+    copyFileSync(libatomic, join(stage, "lib", "native", "libatomic.so.1")); // The file a link names, not the link.
     copyFileSync(command, join(stage, "lib", "player-two.js"));
     writeFileSync(join(stage, "bin", "player-two"), WRAPPER, { mode: 0o755 });
     writeFileSync(join(stage, "bin", "player-two-desk"), LAUNCHER, { mode: 0o755 });
@@ -83,6 +91,14 @@ if (import.meta.main) {
   }
   const unpacked = tarball.name.replace(/\.tar\.gz$/, "");
   run("tar", ["-xzf", cached, "-C", CACHE, `${unpacked}/bin/node`]);
-  const digest = pack(join(CACHE, unpacked, "bin", "node"), join(ROOT, "dist", "player-two.js"), join(ROOT, "dist", "wsl-runtime.tar.gz"));
+  const node = join(CACHE, unpacked, "bin", "node");
+  const ldd = spawnSync("ldd", [node], { encoding: "utf8" });
+  const libatomic = libatomicIn(ldd.stdout);
+  if (libatomic === null) {
+    throw new Error(
+      `ldd finds no libatomic.so.1 for ${node}, which the runtime ships for Ubuntu's WSL images that lack it; on Debian or Ubuntu: apt install libatomic1. ldd said:\n${ldd.stdout}${ldd.stderr}`
+    );
+  }
+  const digest = pack(node, libatomic, join(ROOT, "dist", "player-two.js"), join(ROOT, "dist", "wsl-runtime.tar.gz"));
   console.log(`dist/wsl-runtime.tar.gz: ${unpacked}, sha256 ${digest}`);
 }
