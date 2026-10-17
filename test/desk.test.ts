@@ -2,6 +2,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -298,6 +299,67 @@ await test("the built desk ends on SIGTERM, SIGINT or SIGHUP as it does at the e
 
     assert.deepEqual(await exited, [0, null], signal); // It ended itself, having stopped what it runs, rather than being ended by the signal.
   }
+});
+
+await test("a second built desk for one identity stops at once saying which desk is running, and one started after a desk was killed takes its lock over", { timeout: 30_000 }, async (t) => {
+  const home = mkdtempSync(join(tmpdir(), "player-two-desk-"));
+  const started: ChildProcessWithoutNullStreams[] = [];
+  t.after(() => {
+    for (const desk of started) {
+      desk.kill("SIGKILL");
+    }
+    rmSync(home, { recursive: true, force: true });
+  });
+  /** Start the built desk for `home`: `up` once it has shown its first view, or not, with its exit status and what it said on standard error, once it has gone without. */
+  const start = (): Promise<{ readonly desk: ChildProcessWithoutNullStreams; readonly up: boolean; readonly exit: number | null; readonly said: string }> => {
+    const desk = spawn(process.execPath, [BUILT, "desk"], { env: { ...process.env, PLAYER_TWO_HOME: home }, stdio: "pipe" });
+    started.push(desk);
+    const said = text(desk.stderr);
+    return new Promise((resolve) => {
+      let lines = 0;
+      createInterface({ input: desk.stdout }).on("line", () => {
+        lines += 1;
+        if (lines === 2) {
+          resolve({ desk, up: true, exit: null, said: "" });
+        }
+      });
+      desk.once("close", (code) => {
+        said.then(
+          (words) => {
+            resolve({ desk, up: false, exit: code, said: words });
+          },
+          () => undefined
+        );
+      });
+    });
+  };
+
+  const first = await start();
+  assert.ok(first.up, first.said);
+  writeFileSync(
+    join(home, "config.json"),
+    JSON.stringify(configSchema.parse({ hub: "http://127.0.0.1:9", name: "alice", agents: [DEFAULT_PRESET], defaultAgent: DEFAULT_PRESET.id, ownMode: "auto-edits" }))
+  );
+  const second = await start();
+  assert.ok(!second.up, "a second desk for the same identity started");
+  assert.equal(second.exit, 1);
+  assert.match(second.said, new RegExp(`another desk is running as alice \\(pid ${String(first.desk.pid)}\\)`));
+
+  const killed = new Promise((resolve) => {
+    first.desk.once("close", resolve);
+  });
+  first.desk.kill("SIGKILL"); // It leaves its socket behind, with nothing listening on it.
+  await killed;
+  assert.ok(existsSync(join(home, "desk.sock")));
+  rmSync(join(home, "config.json")); // So that the desk now started does not ask a hub.
+  const third = await start();
+  assert.ok(third.up, `a desk started after the first was killed did not take its lock over: ${third.said}`);
+  const ended = new Promise<number | null>((resolve) => {
+    third.desk.once("close", resolve);
+  });
+  third.desk.stdin.end();
+  assert.equal(await ended, 0);
+  assert.ok(!existsSync(join(home, "desk.sock")), "a desk that ended left its lock behind");
 });
 
 await test("the desk writes a view only once the window has read the last, and ends as at the end of its input when its output breaks", { timeout: 30_000 }, async (t) => {

@@ -1,5 +1,9 @@
 /** The desk as a program: one person's session with no window. It reads the window's lines on one stream, writes its own on another, and opens nothing else. */
 
+import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { createConnection, createServer } from "node:net";
+import type { Server } from "node:net";
+import { join as joinPath } from "node:path";
 import { createInterface } from "node:readline";
 import type { Interface } from "node:readline";
 import type { Writable } from "node:stream";
@@ -13,7 +17,7 @@ import { commandSchema, readLine, windowLineSchema } from "../shared/ipc.ts";
 import type { Command, DeskLine, Outcome, Question, View } from "../shared/ipc.ts";
 import { PRESETS } from "./agents/presets.ts";
 import { saveToken } from "./azure.ts";
-import { defaultDev, defaultHome, http, join, loadClient, PlayerTwoError } from "./client.ts";
+import { defaultDev, defaultHome, http, join, loadClient, PlayerTwoError, readConfig } from "./client.ts";
 import type { Transport } from "./client.ts";
 import { runChecks, WITHOUT_IDENTITY } from "./doctor.ts";
 import { Session } from "./session.ts";
@@ -22,6 +26,8 @@ import { joinPaths, shellPath } from "./shellEnv.ts";
 import { sweep } from "./worktree.ts";
 
 const SIGNALS = ["SIGTERM", "SIGINT", "SIGHUP"] as const; // What asks a process to end: a terminal's Ctrl-C, its closing, and kill.
+const LOCK = "desk.sock"; // In the identity's folder: the socket the desk running for it listens on, so that a second one started there does not run beside it.
+const HOLDER_WAIT = 2000; // Milliseconds a desk starting gives the one holding the lock to say its process id.
 
 // A command line whose command the desk cannot read, as one from a newer window's would be: enough of it to give the one reply it is owed.
 const unreadCommandSchema = z.object({ t: z.literal("command"), id: z.int(), command: z.unknown().optional() });
@@ -247,7 +253,87 @@ class Desk {
   }
 }
 
-/** Run the desk until `input` ends: say hello, show the join form or the chats, do what the window's lines ask, and at the end stop the agents and tell the chat. */
+/** What the desk holding the lock at `path` says, its process id, "" when it says nothing in time; null when nothing listens there, as when the desk that made it was killed. */
+function holder(path: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    let connected = false;
+    let said = "";
+    const socket = createConnection(path, () => {
+      connected = true;
+    });
+    socket.setTimeout(HOLDER_WAIT, () => {
+      socket.destroy();
+      resolve(said);
+    });
+    socket.setEncoding("utf8").on("data", (chunk: string) => {
+      said += chunk;
+    });
+    socket.on("end", () => {
+      resolve(said);
+    });
+    socket.on("error", () => {
+      resolve(connected ? said : null);
+    });
+  });
+}
+
+/** Listen on `path`, resolving with what failed, or null once listening. */
+function listen(server: Server, path: string): Promise<NodeJS.ErrnoException | null> {
+  return new Promise((resolve) => {
+    server.once("error", resolve);
+    server.listen(path, () => {
+      server.off("error", resolve);
+      resolve(null);
+    });
+  });
+}
+
+/**
+ * Take the lock that lets one desk run for the identity in `home`, or fail saying which is running. Two desks of one identity on one machine each took a teammate's request under a grant
+ * and raced to make its worktree at the same path, and most often neither ran it and the asker heard nothing. The lock is a socket the desk listens on, which goes with its process: a
+ * process id written to a file could, after a restart, as WSL's are, belong to some other process and keep every desk out. One whose desk was killed is taken over.
+ */
+async function lock(home: string): Promise<Server> {
+  mkdirSync(home, { mode: 0o700, recursive: true }); // As joining makes it: a desk may start before anyone has joined from here.
+  const path = joinPath(home, LOCK);
+  const server = createServer((socket) => {
+    socket.end(String(process.pid));
+  });
+  let failed = await listen(server, path);
+  if (failed?.code === "EADDRINUSE") {
+    const pid = await holder(path);
+    if (pid !== null) {
+      let name = "";
+      try {
+        name = existsSync(joinPath(home, "config.json")) ? ` as ${readConfig(home).name}` : "";
+      } catch {
+        // A config.json the desk cannot read says nothing of who it is; the desk would fail on it anyway.
+      }
+      const which = /^[0-9]+$/.test(pid) ? ` (pid ${pid})` : "";
+      throw new PlayerTwoError(`another desk is running${name}${which}: one identity has one desk on a machine, so close the window or stop the process that started it first`);
+    }
+    // ponytail: two desks started in the same moment over a killed one's socket can both take it, each removing it before the other listens; a lock file beside it would close that.
+    rmSync(path, { force: true });
+    failed = await listen(server, path);
+  }
+  if (failed?.code === "EINVAL") {
+    throw new PlayerTwoError(`${path} is longer than a socket's path may be, so the desk cannot hold its lock there: set PLAYER_TWO_HOME to a folder with a shorter path`);
+  }
+  if (failed !== null) {
+    throw failed;
+  }
+  return server;
+}
+
+/**
+ * Run the desk until `input` ends: say hello, show the join form or the chats, do what the window's lines ask, and at the end stop the agents and tell the chat. Fails at once, before the
+ * hello, when another desk is running for the same identity.
+ */
 export async function runDesk(input: NodeJS.ReadableStream, output: Writable): Promise<void> {
-  await new Desk(output).run(input);
+  const held = await lock(defaultHome()); // Before the desk's start-up sweep, which must not take the worktree of a run the other desk has going.
+  try {
+    await new Desk(output).run(input);
+  } finally {
+    held.close();
+  }
 }

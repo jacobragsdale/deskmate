@@ -369,12 +369,13 @@ Your identity is in `~/.config/player-two`, inside WSL on Windows:
 | `known.json` | The public key first seen for each teammate. |
 | `app-state.json` | Read marks, the last open chat, how you last ran each teammate's requests of each repo, and with which agent, and the branch rooms you said not to suggest. Safe to delete. |
 | `azure.json` | An Azure DevOps token saved from the Setup page, if you saved one. Readable only by you. |
+| `desk.sock` | The socket the desk running for this identity listens on, so that only one runs for it on a machine: two took the same teammate's request and raced to run it. A second desk stops at once with `another desk is running as NAME (pid N)`, which the window shows on its Setup page; close the other window, or stop that process, and press Check again. One a killed desk left behind is taken over by the next desk. |
 
 Two environment variables move things, mainly to hold two identities on one machine:
 
 | Variable | Default | Description |
 |---|---|---|
-| `PLAYER_TWO_HOME` | `~/.config/player-two` | Where the files above live. |
+| `PLAYER_TWO_HOME` | `~/.config/player-two` | Where the files above live. With `/desk.sock` after it, its path must fit in a socket's, 107 bytes on Linux and 103 on macOS; the desk says so when it does not. |
 | `PLAYER_TWO_DEV` | `~/dev` | The folder whose direct subfolders are your repos. |
 
 The runtime the window installs is in `~/.player-two`: each version under `runtime/`, `current` linking to the one in use and `previous` to the one before. The clean copies teammates' requests run on are under `~/.player-two/worktrees`, which `PLAYER_TWO_HOME` does not move; the desk removes any a crash left when it starts, but not one kept because its patch was too large to send. The window keeps one file of its own, `settings.json` in `%APPDATA%\Player Two` on Windows, with the WSL distribution chosen on the Setup page, with none chosen WSL's default, whether Player Two starts at login, and whether it has said that closing the window hid it to the tray.
