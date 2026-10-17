@@ -1,14 +1,14 @@
 /**
  * The desktop app's main process: one window, the desk it starts and speaks to, and the operating system's notifications, badge, dialogs and tray icon. The session is not here: it is in the desk,
  * a process of its own. While a grant of the user's is live, closing the window hides it to the tray, so the desk goes on answering under it, or keeps it open where the user could not be told
- * it went there; Quit in the tray's menu quits.
+ * it went there; Quit in the tray's menu or the app's quits. The app's menu is Electron's own without what reloads the page or opens DevTools.
  */
 
 import { appendFileSync, existsSync } from "node:fs";
 import { join as joinPath } from "node:path";
 
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, shell, Tray } from "electron";
-import type { IpcMainInvokeEvent, NativeImage } from "electron";
+import type { IpcMainInvokeEvent, MenuItemConstructorOptions, NativeImage } from "electron";
 
 import { noteIn, noteOf } from "../../core/links.ts";
 import { problemOf } from "../../core/text.ts";
@@ -29,7 +29,7 @@ const ICON_BGR = [0xc4, 0x3f, 0x7a] as const; // Its colour, an agent's answer's
 let window: BrowserWindow | null = null;
 let current: View | null = null; // What the desk last said to draw; null until it has said anything.
 let stopped = false;
-let quitting = false; // Once the user, the tray's Quit or the system has asked the app to quit: the window then closes for real.
+let quitting = false; // Once the app is quitting, from a menu's Quit, a signal or the system: the window then closes for real, and nothing more is asked.
 let tray: Tray | null = null;
 let untold = false; // Once the system has failed to show the notice that the window went to the tray: it then stays in sight for the rest of this run.
 let linked: string | null = noteIn(process.argv); // A note a link asked for that the desk has not been asked to open yet: one the app was started with waits until the chats are loaded.
@@ -239,6 +239,54 @@ function trayIcon(): NativeImage {
   return nativeImage.createFromBitmap(pixels, { width: ICON, height: ICON, scaleFactor: 2 });
 }
 
+/**
+ * Whether the user lets go of what quitting now would lose, the agents at work and the drafts not sent, asked in a dialog when there is any. It is asked when they close the window or quit from a
+ * menu, and never for a quit from a signal or the system, as at the end of a session or on `kill`: nobody may be there to answer, and the question would hold the quit up.
+ */
+function letGo(): boolean {
+  const { working, unsent } = current?.kind === "chat" ? current.busy : { working: 0, unsent: 0 };
+  const losing = [...(working > 0 ? [`${String(working)} agent${working > 1 ? "s" : ""} still working`] : []), ...(unsent > 0 ? [`${String(unsent)} draft${unsent > 1 ? "s" : ""} not sent`] : [])];
+  if (losing.length === 0) {
+    return true;
+  }
+  const question: Question = { message: `${losing.join(" and ")}.`, detail: "Quitting stops the agents and loses the drafts.", confirm: "Quit" };
+  if (TEST_ASKS !== "") {
+    appendFileSync(TEST_ASKS, `${JSON.stringify(question)}\n`);
+    return existsSync(`${TEST_ASKS}.yes`);
+  }
+  bringUp(); // Quitting from the tray: the warning is about this window's agents and drafts.
+  const options = { type: "warning" as const, message: question.message, detail: question.detail, buttons: [question.confirm, "Cancel"], defaultId: 1, cancelId: 1 };
+  return (window === null ? dialog.showMessageBoxSync(options) : dialog.showMessageBoxSync(window, options)) === 0;
+}
+
+/** Quit from a menu, the tray's or the app's, once the user lets go of what that would lose. */
+function quitAsked(): void {
+  if (letGo()) {
+    app.quit();
+  }
+}
+
+/**
+ * The app's menu: Electron's own, less Reload, Force Reload and DevTools, whose page shows other people's words and has nothing to reload. Its Quit asks first, as the tray's does, and is the only
+ * one of the app's that does: macOS's Dock quits without asking, as a signal does. Edit's items are what make the clipboard's keys work on macOS, and View keeps zooming.
+ */
+function appMenu(): Menu {
+  const mac = process.platform === "darwin";
+  const quit: MenuItemConstructorOptions = {
+    label: mac ? "Quit Player Two" : process.platform === "win32" ? "Exit" : "Quit",
+    ...(process.platform === "win32" ? {} : { accelerator: "CommandOrControl+Q" }), // Where Electron's own Quit has a key: Windows quits with Alt+F4, which closes the window.
+    click: quitAsked
+  };
+  const template: MenuItemConstructorOptions[] = [
+    ...(mac ? [{ role: "appMenu" as const, submenu: [{ role: "hide" as const }, { role: "hideOthers" as const }, { role: "unhide" as const }, { type: "separator" as const }, quit] }] : []),
+    { role: "fileMenu", submenu: mac ? [{ role: "close" }] : [quit] },
+    { role: "editMenu" },
+    { role: "viewMenu", submenu: [{ role: "resetZoom" }, { role: "zoomIn" }, { role: "zoomOut" }, { type: "separator" }, { role: "togglefullscreen" }] },
+    { role: "windowMenu" }
+  ];
+  return Menu.buildFromTemplate(template);
+}
+
 /** The tray's menu: open the window, start at login where the app can, and quit for real. */
 function trayMenu(): void {
   tray?.setContextMenu(
@@ -257,12 +305,7 @@ function trayMenu(): void {
           ]
         : []),
       { type: "separator" },
-      {
-        label: "Quit",
-        click: (): void => {
-          app.quit();
-        }
-      }
+      { label: "Quit", click: quitAsked }
     ])
   );
 }
@@ -355,11 +398,17 @@ function createWindow(hidden: boolean): void {
   created.on("blur", () => {
     desk.attend(false);
   });
+  // Windows is shutting down or signing the user out. It ends the app with no before-quit or will-quit, so the desk is told to stop here, while there may be time for it to stop its agents
+  // and tell the chat; if there is not, a desk whose window has gone stops the same way as its input closes. Nothing is asked, and sign-out is not held up: query-session-end is left alone.
   created.on("session-end", () => {
-    quitting = true; // Windows is shutting down or signing the user out, which does not say before-quit: the window closes for real.
+    quitting = true;
+    desk.stop().catch(report);
   });
   created.on("close", (event) => {
-    if (!quitting && granting()) {
+    if (quitting) {
+      return; // Asked already if from a menu; from a signal or the system, not asked.
+    }
+    if (granting()) {
       event.preventDefault(); // Not closed: the desk goes on answering under the user's grants.
       if (mayHide()) {
         created.hide();
@@ -369,24 +418,8 @@ function createWindow(hidden: boolean): void {
       }
       return;
     }
-    const { working, unsent } = current?.kind === "chat" ? current.busy : { working: 0, unsent: 0 };
-    const losing = [...(working > 0 ? [`${String(working)} agent${working > 1 ? "s" : ""} still working`] : []), ...(unsent > 0 ? [`${String(unsent)} draft${unsent > 1 ? "s" : ""} not sent`] : [])];
-    if (losing.length > 0) {
-      bringUp(); // Quitting from the tray: the warning is about this window's agents and drafts.
-    }
-    const stay =
-      losing.length > 0 &&
-      dialog.showMessageBoxSync(created, {
-        type: "warning",
-        message: `${losing.join(" and ")}.`,
-        detail: "Quitting stops the agents and loses the drafts.",
-        buttons: ["Quit", "Cancel"],
-        defaultId: 1,
-        cancelId: 1
-      }) === 1;
-    if (stay) {
+    if (!letGo()) {
       event.preventDefault();
-      quitting = false; // The user stayed: closing the window later hides it again while a grant is live.
     }
   });
   created.on("closed", () => {
@@ -444,6 +477,7 @@ app
     if (app.isPackaged) {
       app.setAsDefaultProtocolClient("player-two");
     }
+    Menu.setApplicationMenu(appMenu());
     // Started at login it waits in the tray: on Windows it is given HIDDEN, and macOS says whether it opened it at login.
     createWindow(process.argv.includes(HIDDEN) || (process.platform === "darwin" && app.getLoginItemSettings().wasOpenedAtLogin));
     makeTray();
