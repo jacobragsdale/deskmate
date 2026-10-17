@@ -1,4 +1,4 @@
-/** The hub as a program: settings from the environment, where to listen from the arguments, and a line on standard error for each thing worth knowing; and checking its log's chain. */
+/** The hub as a program: settings from the environment, where to listen from the arguments, and a line on standard error for each thing worth knowing; checking its log's chain; and giving someone a new key. */
 
 import { existsSync } from "node:fs";
 import type { Server } from "node:http";
@@ -7,9 +7,10 @@ import { parseArgs } from "node:util";
 import { z } from "zod";
 
 import { problemOf } from "../core/text.ts";
+import { nameSchema, pubKeySchema } from "../core/wire.ts";
 import { createHub } from "./app.ts";
 import type { Log } from "./app.ts";
-import { verifyChain } from "./db.ts";
+import { Database, verifyChain } from "./db.ts";
 import { allowList } from "./workflows.ts";
 
 const settingsSchema = z
@@ -49,6 +50,18 @@ function onDatabase<T>(path: string, work: () => T): T {
   } catch (error) {
     throw error instanceof Error && "code" in error && error.code === "ERR_SQLITE_ERROR" ? new Error(`${path}: ${error.message}`) : error;
   }
+}
+
+/** The database PLAYER_TWO_DB names, for a command run on the hub's: one that is not there is said so, rather than in SQLite's words, which do not say where it looked, or made empty. */
+function databaseOf(env: NodeJS.ProcessEnv): string {
+  const setting = dbSchema.safeParse(env);
+  if (!setting.success) {
+    throw new Error(`PLAYER_TWO_DB ${setting.error.issues[0]?.message ?? "is not set"}`);
+  }
+  if (!existsSync(setting.data.PLAYER_TWO_DB)) {
+    throw new Error(`there is no database at ${setting.data.PLAYER_TWO_DB}`);
+  }
+  return setting.data.PLAYER_TWO_DB;
 }
 
 /**
@@ -92,16 +105,33 @@ export async function runHub(args: readonly string[], env: NodeJS.ProcessEnv): P
   return server;
 }
 
+/**
+ * `player-two hub rekey NAME KEY`: give NAME, who lost their key, the public key KEY in the database PLAYER_TWO_DB names, beside the running hub, which takes it from their next request, and return
+ * what to do next. KEY is the one the hub's refusal of their join gave them. Throws, with words for whoever runs the hub, when an argument is wrong or there is nothing to replace.
+ */
+export function rekeyHub(name: string, pubkey: string, env: NodeJS.ProcessEnv, now: () => number = () => Date.now() / 1000): string {
+  if (!nameSchema.safeParse(name).success) {
+    throw new Error(`'${name}' is not a name anyone could have joined under`);
+  }
+  if (!pubKeySchema.safeParse(pubkey).success) {
+    throw new Error(`${pubkey} is not a public key: the hub's refusal of their join gives theirs, 64 hex characters`);
+  }
+  const path = databaseOf(env);
+  onDatabase(path, () => {
+    const db = new Database(path);
+    try {
+      db.rekey(name, pubkey, Math.floor(now()));
+    } finally {
+      db.close();
+    }
+  });
+  return `${name} signs with ${pubkey} from now on, and their agents once their desk registers them again: they join again as before, and everyone else removes ${name} from known.json`;
+}
+
 /** `player-two hub verify`: walk the log in the database PLAYER_TWO_DB names and return what to say when its chain holds. Throws, naming the first seq that breaks it, when it does not, and the first agent whose key in the agents table the log does not give it. */
 export function verifyHub(env: NodeJS.ProcessEnv): string {
-  const setting = dbSchema.safeParse(env);
-  if (!setting.success) {
-    throw new Error(`PLAYER_TWO_DB ${setting.error.issues[0]?.message ?? "is not set"}`);
-  }
-  if (!existsSync(setting.data.PLAYER_TWO_DB)) {
-    throw new Error(`there is no database at ${setting.data.PLAYER_TWO_DB}`); // Rather than SQLite's words, which do not say where it looked.
-  }
-  const { events, head, broken, agents } = onDatabase(setting.data.PLAYER_TWO_DB, () => verifyChain(setting.data.PLAYER_TWO_DB));
+  const path = databaseOf(env);
+  const { events, head, broken, agents } = onDatabase(path, () => verifyChain(path));
   if (broken !== null) {
     throw new Error(`the chain breaks at seq ${String(broken.seq)}: ${broken.why}`);
   }

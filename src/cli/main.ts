@@ -24,7 +24,7 @@ import { runDesk } from "../desk/main.ts";
 import { agentOf, ask, glance, readNote, trust } from "../desk/notes.ts";
 import type { Agent, Asked } from "../desk/notes.ts";
 import { shellPath } from "../desk/shellEnv.ts";
-import { runHub, verifyHub } from "../hub/main.ts";
+import { rekeyHub, runHub, verifyHub } from "../hub/main.ts";
 import { createServer } from "../mcp/server.ts";
 import type { Check } from "../shared/ipc.ts";
 
@@ -48,6 +48,7 @@ const USAGE = `usage: player-two COMMAND
   channel [join NAME | leave NAME]      list the channels, or join or leave one
   hub [--host HOST] [--port PORT]       run the hub; it reads PLAYER_TWO_JOIN_TOKEN, PLAYER_TWO_DB, PLAYER_TWO_REPOS and, if set, PLAYER_TWO_DOWNLOADS and PLAYER_TWO_WEBHOOK_ALLOW
   hub verify                            check that no event in the log in PLAYER_TWO_DB was changed or taken out since it was stored
+  hub rekey NAME KEY                    give NAME, who lost their key, the key their join was refused with, in PLAYER_TWO_DB, beside the running hub
   desk                                  run your side with no window, for the window to start: it speaks JSON lines on standard input and output
   mcp [--allow-send]                    run the MCP server, for an agent's editor to start: the chat as tools, over standard input and output; --allow-send adds sending, asking and withdrawing
                                         (the desk starts it with --job ID in a run let ask other agents, whose PLAYER_TWO_JOB names the same ID)
@@ -557,6 +558,12 @@ async function hub(args: string[], out: (line: string) => void): Promise<void> {
       throw new UsageError("hub verify takes nothing more: it checks the database PLAYER_TWO_DB names");
     }
     out(verifyHub(process.env));
+  } else if (args[0] === "rekey") {
+    const [, name, pubkey, ...more] = args;
+    if (name === undefined || pubkey === undefined || more.length > 0) {
+      throw new UsageError("hub rekey takes a name and the key their join was refused with");
+    }
+    out(rekeyHub(name, pubkey, process.env));
   } else {
     await runHub(args, process.env); // Once it listens, it keeps the program alive from here, until it is told to stop.
   }

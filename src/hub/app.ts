@@ -265,7 +265,11 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
     }
     db.addUser(name, pubkey);
     if (db.pubkeyOf(name) !== pubkey) {
-      throw new Refusal(409, `the name '${name}' is taken by another key`);
+      // Only whoever runs the hub can give a name a new key, once they know it is that person's: then the same join goes through.
+      throw new Refusal(
+        409,
+        `the name '${name}' is taken by another key: if it is yours and you lost that key, ask whoever runs the hub to run \`player-two hub rekey ${name} ${pubkey}\`, then join again`
+      );
     }
     log("user joined", { user: name });
     return [201, { name, pubkey }];
@@ -521,13 +525,25 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
 
   /**
    * Hold the response open and send the caller every event they can see after `after`, then each new one as it is stored, and a comment line every PING seconds.
-   * Each batch is read through the same rule as every other read, at the moment it is sent, so a channel left since the stream opened sends nothing more.
+   * Each batch is read through the same rule as every other read, at the moment it is sent, so a channel left since the stream opened sends nothing more. It ends, rather than sending or
+   * pinging, once the key it was opened with is not its signer's any more, as after `player-two hub rekey`, which another process runs and so wakes no stream: within PING seconds.
    */
   function stream(ask: Ask): null {
     const { after } = parsed(streamQuerySchema, Object.fromEntries(ask.query), "query");
-    const { me, response } = ask;
+    const { me, signer, response } = ask;
+    const opened = keyOf(signer);
     let sent = after;
+    const end = (): void => {
+      clearInterval(ping);
+      waiting.delete(send);
+      response.off("drain", send);
+      response.end();
+    };
     const send = (): void => {
+      if (keyOf(signer) !== opened) {
+        end();
+        return;
+      }
       // Stops while the reader has not taken what was written, and goes on when it has ("drain"), so a slow reader holds a page of the log in memory, not all of it.
       while (!response.writableNeedDrain) {
         const newest = db.head().seq; // Nothing can be stored between this and the read below: both happen in this one turn of the loop.
@@ -543,7 +559,11 @@ export function createHub(settings: HubSettings, now: () => number = () => Date.
       }
     };
     const ping = setInterval(() => {
-      response.write(":\n\n");
+      if (keyOf(signer) === opened) {
+        response.write(":\n\n");
+      } else {
+        end();
+      }
     }, PING * 1000);
     response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }).flushHeaders();
     waiting.add(send);

@@ -18,7 +18,7 @@ import { VERSION } from "../src/core/version.ts";
 import { deliveredSchema, HUB, MAX_SKEW, ownerOf, PROTOCOL, receiptSchema } from "../src/core/wire.ts";
 import type { Delivered, Event, Repo } from "../src/core/wire.ts";
 import { oneshotAgent } from "../src/desk/agents/presets.ts";
-import { http, join as joinHub } from "../src/desk/client.ts";
+import { http, join as joinHub, loadClient } from "../src/desk/client.ts";
 import type { Client } from "../src/desk/client.ts";
 import { createHub } from "../src/hub/app.ts";
 import { Database, SCHEMA_VERSION } from "../src/hub/db.ts";
@@ -1024,6 +1024,68 @@ await test("hub verify checks an agent's events against the key its owner had re
   kept.prepare("UPDATE events SET id = ?, nonce = ?, sig = ?, chain = ? WHERE seq = 4").run(late.id, late.nonce, late.sig, after);
   kept.close();
   assert.deepEqual(verify(), [1, "player-two: the chain breaks at seq 4: its signature does not hold under the key alice last registered for it before then\n"]);
+});
+
+await test("someone who lost their key is given a new one by whoever runs the hub, beside it: the name is never free, the old key, its open stream and its agents stop working, and the log still holds", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] }); // The hub's alone: fetch and the test runner keep their own timers.
+  const hub = await startHub(t);
+  await hub.join("alice");
+  await hub.join("bob");
+  const [lost, fresh] = [loadKey("33".repeat(32)), loadKey("44".repeat(32))]; // Alice's agent's key on the machine she lost, and on her new one.
+  assert.equal((await post(hub, "alice", signed(hub, "alice", "*", "agent.register", { repo: "uploader", pubkey: publicHex(lost) })))[0], 201);
+  await say(hub, "bob", "alice", "before");
+  const stream = await openStream(hub, "alice", 0);
+  t.after(stream.hangUp);
+  assert.deepEqual([await stream.next(), await stream.next()], ["agent.register", "before"]);
+
+  // Her new machine's join is refused with the command for whoever runs the hub, and keeps the key it made for joining again.
+  const home = join(hub.dir, "alice-again");
+  const refused = await joinHub(home, hub.url, "alice", TOKEN, oneshotAgent("fake-agent"), http).then(
+    () => "joined",
+    (error: unknown) => (error instanceof Error ? error.message : String(error))
+  );
+  const pubkey = publicHex(loadKey(readFileSync(join(home, "key"), "utf8").trim()));
+  assert.equal(refused, `the name 'alice' is taken by another key: if it is yours and you lost that key, ask whoever runs the hub to run \`player-two hub rekey alice ${pubkey}\`, then join again`);
+
+  const rekey = (...args: string[]): readonly [number | null, string] => {
+    const ran = spawnSync(process.execPath, [COMMAND, "hub", "rekey", ...args], { env: { PLAYER_TWO_DB: join(hub.dir, "hub.db") }, encoding: "utf8" });
+    return [ran.status, ran.stdout + ran.stderr];
+  };
+  assert.deepEqual(rekey("carol", pubkey), [1, "player-two: nobody named 'carol' has joined this hub, so there is no key to replace: they can join with theirs\n"]);
+  assert.deepEqual(rekey("alice", "not-a-key"), [1, "player-two: not-a-key is not a public key: the hub's refusal of their join gives theirs, 64 hex characters\n"]);
+  assert.deepEqual(rekey("alice", pubkey), [
+    0,
+    `alice signs with ${pubkey} from now on, and their agents once their desk registers them again: they join again as before, and everyone else removes alice from known.json\n`
+  ]);
+  assert.deepEqual(rekey("alice", pubkey), [1, `player-two: ${pubkey} is alice's key already\n`]);
+
+  // The running hub takes it from the next request: the old key and its agent's are refused, and the stream it opened ends at its next comment line.
+  const unknown = "not signed by a known user, or your clock is more than 5 minutes off";
+  assert.deepEqual(await refusal(hub, "GET", "/users", { headers: signedBy(hub, "alice", "GET", "/users") }), [401, unknown]);
+  const progress = signEvent(lost, { author: "alice/uploader", to: "bob", kind: "job.progress", content: JSON.stringify({ repo: "uploader", summary: "reading" }), ts: NOW, refs: [] });
+  const asAgent = { Authorization: authHeader(lost, "alice/uploader", NOW, "POST", "/events"), "Content-Type": "application/json" };
+  assert.deepEqual(await refusal(hub, "POST", "/events", { headers: asAgent, body: JSON.stringify(progress) }), [401, unknown]);
+  t.mock.timers.tick(20_000);
+  assert.equal(await stream.next(), "(closed)");
+
+  // The same join now goes through, keeping her name, her chats and her channels, and her desk registers her agent again.
+  await joinHub(home, hub.url, "alice", TOKEN, oneshotAgent("fake-agent"), http);
+  const alice = loadClient(home, http, () => NOW);
+  assert.ok(alice !== null);
+  assert.deepEqual(
+    (await alice.users()).map((user) => [user.name, user.pubkey]),
+    [
+      ["alice", pubkey],
+      ["bob", publicHex(keyOf(hub, "bob"))]
+    ]
+  );
+  await alice.publish("bob", "message", { text: "back", via: "cli" });
+  await alice.publish("*", "agent.register", { repo: "uploader", pubkey: publicHex(fresh) });
+  assert.deepEqual(await said(hub, "bob"), ["agent.register", "before", "user.rekey", "back", "agent.register"]);
+
+  // hub verify checks what she signed before against the key she lost, and after against the new one.
+  const verified = spawnSync(process.execPath, [COMMAND, "hub", "verify"], { env: { PLAYER_TWO_DB: join(hub.dir, "hub.db") }, encoding: "utf8" });
+  assert.match(verified.stdout, /^the chain holds: 5 events/);
 });
 
 await test("a database phase 2 made, schema 6, is brought forward with what it holds, gaining the agents table", async (t) => {

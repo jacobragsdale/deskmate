@@ -7,7 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 
 import { readContent } from "../core/kinds.ts";
-import { eventId, eventIsAuthentic, loadKey, newKey, privateHex, publicHex } from "../core/sign.ts";
+import { eventId, eventIsAuthentic, loadKey, newKey, privateHex, publicHex, signEvent } from "../core/sign.ts";
 import { byCodeUnit, problemOf } from "../core/text.ts";
 import { deliveredSchema, HIT_CLOSE, HIT_OPEN, HUB, isAgent, isChannel, ownerOf, personSchema, searchable, teamRepoSchema } from "../core/wire.ts";
 import type { Delivered, Event, Person, Repo, RepoRef, TeamRepo } from "../core/wire.ts";
@@ -198,7 +198,7 @@ function eventIn(row: Record<string, unknown>, chain: string, previous: string, 
   }
   const pubkey = keys.get(event.author);
   if (pubkey === undefined) {
-    return `its author, ${event.author}, has no key on this hub to check its signature against`; // The hub stores nobody's event before they have joined, or their agent's before they registered it, and never forgets a key.
+    return `its author, ${event.author}, has no key on this hub to check its signature against`; // The hub stores nobody's event before they have joined, or their agent's before they registered it, and changes a key only with a user.rekey.
   }
   if (!eventIsAuthentic(event, pubkey)) {
     const key = isAgent(event.author) ? `the key ${ownerOf(event.author)} last registered for it before then` : `the key ${event.author} joined with`;
@@ -224,8 +224,8 @@ function disagreement(agent: string, held: string | undefined, registered: strin
 /**
  * Walk the event log in the database at `path`, without changing it, and say how far it holds: how many events there are and the newest chain value,
  * or the first seq that breaks it, and how. Each event's id is worked out again from its fields, its chain value from the one before, and its signature checked against the key its author joined with,
- * or for an agent, the key its owner's newest registration of it before then holds, read from the log as the hub read it then;
- * so a row changed by hand, its signature included, breaks the log at that row; a row taken out breaks it at the one after; and a row that cannot be read is named, not passed over.
+ * or for an agent, the key its owner's newest registration of it before then holds, read from the log as the hub read it then; for someone the hub gave a new key, with a user.rekey, the key before it
+ * until then and the new one after, when their agents have none until registered again; so a row changed by hand, its signature included, breaks the log at that row; a row taken out breaks it at the one after; and a row that cannot be read is named, not passed over.
  * Once the log holds, the agents table, which the hub checks every agent's signature against, must hold exactly the keys the walk learned: `agents` names the first agent it does not, and how.
  */
 export function verifyChain(path: string): { readonly events: number; readonly head: string; readonly broken: { readonly seq: number; readonly why: string } | null; readonly agents: string | null } {
@@ -235,6 +235,13 @@ export function verifyChain(path: string): { readonly events: number; readonly h
     const hubKey = hubKeyIn(db);
     if (hubKey !== undefined) {
       keys.set(HUB, publicHex(hubKey)); // Nobody has joined under its name since the hub has had a key.
+    }
+    // Someone given a new key signed what came before it with the key their first user.rekey replaced, newest first so that the earliest is left: `users` holds only the last.
+    for (const { event } of readable(db.prepare(`SELECT ${EVENT_COLUMNS} FROM events WHERE author = ? AND kind = 'user.rekey' AND recipient = '*' ORDER BY seq DESC`).all(HUB))) {
+      const said = readContent(event);
+      if (said.kind === "user.rekey") {
+        keys.set(said.content.name, said.content.previous);
+      }
     }
     let previous = FIRST_CHAIN;
     let events = 0;
@@ -247,6 +254,12 @@ export function verifyChain(path: string): { readonly events: number; readonly h
       const said = readContent(event);
       if (said.kind === "agent.register" && event.to === "*" && !isAgent(event.author)) {
         keys.set(`${event.author}/${said.content.repo}`, said.content.pubkey); // As the hub learned it when it stored this.
+      }
+      if (said.kind === "user.rekey" && event.author === HUB && event.to === "*") {
+        keys.set(said.content.name, said.content.pubkey);
+        for (const agent of [...keys.keys()].filter((author) => isAgent(author) && ownerOf(author) === said.content.name)) {
+          keys.delete(agent); // As the hub dropped them.
+        }
       }
       previous = chain;
       events += 1;
@@ -314,6 +327,26 @@ export class Database {
     this.db.prepare("INSERT OR IGNORE INTO users (name, pubkey) VALUES (?, ?)").run(name, pubkey);
   }
 
+  /**
+   * Give `name`, who lost their key, `pubkey` in its place, as `player-two hub rekey` does, so that the name is never free for someone else to join under: their agents' keys go with the old one,
+   * until their desk registers them again, and a user.rekey of the hub's own, to everyone, keeps the change in the log, so that hub verify checks what they signed before it against the old key.
+   * Throws when nobody joined under `name`, or when it is their key already.
+   */
+  public rekey(name: string, pubkey: string, ts: number): void {
+    this.transaction(() => {
+      const previous = this.pubkeyOf(name);
+      if (previous === null || name === HUB) {
+        throw new Error(`nobody named '${name}' has joined this hub, so there is no key to replace: they can join with theirs`);
+      }
+      if (previous === pubkey) {
+        throw new Error(`${pubkey} is ${name}'s key already`);
+      }
+      this.addEvent(signEvent(this.hubKey(), { author: HUB, to: "*", kind: "user.rekey", content: JSON.stringify({ name, pubkey, previous }), ts, refs: [] }));
+      this.db.prepare("UPDATE users SET pubkey = ? WHERE name = ?").run(pubkey, name);
+      this.db.prepare("DELETE FROM agents WHERE owner = ?").run(name);
+    });
+  }
+
   /** Record that someone was here at `ts`, Unix seconds. */
   public sawUser(name: string, ts: number): void {
     this.db.prepare("UPDATE users SET seen = ? WHERE name = ?").run(ts, name);
@@ -333,9 +366,12 @@ export class Database {
     this.db.prepare("INSERT OR REPLACE INTO agents (owner, repo, pubkey, seq) VALUES (?, ?, ?, ?)").run(owner, repo, pubkey, seq);
   }
 
-  /** Do all of `work` or, when it throws, none of it. */
+  /**
+   * Do all of `work` or, when it throws, none of it. It takes the file's write lock from the start, as `player-two hub rekey` writes beside the running hub: one begun as a reader, which reads
+   * the head its event is chained to, fails at its first write, rather than waiting, when the other process wrote since.
+   */
   public transaction<T>(work: () => T): T {
-    this.db.exec("BEGIN");
+    this.db.exec("BEGIN IMMEDIATE");
     try {
       const done = work();
       this.db.exec("COMMIT");

@@ -66,6 +66,9 @@ export const contentSchema = z
     z.object({ kind: z.literal("job.cancelled"), content: z.object({ repo }).readonly() }),
     z.object({ kind: z.literal("job.withdrawn"), content: z.object({ agent: z.string().regex(new RegExp(`^${NAME}/${REPO_NAME}$`)) }).readonly() }),
     z.object({ kind: z.literal("agent.register"), content: z.object({ repo, pubkey: pubKeySchema }).readonly() }), // The key of its author's agent in `repo`, which then signs as "author/repo": the newest wins.
+    // The hub's own, to everyone, as `player-two hub rekey` stores it for someone who lost their key: from here on `name` signs with `pubkey` in place of `previous`, and has no agents until
+    // they register them again. Counts only for hub verify, which checks what they signed before it against `previous`; a reader's fold counts it for nothing (mayCome).
+    z.object({ kind: z.literal("user.rekey"), content: z.object({ name: nameSchema, pubkey: pubKeySchema, previous: pubKeySchema }).readonly() }),
     // An agent at work asking another, from phase 5, authored by the asking agent. refs[0] is the root request, and refs[1] the request the asker is working on: the root again when the asker is the root's agent.
     // `chain` is the agents from the root's down to the asker, in order. src/core/delegation.ts says when one may run.
     z.object({ kind: z.literal("job.request"), content: z.object({ target: agent, text, chain: z.array(agent).min(1).readonly() }).readonly() }),
